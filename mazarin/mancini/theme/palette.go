@@ -36,7 +36,6 @@ func (p *DefaultPalette) Icon() color.NRGBA          { return p.icon }
 func (p *DefaultPalette) Highlight() color.NRGBA     { return p.highlight }
 func (p *DefaultPalette) HighlightText() color.NRGBA { return p.highlightText }
 func (p *DefaultPalette) DisabledAlpha() float64     { return p.disabledAlpha }
-func (p *DefaultPalette) SwapRB() bool               { return p.swapRB }
 
 // NewDefaultPalette returns the standard purple neumorphic palette.
 func NewDefaultPalette() *DefaultPalette {
@@ -64,9 +63,19 @@ func NewDefaultPaletteWithColors(surface, text color.NRGBA) *DefaultPalette {
 }
 
 // NewDefaultPaletteSwapRB returns the standard palette with red and blue
-// channels swapped (for framebuffers that use BGR byte order).
+// channels pre-swapped in every color (for framebuffers that use BGR
+// byte order). Callers can use the returned colors directly without
+// additional swapping.
 func NewDefaultPaletteSwapRB() *DefaultPalette {
 	p := NewDefaultPalette()
 	p.swapRB = true
+	p.surface = mancini.SwapRB(p.surface)
+	p.surfaceTint = mancini.SwapRB(p.surfaceTint)
+	p.darkShadow = mancini.SwapRB(p.darkShadow)
+	p.lightShadow = mancini.SwapRB(p.lightShadow)
+	p.text = mancini.SwapRB(p.text)
+	p.icon = mancini.SwapRB(p.icon)
+	p.highlight = mancini.SwapRB(p.highlight)
+	p.highlightText = mancini.SwapRB(p.highlightText)
 	return p
 }

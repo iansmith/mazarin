@@ -288,14 +288,14 @@ func scrollbarDrawArrow(dc mancini.DrawContext, pal mancini.Palette,
 		x0-ox+p.DarkOff, y0-oy+p.DarkOff,
 		x1-ox+p.DarkOff, y1-oy+p.DarkOff,
 		x2-ox+p.DarkOff, y2-oy+p.DarkOff,
-		pal.DarkShadow(), p.DarkAlpha, p.DarkBlur, pal.SwapRB())
+		pal.DarkShadow(), p.DarkAlpha, p.DarkBlur)
 	draw.Draw(canvas, dst, dark, image.Point{}, draw.Over)
 
 	light := triangleShadowLayer(lw, lh,
 		x0-ox-p.LightOff, y0-oy-p.LightOff,
 		x1-ox-p.LightOff, y1-oy-p.LightOff,
 		x2-ox-p.LightOff, y2-oy-p.LightOff,
-		pal.LightShadow(), p.LightAlpha, p.LightBlur, pal.SwapRB())
+		pal.LightShadow(), p.LightAlpha, p.LightBlur)
 	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
 
 	// Fill triangle with surface color.
@@ -309,11 +309,10 @@ func scrollbarDrawArrow(dc mancini.DrawContext, pal mancini.Palette,
 // triangleShadowLayer renders a colored triangle into a temporary NRGBA
 // buffer, optionally blurred. Used for arrow button shadows.
 func triangleShadowLayer(w, h int, x0, y0, x1, y1, x2, y2 float64,
-	c color.NRGBA, alpha uint8, blur float64, swapRB bool) *image.NRGBA {
+	c color.NRGBA, alpha uint8, blur float64) *image.NRGBA {
 
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 	dc := gg.NewContextForRGBA(rgba)
-	dc.SwapRB = swapRB
 	dc.SetColor(color.NRGBA{c.R, c.G, c.B, alpha})
 	dc.MoveTo(x0, y0)
 	dc.LineTo(x1, y1)

@@ -225,7 +225,6 @@ func radialDrawFilledArc(canvas *image.RGBA, pal mancini.Palette,
 
 	rgba := image.NewRGBA(canvas.Bounds())
 	ctx := gg.NewContextForRGBA(rgba)
-	ctx.SwapRB = pal.SwapRB()
 	traceArcPath(ctx, cx, cy, rOuter, rInner, startAngle, endAngle)
 	ctx.SetColor(pal.Surface())
 	ctx.Fill()
@@ -247,7 +246,6 @@ func radialDrawFlushEdge(canvas *image.RGBA, pal mancini.Palette,
 	// Dark edge.
 	darkEdge := image.NewRGBA(image.Rect(0, 0, w, h))
 	ddc := gg.NewContextForRGBA(darkEdge)
-	ddc.SwapRB = pal.SwapRB()
 	ddc.SetColor(color.NRGBA{darkSh.R, darkSh.G, darkSh.B, p.EdgeAlpha})
 	ddc.SetLineWidth(p.EdgeW)
 	traceArcPath(ddc, cx, cy, rOuter, rInner, startAngle, endAngle)
@@ -257,7 +255,6 @@ func radialDrawFlushEdge(canvas *image.RGBA, pal mancini.Palette,
 	// Light edge (offset +1, +1, masked to shape).
 	lightEdge := image.NewRGBA(image.Rect(0, 0, w, h))
 	ldc := gg.NewContextForRGBA(lightEdge)
-	ldc.SwapRB = pal.SwapRB()
 	ldc.SetColor(color.NRGBA{lightSh.R, lightSh.G, lightSh.B, p.EdgeAlpha})
 	ldc.SetLineWidth(p.EdgeW)
 	traceArcPath(ldc, cx+1, cy+1, rOuter, rInner, startAngle, endAngle)
@@ -291,7 +288,6 @@ func radialDrawGrooves(canvas *image.RGBA, pal mancini.Palette,
 	// Dark groove lines.
 	darkBuf := image.NewRGBA(image.Rect(0, 0, w, h))
 	ddc := gg.NewContextForRGBA(darkBuf)
-	ddc.SwapRB = pal.SwapRB()
 	ddc.SetColor(color.NRGBA{darkSh.R, darkSh.G, darkSh.B, 150})
 	ddc.SetLineWidth(lineWidth)
 	for i := 1; i < n; i++ {
@@ -310,7 +306,6 @@ func radialDrawGrooves(canvas *image.RGBA, pal mancini.Palette,
 	// Light groove lines.
 	lightBuf := image.NewRGBA(image.Rect(0, 0, w, h))
 	ldc := gg.NewContextForRGBA(lightBuf)
-	ldc.SwapRB = pal.SwapRB()
 	ldc.SetColor(color.NRGBA{lightSh.R, lightSh.G, lightSh.B, 150})
 	ldc.SetLineWidth(lineWidth)
 	for i := 1; i < n; i++ {
@@ -343,7 +338,6 @@ func radialApplySelection(canvas *image.RGBA, pal mancini.Palette,
 	// Purple tint fill, masked to segment.
 	tintBuf := image.NewRGBA(image.Rect(0, 0, w, h))
 	tctx := gg.NewContextForRGBA(tintBuf)
-	tctx.SwapRB = pal.SwapRB()
 	tctx.SetColor(color.NRGBA{200, 100, 255, 60})
 	traceArcPath(tctx, cx, cy, rOuter, rInner, startAngle, endAngle)
 	tctx.Fill()
@@ -355,12 +349,12 @@ func radialApplySelection(canvas *image.RGBA, pal mancini.Palette,
 
 	// Dark inset shadow (offset upper-left, blurred, masked to segment).
 	darkSh := arcShadowLayer(w, h, cx-off, cy-off, rOuter, rInner,
-		startAngle, endAngle, pal.DarkShadow(), 190, darkBlur, pal.SwapRB())
+		startAngle, endAngle, pal.DarkShadow(), 190, darkBlur)
 	draw.DrawMask(canvas, bounds, darkSh, image.Point{}, mask, image.Point{}, draw.Over)
 
 	// Light inset shadow (offset lower-right, blurred, masked to segment).
 	lightSh := arcShadowLayer(w, h, cx+off, cy+off, rOuter, rInner,
-		startAngle, endAngle, pal.LightShadow(), 190, lightBlur, pal.SwapRB())
+		startAngle, endAngle, pal.LightShadow(), 190, lightBlur)
 	draw.DrawMask(canvas, bounds, lightSh, image.Point{}, mask, image.Point{}, draw.Over)
 }
 
@@ -393,8 +387,7 @@ func radialDrawContent(dc mancini.DrawContext, canvas *image.RGBA, pal mancini.P
 	}
 
 	faceBuf := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
-	faceCtx := gg.NewContextForRGBA(faceBuf)
-	faceCtx.SwapRB = pal.SwapRB()
+	faceCtx := dc.NewChildContext(faceBuf)
 	face.DrawFace(faceCtx, 2, 2, arcLen, radialH)
 
 	// Rotate the face buffer to align with the segment angle.
@@ -443,11 +436,10 @@ func arcSegmentMask(w, h int, cx, cy, rOuter, rInner, startAngle, endAngle float
 // arcShadowLayer renders a colored annular arc shape into a temporary NRGBA
 // buffer, optionally blurred. Used for inset shadow effects.
 func arcShadowLayer(w, h int, cx, cy, rOuter, rInner, startAngle, endAngle float64,
-	c color.NRGBA, alpha uint8, blur float64, swapRB bool) *image.NRGBA {
+	c color.NRGBA, alpha uint8, blur float64) *image.NRGBA {
 
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 	ctx := gg.NewContextForRGBA(rgba)
-	ctx.SwapRB = swapRB
 	ctx.SetColor(color.NRGBA{c.R, c.G, c.B, alpha})
 	traceArcPath(ctx, cx, cy, rOuter, rInner, startAngle, endAngle)
 	ctx.Fill()

@@ -173,7 +173,6 @@ func (t *SingleLineText) Draw(self mancini.Interactor, x, y, w, h int64) {
 	//    the content area, so text is naturally clipped at field boundaries.
 	textBuf := image.NewRGBA(image.Rect(0, 0, cw, ch))
 	tdc := gg.NewContextForRGBA(textBuf)
-	tdc.SwapRB = pal.SwapRB()
 	if face != nil {
 		tdc.SetFontFace(face)
 	}

@@ -49,14 +49,14 @@ func (f *RomanFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy
 
 	// Roman numeral markers at each hour position.
 	fontSize := int64(math.Max(6, radius*0.18))
-	loadFont(fc, dc, true, fontSize)
+	fontID := openFont(fc, dc, true, fontSize)
 	dc.SetColor(col)
 	markerRad := radius * 0.82
 	for i := 1; i <= 12; i++ {
 		angle := float64(i)*math.Pi/6 - math.Pi/2
 		mx := cx + markerRad*math.Cos(angle)
 		my := cy + markerRad*math.Sin(angle)
-		dc.DrawStringAnchored(romanNumerals[i], mx, my, 0.5, 0.5)
+		dc.DrawStringAnchored(romanNumerals[i], fontID, mx, my, 0.5, 0.5)
 	}
 
 	// Fractional seconds for smooth cascading motion.

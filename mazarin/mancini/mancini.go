@@ -88,7 +88,6 @@ type Palette interface {
 	Highlight() color.NRGBA
 	HighlightText() color.NRGBA
 	DisabledAlpha() float64
-	SwapRB() bool
 }
 
 // NeumorphicParams provides two weight classes of shadow parameters,
@@ -151,3 +150,10 @@ type NeuParams struct {
 // lines. Used by [std.NeuGroove] and by [std.NOfMChooser] for inter-strip
 // groove separators.
 var GrooveParams = InsetParams{Off: 1, DarkBlur: 3, LightBlur: 2}
+
+// SwapRB returns a copy of c with the red and blue channels exchanged.
+// Use this when writing directly to a BGR framebuffer with colors that
+// did not come from a palette (which pre-swaps its own colors).
+func SwapRB(c color.NRGBA) color.NRGBA {
+	return color.NRGBA{R: c.B, G: c.G, B: c.R, A: c.A}
+}

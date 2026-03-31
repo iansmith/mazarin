@@ -9,17 +9,48 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
+// --- V2 cache header (read-only, matches textshape/glyph_cache.go) ---
+
+const v2Magic = 0x47435632 // "GCV2"
+
+// v2Header mirrors textshape.glyphCacheHeader (64 bytes).
+type v2Header struct {
+	Magic     uint32
+	Version   uint32
+	PointSize int32
+	FontID    uint32
+	NumGlyphs uint32
+	NumCPMap  uint32
+	GIDMapOff uint32
+	CPMapOff  uint32
+	TotalSize uint32
+	Height    int32
+	Ascent    int32
+	Descent   int32
+	_         [12]byte
+}
+
+// v2CPMapEntry mirrors textshape.cpMapEntry (12 bytes).
+type v2CPMapEntry struct {
+	Codepoint  uint32
+	GID        uint32
+	DataOffset uint32
+}
+
+const v2CPMapEntrySize = 12
+
 // sharedFace implements font.Face by reading glyph data from a shared
-// memory glyph cache built by fontsvc.maz.
+// memory V2 glyph cache built by fontsvc.maz.
 type sharedFace struct {
 	fc      *FontCache
 	fontID  int32
-	header  *CacheHeader
+	header  *v2Header
 	cache   uintptr // base VA of shared cache in this shepherd's space
 	metrics font.Metrics
 
-	// Glyph map: sorted slice of GlyphMapEntry for binary search.
-	mapEntries []GlyphMapEntry
+	// V2 codepoint map for binary search.
+	numCPMap uint32
+	cpMapOff uint32
 
 	// Local tier-2 glyph cache — populated on demand.
 	localGlyphs map[rune]*localGlyph
@@ -35,25 +66,20 @@ type localGlyph struct {
 // newSharedFace constructs a sharedFace from an OpenFontReply.
 func newSharedFace(fc *FontCache, reply *wm.OpenFontReplyMsg) *sharedFace {
 	cacheBase := uintptr(reply.CacheAddr)
-	header := (*CacheHeader)(unsafe.Pointer(cacheBase))
-
-	// Build a slice over the glyph map in shared memory.
-	mapPtr := cacheBase + uintptr(header.MapOffset)
-	mapEntries := unsafe.Slice((*GlyphMapEntry)(unsafe.Pointer(mapPtr)), header.NumGlyphs)
+	header := (*v2Header)(unsafe.Pointer(cacheBase))
 
 	f := &sharedFace{
-		fc:     fc,
-		fontID: reply.FontID,
-		header: header,
-		cache:  cacheBase,
+		fc:       fc,
+		fontID:   reply.FontID,
+		header:   header,
+		cache:    cacheBase,
+		numCPMap: header.NumCPMap,
+		cpMapOff: header.CPMapOff,
 		metrics: font.Metrics{
-			Height:    fixed.Int26_6(reply.Height),
-			Ascent:    fixed.Int26_6(reply.Ascent),
-			Descent:   fixed.Int26_6(reply.Descent),
-			XHeight:   fixed.Int26_6(header.XHeight),
-			CapHeight: fixed.Int26_6(header.CapHeight),
+			Height:  fixed.Int26_6(reply.Height),
+			Ascent:  fixed.Int26_6(reply.Ascent),
+			Descent: fixed.Int26_6(reply.Descent),
 		},
-		mapEntries:  mapEntries,
 		localGlyphs: make(map[rune]*localGlyph),
 	}
 	return f
@@ -144,18 +170,34 @@ func (f *sharedFace) lookupGlyph(r rune) *GlyphEntry {
 
 // lookupGlyphWithAlpha returns both the GlyphEntry and alpha pixel slice.
 func (f *sharedFace) lookupGlyphWithAlpha(r rune) (*GlyphEntry, []byte) {
-	// Tier 1: binary search the shared cache map.
-	if idx := f.binarySearch(r); idx >= 0 {
-		entry := &f.mapEntries[idx]
-		ge := (*GlyphEntry)(unsafe.Pointer(f.cache + uintptr(entry.Offset)))
-		w := int(ge.Width)
-		h := int(ge.Height)
-		var alpha []byte
-		if w > 0 && h > 0 {
-			alphaPtr := f.cache + uintptr(entry.Offset) + GlyphEntrySize
-			alpha = unsafe.Slice((*byte)(unsafe.Pointer(alphaPtr)), w*h)
+	// Tier 1: binary search the V2 codepoint map.
+	cp := uint32(r)
+	lo, hi := uint32(0), f.numCPMap
+	if hi > 0 {
+		hi--
+		for lo <= hi {
+			mid := lo + (hi-lo)/2
+			me := (*v2CPMapEntry)(unsafe.Pointer(f.cache + uintptr(f.cpMapOff) + uintptr(mid)*v2CPMapEntrySize))
+			if me.Codepoint == cp {
+				ge := (*GlyphEntry)(unsafe.Pointer(f.cache + uintptr(me.DataOffset)))
+				w := int(ge.Width)
+				h := int(ge.Height)
+				var alpha []byte
+				if w > 0 && h > 0 {
+					alphaPtr := f.cache + uintptr(me.DataOffset) + GlyphEntrySize
+					alpha = unsafe.Slice((*byte)(unsafe.Pointer(alphaPtr)), w*h)
+				}
+				return ge, alpha
+			}
+			if me.Codepoint < cp {
+				lo = mid + 1
+			} else {
+				if mid == 0 {
+					break
+				}
+				hi = mid - 1
+			}
 		}
-		return ge, alpha
 	}
 
 	// Tier 2: check local cache.
@@ -163,8 +205,8 @@ func (f *sharedFace) lookupGlyphWithAlpha(r rune) (*GlyphEntry, []byte) {
 		return &lg.entry, lg.alpha
 	}
 
-	// Tier 2 miss: request from fontsvc.
-	reply := f.fc.requestGlyph(f.fontID, r)
+	// Tier 2 miss: request from fontsvc by codepoint (legacy font.Face path).
+	reply := f.fc.requestGlyphByCodepoint(f.fontID, r)
 	if reply == nil || reply.GlyphSize == 0 {
 		return nil, nil
 	}
@@ -182,23 +224,4 @@ func (f *sharedFace) lookupGlyphWithAlpha(r rune) (*GlyphEntry, []byte) {
 	}
 	f.localGlyphs[r] = lg
 	return &lg.entry, lg.alpha
-}
-
-// binarySearch finds r in the sorted glyph map. Returns index or -1.
-func (f *sharedFace) binarySearch(r rune) int {
-	cp := uint32(r)
-	lo, hi := 0, len(f.mapEntries)-1
-	for lo <= hi {
-		mid := lo + (hi-lo)/2
-		v := f.mapEntries[mid].Codepoint
-		if v == cp {
-			return mid
-		}
-		if v < cp {
-			lo = mid + 1
-		} else {
-			hi = mid - 1
-		}
-	}
-	return -1
 }

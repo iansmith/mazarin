@@ -91,6 +91,11 @@ type ShapingParams struct {
 	Direction Direction
 	Script    Script
 	Language  string // BCP 47 ("en", "ar", "zh-Hans"); empty = auto
+	// StartPenX is the initial pen position in fixed.Int26_6 units (1/64 pixel).
+	// Use the fractional carry from the end of the previous run (prevPenX % 64)
+	// so that glyphs are positioned as if this run is a continuation of the prior
+	// run. This matches Blink's sub-pixel pen accumulation across inline boxes.
+	StartPenX int32
 }
 
 // ShapedGlyph is a single glyph produced by shaping.

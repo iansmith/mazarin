@@ -7,19 +7,16 @@
 package main
 
 import (
-	"image"
-	"image/color"
+	"bytes"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
+	"mazarin/textshape"
 	"mazzy/shared/wm"
-	"sort"
 	"unsafe"
 
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
+	goFont "github.com/go-text/typesetting/font"
 )
 
 // MazEntryPoint holds a reference to MazarinMain to prevent DCE.
@@ -63,13 +60,14 @@ func MazarinShepherd(injected interface{}) error {
 // --- Font state ---
 
 type fontSlot struct {
-	inUse   bool
-	path    string
-	variant int32
-	size    int32
-	cache   []byte   // 2MB glyph cache (owned by fontsvc)
-	otFont  *opentype.Font
-	face    font.Face
+	inUse    bool
+	path     string
+	variant  int32
+	size     int32
+	cache    []byte        // V2 glyph cache (kernel-allocated pages)
+	face     *goFont.Face  // go-text Face (backed by fontData)
+	fontData []byte        // raw font file bytes (from LoadFile)
+	scale    float32       // pointSize / upem
 }
 
 var fonts [fontcache.MaxFonts]fontSlot
@@ -129,16 +127,16 @@ func findCachedFont(path string, variant int32, size int32) int32 {
 	return -1
 }
 
-// findParsedFont finds an existing slot with the same path+variant (any size).
-// Returns the parsed *opentype.Font so we can skip LoadFile+Parse.
-func findParsedFont(path string, variant int32) *opentype.Font {
+// findExistingFont finds an existing slot with the same path+variant (any size).
+// Returns the parsed Face and font data so we can skip LoadFile+Parse.
+func findExistingFont(path string, variant int32) (*goFont.Face, []byte) {
 	for i := int32(0); i < fontcache.MaxFonts; i++ {
 		if fonts[i].inUse && fonts[i].path == path &&
-			fonts[i].variant == variant && fonts[i].otFont != nil {
-			return fonts[i].otFont
+			fonts[i].variant == variant && fonts[i].face != nil {
+			return fonts[i].face, fonts[i].fontData
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // MazarinMain is the fontsvc entry point. It runs the MailboxRecv loop,
@@ -146,14 +144,6 @@ func findParsedFont(path string, variant int32) *opentype.Font {
 //
 //go:noinline
 func MazarinMain() {
-	// .maz init functions don't run, so image package globals are nil.
-	// opentype's face.Glyph() calls rast.Draw(..., image.Opaque, ...) internally,
-	// which panics on nil *image.Uniform. Initialize the required globals here.
-	image.Opaque = image.NewUniform(color.Alpha16{A: 0xffff})
-	image.Transparent = image.NewUniform(color.Alpha16{A: 0})
-	image.Black = image.NewUniform(color.Gray16{Y: 0})
-	image.White = image.NewUniform(color.Gray16{Y: 0xffff})
-
 	rawPuts("[fontsvc] starting mailbox loop\n")
 
 	for {
@@ -219,8 +209,8 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 	}
 
 	// Try reusing an already-parsed font (same file, different size).
-	otFont := findParsedFont(path, msg.Variant)
-	if otFont == nil {
+	face, fontData := findExistingFont(path, msg.Variant)
+	if face == nil {
 		// Load font file from FAT32.
 		result, loadErr := sys.LoadFile(path)
 		if loadErr != nil {
@@ -228,214 +218,62 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 			sendOpenFontError(conn, senderSID)
 			return
 		}
-		fontData := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
+		fontData = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
 
-		// Parse font.
+		// Parse font using go-text.
 		var err error
-		otFont, err = opentype.Parse(fontData)
+		face, err = goFont.ParseTTF(bytes.NewReader(fontData))
 		if err != nil {
-			rawPuts("[fontsvc] opentype.Parse failed\n")
+			rawPuts("[fontsvc] ParseTTF failed\n")
 			sendOpenFontError(conn, senderSID)
 			return
 		}
 	}
 
-	// Create face at requested size.
-	face, err := opentype.NewFace(otFont, &opentype.FaceOptions{
-		Size:    float64(msg.Size),
-		DPI:     72,
-		Hinting: font.HintingFull,
-	})
-	if err != nil {
-		rawPuts("[fontsvc] NewFace failed\n")
-		sendOpenFontError(conn, senderSID)
-		return
-	}
+	upem := float32(face.Upem())
+	scale := float32(msg.Size) / upem
 
-	// Allocate cache pages via kernel (properly typed as PageFontCache).
-	cachePages := (fontcache.CacheSizeBytes + 4095) / 4096
-	cache, err2 := mem.AllocPagesSlice(cachePages, mem.PageFontCache)
+	// Compute metrics.
+	metrics := textshape.ComputeFontMetrics(face, scale, fontID)
+
+	// Allocate cache pages via kernel (variable size, up to 4MB).
+	maxCachePages := (textshape.MaxCacheSize + 4095) / 4096
+	cache, err2 := mem.AllocPagesSlice(maxCachePages, mem.PageFontCache)
 	if err2 != nil {
 		rawPuts("[fontsvc] AllocPages for cache failed\n")
 		sendOpenFontError(conn, senderSID)
 		return
 	}
-	metrics := face.Metrics()
-	numGlyphs := buildGlyphCache(cache, face, metrics, uint32(fontID), msg.Size)
-	_ = numGlyphs
+
+	// Build V2 cache into kernel-allocated pages.
+	cache = textshape.BuildGlyphCacheInto(cache, face, scale, uint32(fontID), msg.Size, metrics)
 
 	// Store font slot.
 	fonts[fontID] = fontSlot{
-		inUse:   true,
-		path:    path,
-		variant: msg.Variant,
-		size:    msg.Size,
-		cache:   cache,
-		otFont:  otFont,
-		face:    face,
+		inUse:    true,
+		path:     path,
+		variant:  msg.Variant,
+		size:     msg.Size,
+		cache:    cache,
+		face:     face,
+		fontData: fontData,
+		scale:    scale,
 	}
 
 	shareCacheAndReply(conn, connIdx, senderSID, fontID)
 }
 
-// buildGlyphCache populates the cache buffer with header, glyph map, and glyph data.
-// Returns the number of glyphs rendered.
-func buildGlyphCache(cache []byte, face font.Face, metrics font.Metrics,
-	fontID uint32, pointSize int32) uint32 {
-
-	// Phase 1: Enumerate all codepoints the font supports.
-	type cpEntry struct {
-		cp      rune
-		advance fixed.Int26_6
-	}
-	var supported []cpEntry
-
-	// Scan BMP (U+0020 to U+FFFF).
-	for cp := rune(0x0020); cp <= 0xFFFF; cp++ {
-		adv, ok := face.GlyphAdvance(cp)
-		if ok && adv > 0 {
-			supported = append(supported, cpEntry{cp: cp, advance: adv})
-		}
-	}
-	sort.Slice(supported, func(i, j int) bool {
-		return supported[i].cp < supported[j].cp
-	})
-
-	// Phase 2: Calculate layout.
-	// Header(64) + MapEntries(8 each) + GlyphData.
-	headerSize := uint32(64)
-	mapEntrySize := uint32(8)
-	maxGlyphs := uint32(len(supported))
-
-	// We'll determine how many glyphs fit by rendering them.
-	mapOffset := headerSize
-	dataOffset := mapOffset + maxGlyphs*mapEntrySize
-
-	// Phase 3: Render glyphs, packing into cache.
-	dataPos := dataOffset
-	var rendered uint32
-
-	// Temporary map entries (we'll write them after we know how many fit).
-	mapBuf := make([]fontcache.GlyphMapEntry, 0, len(supported))
-
-	dot := fixed.Point26_6{}
-	for _, s := range supported {
-		dr, mask, maskp, advance, ok := face.Glyph(dot, s.cp)
-		if !ok {
-			continue
-		}
-
-		w := uint16(dr.Dx())
-		h := uint16(dr.Dy())
-		entrySize := fontcache.GlyphTotalSize(w, h)
-
-		// Check if this glyph fits.
-		if dataPos+entrySize > fontcache.CacheSizeBytes {
-			break // cache full
-		}
-
-		// Write GlyphEntry header.
-		ge := (*fontcache.GlyphEntry)(unsafe.Pointer(&cache[dataPos]))
-		ge.Advance = int32(advance)
-		ge.DrMinX = int16(dr.Min.X)
-		ge.DrMinY = int16(dr.Min.Y)
-		ge.DrMaxX = int16(dr.Max.X)
-		ge.DrMaxY = int16(dr.Max.Y)
-		ge.Width = w
-		ge.Height = h
-
-		// Copy alpha pixels.
-		if w > 0 && h > 0 && mask != nil {
-			alphaOff := dataPos + fontcache.GlyphEntrySize
-			copyAlphaPixels(cache[alphaOff:], mask, maskp, int(w), int(h))
-		}
-
-		mapBuf = append(mapBuf, fontcache.GlyphMapEntry{
-			Codepoint: uint32(s.cp),
-			Offset:    dataPos,
-		})
-
-		dataPos += entrySize
-		rendered++
-	}
-
-	// Now we know the actual glyph count. Recompute layout if map is smaller.
-	actualMapSize := uint32(len(mapBuf)) * mapEntrySize
-	if actualMapSize < maxGlyphs*mapEntrySize {
-		// Shift glyph data forward to close the gap.
-		newDataOffset := mapOffset + actualMapSize
-		gap := dataOffset - newDataOffset
-		if gap > 0 {
-			// Shift all glyph data backward.
-			copy(cache[newDataOffset:], cache[dataOffset:dataPos])
-			dataPos -= gap
-			dataOffset = newDataOffset
-			// Adjust all offsets in mapBuf.
-			for i := range mapBuf {
-				mapBuf[i].Offset -= gap
-			}
-		}
-	}
-
-	// Write glyph map.
-	for i, entry := range mapBuf {
-		me := (*fontcache.GlyphMapEntry)(unsafe.Pointer(&cache[mapOffset+uint32(i)*mapEntrySize]))
-		me.Codepoint = entry.Codepoint
-		me.Offset = entry.Offset
-	}
-
-	// Write header.
-	hdr := (*fontcache.CacheHeader)(unsafe.Pointer(&cache[0]))
-	hdr.Magic = fontcache.CacheMagic
-	hdr.Version = fontcache.CacheVersion
-	hdr.PointSize = pointSize
-	hdr.FontID = fontID
-	hdr.Height = int32(metrics.Height)
-	hdr.Ascent = int32(metrics.Ascent)
-	hdr.Descent = int32(metrics.Descent)
-	hdr.XHeight = int32(metrics.XHeight)
-	hdr.CapHeight = int32(metrics.CapHeight)
-	hdr.NumGlyphs = rendered
-	hdr.MapOffset = mapOffset
-	hdr.DataOffset = dataOffset
-	hdr.TotalUsed = dataPos
-
-	return rendered
-}
-
-// copyAlphaPixels copies the alpha channel from a mask image into a flat buffer.
-func copyAlphaPixels(dst []byte, mask image.Image, maskp image.Point, w, h int) {
-	switch m := mask.(type) {
-	case *image.Alpha:
-		for y := 0; y < h; y++ {
-			srcOff := m.PixOffset(maskp.X, maskp.Y+y)
-			dstOff := y * w
-			if srcOff+w <= len(m.Pix) && dstOff+w <= len(dst) {
-				copy(dst[dstOff:dstOff+w], m.Pix[srcOff:srcOff+w])
-			}
-		}
-	default:
-		// Fallback: read pixel by pixel.
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				_, _, _, a := mask.At(maskp.X+x, maskp.Y+y).RGBA()
-				dst[y*w+x] = byte(a >> 8)
-			}
-		}
-	}
-}
-
-// sharedMapping tracks the VA of a previously shared font cache.
+// sharedMapping tracks the VA of previously shared pages.
 type sharedMapping struct {
 	firstVA  uintptr
 	numPages int32
 }
 
-// perFontSharedVAs stores the shared VA for each fontID per shepherd.
-// Avoids re-mapping pages on cache hits.
+// perFontSharedVAs stores shared VAs for cache and font file per fontID per shepherd.
 type perFontSharedVAs struct {
-	vas   [fontcache.MaxFonts]sharedMapping
-	valid [fontcache.MaxFonts]bool
+	cacheVAs [fontcache.MaxFonts]sharedMapping
+	fontVAs  [fontcache.MaxFonts]sharedMapping
+	valid    [fontcache.MaxFonts]bool
 }
 
 var sharedVAs [32]perFontSharedVAs // indexed by shepherdConns slot
@@ -443,38 +281,73 @@ var sharedVAs [32]perFontSharedVAs // indexed by shepherdConns slot
 func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID int32) {
 	slot := &fonts[fontID]
 	cache := slot.cache
-	hdr := (*fontcache.CacheHeader)(unsafe.Pointer(&cache[0]))
-	numPages := int32((int(hdr.TotalUsed) + 4095) / 4096)
-	if numPages < 1 {
-		numPages = 1
+
+	// Read total size from V2 header.
+	type v2Hdr struct {
+		Magic     uint32
+		Version   uint32
+		PointSize int32
+		FontID    uint32
+		NumGlyphs uint32
+		NumCPMap  uint32
+		GIDMapOff uint32
+		CPMapOff  uint32
+		TotalSize uint32
+	}
+	hdr := (*v2Hdr)(unsafe.Pointer(&cache[0]))
+	cacheUsed := hdr.TotalSize
+	numCachePages := int32((int(cacheUsed) + 4095) / 4096)
+	if numCachePages < 1 {
+		numCachePages = 1
 	}
 
-	var firstVA uintptr
+	var cacheFirstVA uintptr
+	var fontFirstVA uintptr
+	numFontPages := int32((len(slot.fontData) + 4095) / 4096)
 
-	// Check if this font is already shared with this shepherd.
 	if connIdx >= 0 && connIdx < 32 && sharedVAs[connIdx].valid[fontID] {
-		// Already shared — reuse previous VA.
-		firstVA = sharedVAs[connIdx].vas[fontID].firstVA
+		// Already shared — reuse previous VAs.
+		cacheFirstVA = sharedVAs[connIdx].cacheVAs[fontID].firstVA
+		fontFirstVA = sharedVAs[connIdx].fontVAs[fontID].firstVA
 	} else {
-		// First time sharing — map cache pages.
+		// Share cache pages.
 		cacheBase := uintptr(unsafe.Pointer(&cache[0]))
-		for i := int32(0); i < numPages; i++ {
+		for i := int32(0); i < numCachePages; i++ {
 			pageVA := cacheBase + uintptr(i)*4096
 			targetVA, err := sys.MailboxMapPage(senderSID, pageVA)
 			if err != nil {
-				rawPuts("[fontsvc] MailboxMapPage failed for page ")
+				rawPuts("[fontsvc] MailboxMapPage cache failed for page ")
 				rawPutsInt(int(i))
 				rawPuts("\n")
 				sendOpenFontError(conn, senderSID)
 				return
 			}
 			if i == 0 {
-				firstVA = targetVA
+				cacheFirstVA = targetVA
 			}
 		}
-		// Cache the mapping.
+
+		// Share font file pages.
+		fontBase := uintptr(unsafe.Pointer(&slot.fontData[0]))
+		for i := int32(0); i < numFontPages; i++ {
+			pageVA := fontBase + uintptr(i)*4096
+			targetVA, err := sys.MailboxMapPage(senderSID, pageVA)
+			if err != nil {
+				rawPuts("[fontsvc] MailboxMapPage font failed for page ")
+				rawPutsInt(int(i))
+				rawPuts("\n")
+				sendOpenFontError(conn, senderSID)
+				return
+			}
+			if i == 0 {
+				fontFirstVA = targetVA
+			}
+		}
+
+		// Cache the mappings.
 		if connIdx >= 0 && connIdx < 32 {
-			sharedVAs[connIdx].vas[fontID] = sharedMapping{firstVA: firstVA, numPages: numPages}
+			sharedVAs[connIdx].cacheVAs[fontID] = sharedMapping{firstVA: cacheFirstVA, numPages: numCachePages}
+			sharedVAs[connIdx].fontVAs[fontID] = sharedMapping{firstVA: fontFirstVA, numPages: numFontPages}
 			sharedVAs[connIdx].valid[fontID] = true
 		}
 	}
@@ -483,12 +356,15 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 	var reply wm.OpenFontReplyMsg
 	reply.Type = wm.MsgOpenFontReply
 	reply.FontID = fontID
-	reply.NumPages = numPages
-	reply.CacheAddr = uint64(firstVA)
-	reply.CacheSize = uint64(hdr.TotalUsed)
-	reply.Height = int32(hdr.Height)
-	reply.Ascent = int32(hdr.Ascent)
-	reply.Descent = int32(hdr.Descent)
+	reply.NumCachePages = numCachePages
+	reply.CacheAddr = uint64(cacheFirstVA)
+	reply.CacheSize = uint64(cacheUsed)
+	reply.Height = textshape.ComputeFontMetrics(slot.face, slot.scale, fontID).Height
+	reply.Ascent = textshape.ComputeFontMetrics(slot.face, slot.scale, fontID).Ascent
+	reply.Descent = textshape.ComputeFontMetrics(slot.face, slot.scale, fontID).Descent
+	reply.NumFontPages = numFontPages
+	reply.FontAddr = uint64(fontFirstVA)
+	reply.FontSize = uint64(len(slot.fontData))
 
 	conn.returnRb.Push(unsafe.Pointer(&reply))
 	if err := sys.MailboxSend(senderSID, wm.FontResponse, conn.returnRb.Addr()); err != nil {
@@ -510,17 +386,33 @@ func handleRequestGlyph(senderSID int, msg *wm.RequestGlyphMsg) {
 	}
 
 	slot := &fonts[fontID]
-	cp := rune(msg.Codepoint)
 
-	// Render the glyph.
-	dot := fixed.Point26_6{}
-	dr, mask, maskp, advance, ok := slot.face.Glyph(dot, cp)
-	if !ok {
+	// Resolve GID: prefer msg.GID, fall back to codepoint→GID via NominalGlyph.
+	gid := goFont.GID(msg.GID)
+	if msg.GID == 0 && msg.Codepoint != 0 {
+		g, ok := slot.face.NominalGlyph(rune(msg.Codepoint))
+		if !ok {
+			// Send empty reply.
+			var reply wm.GlyphReplyMsg
+			reply.Type = wm.MsgGlyphReply
+			reply.FontID = fontID
+			reply.GID = msg.GID
+			reply.GlyphSize = 0
+			conn.returnRb.Push(unsafe.Pointer(&reply))
+			sys.MailboxSend(senderSID, wm.FontResponse, conn.returnRb.Addr())
+			return
+		}
+		gid = g
+	}
+
+	// Render the glyph using textshape.RenderGlyph.
+	info, alpha := textshape.RenderGlyph(slot.face, gid, slot.scale)
+	if info == nil {
 		// Send empty reply.
 		var reply wm.GlyphReplyMsg
 		reply.Type = wm.MsgGlyphReply
 		reply.FontID = fontID
-		reply.Codepoint = msg.Codepoint
+		reply.GID = int32(gid)
 		reply.GlyphSize = 0
 		conn.returnRb.Push(unsafe.Pointer(&reply))
 		sys.MailboxSend(senderSID, wm.FontResponse, conn.returnRb.Addr())
@@ -544,8 +436,8 @@ func handleRequestGlyph(senderSID int, msg *wm.RequestGlyphMsg) {
 		conn.scratchVA = targetVA
 	}
 
-	w := uint16(dr.Dx())
-	h := uint16(dr.Dy())
+	w := info.Width
+	h := info.Height
 	totalSize := fontcache.GlyphTotalSize(w, h)
 	if totalSize > 4096 {
 		rawPuts("[fontsvc] glyph too large for scratch page\n")
@@ -555,23 +447,23 @@ func handleRequestGlyph(senderSID int, msg *wm.RequestGlyphMsg) {
 	// Write glyph to scratch buffer.
 	scratch := conn.scratchBuf
 	ge := (*fontcache.GlyphEntry)(unsafe.Pointer(&scratch[0]))
-	ge.Advance = int32(advance)
-	ge.DrMinX = int16(dr.Min.X)
-	ge.DrMinY = int16(dr.Min.Y)
-	ge.DrMaxX = int16(dr.Max.X)
-	ge.DrMaxY = int16(dr.Max.Y)
+	ge.Advance = info.Advance
+	ge.DrMinX = info.DrMinX
+	ge.DrMinY = info.DrMinY
+	ge.DrMaxX = info.DrMaxX
+	ge.DrMaxY = info.DrMaxY
 	ge.Width = w
 	ge.Height = h
 
-	if w > 0 && h > 0 && mask != nil {
-		copyAlphaPixels(scratch[fontcache.GlyphEntrySize:], mask, maskp, int(w), int(h))
+	if w > 0 && h > 0 && len(alpha) > 0 {
+		copy(scratch[fontcache.GlyphEntrySize:], alpha)
 	}
 
 	// Send reply with pointer to scratch in shepherd's space.
 	var reply wm.GlyphReplyMsg
 	reply.Type = wm.MsgGlyphReply
 	reply.FontID = fontID
-	reply.Codepoint = msg.Codepoint
+	reply.GID = int32(gid)
 	reply.ScratchAddr = uint64(conn.scratchVA)
 	reply.GlyphSize = totalSize
 	conn.returnRb.Push(unsafe.Pointer(&reply))

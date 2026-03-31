@@ -50,16 +50,16 @@ func (f *PolarFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy
 	digitRad := radius * 0.80 // radius for digit placement
 	dotRad := radius - dotR   // radius for dot placement (flush with edge)
 
+	fontID := openFont(fc, dc, true, fontSize)
 	for i := 0; i < 24; i++ {
 		posAngle := float64(i)*math.Pi/12 - math.Pi/2
 
 		if i == 0 || i == 6 || i == 12 || i == 18 {
 			// Cardinal positions: draw digit.
-			loadFont(fc, dc, true, fontSize)
 			dc.SetColor(col)
 			mx := cx + digitRad*math.Cos(posAngle)
 			my := cy + digitRad*math.Sin(posAngle)
-			dc.DrawStringAnchored(fmt.Sprintf("%d", i), mx, my, 0.5, 0.5)
+			dc.DrawStringAnchored(fmt.Sprintf("%d", i), fontID, mx, my, 0.5, 0.5)
 		} else {
 			// Other positions: draw dot.
 			mx := cx + dotRad*math.Cos(posAngle)

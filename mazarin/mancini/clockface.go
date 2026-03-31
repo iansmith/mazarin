@@ -3,9 +3,8 @@ package mancini
 import (
 	"image/color"
 	"math"
+	"mazarin/textshape"
 	"time"
-
-	"github.com/fogleman/gg"
 )
 
 // ClockFace defines how an analog clock renders and what timezone it displays.
@@ -31,7 +30,7 @@ func DrawHand(dc DrawContext, cx, cy, angle, length, width float64, col color.NR
 	ey := cy + length*math.Sin(angle)
 	dc.SetColor(col)
 	dc.SetLineWidth(width)
-	dc.SetLineCap(gg.LineCapRound)
+	dc.SetLineCap(textshape.LineCapRound)
 	dc.DrawLine(cx, cy, ex, ey)
 	dc.Stroke()
 }

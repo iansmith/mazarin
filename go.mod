@@ -6,6 +6,7 @@ require (
 	github.com/fogleman/gg v1.3.0
 	github.com/pelletier/go-toml/v2 v2.3.0
 	golang.org/x/image v0.23.0
+	mazarin/textshape v0.0.0-00010101000000-000000000000
 )
 
 require (
@@ -97,6 +98,8 @@ require (
 )
 
 replace github.com/fogleman/gg v1.3.0 => ./internal/gg
+
+replace mazarin/textshape => ./mazarin/textshape
 
 // Tool directives - these can be run with "go tool <name>"
 tool (

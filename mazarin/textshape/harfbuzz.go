@@ -47,12 +47,18 @@ func (s *HarfBuzzShaper) Shape(params ShapingParams) (ShapedRun, error) {
 	runes := []rune(params.Text)
 	buf.AddRunes(runes, 0, len(runes))
 
-	// Set segment properties.
-	buf.Props.Direction = toHBDirection(params.Direction)
-	buf.Props.Script = language.Script(params.Script)
+	// Set segment properties. Explicit values override; ScriptCommon (zero)
+	// and zero Direction signal "auto-detect via GuessSegmentProperties".
+	if params.Direction != 0 {
+		buf.Props.Direction = toHBDirection(params.Direction)
+	}
+	if params.Script != ScriptCommon {
+		buf.Props.Script = language.Script(params.Script)
+	}
 	if params.Language != "" {
 		buf.Props.Language = language.NewLanguage(params.Language)
 	}
+	buf.GuessSegmentProperties()
 
 	// Shape with default features.
 	buf.Shape(hbFont, nil)

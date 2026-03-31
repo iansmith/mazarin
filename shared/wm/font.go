@@ -24,26 +24,31 @@ type OpenFontMsg struct {
 }
 
 // OpenFontReplyMsg is sent by fontsvc to a shepherd after opening a font.
-// Layout: 8+4+4+8+8+4+4+4+84 = 128 bytes.
+// Layout: 8+4+4+8+8+4+4+4+4+8+8+64 = 128 bytes.
 type OpenFontReplyMsg struct {
-	Type      int64  // MsgOpenFontReply
-	FontID    int32  // allocated font ID (0–31), or -1 on error
-	NumPages  int32  // number of 4KB pages in glyph cache
-	CacheAddr uint64 // VA of glyph cache in shepherd's address space
-	CacheSize uint64 // total bytes used in cache
-	Height    int32  // font.Metrics.Height (fixed.Int26_6)
-	Ascent    int32  // font.Metrics.Ascent (fixed.Int26_6)
-	Descent   int32  // font.Metrics.Descent (fixed.Int26_6)
-	_         [84]byte
+	Type          int64  // MsgOpenFontReply
+	FontID        int32  // allocated font ID (0–31), or -1 on error
+	NumCachePages int32  // number of 4KB pages in glyph cache
+	CacheAddr     uint64 // VA of glyph cache in shepherd's address space
+	CacheSize     uint64 // total bytes used in cache
+	Height        int32  // font metrics Height (fixed.Int26_6)
+	Ascent        int32  // font metrics Ascent (fixed.Int26_6)
+	Descent       int32  // font metrics Descent (fixed.Int26_6)
+	NumFontPages  int32  // number of 4KB pages for raw font file
+	FontAddr      uint64 // VA of font file pages in shepherd's address space
+	FontSize      uint64 // actual byte length of font file
+	_             [64]byte
 }
 
 // RequestGlyphMsg is sent by a shepherd to fontsvc for a tier-2 glyph.
-// Layout: 8+4+4+112 = 128 bytes.
+// GID is preferred; if GID is 0, fontsvc uses Codepoint to find the GID.
+// Layout: 8+4+4+4+108 = 128 bytes.
 type RequestGlyphMsg struct {
 	Type      int64 // MsgRequestGlyph
 	FontID    int32 // font to render for
-	Codepoint int32 // unicode codepoint
-	_         [112]byte
+	GID       int32 // glyph ID (preferred; 0 = use Codepoint)
+	Codepoint int32 // unicode codepoint (fallback when GID=0)
+	_         [108]byte
 }
 
 // GlyphReplyMsg is sent by fontsvc to a shepherd after rendering a tier-2 glyph.
@@ -51,10 +56,10 @@ type RequestGlyphMsg struct {
 // scratch buffer is reused for the next request.
 // Layout: 8+4+4+8+4+100 = 128 bytes.
 type GlyphReplyMsg struct {
-	Type       int64  // MsgGlyphReply
-	FontID     int32  // font ID
-	Codepoint  int32  // unicode codepoint
+	Type        int64  // MsgGlyphReply
+	FontID      int32  // font ID
+	GID         int32  // glyph ID
 	ScratchAddr uint64 // VA of GlyphEntry+alpha in shepherd's scratch page
-	GlyphSize  uint32 // total bytes (GlyphEntry header + alpha pixels)
-	_          [100]byte
+	GlyphSize   uint32 // total bytes (GlyphEntry header + alpha pixels)
+	_           [100]byte
 }

@@ -46,7 +46,7 @@ func (f *DigitFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy
 	// Rotated digit markers at each hour position.
 	// Each digit is rotated by its angular position: 12→0°, 1→30°, 2→60°, ...
 	fontSize := int64(math.Max(6, radius*0.20))
-	loadFont(fc, dc, true, fontSize)
+	fontID := openFont(fc, dc, true, fontSize)
 	dc.SetColor(col)
 	markerRad := radius * 0.80
 	for i := 1; i <= 12; i++ {
@@ -60,7 +60,7 @@ func (f *DigitFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy
 
 		dc.Push()
 		dc.RotateAbout(rotAngle, mx, my)
-		dc.DrawStringAnchored(fmt.Sprintf("%d", i), mx, my, 0.5, 0.5)
+		dc.DrawStringAnchored(fmt.Sprintf("%d", i), fontID, mx, my, 0.5, 0.5)
 		dc.Pop()
 	}
 

@@ -10,25 +10,30 @@ func resolveFont(fc *FontConfig, bold bool, size int64) font.Face {
 	return fc.LoadFace(bold, size)
 }
 
-// loadFont sets the font on a gg context. Uses FontConfig.LoadFace if available,
-// otherwise falls back to loading from FontRegular/FontBold file paths.
-func loadFont(fc *FontConfig, dc DrawContext, bold bool, size int64) bool {
+// openFont opens a font via DrawContext.OpenFont and returns the fontID.
+// Uses FontConfig paths; returns -1 on failure.
+func openFont(fc *FontConfig, dc DrawContext, bold bool, size int64) int32 {
 	if fc == nil {
-		return false
+		return -1
 	}
-	if fc.LoadFace != nil {
-		face := fc.LoadFace(bold, size)
-		if face != nil {
-			dc.SetFontFace(face)
-			return true
-		}
+	// If a shaped fontID is already set and layout is available, use it.
+	if fc.Layout != nil && fc.ShapedFontID >= 0 {
+		return fc.ShapedFontID
 	}
 	path := fc.FontRegular
 	if bold {
 		path = fc.FontBold
 	}
 	if path == "" {
-		return false
+		return -1
 	}
-	return dc.LoadFontFace(path, size) == nil
+	variant := int32(0)
+	if bold {
+		variant = 1
+	}
+	m, err := dc.OpenFont(path, variant, int32(size))
+	if err != nil {
+		return -1
+	}
+	return m.FontID
 }

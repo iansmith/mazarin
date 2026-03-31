@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	goFont "github.com/go-text/typesetting/font"
 	ot "github.com/go-text/typesetting/font/opentype"
@@ -108,13 +109,23 @@ func RenderGlyph(face *goFont.Face, gid goFont.GID, scale float32) (*GlyphInfo, 
 	}, alpha.Pix
 }
 
+// tier2Glyph holds a glyph rendered on-demand that didn't fit in
+// the tier-1 cache (overflow or ligature GID).
+type tier2Glyph struct {
+	info  GlyphInfo
+	alpha []byte
+}
+
 // directFont tracks a font loaded by DirectGlyphProvider.
 type directFont struct {
-	face    *goFont.Face
-	scale   float32
-	path    string
-	variant int32
-	size    int32
+	face     *goFont.Face
+	scale    float32
+	path     string
+	variant  int32
+	size     int32
+	fontData []byte                 // mmap'd font file (backing face)
+	cache    []byte                 // tier-1 glyph cache (V2 format)
+	tier2    map[uint32]*tier2Glyph // overflow/ligature glyphs
 }
 
 // DirectGlyphProvider implements [GlyphProvider] using in-process
@@ -153,16 +164,33 @@ func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error)
 	}
 
 	// Reuse an already-parsed face if same file was loaded at different size.
-	face := p.findParsedFace(req.Path, req.Variant)
-	if face == nil {
-		data, err := os.ReadFile(resolved)
+	existing := p.findExistingFont(req.Path, req.Variant)
+	var face *goFont.Face
+	var fontData []byte
+	if existing != nil {
+		face = existing.face
+		fontData = existing.fontData
+	} else {
+		// mmap the font file read-only.
+		f, err := os.Open(resolved)
 		if err != nil {
-			return FontMetrics{}, fmt.Errorf("read font file: %w", err)
+			return FontMetrics{}, fmt.Errorf("open font file: %w", err)
 		}
-		var parseErr error
-		face, parseErr = goFont.ParseTTF(bytes.NewReader(data))
-		if parseErr != nil {
-			return FontMetrics{}, fmt.Errorf("parse font: %w", parseErr)
+		fi, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return FontMetrics{}, fmt.Errorf("stat font file: %w", err)
+		}
+		fontData, err = syscall.Mmap(int(f.Fd()), 0, int(fi.Size()),
+			syscall.PROT_READ, syscall.MAP_PRIVATE)
+		f.Close()
+		if err != nil {
+			return FontMetrics{}, fmt.Errorf("mmap font file: %w", err)
+		}
+		face, err = goFont.ParseTTF(bytes.NewReader(fontData))
+		if err != nil {
+			syscall.Munmap(fontData)
+			return FontMetrics{}, fmt.Errorf("parse font: %w", err)
 		}
 	}
 
@@ -170,14 +198,19 @@ func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error)
 	scale := float32(req.Size) / upem
 
 	p.fonts[fontID] = &directFont{
-		face:    face,
-		scale:   scale,
-		path:    req.Path,
-		variant: req.Variant,
-		size:    req.Size,
+		face:     face,
+		scale:    scale,
+		path:     req.Path,
+		variant:  req.Variant,
+		size:     req.Size,
+		fontData: fontData,
+		tier2:    make(map[uint32]*tier2Glyph),
 	}
 
-	return p.metricsFor(int32(fontID)), nil
+	m := p.metricsFor(int32(fontID))
+	p.fonts[fontID].cache = buildGlyphCache(face, scale, uint32(fontID), req.Size, m)
+
+	return m, nil
 }
 
 // Face returns the go-text Face for the given fontID.
@@ -188,17 +221,35 @@ func (p *DirectGlyphProvider) Face(fontID int32) *goFont.Face {
 	return p.fonts[fontID].face
 }
 
-// GlyphByGID rasterizes a glyph on-demand by GID.
+// GlyphByGID looks up a glyph by GID using a tiered strategy:
+// tier-1 (binary search in pre-rendered cache), tier-2 (overflow map),
+// then on-demand rasterization for cache misses.
 func (p *DirectGlyphProvider) GlyphByGID(fontID int32, gid uint32) (*GlyphInfo, []byte, error) {
 	if fontID < 0 || fontID >= maxFonts || p.fonts[fontID] == nil {
 		return nil, nil, fmt.Errorf("invalid fontID %d", fontID)
 	}
 
 	df := p.fonts[fontID]
+
+	// Tier 1: binary search in pre-rendered cache.
+	if df.cache != nil {
+		info, alpha := LookupByGID(df.cache, gid)
+		if info != nil {
+			return info, alpha, nil
+		}
+	}
+
+	// Tier 2: check overflow map (previously rendered on-demand).
+	if t2, ok := df.tier2[gid]; ok {
+		return &t2.info, t2.alpha, nil
+	}
+
+	// Tier 2 miss: render on-demand + cache in overflow map.
 	info, alpha := RenderGlyph(df.face, goFont.GID(gid), df.scale)
 	if info == nil {
 		return nil, nil, nil
 	}
+	df.tier2[gid] = &tier2Glyph{info: *info, alpha: alpha}
 	return info, alpha, nil
 }
 
@@ -214,11 +265,11 @@ func (p *DirectGlyphProvider) findCachedFont(path string, variant, size int32) i
 	return -1
 }
 
-func (p *DirectGlyphProvider) findParsedFace(path string, variant int32) *goFont.Face {
+func (p *DirectGlyphProvider) findExistingFont(path string, variant int32) *directFont {
 	for i := int32(0); i < maxFonts; i++ {
 		if p.fonts[i] != nil && p.fonts[i].path == path &&
 			p.fonts[i].variant == variant && p.fonts[i].face != nil {
-			return p.fonts[i].face
+			return p.fonts[i]
 		}
 	}
 	return nil
@@ -235,13 +286,19 @@ func (p *DirectGlyphProvider) allocFontID() int32 {
 
 func (p *DirectGlyphProvider) metricsFor(fontID int32) FontMetrics {
 	df := p.fonts[fontID]
-	ext, _ := df.face.FontHExtents()
+	return ComputeFontMetrics(df.face, df.scale, fontID)
+}
+
+// ComputeFontMetrics extracts font-level metrics from a go-text Face.
+// All values are in fixed.Int26_6 format (multiply by 64).
+func ComputeFontMetrics(face *goFont.Face, scale float32, fontID int32) FontMetrics {
+	ext, _ := face.FontHExtents()
 	return FontMetrics{
 		FontID:    fontID,
-		Height:    int32((ext.Ascender - ext.Descender + ext.LineGap) * df.scale * 64),
-		Ascent:    int32(ext.Ascender * df.scale * 64),
-		Descent:   int32(-ext.Descender * df.scale * 64),
-		XHeight:   int32(df.face.LineMetric(goFont.XHeight) * df.scale * 64),
-		CapHeight: int32(df.face.LineMetric(goFont.CapHeight) * df.scale * 64),
+		Height:    int32((ext.Ascender - ext.Descender + ext.LineGap) * scale * 64),
+		Ascent:    int32(ext.Ascender * scale * 64),
+		Descent:   int32(-ext.Descender * scale * 64),
+		XHeight:   int32(face.LineMetric(goFont.XHeight) * scale * 64),
+		CapHeight: int32(face.LineMetric(goFont.CapHeight) * scale * 64),
 	}
 }

@@ -125,7 +125,7 @@ func (tl *HarfBuzzTextLayout) LayoutText(params ShapingParams) (*TextRun, error)
 	}
 
 	glyphs := make([]PositionedGlyph, 0, len(run.Glyphs))
-	var penX, penY int32 // fixed.Int26_6 pen position
+	penX, penY := params.StartPenX, int32(0) // fixed.Int26_6 pen position
 
 	for _, sg := range run.Glyphs {
 		gi, alpha, err := tl.provider.GlyphByGID(params.FontID, sg.GID)

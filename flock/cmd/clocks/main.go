@@ -22,8 +22,6 @@ import (
 	"os"
 	"strconv"
 	"unsafe"
-
-	"github.com/fogleman/gg"
 )
 
 // Screen dimensions — read from kernel constraint attributes at startup.
@@ -151,7 +149,7 @@ func main() {
 	// 5. Build interactor tree: AppWindow → Row → 6 Columns → [Label, NeuCircle→Clock, Label].
 	// All new-system types. Children discover parents via constraint network.
 	textColor := color.NRGBA{0, 0, 0, 255}
-	subtitleColor := color.NRGBA{78, 72, 112, 255}
+	subtitleColor := mancini.SwapRB(color.NRGBA{78, 72, 112, 255})
 
 	// Shared UTC time source — all clocks read from the same constraint handles.
 	utcFunc := func() (int64, int64) {
@@ -249,16 +247,16 @@ func main() {
 	drawCtx := mancini.NewFramebufferContext()
 	fbImage := drawCtx.Image()
 
-	// Single gg context for the entire draw pass — threaded through the tree.
-	ggCtx := gg.NewContextForRGBA(fbImage)
-	ggCtx.SwapRB = true
+	// DrawContext for the entire draw pass — threaded through the tree.
+	provider := fontcache.NewFontSvcGlyphProvider(fc)
+	dc := mancini.NewDrawContextForImage(fbImage, provider)
 	// 8. Initial sizing draw to publish children's dimensions.
 	appLH := app.GetLayout()
 	initX := float64(screenW)/2 - 400
 	initY := float64(screenH)/2 - 125
 	appLH.X.Set(int64(initX))
 	appLH.Y.Set(int64(initY))
-	app.SetDC(ggCtx)
+	app.SetDC(dc)
 	app.Draw(app, int64(initX), int64(initY), appLH.Width.Get(), appLH.Height.Get())
 
 	// Read constraint-computed size.
@@ -332,8 +330,8 @@ func main() {
 	if initY+winH > clearY1 {
 		clearY1 = initY + winH
 	}
-	ggCtx.SetColor(pal.Surface())
-	ggCtx.FillRectangle(clearX0, clearY0, clearX1-clearX0, clearY1-clearY0)
+	dc.SetColor(pal.Surface())
+	dc.FillRectangle(clearX0, clearY0, clearX1-clearX0, clearY1-clearY0)
 
 	// Draw at the constraint-computed position.
 	appLH.X.Set(int64(winX))

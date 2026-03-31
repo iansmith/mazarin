@@ -147,11 +147,10 @@ func (m *RadialMenu) Draw(self mancini.Interactor, x, y, w, h int64) {
 // annulusShadowLayer renders a colored annulus (ring) shape into a
 // temporary NRGBA buffer using even-odd fill, optionally blurred.
 func annulusShadowLayer(w, h int, cx, cy, outerR, innerR float64,
-	c color.NRGBA, alpha uint8, blur float64, swapRB bool) *image.NRGBA {
+	c color.NRGBA, alpha uint8, blur float64) *image.NRGBA {
 
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 	dc := gg.NewContextForRGBA(rgba)
-	dc.SwapRB = swapRB
 	dc.SetFillRuleEvenOdd()
 	dc.SetColor(color.NRGBA{c.R, c.G, c.B, alpha})
 	dc.DrawCircle(cx, cy, outerR)
@@ -171,7 +170,6 @@ func menuDrawFlatAnnulus(canvas *image.RGBA, pal mancini.Palette,
 
 	fillBuf := image.NewRGBA(canvas.Bounds())
 	fc := gg.NewContextForRGBA(fillBuf)
-	fc.SwapRB = pal.SwapRB()
 	fc.SetFillRuleEvenOdd()
 	fc.SetColor(pal.Surface())
 	fc.DrawCircle(cx, cy, outerR)
@@ -196,18 +194,17 @@ func menuDrawRaisedAnnulus(canvas *image.RGBA, pal mancini.Palette,
 
 	dark := annulusShadowLayer(lw, lh,
 		lcx+p.DarkOff, lcy+p.DarkOff, outerR, innerR,
-		pal.DarkShadow(), p.DarkAlpha, p.DarkBlur, pal.SwapRB())
+		pal.DarkShadow(), p.DarkAlpha, p.DarkBlur)
 	draw.Draw(canvas, dst, dark, image.Point{}, draw.Over)
 
 	light := annulusShadowLayer(lw, lh,
 		lcx-p.LightOff, lcy-p.LightOff, outerR, innerR,
-		pal.LightShadow(), p.LightAlpha, p.LightBlur, pal.SwapRB())
+		pal.LightShadow(), p.LightAlpha, p.LightBlur)
 	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
 
 	// Fill annulus with surface color.
 	fillBuf := image.NewRGBA(canvas.Bounds())
 	fc := gg.NewContextForRGBA(fillBuf)
-	fc.SwapRB = pal.SwapRB()
 	fc.SetFillRuleEvenOdd()
 	fc.SetColor(pal.Surface())
 	fc.DrawCircle(cx, cy, outerR)
@@ -234,7 +231,6 @@ func menuDrawInsetSegment(canvas *image.RGBA, pal mancini.Palette,
 
 	eraseBuf := image.NewRGBA(bounds)
 	ec := gg.NewContextForRGBA(eraseBuf)
-	ec.SwapRB = pal.SwapRB()
 	ec.MoveTo(cx, cy)
 	ec.DrawArc(cx, cy, eraseOuterR+1, startAngle-angleMargin, endAngle+angleMargin)
 	ec.ClosePath()
@@ -252,7 +248,6 @@ func menuDrawInsetSegment(canvas *image.RGBA, pal mancini.Palette,
 	// Selected tint fill.
 	tintBuf := image.NewRGBA(image.Rect(0, 0, w, h))
 	tctx := gg.NewContextForRGBA(tintBuf)
-	tctx.SwapRB = pal.SwapRB()
 	tctx.SetColor(color.NRGBA{selectedBg.R, selectedBg.G, selectedBg.B, 60})
 	traceArcPath(tctx, cx, cy, outerR, innerR, startAngle, endAngle)
 	tctx.Fill()
@@ -261,11 +256,11 @@ func menuDrawInsetSegment(canvas *image.RGBA, pal mancini.Palette,
 	// Inset shadows.
 	off := ip.Off
 	darkSh := arcShadowLayer(w, h, cx-off, cy-off, outerR, innerR,
-		startAngle, endAngle, pal.DarkShadow(), 190, ip.DarkBlur, pal.SwapRB())
+		startAngle, endAngle, pal.DarkShadow(), 190, ip.DarkBlur)
 	draw.DrawMask(canvas, bounds, darkSh, image.Point{}, mask, image.Point{}, draw.Over)
 
 	lightSh := arcShadowLayer(w, h, cx+off, cy+off, outerR, innerR,
-		startAngle, endAngle, pal.LightShadow(), 190, ip.LightBlur, pal.SwapRB())
+		startAngle, endAngle, pal.LightShadow(), 190, ip.LightBlur)
 	draw.DrawMask(canvas, bounds, lightSh, image.Point{}, mask, image.Point{}, draw.Over)
 }
 
@@ -300,7 +295,6 @@ func menuDrawGrooves(canvas *image.RGBA, pal mancini.Palette,
 	// Dark groove lines.
 	darkBuf := image.NewRGBA(image.Rect(0, 0, w, h))
 	ddc := gg.NewContextForRGBA(darkBuf)
-	ddc.SwapRB = pal.SwapRB()
 	ddc.SetColor(color.NRGBA{darkSh.R, darkSh.G, darkSh.B, 150})
 	ddc.SetLineWidth(lineWidth)
 	for i := 0; i < n; i++ {
@@ -319,7 +313,6 @@ func menuDrawGrooves(canvas *image.RGBA, pal mancini.Palette,
 	// Light groove lines.
 	lightBuf := image.NewRGBA(image.Rect(0, 0, w, h))
 	ldc := gg.NewContextForRGBA(lightBuf)
-	ldc.SwapRB = pal.SwapRB()
 	ldc.SetColor(color.NRGBA{lightSh.R, lightSh.G, lightSh.B, 150})
 	ldc.SetLineWidth(lineWidth)
 	for i := 0; i < n; i++ {

@@ -29,7 +29,6 @@ type GradientTitle struct {
 	title    string
 	textFace mancini.LatinTextFace
 	radius   float64
-	swapRB   bool
 
 	mu    sync.Mutex
 	front *image.RGBA // current completed frame for blitting
@@ -53,7 +52,6 @@ func NewGradientTitle(pal mancini.Palette, fonts *mancini.FontConfig, title stri
 		title:    title,
 		textFace: textFace,
 		radius:   radius,
-		swapRB:   pal.SwapRB(),
 	}
 }
 
@@ -111,7 +109,6 @@ func (g *GradientTitle) renderFrame(elapsed float64) {
 
 	buf := image.NewRGBA(image.Rect(0, 0, w, h))
 	dc := gg.NewContextForRGBA(buf)
-	dc.SwapRB = g.swapRB
 
 	fw, fh := float64(w), float64(h)
 
@@ -127,12 +124,6 @@ func (g *GradientTitle) renderFrame(elapsed float64) {
 	dc.SetFillStyle(grad)
 	dc.DrawRoundedRectangle(0, 0, fw, fh, g.radius)
 	dc.Fill()
-
-	// Title text centered.
-	dc.SetColor(g.pal.Text())
-	if g.textFace != nil {
-		g.textFace.DrawFace(dc, 0, 0, fw, fh)
-	}
 
 	g.mu.Lock()
 	g.front = buf
@@ -188,5 +179,11 @@ func (g *GradientTitle) TitleDraw(dc mancini.DrawContext, focused bool, x, y, w,
 			continue
 		}
 		copy(canvas.Pix[dstOff:dstOff+copyW*4], buf.Pix[srcOff:srcOff+copyW*4])
+	}
+
+	// Draw title text on top of the gradient using the real DrawContext.
+	if g.textFace != nil {
+		dc.SetColor(g.pal.Text())
+		g.textFace.DrawFace(dc, x, y, w, h)
 	}
 }

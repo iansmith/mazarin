@@ -15,8 +15,6 @@ import (
 
 	"golang.org/x/image/font"
 
-	"github.com/fogleman/gg"
-
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
 	mfont "mazzy/shared/font"
@@ -36,11 +34,11 @@ const (
 	fontSize     int64 = 16
 )
 
-// Console text colors (natural RGB — gg context has SwapRB set).
+// Console text colors (pre-swapped for BGR framebuffer).
 var (
-	nContent = color.NRGBA{40, 42, 48, 255}    // content well background
-	nText    = color.NRGBA{200, 205, 215, 255}  // stdout text
-	nStderr  = color.NRGBA{200, 80, 80, 255}    // stderr text
+	nContent = mancini.SwapRB(color.NRGBA{40, 42, 48, 255})    // content well background
+	nText    = mancini.SwapRB(color.NRGBA{200, 205, 215, 255})  // stdout text
+	nStderr  = mancini.SwapRB(color.NRGBA{200, 80, 80, 255})    // stderr text
 )
 
 // lineData holds one line of console output.
@@ -316,15 +314,15 @@ func main() {
 	screenH := int(screenHAttr.Get())
 	drawCtx := mancini.NewFramebufferContext()
 	fbImage := drawCtx.Image()
-	ggCtx := gg.NewContextForRGBA(fbImage)
-	ggCtx.SwapRB = true
+	provider := fontcache.NewFontSvcGlyphProvider(fc)
+	dc := mancini.NewDrawContextForImage(fbImage, provider)
 	// 7. Initial sizing draw.
 	appLH := app.GetLayout()
 	initX := float64(screenW)/2 - 400
 	initY := float64(screenH)/2 - 200
 	appLH.X.Set(int64(initX))
 	appLH.Y.Set(int64(initY))
-	app.SetDC(ggCtx)
+	app.SetDC(dc)
 	app.Draw(app, int64(initX), int64(initY), appLH.Width.Get(), appLH.Height.Get())
 
 	// Read constraint-computed size.
@@ -362,7 +360,7 @@ func main() {
 	winX := float64(posXAttr.Get())
 	winY := float64(posYAttr.Get())
 	// Clear sizing ghost and draw at final position.
-	ggCtx.SetColor(pal.Surface())
+	dc.SetColor(pal.Surface())
 	clearX0, clearY0 := initX, initY
 	clearX1, clearY1 := initX+winW, initY+winH
 	if winX < clearX0 {
@@ -377,7 +375,7 @@ func main() {
 	if winY+winH > clearY1 {
 		clearY1 = winY + winH
 	}
-	ggCtx.FillRectangle(clearX0, clearY0, clearX1-clearX0, clearY1-clearY0)
+	dc.FillRectangle(clearX0, clearY0, clearX1-clearX0, clearY1-clearY0)
 
 	appLH.X.Set(int64(winX))
 	appLH.Y.Set(int64(winY))

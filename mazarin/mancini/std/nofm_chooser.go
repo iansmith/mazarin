@@ -148,7 +148,6 @@ func drawFlatTopRoundedBottom(dc mancini.DrawContext, pal mancini.Palette,
 	canvas := dc.Image().(*image.RGBA)
 	rgba := image.NewRGBA(canvas.Bounds())
 	ctx := gg.NewContextForRGBA(rgba)
-	ctx.SwapRB = pal.SwapRB()
 
 	flatTopRoundedBottomPath(ctx, x, y, w, h, r)
 	ctx.SetColor(pal.Surface())
@@ -227,7 +226,6 @@ func drawFlatTopFlushEdge(canvas *image.RGBA, pal mancini.Palette,
 	// Dark edge.
 	darkEdge := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	ddc := gg.NewContextForRGBA(darkEdge)
-	ddc.SwapRB = pal.SwapRB()
 	ddc.SetColor(color.NRGBA{darkSh.R, darkSh.G, darkSh.B, p.EdgeAlpha})
 	ddc.SetLineWidth(p.EdgeW)
 	flatTopRoundedBottomPath(ddc, lx, ly, w, h, r)
@@ -237,7 +235,6 @@ func drawFlatTopFlushEdge(canvas *image.RGBA, pal mancini.Palette,
 	// Light edge (offset +1, +1, masked to shape).
 	lightEdge := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	ldc := gg.NewContextForRGBA(lightEdge)
-	ldc.SwapRB = pal.SwapRB()
 	ldc.SetColor(color.NRGBA{lightSh.R, lightSh.G, lightSh.B, p.EdgeAlpha})
 	ldc.SetLineWidth(p.EdgeW)
 	flatTopRoundedBottomPath(ldc, lx+1, ly+1, w, h, r)
@@ -287,7 +284,6 @@ func applyStripSelection(canvas *image.RGBA, pal mancini.Palette,
 
 	overlay := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	odc := gg.NewContextForRGBA(overlay)
-	odc.SwapRB = pal.SwapRB()
 	odc.SetColor(color.NRGBA{selectedBg.R, selectedBg.G, selectedBg.B, 60})
 	stripColumnPath(odc, lsx, lsy, sw, sh, leftR, rightR)
 	odc.Fill()
@@ -318,13 +314,13 @@ func applyStripSelection(canvas *image.RGBA, pal mancini.Palette,
 	// Dark shadow (top-left bias).
 	darkShLayer := shadowLayer(ilw, ilh,
 		ilsx-ip.Off, ilsy-ip.Off, ilsx+sw-ip.Off, ilsy+sh-ip.Off,
-		0, darkSh, 190, ip.DarkBlur, pal.SwapRB())
+		0, darkSh, 190, ip.DarkBlur)
 	draw.DrawMask(canvas, idst, darkShLayer, image.Point{}, mask, image.Point{}, draw.Over)
 
 	// Light shadow (bottom-right bias).
 	lightShLayer := shadowLayer(ilw, ilh,
 		ilsx+ip.Off, ilsy+ip.Off, ilsx+sw+ip.Off, ilsy+sh+ip.Off,
-		0, lightSh, 190, ip.LightBlur, pal.SwapRB())
+		0, lightSh, 190, ip.LightBlur)
 	draw.DrawMask(canvas, idst, lightShLayer, image.Point{}, mask, image.Point{}, draw.Over)
 }
 
