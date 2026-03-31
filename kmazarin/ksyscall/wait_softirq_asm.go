@@ -56,3 +56,9 @@ func GetSlotInterruptKind(slotNum int32) hid.InterruptType
 //go:linkname enableIRQsAndWait main.EnableIRQsAndWait
 func enableIRQsAndWait()
 
+// RegisterBlockCompletionRing pins a userspace page and sets it up as the
+// shared completion ring for block I/O.
+//
+//go:linkname RegisterBlockCompletionRing main.RegisterBlockCompletionRing
+func RegisterBlockCompletionRing(ringVA uintptr, shepherdID int16) int64
+

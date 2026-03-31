@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/input"
+	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
@@ -45,6 +46,119 @@ var blockDeviceOwnerPID int16 = -1
 //go:nosplit
 func GetBlockDeviceOwnerPID() int16 {
 	return blockDeviceOwnerPID
+}
+
+// ============================================================================
+// Block Completion Ring — Shared Memory IRQ Delivery
+// ============================================================================
+//
+// When registered, the IRQ top-half writes block I/O completions directly
+// to a userspace-owned page (CompletionRing). Userspace polls the ring
+// without any syscall. A mailbox notification wakes the shepherd.
+
+// blockCompletionRingKVA is the kernel VA of the shared completion ring page.
+// 0 = not registered (legacy soft IRQ path used instead).
+var blockCompletionRingKVA uintptr
+
+// blockCompletionRingPA is the PA for cleanup (unpin on shepherd death).
+var blockCompletionRingPA uintptr
+
+// blockCompletionRingOwnerSID is the shepherd that owns the completion ring.
+var blockCompletionRingOwnerSID int16 = -1
+
+// GetBlockCompletionRingKVA returns the kernel VA of the shared completion ring.
+// Returns 0 if no completion ring is registered (legacy mode).
+//
+//go:nosplit
+func GetBlockCompletionRingKVA() uintptr {
+	return blockCompletionRingKVA
+}
+
+// GetBlockCompletionRingOwnerSID returns the shepherd ID that owns the ring.
+//
+//go:nosplit
+func GetBlockCompletionRingOwnerSID() int16 {
+	return blockCompletionRingOwnerSID
+}
+
+// RegisterBlockCompletionRing pins a userspace page and sets it up as the
+// shared completion ring for block I/O. Called from ksyscall via linkname.
+func RegisterBlockCompletionRing(ringVA uintptr, shepherdID int16) int64 {
+	if blockCompletionRingKVA != 0 {
+		return -16 // EBUSY — already registered
+	}
+
+	// Walk user page table to get PA
+	pa := kmem.WalkUserPageTable(ringVA)
+	if pa == 0 {
+		// Demand-fault the page
+		if !kmem.HandleUserPageFault(ringVA, 0) {
+			return -14 // EFAULT
+		}
+		pa = kmem.WalkUserPageTable(ringVA)
+		if pa == 0 {
+			return -14 // EFAULT
+		}
+	}
+
+	// Pin the page
+	desc := kmem.GetPageDescriptor(pa)
+	if desc == nil {
+		return -14 // EFAULT
+	}
+	desc.Flags |= kmem.PD_PINNED
+	desc.RefCount++
+
+	// Compute kernel VA (all RAM is identity-mapped at KernelMMIOOffset)
+	kva := kmem.MapPAToKernelScratch(pa)
+	if kva == 0 {
+		desc.Flags &^= kmem.PD_PINNED
+		desc.RefCount--
+		return -14 // EFAULT
+	}
+
+	// Initialize ring header
+	ring := (*hid.CompletionRing)(unsafe.Pointer(kva))
+	ring.Head = 0
+	ring.Tail = 0
+	ring.Capacity = hid.CompletionRingSize
+	ring.Flags = 0
+	ring.Lock = 0
+
+	// Store for top-half access and cleanup
+	blockCompletionRingKVA = kva
+	blockCompletionRingPA = pa
+	blockCompletionRingOwnerSID = shepherdID
+	blockDeviceOwnerPID = shepherdID // allow BlockSubmit from this shepherd
+
+	serial.RawUARTPuts("[CompletionRing] registered for shepherd ")
+	serial.RawUARTDecimal(uint64(shepherdID))
+	serial.RawUARTPuts(" KVA=0x")
+	serial.RawUARTHexCompact(uint64(kva))
+	serial.RawUARTPuts("\r\n")
+
+	return 0
+}
+
+// CleanupBlockCompletionRing unpins and releases the completion ring page
+// when the owning shepherd dies. Must be called before CleanupShepherdPages.
+func CleanupBlockCompletionRing(shepherdID int16) {
+	if blockCompletionRingOwnerSID != shepherdID {
+		return
+	}
+	if blockCompletionRingPA != 0 {
+		desc := kmem.GetPageDescriptor(blockCompletionRingPA)
+		if desc != nil {
+			desc.Flags &^= kmem.PD_PINNED
+			desc.RefCount--
+		}
+	}
+	blockCompletionRingKVA = 0
+	blockCompletionRingPA = 0
+	blockCompletionRingOwnerSID = -1
+	if blockDeviceOwnerPID == shepherdID {
+		blockDeviceOwnerPID = -1
+	}
 }
 
 // ============================================================================

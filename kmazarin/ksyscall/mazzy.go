@@ -58,8 +58,9 @@ var mazzySyscallTable = [64]SyscallHandler{
 	51: SyscallSetCursor,               // SetCursor = 0x1033
 	52: SyscallGetReady,               // GetReady = 0x1034
 	// slots 53-54 freed (were RegisterDMAPool/UnregisterDMAPool)
-	55: SyscallBlockSubmit,     // BlockSubmit = 0x1037
-	56: SyscallReadFilePages,   // ReadFilePages = 0x1038
+	55: SyscallBlockSubmit,            // BlockSubmit = 0x1037
+	56: SyscallReadFilePages,          // ReadFilePages = 0x1038
+	57: SyscallRegisterCompletionRing, // RegisterCompletionRing = 0x1039
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

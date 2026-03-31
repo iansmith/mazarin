@@ -62,5 +62,6 @@ const (
 	SysGetReady               = MazzySyscallBase + 52 // 0x1034 - Check if named shepherd is ready
 	// slots 53-54 freed (were RegisterDMAPool/UnregisterDMAPool)
 	SysBlockSubmit     = MazzySyscallBase + 55 // 0x1037 - Async block I/O submit (returns IOTag)
-	SysReadFilePages   = MazzySyscallBase + 56 // 0x1038 - Read file data into caller's DMA pages
+	SysReadFilePages          = MazzySyscallBase + 56 // 0x1038 - Read file data into caller's DMA pages
+	SysRegisterCompletionRing = MazzySyscallBase + 57 // 0x1039 - Register shared completion ring page
 )

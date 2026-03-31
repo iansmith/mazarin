@@ -85,32 +85,39 @@ func main() {
 		os.Exit(1)
 	}
 
-	blockSlot := -1
+	blockFound := false
 	for _, dev := range devices {
 		if dev.DeviceType == hid.DeviceTypeBlock {
-			err := sys.RegisterSoftIRQ(dev.IRQNum, 0)
-			if err != nil {
-				fmt.Printf("[fs] RegisterSoftIRQ failed: %v\n", err)
-				os.Exit(1)
-			}
-			blockSlot = 0
+			blockFound = true
 			break
 		}
 	}
-	if blockSlot < 0 {
+	if !blockFound {
 		fmt.Println("[fs] ERROR: no block device found")
 		os.Exit(1)
 	}
 
-	// 2. Allocate DMA scratch buffer for the fs shepherd's own block reads
+	// 2. Allocate shared completion ring page for block I/O
+	ringPage, ringErr := mem.AllocPages(1, mem.PageShared)
+	if ringErr != nil {
+		fmt.Printf("[fs] AllocPages for completion ring failed: %v\n", ringErr)
+		os.Exit(1)
+	}
+	completionRing := (*hid.CompletionRing)(ringPage)
+	if err := sys.RegisterCompletionRing(uintptr(unsafe.Pointer(completionRing)), 0); err != nil {
+		fmt.Printf("[fs] RegisterCompletionRing failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 3. Allocate DMA scratch buffer for the fs shepherd's own block reads
 	//    (ext2 metadata, boot config, etc.). Self-targeted BlockSubmit.
 	scratch, scratchErr := mem.AllocContiguous(scratchPages * 4096)
 	if scratchErr != nil {
 		fmt.Printf("[fs] AllocContiguous for scratch failed: %v\n", scratchErr)
 		os.Exit(1)
 	}
-	// 3. Mount ext2 on VirtIO block device (read-only)
-	blkDev := newAsyncBlockDev(scratch.Addr)
+	// 4. Mount ext2 on VirtIO block device (read-only)
+	blkDev := newAsyncBlockDev(scratch.Addr, completionRing)
 	fsys, mountErr := ext2.Mount(blkDev)
 	if mountErr != nil {
 		fmt.Printf("[fs] ext2 mount failed: %v\n", mountErr)
@@ -376,14 +383,15 @@ func bootSequence(fsys *ext2.FileSystem) {
 }
 
 // asyncBlockDev implements blockdev.BlockDevice backed by a DMA worker
-// goroutine. All DMA operations (BlockSubmit + WaitSoftIRQ) run on a single
-// dedicated goroutine, which is the sole owner of the SoftIRQ slot and
-// scratch buffer. Other goroutines send requests via channel and block on
+// goroutine. All DMA operations (BlockSubmit + completion ring poll) run on a
+// single dedicated goroutine, which is the sole owner of the completion ring
+// and scratch buffer. Other goroutines send requests via channel and block on
 // a per-request response channel. This makes the single-waiter-per-slot
 // invariant structural — no mutex needed, no stolen completion events.
 type asyncBlockDev struct {
 	reqCh     chan dmaRequest
-	scratchVA uintptr // base of MAZARIN_CONTIGUOUS scratch pages
+	scratchVA uintptr              // base of MAZARIN_CONTIGUOUS scratch pages
+	ring      *hid.CompletionRing  // shared completion ring for block I/O
 }
 
 // dmaRequest is sent to the DMA worker goroutine.
@@ -417,10 +425,11 @@ const (
 )
 
 // newAsyncBlockDev creates the block device and starts the DMA worker.
-func newAsyncBlockDev(scratchVA uintptr) *asyncBlockDev {
+func newAsyncBlockDev(scratchVA uintptr, ring *hid.CompletionRing) *asyncBlockDev {
 	d := &asyncBlockDev{
 		reqCh:     make(chan dmaRequest, 4),
 		scratchVA: scratchVA,
+		ring:      ring,
 	}
 	go d.dmaWorker()
 	return d
@@ -462,13 +471,18 @@ func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 	if serr != nil {
 		return serr
 	}
-	var softBuf hid.SoftIRQReturn
-	_, err := sys.WaitSoftIRQ(0, &softBuf)
-	if err != nil {
-		return err
-	}
-	if softBuf.Length > 0 && softBuf.Events[0].Code != 0 {
-		return syscall.EIO
+	// Spin-poll shared completion ring. The IRQ top-half writes completions
+	// directly to this page, so data arrives within microseconds.
+	// No mailbox/SVC needed — the IRQ fires while we're in userspace.
+	var events [1]hid.HIDEvent
+	for {
+		n := sys.PollCompletionRing(d.ring, events[:], 1)
+		if n > 0 {
+			if events[0].Code != 0 {
+				return syscall.EIO
+			}
+			break
+		}
 	}
 	copy(buf[:asyncBlockSize], dmaBuf)
 	return nil
@@ -514,14 +528,11 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 		tWait := time.Now()
 		if submitted > 0 {
 			remaining := submitted
+			var events [scratchPages]hid.HIDEvent
 			for remaining > 0 {
-				var softBuf hid.SoftIRQReturn
-				n, err := sys.WaitSoftIRQ(0, &softBuf)
-				if err != nil {
-					return err
-				}
-				for i := 0; i < n && remaining > 0; i++ {
-					if softBuf.Events[i].Code != 0 {
+				n := sys.PollCompletionRing(d.ring, events[:], remaining)
+				for i := 0; i < n; i++ {
+					if events[i].Code != 0 {
 						return syscall.EIO
 					}
 					remaining--

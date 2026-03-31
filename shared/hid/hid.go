@@ -77,6 +77,30 @@ type SoftIRQReturn struct {
 	Events   [MaxHIDEvents]HIDEvent   // Events array
 }
 
+// CompletionRingSize is the number of event slots in a CompletionRing.
+const CompletionRingSize = 256
+
+// CompletionRing is a shared-memory MPSC ring buffer for IRQ completion
+// delivery. The kernel IRQ top-half writes events directly to this page;
+// userspace polls it without any syscall.
+//
+// Producer (kernel top-half): acquires Lock, writes event, advances Tail.
+// Consumer (userspace): reads events, advances Head (no lock needed).
+//
+// The page is allocated by userspace and pinned by the kernel via
+// SysRegisterCompletionRing. It must not contain Go pointers.
+//
+// Total size: 32 + 256*8 = 2080 bytes (fits in a 4KB page).
+type CompletionRing struct {
+	Head     uint32                        // atomic: consumer index (userspace)
+	Tail     uint32                        // atomic: producer index (kernel top-half)
+	Capacity uint32                        // ring size (256), set by kernel
+	Flags    uint32                        // overflow counter (low bits)
+	Lock     uint32                        // CAS spinlock for multi-core producers
+	_        [3]uint32                     // pad header to 32 bytes
+	Events   [CompletionRingSize]HIDEvent  // event slots
+}
+
 // InputDeviceInfo describes an available input device.
 // Returned by the QueryInputDevices syscall.
 type InputDeviceInfo struct {

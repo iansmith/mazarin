@@ -239,6 +239,70 @@ func ringPush(r *softIRQRing, ev hid.HIDEvent) bool {
 	return true
 }
 
+// completionRingPush writes an event to the shared completion ring page.
+// Acquires a spinlock for multi-core safety. If the ring is full, the event
+// is dropped and an overflow counter is incremented.
+//
+//go:nosplit
+//go:noinline
+func completionRingPush(kva uintptr, ev hid.HIDEvent) bool {
+	ring := (*hid.CompletionRing)(unsafe.Pointer(kva))
+	// CAS spinlock acquire
+	for !atomic.CompareAndSwapUint32(&ring.Lock, 0, 1) {
+		asm.Wfe()
+	}
+	tail := atomic.LoadUint32(&ring.Tail)
+	head := atomic.LoadUint32(&ring.Head)
+	if tail-head >= hid.CompletionRingSize {
+		atomic.AddUint32(&ring.Flags, 1) // overflow counter
+		atomic.StoreUint32(&ring.Lock, 0)
+		return false
+	}
+	ring.Events[tail&(hid.CompletionRingSize-1)] = ev
+	asm.Dsb() // ensure event data visible before tail update
+	atomic.StoreUint32(&ring.Tail, tail+1)
+	atomic.StoreUint32(&ring.Lock, 0)
+	return true
+}
+
+// BlockIOCompleteCode is the mailbox notification code for block I/O completions.
+const BlockIOCompleteCode int64 = 0x4200 // "B\0" — block I/O complete
+
+// mailboxSendFromIRQ sends a block I/O completion notification to a shepherd's
+// mailbox from the IRQ top-half. Wakes the shepherd if it's blocked on MailboxRecv.
+//
+//go:nosplit
+//go:noinline
+func mailboxSendFromIRQ(targetSID int16) {
+	idx := int(targetSID)
+	if idx < 0 || idx >= len(mailboxQueues) {
+		return
+	}
+
+	notif := MailboxNotification{Code: BlockIOCompleteCode, SenderSID: 0}
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+
+	mailboxQueues[idx].push(notif)
+
+	if mailboxBlockedTID[idx] >= 0 {
+		t := (*Thread)(unsafe.Pointer(mailboxBlockedPtr[idx]))
+		if t != nil && t.State == ThreadBlockedMailbox {
+			t.State = ThreadReady
+			mailboxBlockedTID[idx] = -1
+			mailboxBlockedPtr[idx] = 0
+			t.Context.RewindToSyscall()
+			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+			enqueueReadySchedLockHeld(t)
+			asm.Dsb()
+		}
+	}
+
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
+}
+
 // RingDrain copies up to max events from the ring into buf.
 // Returns the number of events drained.
 //
@@ -348,20 +412,29 @@ func NonTimerIRQTopHalf() {
 				}
 
 				atomic.AddUint32(&dbgBlockAsyncEvents, 1)
-				// Push completion event to ring (must use ringPush which
-				// uses monotonically-increasing tail — NOT wrapping indices —
-				// to match RingDrain's head convention)
-				ringPush(&topHalfBlockRing, hid.HIDEvent{
+				ev := hid.HIDEvent{
 					Type:  tag,
 					Code:  status,
 					Value: info.UsedLen,
-				})
+				}
+				// Push to shared completion ring if registered, else legacy ring
+				crKVA := blockCompletionRingKVA
+				if crKVA != 0 {
+					completionRingPush(crKVA, ev)
+				} else {
+					ringPush(&topHalfBlockRing, ev)
+				}
 
 				// Clear metadata slot
 				*meta = blockAsyncSlot{}
 			}
 			atomic.AddUint32(&dbgBlockIRQAsync, 1)
-			WakeSlotForIRQ(hid.BlockVirtualIRQ)
+			// Wake via mailbox if shared ring registered, else legacy slot wake
+			if blockCompletionRingKVA != 0 {
+				mailboxSendFromIRQ(blockCompletionRingOwnerSID)
+			} else {
+				WakeSlotForIRQ(hid.BlockVirtualIRQ)
+			}
 		} else {
 			// Sync mode: just signal IOComplete for WFI loop
 			atomic.AddUint32(&dbgBlockIRQSync, 1)
