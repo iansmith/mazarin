@@ -112,16 +112,42 @@ func (c *compiler) checkStmt(stmt ast.Stmt) error {
 		return c.checkStmtList(s.Body.List)
 
 	case *ast.BranchStmt:
-		if s.Tok == token.BREAK {
+		if s.Tok == token.BREAK || s.Tok == token.CONTINUE {
 			return nil
 		}
-		return c.errAt(s.Pos(), "%s not allowed (only break is permitted)", s.Tok)
+		return c.errAt(s.Pos(), "%s not allowed (only break and continue are permitted)", s.Tok)
 
 	case *ast.ExprStmt:
 		return c.checkExpr(s.X)
 
 	case *ast.BlockStmt:
 		return c.checkStmtList(s.List)
+
+	case *ast.SwitchStmt:
+		if s.Init != nil {
+			return c.errAt(s.Init.Pos(), "switch init statement not allowed")
+		}
+		if s.Tag == nil {
+			return c.errAt(s.Pos(), "switch without tag not allowed")
+		}
+		if err := c.checkExpr(s.Tag); err != nil {
+			return err
+		}
+		for _, stmt := range s.Body.List {
+			cc, ok := stmt.(*ast.CaseClause)
+			if !ok {
+				return c.errAt(stmt.Pos(), "unexpected statement in switch body")
+			}
+			for _, expr := range cc.List {
+				if _, ok := expr.(*ast.BasicLit); !ok {
+					return c.errAt(expr.Pos(), "switch case values must be integer or string constants")
+				}
+			}
+			if err := c.checkStmtList(cc.Body); err != nil {
+				return err
+			}
+		}
+		return nil
 
 	// Rejected constructs.
 	case *ast.ForStmt:
@@ -134,8 +160,6 @@ func (c *compiler) checkStmt(stmt ast.Stmt) error {
 		return c.errAt(s.Pos(), "select not allowed")
 	case *ast.DeferStmt:
 		return c.errAt(s.Pos(), "defer not allowed")
-	case *ast.SwitchStmt:
-		return c.errAt(s.Pos(), "switch not allowed (use if/else)")
 	case *ast.TypeSwitchStmt:
 		return c.errAt(s.Pos(), "type switch not allowed")
 	case *ast.LabeledStmt:

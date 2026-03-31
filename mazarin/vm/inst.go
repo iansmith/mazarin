@@ -38,8 +38,14 @@ const (
 	OpMul uint8 = 0x22
 	OpDiv uint8 = 0x23
 	OpMod uint8 = 0x24 // I64 only
-	OpNeg uint8 = 0x25 // unary
-	OpAbs uint8 = 0x26 // unary
+	OpNeg  uint8 = 0x25 // unary
+	OpAbs  uint8 = 0x26 // unary
+
+	// Bitwise — I64 only.
+	OpShl  uint8 = 0x27 // a << b
+	OpShr  uint8 = 0x28 // a >> b  (arithmetic / signed)
+	OpBand uint8 = 0x29 // a & b
+	OpBor  uint8 = 0x2A // a | b
 
 	// Comparison — pop two of type typ, push Bool.
 	OpEq  uint8 = 0x30
@@ -75,9 +81,10 @@ const (
 	// op1 = local slot for index (i), op2 = local slot for element value (v).
 	// Body runs once per element, then jumps back to the top of the loop.
 	// Bounded by collection length — no unbounded loops.
-	OpForRange uint8 = 0x68
-	OpEndFor   uint8 = 0x69
-	OpBreak    uint8 = 0x6A // exit innermost FOR_RANGE
+	OpForRange  uint8 = 0x68
+	OpEndFor    uint8 = 0x69
+	OpBreak     uint8 = 0x6A // exit innermost FOR_RANGE
+	OpContinue  uint8 = 0x6B // skip to next iteration of innermost FOR_RANGE
 
 	// Collection literal.
 	// Pop op2 elements from stack, push a collection of type typ.
@@ -148,8 +155,9 @@ func InstEndIf() Inst { return Inst{Opcode: OpEndIf} }
 func InstForRange(indexSlot, valueSlot uint16) Inst {
 	return Inst{Opcode: OpForRange, Op1: indexSlot, Op2: valueSlot}
 }
-func InstEndFor() Inst { return Inst{Opcode: OpEndFor} }
-func InstBreak() Inst  { return Inst{Opcode: OpBreak} }
+func InstEndFor() Inst   { return Inst{Opcode: OpEndFor} }
+func InstBreak() Inst    { return Inst{Opcode: OpBreak} }
+func InstContinue() Inst { return Inst{Opcode: OpContinue} }
 
 func InstMakeColl(typ uint8, count uint16) Inst {
 	return Inst{Opcode: OpMakeColl, Typ: typ, Op2: count}

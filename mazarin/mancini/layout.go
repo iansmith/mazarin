@@ -77,6 +77,11 @@ func RectPrefix() string {
 	return "attr:///shepherd/" + manciniSID + "/rect/"
 }
 
+// StrPrefix returns the URI prefix for string attributes in the mancini namespace.
+func StrPrefix() string {
+	return "attr:///shepherd/" + manciniSID + "/str/"
+}
+
 // NewLayoutAttributesBase creates X, Y, Visible, Parent attributes (no Width/Height).
 func NewLayoutAttributesBase(myName, parent string) *LayoutAttributes {
 	return &LayoutAttributes{

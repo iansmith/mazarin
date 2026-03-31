@@ -334,6 +334,14 @@ func countLocalsInStmts(stmts []ast.Stmt, names map[string]bool) {
 			}
 		case *ast.BlockStmt:
 			countLocalsInStmts(s.List, names)
+		case *ast.SwitchStmt:
+			// Reserve one slot for the switch tag temp variable.
+			names["_switch_"] = true
+			for _, stmt := range s.Body.List {
+				if cc, ok := stmt.(*ast.CaseClause); ok {
+					countLocalsInStmts(cc.Body, names)
+				}
+			}
 		case *ast.IncDecStmt:
 			if id, ok := s.X.(*ast.Ident); ok {
 				names[id.Name] = true

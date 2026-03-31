@@ -147,12 +147,19 @@ func (c *compiler) compileStmt(stmt ast.Stmt) error {
 	case *ast.IfStmt:
 		return c.compileIf(s)
 
+	case *ast.SwitchStmt:
+		return c.compileSwitch(s)
+
 	case *ast.RangeStmt:
 		return c.compileForRange(s)
 
 	case *ast.BranchStmt:
 		if s.Tok == token.BREAK {
 			c.emit(vm.InstBreak())
+			return nil
+		}
+		if s.Tok == token.CONTINUE {
+			c.emit(vm.InstContinue())
 			return nil
 		}
 		return c.errAt(s.Pos(), "unsupported branch statement: %s", s.Tok)
@@ -239,6 +246,82 @@ func (c *compiler) compileForRange(s *ast.RangeStmt) error {
 		return err
 	}
 	c.emit(vm.InstEndFor())
+	return nil
+}
+
+// compileSwitch compiles a switch statement to a nested if/else chain.
+// The switch tag is evaluated once and stored in the _switch_ temp local.
+// Each case becomes: load _switch_; push constant; EQ; IF; body; ELSE.
+// The default case (if any) is the innermost else branch.
+func (c *compiler) compileSwitch(s *ast.SwitchStmt) error {
+	// Evaluate the tag expression once and store in the temp local.
+	if err := c.compileExpr(s.Tag); err != nil {
+		return err
+	}
+	tagSlot := c.allocLocal("_switch_")
+	c.emit(vm.InstStore(tagSlot))
+
+	// Separate cases from default.
+	var cases []*ast.CaseClause
+	var defaultCase *ast.CaseClause
+	for _, stmt := range s.Body.List {
+		cc := stmt.(*ast.CaseClause)
+		if cc.List == nil {
+			defaultCase = cc
+		} else {
+			cases = append(cases, cc)
+		}
+	}
+
+	// Emit nested if/else chain: each case opens an IF and an ELSE.
+	for _, cc := range cases {
+		// Load tag and compare to each value in the case list (OR logic).
+		if len(cc.List) == 1 {
+			c.emit(vm.InstLoad(tagSlot))
+			if err := c.compileExpr(cc.List[0]); err != nil {
+				return err
+			}
+			tagTyp := c.exprVMType(s.Tag)
+			c.emit(vm.InstCmp(vm.OpEq, tagTyp))
+		} else {
+			// case v1, v2, ...: OR the comparisons.
+			tagTyp := c.exprVMType(s.Tag)
+			for i, val := range cc.List {
+				c.emit(vm.InstLoad(tagSlot))
+				if err := c.compileExpr(val); err != nil {
+					return err
+				}
+				c.emit(vm.InstCmp(vm.OpEq, tagTyp))
+				if i > 0 {
+					c.emit(vm.Inst{Opcode: vm.OpOr})
+				}
+			}
+		}
+		c.emit(vm.InstIf())
+
+		// Compile case body.
+		for _, stmt := range cc.Body {
+			if err := c.compileStmt(stmt); err != nil {
+				return err
+			}
+		}
+
+		c.emit(vm.InstElse())
+	}
+
+	// Innermost else: default body (if any).
+	if defaultCase != nil {
+		for _, stmt := range defaultCase.Body {
+			if err := c.compileStmt(stmt); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Close all opened IFs.
+	for range cases {
+		c.emit(vm.InstEndIf())
+	}
 	return nil
 }
 
@@ -350,6 +433,15 @@ func (c *compiler) compileBinary(e *ast.BinaryExpr) error {
 		c.emit(vm.InstArith(vm.OpDiv, typ))
 	case token.REM:
 		c.emit(vm.InstArith(vm.OpMod, vm.TypeI64))
+
+	case token.SHL:
+		c.emit(vm.Inst{Opcode: vm.OpShl})
+	case token.SHR:
+		c.emit(vm.Inst{Opcode: vm.OpShr})
+	case token.AND:
+		c.emit(vm.Inst{Opcode: vm.OpBand})
+	case token.OR:
+		c.emit(vm.Inst{Opcode: vm.OpBor})
 
 	case token.EQL:
 		c.emit(vm.InstCmp(vm.OpEq, typ))

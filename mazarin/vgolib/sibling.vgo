@@ -1,0 +1,70 @@
+import "children"
+
+// findParent returns the parent name of the element identified by mySeg,
+// by dereferencing its string-typed Parent attribute.
+func findParent(mySeg string) string {
+	return derefStr("_strPrefix_" + mySeg + "_parentSuffix_")
+}
+
+// prevSibling returns the URI of the nearest visible sibling that precedes
+// mySeg in the parent's child list, or "" if mySeg is the first visible child.
+func prevSibling(mySeg string) string {
+	parentName := findParent(mySeg)
+	siblings := findWhere("_childPattern_", parentName)
+	prev := ""
+	for _, uri := range siblings {
+		seg := uriSegment(uri, 3)
+		if seg == mySeg {
+			return prev
+		}
+		if isChildVisible(seg) {
+			prev = uri
+		}
+	}
+	return ""
+}
+
+// nextSibling returns the URI of the nearest visible sibling that follows
+// mySeg in the parent's child list, or "" if mySeg is the last visible child.
+func nextSibling(mySeg string) string {
+	parentName := findParent(mySeg)
+	siblings := findWhere("_childPattern_", parentName)
+	found := false
+	for _, uri := range siblings {
+		seg := uriSegment(uri, 3)
+		if found {
+			if isChildVisible(seg) {
+				return uri
+			}
+		}
+		if seg == mySeg {
+			found = true
+		}
+	}
+	return ""
+}
+
+// mySiblingIndex returns the 0-based index of mySeg among the visible children
+// of its parent, or -1 if mySeg is not found.
+func mySiblingIndex(mySeg string) int64 {
+	parentName := findParent(mySeg)
+	siblings := findWhere("_childPattern_", parentName)
+	n := int64(0)
+	for _, uri := range siblings {
+		seg := uriSegment(uri, 3)
+		if seg == mySeg {
+			return n
+		}
+		if isChildVisible(seg) {
+			n = n + 1
+		}
+	}
+	return int64(-1)
+}
+
+// numSiblings returns the total number of visible children of mySeg's parent
+// (i.e. the number of siblings including mySeg itself).
+func numSiblings(mySeg string) int64 {
+	parentName := findParent(mySeg)
+	return numChildren(parentName)
+}

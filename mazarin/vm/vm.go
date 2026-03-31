@@ -12,7 +12,7 @@ import (
 const (
 	MaxInstructions = 100_000 // instruction counter kill limit
 	MaxStackDepth   = 256
-	MaxLocals       = 64
+	MaxLocals       = 128
 	MaxCallDepth    = 8
 )
 
@@ -247,6 +247,52 @@ func (m *machine) execOne(inst Inst) error {
 			return a
 		}, func(a float64) float64 { return math.Abs(a) })
 
+	// --- Bitwise (I64 only) ---
+
+	case OpShl:
+		b, err := m.pop()
+		if err != nil {
+			return err
+		}
+		a, err := m.pop()
+		if err != nil {
+			return err
+		}
+		return m.push(I64(a.i64 << uint(b.i64)))
+
+	case OpShr:
+		b, err := m.pop()
+		if err != nil {
+			return err
+		}
+		a, err := m.pop()
+		if err != nil {
+			return err
+		}
+		return m.push(I64(a.i64 >> uint(b.i64)))
+
+	case OpBand:
+		b, err := m.pop()
+		if err != nil {
+			return err
+		}
+		a, err := m.pop()
+		if err != nil {
+			return err
+		}
+		return m.push(I64(a.i64 & b.i64))
+
+	case OpBor:
+		b, err := m.pop()
+		if err != nil {
+			return err
+		}
+		a, err := m.pop()
+		if err != nil {
+			return err
+		}
+		return m.push(I64(a.i64 | b.i64))
+
 	// --- Comparison ---
 
 	case OpEq, OpNeq, OpLt, OpGt, OpLe, OpGe:
@@ -401,6 +447,9 @@ func (m *machine) execOne(inst Inst) error {
 	case OpBreak:
 		return m.haltf("BREAK outside FOR_RANGE")
 
+	case OpContinue:
+		return m.haltf("CONTINUE outside FOR_RANGE")
+
 	// --- Collection literal ---
 
 	case OpMakeColl:
@@ -504,6 +553,13 @@ func (m *machine) execForBody() (forSignal, error) {
 				return 0, err
 			}
 			return forSignalBreak, nil
+		}
+		if inst.Opcode == OpContinue {
+			m.pc++
+			if err := m.skipToEndFor(); err != nil {
+				return 0, err
+			}
+			return forSignalContinue, nil
 		}
 
 		m.fuel--

@@ -1,0 +1,151 @@
+import "sibling"
+
+// getAttr reads the attribute identified by fnCode for the element named seg.
+//
+// Function codes (from the ULC paper, Hudson & Smith):
+//   0 = x       (left edge)
+//   1 = y       (top edge)
+//   2 = width
+//   3 = height
+//   4 = right   (x + width)
+//   5 = bottom  (y + height)
+func getAttr(seg string, fnCode int64) int64 {
+	switch fnCode {
+	case 0:
+		return derefI64("_int64Prefix_" + seg + "_xSuffix_")
+	case 1:
+		return derefI64("_int64Prefix_" + seg + "_ySuffix_")
+	case 2:
+		return derefI64("_int64Prefix_" + seg + "_widthSuffix_")
+	case 3:
+		return derefI64("_int64Prefix_" + seg + "_heightSuffix_")
+	case 4:
+		return derefI64("_int64Prefix_" + seg + "_xSuffix_") + derefI64("_int64Prefix_" + seg + "_widthSuffix_")
+	case 5:
+		return derefI64("_int64Prefix_" + seg + "_ySuffix_") + derefI64("_int64Prefix_" + seg + "_heightSuffix_")
+	}
+	return int64(0)
+}
+
+// minChildAttr returns the minimum value of the given attribute across all
+// visible children of mySeg. Returns 0 if there are no visible children.
+func minChildAttr(mySeg string, fnCode int64) int64 {
+	children := findWhere("_childPattern_", mySeg)
+	best := int64(0)
+	first := true
+	for _, uri := range children {
+		seg := uriSegment(uri, 3)
+		if isChildVisible(seg) {
+			v := getAttr(seg, fnCode)
+			if first {
+				best = v
+				first = false
+			}
+			if v < best {
+				best = v
+			}
+		}
+	}
+	return best
+}
+
+// maxChildAttr returns the maximum value of the given attribute across all
+// visible children of mySeg. Returns 0 if there are no visible children.
+func maxChildAttr(mySeg string, fnCode int64) int64 {
+	children := findWhere("_childPattern_", mySeg)
+	best := int64(0)
+	first := true
+	for _, uri := range children {
+		seg := uriSegment(uri, 3)
+		if isChildVisible(seg) {
+			v := getAttr(seg, fnCode)
+			if first {
+				best = v
+				first = false
+			}
+			if v > best {
+				best = v
+			}
+		}
+	}
+	return best
+}
+
+// ulcDecode decodes the ULC constant stored at _constValURI_ and returns the
+// referenced attribute value.
+//
+// Bit layout of the 16-bit ULC constant:
+//   bits 2-0  fnCode  — which attribute (0–5, see getAttr)
+//   bits 5-3  objRef  — which object    (0–7, see below)
+//   bits 15-6 scale   — reserved for future scale/offset extension
+//
+// Object reference codes:
+//   0 = self
+//   1 = parent
+//   2 = previous visible sibling
+//   3 = next visible sibling
+//   4 = first visible child  (self is the parent)
+//   5 = last visible child   (self is the parent)
+//   6 = visible child with minimum value of fnCode attribute
+//   7 = visible child with maximum value of fnCode attribute
+//
+// Placeholders bound at constraint-creation time:
+//   _mySeg_       — segment name of the constrained element
+//   _constValURI_ — URI of a constant int64 attribute holding the ULC constant
+func ulcDecode() int64 {
+	constVal := derefI64("_constValURI_")
+	fnCode := constVal & 7
+	objRef := (constVal >> 3) & 7
+	switch objRef {
+	case 0:
+		// Self.
+		return getAttr("_mySeg_", fnCode)
+	case 1:
+		// Parent.
+		parentName := findParent("_mySeg_")
+		return getAttr(parentName, fnCode)
+	case 2:
+		// Previous visible sibling.
+		prevURI := prevSibling("_mySeg_")
+		if prevURI == "" {
+			return int64(0)
+		}
+		prevSeg := uriSegment(prevURI, 3)
+		return getAttr(prevSeg, fnCode)
+	case 3:
+		// Next visible sibling.
+		nextURI := nextSibling("_mySeg_")
+		if nextURI == "" {
+			return int64(0)
+		}
+		nextSeg := uriSegment(nextURI, 3)
+		return getAttr(nextSeg, fnCode)
+	case 4:
+		// First visible child.
+		firstURI := nthChild("_mySeg_", 0)
+		if firstURI == "" {
+			return int64(0)
+		}
+		firstSeg := uriSegment(firstURI, 3)
+		return getAttr(firstSeg, fnCode)
+	case 5:
+		// Last visible child.
+		n := numChildren("_mySeg_")
+		if n == 0 {
+			return int64(0)
+		}
+		lastURI := nthChild("_mySeg_", n-1)
+		if lastURI == "" {
+			return int64(0)
+		}
+		lastSeg := uriSegment(lastURI, 3)
+		return getAttr(lastSeg, fnCode)
+	case 6:
+		// Child with minimum fnCode attribute.
+		return minChildAttr("_mySeg_", fnCode)
+	case 7:
+		// Child with maximum fnCode attribute.
+		return maxChildAttr("_mySeg_", fnCode)
+	}
+	return int64(0)
+}

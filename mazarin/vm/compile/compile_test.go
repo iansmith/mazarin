@@ -588,3 +588,140 @@ func isOdd(n int64) bool {
 }
 `, "recursion")
 }
+
+func TestCompileSwitch(t *testing.T) {
+	results := compileAndRun(t, `
+func Main(x int64) int64 {
+	switch x {
+	case 0:
+		return int64(10)
+	case 1:
+		return int64(20)
+	case 2:
+		return int64(30)
+	default:
+		return int64(99)
+	}
+}
+`, vm.I64(1))
+	if results[0].AsI64() != 20 {
+		t.Fatalf("expected 20, got %d", results[0].AsI64())
+	}
+}
+
+func TestCompileSwitchDefault(t *testing.T) {
+	results := compileAndRun(t, `
+func Main(x int64) int64 {
+	switch x {
+	case 0:
+		return int64(10)
+	case 1:
+		return int64(20)
+	default:
+		return int64(99)
+	}
+}
+`, vm.I64(5))
+	if results[0].AsI64() != 99 {
+		t.Fatalf("expected 99, got %d", results[0].AsI64())
+	}
+}
+
+func TestCompileSwitchNoDefault(t *testing.T) {
+	// No default: unmatched case falls through to end, returns zero value.
+	results := compileAndRun(t, `
+func Main(x int64) int64 {
+	r := int64(0)
+	switch x {
+	case 7:
+		r = int64(77)
+	case 8:
+		r = int64(88)
+	}
+	return r
+}
+`, vm.I64(8))
+	if results[0].AsI64() != 88 {
+		t.Fatalf("expected 88, got %d", results[0].AsI64())
+	}
+}
+
+func TestCompileSwitchMultiValue(t *testing.T) {
+	// case with multiple values (OR logic).
+	results := compileAndRun(t, `
+func Main(x int64) int64 {
+	switch x {
+	case 1, 2, 3:
+		return int64(100)
+	default:
+		return int64(0)
+	}
+}
+`, vm.I64(2))
+	if results[0].AsI64() != 100 {
+		t.Fatalf("expected 100, got %d", results[0].AsI64())
+	}
+}
+
+func TestCompileSwitchExpression(t *testing.T) {
+	// Switch on a computed expression (not just an ident).
+	results := compileAndRun(t, `
+func Main(x int64) int64 {
+	switch x % 3 {
+	case 0:
+		return int64(0)
+	case 1:
+		return int64(1)
+	case 2:
+		return int64(2)
+	}
+	return int64(-1)
+}
+`, vm.I64(7))
+	// 7 % 3 = 1
+	if results[0].AsI64() != 1 {
+		t.Fatalf("expected 1, got %d", results[0].AsI64())
+	}
+}
+
+func TestCompileBitwise(t *testing.T) {
+	// Shift left: 1 << 3 = 8
+	results := compileAndRun(t, `
+func Main(x int64) int64 { return x << 3 }
+`, vm.I64(1))
+	if results[0].AsI64() != 8 {
+		t.Fatalf("shl: expected 8, got %d", results[0].AsI64())
+	}
+
+	// Shift right: 256 >> 4 = 16
+	results = compileAndRun(t, `
+func Main(x int64) int64 { return x >> 4 }
+`, vm.I64(256))
+	if results[0].AsI64() != 16 {
+		t.Fatalf("shr: expected 16, got %d", results[0].AsI64())
+	}
+
+	// Bitwise AND: 0xFF & 0x0F = 0x0F
+	results = compileAndRun(t, `
+func Main(x int64) int64 { return x & 15 }
+`, vm.I64(255))
+	if results[0].AsI64() != 15 {
+		t.Fatalf("band: expected 15, got %d", results[0].AsI64())
+	}
+
+	// Bitwise OR: 0xF0 | 0x0F = 0xFF
+	results = compileAndRun(t, `
+func Main(x int64) int64 { return x | 15 }
+`, vm.I64(240))
+	if results[0].AsI64() != 255 {
+		t.Fatalf("bor: expected 255, got %d", results[0].AsI64())
+	}
+
+	// Composed: extract bits 5-3 via shift+mask (like ULC objRef decode)
+	results = compileAndRun(t, `
+func Main(x int64) int64 { return (x >> 3) & 7 }
+`, vm.I64(0b00101000)) // bits 5-3 = 101 = 5
+	if results[0].AsI64() != 5 {
+		t.Fatalf("shr+band: expected 5, got %d", results[0].AsI64())
+	}
+}

@@ -36,21 +36,24 @@ func BindStrings(prog *vm.Program, bindings ...string) *vm.Program {
 }
 
 // BindStringsChildren is BindStrings plus automatic binding of the
-// placeholders required by the "children" vgo library:
+// placeholders required by the "children" and "sibling" vgo libraries:
 // child discovery (_childPattern_), type prefixes (_boolPrefix_,
-// _int64Prefix_), and layout property suffixes (_xSuffix_, _ySuffix_,
-// _widthSuffix_, _heightSuffix_, _visSuffix_, _boundsHashSuffix_).
+// _int64Prefix_, _strPrefix_, _rectPrefix_), and layout property suffixes
+// (_xSuffix_, _ySuffix_, _widthSuffix_, _heightSuffix_, _visSuffix_,
+// _boundsHashSuffix_, _parentSuffix_, _damageRectSuffix_).
 func BindStringsChildren(prog *vm.Program, bindings ...string) *vm.Program {
 	bindings = append(bindings,
 		"_childPattern_", ChildPattern(),
 		"_boolPrefix_", BoolPrefix(),
 		"_int64Prefix_", Int64Prefix(),
+		"_strPrefix_", StrPrefix(),
 		"_xSuffix_", LayoutX.Suffix(),
 		"_ySuffix_", LayoutY.Suffix(),
 		"_widthSuffix_", LayoutWidth.Suffix(),
 		"_heightSuffix_", LayoutHeight.Suffix(),
 		"_visSuffix_", VisSuffix,
 		"_boundsHashSuffix_", LayoutBoundsHash.Suffix(),
+		"_parentSuffix_", LayoutParent.Suffix(),
 		"_rectPrefix_", RectPrefix(),
 		"_damageRectSuffix_", LayoutDamageRect.Suffix(),
 	)
