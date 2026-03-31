@@ -29,15 +29,13 @@ func RegisterMazModuledata(mdPtr uintptr) {
 	}
 	md := (*moduledata)(unsafe.Pointer(mdPtr))
 
+	// Save init tasks before clearing — we'll selectively run safe ones later.
+	mazInitTasks := md.inittasks
+
 	// Clear fields that could cause issues when registered with the shepherd's runtime.
 	// Keep typelinks and itablinks intact — they are needed for cross-module type
 	// deduplication (typelinksinit) and interface dispatch (itabsinit). Without them,
 	// type assertions across module boundaries fail.
-	//
-	// inittasks must be nil — some init functions touch runtime internals (e.g.,
-	// sync.Pool, hash tables sized by GOMAXPROCS) that cause panics in the .maz
-	// context. Package-level vars that need initialization (e.g., go-text font
-	// format tags) must be handled by the .maz code itself before use.
 	md.hasmain = 0
 	md.bad = false
 	md.inittasks = nil
@@ -79,7 +77,51 @@ func RegisterMazModuledata(mdPtr uintptr) {
 	}
 	unlock(&itabLock)
 
+	// Selectively run .maz init tasks. Skip any task whose functions belong
+	// to the "runtime" package — those init functions read/write the .maz's
+	// own copy of runtime globals (ncpu, allp, sched, etc.) which are zero
+	// and cause panics (e.g., divide-by-zero). Non-runtime init tasks are
+	// safe because their runtime calls are trampolined to the host shepherd.
+	if len(mazInitTasks) > 0 {
+		ran, skipped := runSafeMazInitTasks(mazInitTasks, md)
+		println("[runtime] RegisterMazModuledata: ran", ran, "init tasks, skipped", skipped, "(runtime)")
+	}
+
 	println("[runtime] RegisterMazModuledata: registered successfully")
+}
+
+// runSafeMazInitTasks runs .maz init tasks that don't belong to the runtime
+// package. Returns (ran, skipped) counts.
+func runSafeMazInitTasks(tasks []*initTask, md *moduledata) (int, int) {
+	ran, skipped := 0, 0
+	for _, t := range tasks {
+		if t.state == 2 {
+			continue // already done
+		}
+		if t.nfns == 0 {
+			continue
+		}
+		// Check the first function pointer — all functions in an initTask
+		// belong to the same package (the linker groups them this way).
+		firstFunc := add(unsafe.Pointer(t), 8)
+		pc := *(*uintptr)(firstFunc)
+
+		name := funcname(findfunc(pc))
+		if stringHasPrefix(name, "runtime.") ||
+			stringHasPrefix(name, "internal/runtime") ||
+			stringHasPrefix(name, "internal/abi") {
+			skipped++
+			continue
+		}
+		doInit1(t)
+		ran++
+	}
+	return ran, skipped
+}
+
+// stringHasPrefix is a runtime-safe prefix check (can't import strings).
+func stringHasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
 // buildCompleteTypemap extends the .maz module's typemap beyond what typelinks covers.

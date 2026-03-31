@@ -17,7 +17,6 @@ import (
 	"unsafe"
 
 	goFont "github.com/go-text/typesetting/font"
-	ot "github.com/go-text/typesetting/font/opentype"
 )
 
 // MazEntryPoint holds a reference to MazarinMain to prevent DCE.
@@ -145,13 +144,6 @@ func findExistingFont(path string, variant int32) (*goFont.Face, []byte) {
 //
 //go:noinline
 func MazarinMain() {
-	// .maz init functions don't run, so go-text's package-level vars
-	// (font format tags) are uninitialized. Set them before first use.
-	ot.OpenType = ot.MustNewTag("OTTO")
-	ot.TrueType = ot.Tag(0x00010000)
-	ot.AppleTrueType = ot.MustNewTag("true")
-	ot.PostScript1 = ot.MustNewTag("typ1")
-
 	rawPuts("[fontsvc] starting mailbox loop\n")
 
 	for {
