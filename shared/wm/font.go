@@ -20,7 +20,7 @@ type OpenFontMsg struct {
 	Type    int64     // MsgOpenFont
 	Variant int32     // 0=regular, 1=bold
 	Size    int32     // point size (e.g., 18)
-	Path    [112]byte // null-terminated font path (e.g., "/fonts/Atkinson...")
+	Path    [112]byte // null-terminated font family name (e.g., "AtkinsonHyperlegibleMono")
 }
 
 // OpenFontReplyMsg is sent by fontsvc to a shepherd after opening a font.

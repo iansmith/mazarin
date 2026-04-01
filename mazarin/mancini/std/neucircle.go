@@ -138,6 +138,6 @@ func (n *NeuCircle) Decorate(self mancini.Interactor, x, y, w, h int64) {
 
 	if face != n.Pal.Surface() && n.Depth != mancini.Raised {
 		canvas := dc.Image().(*image.RGBA)
-		applyCircleTintOverlay(n.Pal, canvas, cx, cy, faceRad, face)
+		applyCircleTintOverlay(n.Pal, dc, canvas, cx, cy, faceRad, face)
 	}
 }

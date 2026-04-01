@@ -265,6 +265,11 @@ func (dc *DrawContextImpl) transformPoint(x, y float64) (float64, float64) {
 	return dc.gs.matrix.TransformPoint(x, y)
 }
 
+// TransformPoint applies the current matrix to a point (exported, satisfies DrawContext interface).
+func (dc *DrawContextImpl) TransformPoint(x, y float64) (float64, float64) {
+	return dc.gs.matrix.TransformPoint(x, y)
+}
+
 // --- Path building ---
 
 func (dc *DrawContextImpl) MoveTo(x, y float64) {

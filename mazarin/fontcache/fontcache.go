@@ -11,9 +11,9 @@ import (
 
 // faceKey identifies a unique font face configuration.
 type faceKey struct {
-	path string
-	bold bool
-	size int64
+	family string
+	bold   bool
+	size   int64
 }
 
 // FontCache is the client-side handle for communicating with fontsvc.maz.
@@ -35,9 +35,6 @@ type FontCache struct {
 	}
 	cachedCount int
 
-	// fontIndex is loaded lazily on first OpenFaceByName call.
-	fontIndex       *FontIndex
-	fontIndexLoaded bool // true after first load attempt (even if it failed)
 }
 
 // New creates a FontCache that communicates with fontsvc via rachel's mailbox.
@@ -54,20 +51,20 @@ func New(rachelSID int) *FontCache {
 	}
 }
 
-// OpenFace returns a font.Face for the given path/bold/size. Cached faces
+// OpenFace returns a font.Face for the given family/bold/size. Cached faces
 // are returned immediately without IPC. On first call for a given combination,
 // sends an OpenFont request to fontsvc and blocks until the glyph cache
 // is built and shared.
-func (fc *FontCache) OpenFace(path string, bold bool, size int64) font.Face {
+func (fc *FontCache) OpenFace(family string, bold bool, size int64) font.Face {
 	// Check client-side cache first.
-	key := faceKey{path: path, bold: bold, size: size}
+	key := faceKey{family: family, bold: bold, size: size}
 	for i := 0; i < fc.cachedCount; i++ {
 		if fc.cachedFaces[i].key == key {
 			return fc.cachedFaces[i].face
 		}
 	}
 
-	reply, err := fc.SendOpenFont(path, bold, size)
+	reply, err := fc.SendOpenFont(family, bold, size)
 	if err != nil || reply.FontID < 0 {
 		sys.UartWriteString("[fontcache] OpenFont failed\n")
 		// Cache the nil result to prevent repeated blocking requests.
@@ -95,30 +92,14 @@ func (fc *FontCache) OpenFace(path string, bold bool, size int64) font.Face {
 	return face
 }
 
-// OpenFaceByName resolves a logical (family, style) to a font path via
-// the font index (/fonts/fonts.csv) and opens the face. The index is
-// loaded lazily on first call.
+// OpenFaceByName sends a (family, style, size) request to fontsvc which
+// resolves the family name to a filesystem path server-side. Clients never
+// read font files or the font index from disk.
 func (fc *FontCache) OpenFaceByName(family, style string, size int64) font.Face {
-	if !fc.fontIndexLoaded {
-		fc.fontIndexLoaded = true
-		sys.UartWriteString("[fontcache] loading font index /fonts/fonts.csv...\n")
-		t0 := nanotime()
-		idx, err := LoadFontIndex("/fonts/fonts.csv")
-		dt := (nanotime() - t0) / 1e6
-		if err != nil {
-			sys.UartWriteString("[fontcache] font index FAILED: " + err.Error() + "\n")
-			panic("[fontcache] failed to load font index: " + err.Error())
-		}
-		sys.UartWriteString("[fontcache] font index loaded in " + itoa(dt) + "ms\n")
-		fc.fontIndex = idx
-	}
-	path := fc.fontIndex.Resolve(family, style)
-	if path == "" {
-		panic("[fontcache] font not in index: " + family + "/" + style)
-	}
-	sys.UartWriteString("[fontcache] OpenFace " + path + " size=" + itoa(size) + "...\n")
+	// Send family name to fontsvc — server resolves to filesystem path.
+	sys.UartWriteString("[fontcache] OpenFaceByName " + family + "/" + style + " size=" + itoa(size) + "...\n")
 	t0 := nanotime()
-	face := fc.OpenFace(path, IsBoldStyle(style), size)
+	face := fc.OpenFace(family, IsBoldStyle(style), size)
 	dt := (nanotime() - t0) / 1e6
 	if face == nil {
 		sys.UartWriteString("[fontcache] OpenFace RETURNED NIL after " + itoa(dt) + "ms\n")
@@ -129,15 +110,16 @@ func (fc *FontCache) OpenFaceByName(family, style string, size int64) font.Face 
 }
 
 // SendOpenFont sends an OpenFont request to fontsvc and blocks until the reply
-// arrives. Returns the reply message containing cache and font file page info.
-func (fc *FontCache) SendOpenFont(path string, bold bool, size int64) (*wm.OpenFontReplyMsg, error) {
+// arrives. family is the font family name (e.g. "AtkinsonHyperlegibleMono");
+// fontsvc resolves it to a filesystem path server-side.
+func (fc *FontCache) SendOpenFont(family string, bold bool, size int64) (*wm.OpenFontReplyMsg, error) {
 	var msg wm.OpenFontMsg
 	msg.Type = wm.MsgOpenFont
 	if bold {
 		msg.Variant = 1
 	}
 	msg.Size = int32(size)
-	copy(msg.Path[:], path)
+	copy(msg.Path[:], family)
 
 	sys.UartWriteString("[fontcache] SendOpenFont: pushing request...\n")
 	fc.requestRb.Push(unsafe.Pointer(&msg))

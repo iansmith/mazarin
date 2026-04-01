@@ -285,7 +285,7 @@ func NeuBoxWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDe
 		}
 		if face != pal.Surface() && depth != mancini.Raised {
 			canvas := dc.Image().(*image.RGBA)
-			applyTintOverlay(pal, canvas, x1, y1, x2, y2, r, face)
+			applyTintOverlay(pal, dc, canvas, x1, y1, x2, y2, r, face)
 		}
 	} else {
 		dc.SetColor(face)
@@ -295,14 +295,18 @@ func NeuBoxWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDe
 }
 
 // localRect computes a padded bounding box around (x1,y1)-(x2,y2) for
-// local temp buffers, clamped to canvas bounds. Returns local buffer
-// dimensions and origin offsets for compositing back.
-func localRect(canvas *image.RGBA, x1, y1, x2, y2, pad float64) (lw, lh int, ox, oy float64) {
+// local temp buffers, clamped to canvas bounds. Coordinates are in
+// app-local space; dc.TransformPoint maps them to image-space for
+// compositing. Returns local buffer dimensions and image-space origin.
+func localRect(canvas *image.RGBA, dc mancini.DrawContext, x1, y1, x2, y2, pad float64) (lw, lh int, ox, oy float64) {
+	// Transform corners to image-space.
+	ix1, iy1 := dc.TransformPoint(x1, y1)
+	ix2, iy2 := dc.TransformPoint(x2, y2)
 	b := canvas.Bounds()
-	ox = math.Floor(x1 - pad)
-	oy = math.Floor(y1 - pad)
-	ex := math.Ceil(x2 + pad)
-	ey := math.Ceil(y2 + pad)
+	ox = math.Floor(ix1 - pad)
+	oy = math.Floor(iy1 - pad)
+	ex := math.Ceil(ix2 + pad)
+	ey := math.Ceil(iy2 + pad)
 	if ox < float64(b.Min.X) {
 		ox = float64(b.Min.X)
 	}
@@ -323,8 +327,10 @@ func neuRaised(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r fl
 	maxOff := math.Max(p.DarkOff, p.LightOff)
 	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
 	pad := maxOff + math.Ceil(maxBlur*3) + 2
-	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
-	lx1, ly1, lx2, ly2 := x1-ox, y1-oy, x2-ox, y2-oy
+	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	ix1, iy1 := dc.TransformPoint(x1, y1)
+	ix2, iy2 := dc.TransformPoint(x2, y2)
+	lx1, ly1, lx2, ly2 := ix1-ox, iy1-oy, ix2-ox, iy2-oy
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 
 	dark := shadowLayer(lw, lh,
@@ -357,8 +363,10 @@ func neuInset(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r flo
 
 	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
 	pad := p.Off + math.Ceil(maxBlur*3) + 2
-	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
-	lx1, ly1, lx2, ly2 := x1-ox, y1-oy, x2-ox, y2-oy
+	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	ix1, iy1 := dc.TransformPoint(x1, y1)
+	ix2, iy2 := dc.TransformPoint(x2, y2)
+	lx1, ly1, lx2, ly2 := ix1-ox, iy1-oy, ix2-ox, iy2-oy
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 
 	mask := roundedRectMask(lw, lh, lx1, ly1, lx2, ly2, r)
@@ -388,8 +396,10 @@ func neuFlush(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r flo
 	dc.Fill()
 
 	pad := p.EdgeW + 2
-	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
-	lx1, ly1, lx2, ly2 := x1-ox, y1-oy, x2-ox, y2-oy
+	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	ix1, iy1 := dc.TransformPoint(x1, y1)
+	ix2, iy2 := dc.TransformPoint(x2, y2)
+	lx1, ly1, lx2, ly2 := ix1-ox, iy1-oy, ix2-ox, iy2-oy
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 
 	darkEdge := image.NewRGBA(image.Rect(0, 0, lw, lh))
@@ -412,16 +422,17 @@ func neuFlush(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r flo
 	draw.DrawMask(canvas, dst, lightEdge, image.Point{}, mask, image.Point{}, draw.Over)
 }
 
-func applyTintOverlay(pal mancini.Palette, canvas *image.RGBA, x1, y1, x2, y2, r float64, tint color.NRGBA) {
+func applyTintOverlay(pal mancini.Palette, dc mancini.DrawContext, canvas *image.RGBA, x1, y1, x2, y2, r float64, tint color.NRGBA) {
 	pad := 2.0
-	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
-	lx1, ly1 := x1-ox, y1-oy
+	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	ix1, iy1 := dc.TransformPoint(x1, y1)
+	lx1, ly1 := ix1-ox, iy1-oy
 
 	overlay := image.NewRGBA(image.Rect(0, 0, lw, lh))
-	dc := gg.NewContextForRGBA(overlay)
-	dc.SetColor(color.NRGBA{tint.R, tint.G, tint.B, 100})
-	dc.DrawRoundedRectangle(lx1, ly1, x2-x1, y2-y1, r)
-	dc.Fill()
+	odc := gg.NewContextForRGBA(overlay)
+	odc.SetColor(color.NRGBA{tint.R, tint.G, tint.B, 100})
+	odc.DrawRoundedRectangle(lx1, ly1, x2-x1, y2-y1, r)
+	odc.Fill()
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 	draw.Draw(canvas, dst, overlay, image.Point{}, draw.Over)
 }
@@ -445,7 +456,7 @@ func NeuCircleWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.Ne
 		}
 		if face != pal.Surface() && depth != mancini.Raised {
 			canvas := dc.Image().(*image.RGBA)
-			applyCircleTintOverlay(pal, canvas, cx, cy, rad, face)
+			applyCircleTintOverlay(pal, dc, canvas, cx, cy, rad, face)
 		}
 	} else {
 		dc.SetColor(face)
@@ -515,8 +526,9 @@ func neuCircleRaisedShadows(pal mancini.Palette, dc mancini.DrawContext, cx, cy,
 	maxOff := math.Max(p.DarkOff, p.LightOff)
 	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
 	pad := maxOff + math.Ceil(maxBlur*3) + 2
-	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
-	lcx, lcy := cx-ox, cy-oy
+	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	icx, icy := dc.TransformPoint(cx, cy)
+	lcx, lcy := icx-ox, icy-oy
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 
 	dark := circleShadowLayer(lw, lh,
@@ -544,8 +556,9 @@ func neuCircleInset(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad flo
 	x1, y1, x2, y2 := cx-rad, cy-rad, cx+rad, cy+rad
 	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
 	pad := p.Off + math.Ceil(maxBlur*3) + 2
-	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
-	lcx, lcy := cx-ox, cy-oy
+	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	icx, icy := dc.TransformPoint(cx, cy)
+	lcx, lcy := icx-ox, icy-oy
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 
 	mask := circleMask(lw, lh, lcx, lcy, rad)
@@ -576,8 +589,9 @@ func neuCircleFlush(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad flo
 
 	x1, y1, x2, y2 := cx-rad, cy-rad, cx+rad, cy+rad
 	pad := p.EdgeW + 2
-	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
-	lcx, lcy := cx-ox, cy-oy
+	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	icx, icy := dc.TransformPoint(cx, cy)
+	lcx, lcy := icx-ox, icy-oy
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 
 	darkEdge := image.NewRGBA(image.Rect(0, 0, lw, lh))
@@ -600,17 +614,18 @@ func neuCircleFlush(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad flo
 	draw.DrawMask(canvas, dst, lightEdge, image.Point{}, mask, image.Point{}, draw.Over)
 }
 
-func applyCircleTintOverlay(pal mancini.Palette, canvas *image.RGBA, cx, cy, rad float64, tint color.NRGBA) {
+func applyCircleTintOverlay(pal mancini.Palette, dc mancini.DrawContext, canvas *image.RGBA, cx, cy, rad float64, tint color.NRGBA) {
 	x1, y1, x2, y2 := cx-rad, cy-rad, cx+rad, cy+rad
 	pad := 2.0
-	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
-	lcx, lcy := cx-ox, cy-oy
+	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	icx, icy := dc.TransformPoint(cx, cy)
+	lcx, lcy := icx-ox, icy-oy
 
 	overlay := image.NewRGBA(image.Rect(0, 0, lw, lh))
-	dc := gg.NewContextForRGBA(overlay)
-	dc.SetColor(color.NRGBA{tint.R, tint.G, tint.B, 100})
-	dc.DrawCircle(lcx, lcy, rad)
-	dc.Fill()
+	odc := gg.NewContextForRGBA(overlay)
+	odc.SetColor(color.NRGBA{tint.R, tint.G, tint.B, 100})
+	odc.DrawCircle(lcx, lcy, rad)
+	odc.Fill()
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 	draw.Draw(canvas, dst, overlay, image.Point{}, draw.Over)
 }

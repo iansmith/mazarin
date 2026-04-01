@@ -72,6 +72,9 @@ type fontSlot struct {
 
 var fonts [fontcache.MaxFonts]fontSlot
 
+// fontIdx resolves family names to filesystem paths. Loaded lazily.
+var fontIdx *fontcache.FontIndex
+
 // Per-shepherd state for ringbuf communication.
 type shepherdConn struct {
 	returnRb   *ringbuf.RingBuffer // fontsvc → shepherd
@@ -184,7 +187,29 @@ func handleFontNotify(notif sys.MailboxNotification) {
 }
 
 func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
-	path := cstring(msg.Path[:])
+	family := cstring(msg.Path[:])
+
+	// Load font index lazily.
+	if fontIdx == nil {
+		var err error
+		fontIdx, err = fontcache.LoadFontIndex("/fonts/fonts.csv")
+		if err != nil {
+			rawPuts("[fontsvc] failed to load font index: " + err.Error() + "\n")
+			return
+		}
+		rawPuts("[fontsvc] font index loaded\n")
+	}
+
+	// Resolve family name + variant to filesystem path.
+	style := "Regular"
+	if msg.Variant == 1 {
+		style = "Bold"
+	}
+	path := fontIdx.Resolve(family, style)
+	if path == "" {
+		rawPuts("[fontsvc] unknown font family: " + family + "/" + style + "\n")
+		return
+	}
 
 	// Ensure we have a return channel to this shepherd.
 	conn, connIdx := getOrCreateConn(senderSID)

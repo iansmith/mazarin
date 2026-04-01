@@ -258,6 +258,8 @@ func main() {
 		LoadFace: func(bold bool, size int64) font.Face {
 			return fc.OpenFaceByName(mfont.DefaultMono, mfont.Regular, size)
 		},
+		FontRegular: mfont.DefaultMono,
+		FontBold:    mfont.DefaultMono,
 	}
 	pal := mctheme.NewDefaultPaletteSwapRB()
 

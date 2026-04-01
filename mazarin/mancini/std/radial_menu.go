@@ -98,7 +98,7 @@ func (m *RadialMenu) Draw(self mancini.Interactor, x, y, w, h int64) {
 
 	// 1. Draw base annulus shape.
 	if params != nil {
-		menuDrawRaisedAnnulus(canvas, pal, cx, cy, m.OuterR, m.InnerR, params.Raised)
+		menuDrawRaisedAnnulus(canvas, dc, pal, cx, cy, m.OuterR, m.InnerR, params.Raised)
 	} else {
 		menuDrawFlatAnnulus(canvas, pal, cx, cy, m.OuterR, m.InnerR)
 	}
@@ -180,7 +180,7 @@ func menuDrawFlatAnnulus(canvas *image.RGBA, pal mancini.Palette,
 
 // menuDrawRaisedAnnulus draws a raised annulus: dark+light shadow layers
 // then a surface-filled ring on top.
-func menuDrawRaisedAnnulus(canvas *image.RGBA, pal mancini.Palette,
+func menuDrawRaisedAnnulus(canvas *image.RGBA, dc mancini.DrawContext, pal mancini.Palette,
 	cx, cy, outerR, innerR float64, p mancini.RaisedParams) {
 
 	x1, y1 := cx-outerR, cy-outerR
@@ -188,8 +188,9 @@ func menuDrawRaisedAnnulus(canvas *image.RGBA, pal mancini.Palette,
 	maxOff := math.Max(p.DarkOff, p.LightOff)
 	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
 	pad := maxOff + math.Ceil(maxBlur*3) + 2
-	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
-	lcx, lcy := cx-ox, cy-oy
+	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	icx, icy := dc.TransformPoint(cx, cy)
+	lcx, lcy := icx-ox, icy-oy
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 
 	dark := annulusShadowLayer(lw, lh,

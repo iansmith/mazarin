@@ -104,9 +104,10 @@ func mailboxRecvLoop(fc *fontcache.FontCache) {
 				switch msgType {
 				case wm.MsgBackingStoreReady:
 					bsr := *(*wm.BackingStoreReadyMsg)(unsafe.Pointer(&raw[0]))
-					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] BackingStoreReady: VA=0x%x total=%dx%d inset=(%d,%d) app=%dx%d\n",
+					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] BackingStoreReady: VA=0x%x total=%dx%d inset=(%d,%d) app=%dx%d pos=(%d,%d)\n",
 						bsr.BackingStoreAddr, bsr.TotalWidth, bsr.TotalHeight,
-						bsr.LeftInset, bsr.TopInset, bsr.AppWidth, bsr.AppHeight))
+						bsr.LeftInset, bsr.TopInset, bsr.AppWidth, bsr.AppHeight,
+						bsr.AppX, bsr.AppY))
 					backingStoreReadyCh <- bsr
 				default:
 					// Other messages (YouHaveFocus, etc.) — drain and ignore for now.
@@ -152,6 +153,8 @@ func main() {
 			}
 			return fc.OpenFaceByName(mfont.DefaultMono, style, size)
 		},
+		FontRegular: mfont.DefaultMono,
+		FontBold:    mfont.DefaultMono,
 	}
 	pal := mctheme.NewDefaultPaletteSwapRB()
 

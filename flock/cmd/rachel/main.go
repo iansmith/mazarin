@@ -709,8 +709,25 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 					ta.bsWidth = int32(totalW)
 					ta.bsHeight = int32(totalH)
 					ta.bsStride = int32(totalW * 4)
-					ta.x = msg.X
-					ta.y = msg.Y
+
+					// Clamp position so all 4 borders fit within the framebuffer.
+					dw, dh := int(displayWidth), int(displayHeight)
+					appX := int(msg.X)
+					appY := int(msg.Y)
+					if appX < borderLeft {
+						appX = borderLeft
+					}
+					if appY < borderTop {
+						appY = borderTop
+					}
+					if appX+int(msg.Width)+borderRight > dw {
+						appX = dw - int(msg.Width) - borderRight
+					}
+					if appY+int(msg.Height)+borderBottom > dh {
+						appY = dh - int(msg.Height) - borderBottom
+					}
+					ta.x = int32(appX)
+					ta.y = int32(appY)
 
 					// Allocate backing store pages.
 					bsBytes := totalW * 4 * totalH
@@ -744,6 +761,8 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 					resp.TopInset = borderTop
 					resp.AppWidth = msg.Width
 					resp.AppHeight = msg.Height
+					resp.AppX = ta.x
+					resp.AppY = ta.y
 					ta.returnRb.Push(unsafe.Pointer(&resp))
 					_ = sys.MailboxSend(senderSID, wm.ShepherdNotify, ta.returnRb.Addr())
 

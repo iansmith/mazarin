@@ -66,7 +66,7 @@ type AppStartMsg struct {
 // a []byte slice over the full buffer (TotalWidth × TotalHeight), then
 // sets up a DrawContext with Translate(LeftInset, TopInset) and clips to
 // (0, 0, AppWidth, AppHeight) so all drawing is in app-local coordinates.
-// Layout: 8+8+4+4+4+4+4+4+4+4 = 48, + 80 pad = 128 bytes.
+// Layout: 8+8+4+4+4+4+4+4+4+4+4+4 = 56, + 72 pad = 128 bytes.
 type BackingStoreReadyMsg struct {
 	Type             int64 // MsgBackingStoreReady
 	BackingStoreAddr int64 // client's VA of the shared backing store
@@ -77,7 +77,9 @@ type BackingStoreReadyMsg struct {
 	TopInset         int32 // pixels from top edge to app area
 	AppWidth         int32 // app drawing area width
 	AppHeight        int32 // app drawing area height
-	_                [80]byte
+	AppX             int32 // rachel's chosen screen X for app area
+	AppY             int32 // rachel's chosen screen Y for app area
+	_                [72]byte
 }
 
 // BlitMsg is sent by a shepherd to the WM after completing a draw pass.

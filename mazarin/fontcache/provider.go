@@ -35,6 +35,9 @@ type fontsvcFont struct {
 	cache    []byte              // shared V2 cache pages (unsafe.Slice)
 	tier2    map[uint32]*tier2Glyph
 	metrics  textshape.FontMetrics
+	path     string              // resolved path used to open this font
+	variant  int32
+	size     int32
 }
 
 type tier2Glyph struct {
@@ -51,15 +54,16 @@ func NewFontSvcGlyphProvider(fc *FontCache) *FontSvcGlyphProvider {
 // shares cache and font file pages, and returns metrics. The provider parses
 // a local Face from the shared font file pages for HarfBuzz.
 func (p *FontSvcGlyphProvider) OpenFont(req textshape.OpenFontRequest) (textshape.FontMetrics, error) {
-	// Check if already opened.
+	bold := req.Variant == 1
+
+	// Check if already opened with matching path/variant/size.
 	for i := int32(0); i < MaxFonts; i++ {
-		if p.fonts[i] != nil && p.fonts[i].metrics.FontID == i {
-			// TODO: check path/variant/size match
+		if p.fonts[i] != nil && p.fonts[i].path == req.Path && p.fonts[i].variant == req.Variant && p.fonts[i].size == req.Size {
 			return p.fonts[i].metrics, nil
 		}
 	}
 
-	bold := req.Variant == 1
+	// Send family name to fontsvc — server resolves to filesystem path.
 	reply, err := p.fc.SendOpenFont(req.Path, bold, int64(req.Size))
 	if err != nil {
 		return textshape.FontMetrics{}, fmt.Errorf("SendOpenFont: %w", err)
@@ -104,6 +108,9 @@ func (p *FontSvcGlyphProvider) OpenFont(req textshape.OpenFontRequest) (textshap
 		cache:    cache,
 		tier2:    make(map[uint32]*tier2Glyph),
 		metrics:  metrics,
+		path:     req.Path,
+		variant:  req.Variant,
+		size:     req.Size,
 	}
 
 	sys.UartWriteString("[provider] OpenFont fontID=" + strconv.Itoa(int(fontID)) +

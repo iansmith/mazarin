@@ -278,9 +278,10 @@ func applyStripSelection(canvas *image.RGBA, pal mancini.Palette,
 
 	// Tint overlay.
 	pad := 2.0
-	lw, lh, ox, oy := localRect(canvas, sx, sy, sx+sw, sy+sh, pad)
-	lsx := sx - ox
-	lsy := sy - oy
+	lw, lh, ox, oy := localRect(canvas, dc, sx, sy, sx+sw, sy+sh, pad)
+	isx, isy := dc.TransformPoint(sx, sy)
+	lsx := isx - ox
+	lsy := isy - oy
 
 	overlay := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	odc := gg.NewContextForRGBA(overlay)
@@ -293,9 +294,10 @@ func applyStripSelection(canvas *image.RGBA, pal mancini.Palette,
 	// Inset shadows masked to strip column.
 	maxBlur := math.Max(ip.DarkBlur, ip.LightBlur)
 	ipad := ip.Off + math.Ceil(maxBlur*3) + 2
-	ilw, ilh, iox, ioy := localRect(canvas, sx, sy, sx+sw, sy+sh, ipad)
-	ilsx := sx - iox
-	ilsy := sy - ioy
+	ilw, ilh, iox, ioy := localRect(canvas, dc, sx, sy, sx+sw, sy+sh, ipad)
+	iisx, iisy := dc.TransformPoint(sx, sy)
+	ilsx := iisx - iox
+	ilsy := iisy - ioy
 	idst := image.Rect(int(iox), int(ioy), int(iox)+ilw, int(ioy)+ilh)
 
 	// Build mask for this strip column.

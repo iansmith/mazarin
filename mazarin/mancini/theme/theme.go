@@ -44,6 +44,8 @@ func (t *DefaultTheme) Font(feature mancini.Feature, size int64) *mancini.FontCo
 	resolver := t.resolve
 	family := t.family
 	return &mancini.FontConfig{
+		FontRegular: family,
+		FontBold:    family,
 		LoadFace: func(bold bool, sz int64) font.Face {
 			f := feature
 			if bold {

@@ -281,20 +281,24 @@ func scrollbarDrawArrow(dc mancini.DrawContext, pal mancini.Palette,
 	maxOff := math.Max(p.DarkOff, p.LightOff)
 	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
 	pad := maxOff + math.Ceil(maxBlur*3) + 2
-	lw, lh, ox, oy := localRect(canvas, bx1, by1, bx2, by2, pad)
+	lw, lh, ox, oy := localRect(canvas, dc, bx1, by1, bx2, by2, pad)
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 
+	ix0, iy0 := dc.TransformPoint(x0, y0)
+	ix1, iy1 := dc.TransformPoint(x1, y1)
+	ix2, iy2 := dc.TransformPoint(x2, y2)
+
 	dark := triangleShadowLayer(lw, lh,
-		x0-ox+p.DarkOff, y0-oy+p.DarkOff,
-		x1-ox+p.DarkOff, y1-oy+p.DarkOff,
-		x2-ox+p.DarkOff, y2-oy+p.DarkOff,
+		ix0-ox+p.DarkOff, iy0-oy+p.DarkOff,
+		ix1-ox+p.DarkOff, iy1-oy+p.DarkOff,
+		ix2-ox+p.DarkOff, iy2-oy+p.DarkOff,
 		pal.DarkShadow(), p.DarkAlpha, p.DarkBlur)
 	draw.Draw(canvas, dst, dark, image.Point{}, draw.Over)
 
 	light := triangleShadowLayer(lw, lh,
-		x0-ox-p.LightOff, y0-oy-p.LightOff,
-		x1-ox-p.LightOff, y1-oy-p.LightOff,
-		x2-ox-p.LightOff, y2-oy-p.LightOff,
+		ix0-ox-p.LightOff, iy0-oy-p.LightOff,
+		ix1-ox-p.LightOff, iy1-oy-p.LightOff,
+		ix2-ox-p.LightOff, iy2-oy-p.LightOff,
 		pal.LightShadow(), p.LightAlpha, p.LightBlur)
 	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
 

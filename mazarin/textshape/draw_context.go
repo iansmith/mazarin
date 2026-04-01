@@ -95,6 +95,11 @@ type DrawContext interface {
 	DrawImage(im image.Image, x, y int)
 	DrawImageAnchored(im image.Image, x, y int, ax, ay float64)
 
+	// TransformPoint applies the current matrix to a point, returning
+	// the transformed (image-space) coordinates. Used by code that needs
+	// to composite directly onto dc.Image() at the correct position.
+	TransformPoint(x, y float64) (float64, float64)
+
 	// --- Canvas ---
 	// Clear fills the entire canvas with the current color (set via SetColor).
 	Clear()
