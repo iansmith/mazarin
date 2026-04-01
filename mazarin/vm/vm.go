@@ -53,6 +53,15 @@ var errRet = errors.New("ret")
 // It enforces the instruction counter limit — if exceeded, the program
 // is killed and an error is returned.
 func Run(prog *Program, args ...Value) ([]Value, error) {
+	results, _, err := RunCounting(prog, args...)
+	return results, err
+}
+
+// RunCounting is identical to Run but also returns the number of VM
+// instructions executed. The count can be accumulated across many
+// evaluations and divided by elapsed wall time to measure VM throughput
+// independently of the surrounding constraint infrastructure.
+func RunCounting(prog *Program, args ...Value) ([]Value, int, error) {
 	vm := machine{
 		code:    prog.Code,
 		strings: prog.Strings,
@@ -65,13 +74,13 @@ func Run(prog *Program, args ...Value) ([]Value, error) {
 	}
 	for _, a := range args {
 		if err := vm.push(a); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	if err := vm.exec(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return vm.stack[:vm.sp], nil
+	return vm.stack[:vm.sp], MaxInstructions - vm.fuel, nil
 }
 
 type retFrame struct {
