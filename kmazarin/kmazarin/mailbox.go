@@ -157,8 +157,17 @@ func LookupVACache(ownerSID, targetSID int16, ownerPageVA uintptr) (uintptr, boo
 // senderVA is the ring buffer VA in the sender's address space.
 // The kernel translates it to the target's VA using the cache.
 func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr) int64 {
+	result, _ := mailboxSendKernelWithSwitch(senderSID, targetSID, code, senderVA)
+	return result
+}
+
+// mailboxSendKernelWithSwitch is like mailboxSendKernel but also returns
+// the woken thread's context pointer so the SVC handler can immediately
+// context-switch to it (matching Linux's wake_up_process behavior).
+// Returns (result, ctxPtr) where ctxPtr is 0 if no thread was woken.
+func mailboxSendKernelWithSwitch(senderSID, targetSID int16, code int64, senderVA uintptr) (int64, uintptr) {
 	if targetSID < 0 || int(targetSID) >= proc.MaxShepherds {
-		return -22 // EINVAL
+		return -22, 0 // EINVAL
 	}
 
 	// Translate sender's VA to target's VA
@@ -170,7 +179,7 @@ func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr)
 		serial.RawUARTPuts("[Mailbox] send: no VA cache entry for ")
 		serial.RawUARTHexCompact(uint64(senderPageVA))
 		serial.RawUARTPuts("\r\n")
-		return -14 // EFAULT — page not mapped into target
+		return -14, 0 // EFAULT — page not mapped into target
 	}
 	targetRingVA := targetPageVA + pageOffset
 
@@ -190,20 +199,23 @@ func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr)
 		serial.RawUARTPuts("[Mailbox] queue full for target ")
 		serial.RawUARTDecimal(uint64(targetSID))
 		serial.RawUARTPuts("\r\n")
-		return -12 // ENOMEM — queue full
+		return -12, 0 // ENOMEM — queue full
 	}
 
-	// Wake if blocked
+	// Wake if blocked — priority enqueue so mailbox-woken threads run quickly
+	var wokenCtx uintptr
 	if mailboxBlockedTID[targetSID] >= 0 {
 		t := (*Thread)(unsafe.Pointer(mailboxBlockedPtr[targetSID]))
 		if t != nil && t.State == ThreadBlockedMailbox {
 			t.State = ThreadReady
+			t.MailboxWoken = true
 			mailboxBlockedTID[targetSID] = -1
 			mailboxBlockedPtr[targetSID] = 0
 			t.Context.RewindToSyscall()
 			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
 			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-			enqueueReadySchedLockHeld(t)
+			enqueueReadyPrioritySchedLockHeld(t)
+			wokenCtx = uintptr(unsafe.Pointer(&t.Context))
 			asm.Dsb()
 		}
 	}
@@ -211,7 +223,7 @@ func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr)
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 
-	return 0
+	return 0, wokenCtx
 }
 
 // BlockForMailboxRecv blocks the current thread waiting for mailbox notifications.

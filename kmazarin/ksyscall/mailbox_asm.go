@@ -12,6 +12,9 @@ func BlockForMailboxRecv(shepherdIdx int, bufPtr uint64) uintptr
 //go:linkname mailboxSendKernel main.mailboxSendKernel
 func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr) int64
 
+//go:linkname mailboxSendKernelWithSwitch main.mailboxSendKernelWithSwitch
+func mailboxSendKernelWithSwitch(senderSID, targetSID int16, code int64, senderVA uintptr) (int64, uintptr)
+
 //go:linkname drainMailboxQueue main.drainMailboxQueue
 func drainMailboxQueue(shepherdIdx int) (mailboxNotification, bool)
 

@@ -376,6 +376,13 @@ type Thread struct {
 	SignalSiCode    int32  // si_code for siginfo (e.g., SEGV_MAPERR)
 	InSignalHandler uint32 // 1 = executing signal handler, 0 = normal
 	SigreturnPending uint32 // 1 = rt_sigreturn called, load Context for ERET
+
+	// MailboxWoken: set when this thread is woken from ThreadBlockedMailbox.
+	// The scheduler favors mailbox-woken threads so they run before sysmon's
+	// 10ms P-retake window, allowing Go's exitsyscall fast path to reacquire
+	// the P immediately (no 100ms futex safety-net delay).
+	// Cleared by the scheduler when the thread is picked.
+	MailboxWoken bool
 }
 
 // Thread struct field offsets for assembly access.
@@ -1289,6 +1296,31 @@ func printBlockIRQCounters() {
 		serial.RawUARTPuts("/nn")
 		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockOnSlotNoNext)))
 	}
+	// Futex PID mismatch: address matched but caller PID != waiter PID
+	fpm := atomic.LoadUint64(&DbgFutexPIDMismatch)
+	if fpm > 0 {
+		serial.RawUARTPuts(" FPM=")
+		serial.RawUARTDecimal(fpm)
+	}
+	printPriorityWakeCounters()
+}
+
+// printPriorityWakeCounters prints priority wake diagnostics.
+// NOT nosplit — breaks the nosplit chain.
+func printPriorityWakeCounters() {
+	pwc := atomic.LoadUint32(&dbgPWakeChecked)
+	if pwc > 0 {
+		serial.RawUARTPuts(" PW=")
+		serial.RawUARTDecimal(uint64(pwc))
+		serial.RawUARTPuts("/el1h=")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgPWakeEL1h)))
+		serial.RawUARTPuts("/svc=")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgPWakeSVC)))
+		serial.RawUARTPuts("/noctx=")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgPWakeNoCtx)))
+		serial.RawUARTPuts("/ok=")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgPWakeSwitched)))
+	}
 }
 
 // printADScanCounters prints A/D scan delta counters for the [E] event dump.
@@ -1411,6 +1443,7 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 // LOCK DISCIPLINE: save DAIF → mask IRQs → acquire lock → process → release → restore → WFI
 //
 var dbgIdleCount uint64
+var DbgFutexPIDMismatch uint64 // futex_wake: address matched but PID didn't
 var wfiCount uint64
 var trapReturnCount uint64
 var dbgZeroProgressCount uint64
@@ -2459,6 +2492,22 @@ func enqueueReadySchedLockHeld(t *Thread) {
 	enqueueReadyToHomeCPU(t)
 }
 
+// enqueueReadyPrioritySchedLockHeld enqueues a thread at the HEAD of its
+// HomeCPU's ready queue, giving it scheduling priority over other ready threads.
+// Used for mailbox-woken threads so they run before sysmon retakes their P.
+// REQUIRES: schedulerLock held.
+//
+//go:nosplit
+func enqueueReadyPrioritySchedLockHeld(t *Thread) {
+	targetCPU := t.HomeCPU
+	cpuCount := int8(GetCPUCount())
+	if targetCPU < 0 || targetCPU >= cpuCount {
+		targetCPU = int8(GetCPUID())
+	}
+	perCPU := GetPerCPUByID(uint64(targetCPU))
+	perCPU.LocalReadyQueue.PushHeadNoDuplicate(t.TID)
+}
+
 // enqueueReadyToHomeCPU adds thread to its HomeCPU's local queue (TAIL).
 // Falls back to current CPU if HomeCPU is invalid.
 // REQUIRES: schedulerLock held (protects all per-CPU queues).
@@ -2543,18 +2592,34 @@ func hasAnyReadyThreads() bool {
 func findReadyThreadWithStealing() *Thread {
 	myPerCPU := GetPerCPU()
 
-	// 1. Check local queue first (cache-friendly path)
+	// Priority pass: scan for mailbox-woken threads (head of queue first)
+	q := &myPerCPU.LocalReadyQueue
+	idx := q.Head()
+	for seen := 0; seen < len(q.Data); seen++ {
+		if q.InUse[idx] {
+			tid := q.Data[idx]
+			t := threadLookupByTID(int32(tid))
+			if t != nil && t.State == ThreadReady && t.MailboxWoken {
+				q.PluckAt(idx)
+				t.MailboxWoken = false
+				return t
+			}
+		}
+		idx = (idx + 1) % len(q.Data)
+	}
+
+	// Normal path: pop from head
 	for !myPerCPU.LocalReadyQueue.IsEmpty() {
 		tid := myPerCPU.LocalReadyQueue.Pop()
 
 		t := threadLookupByTID(int32(tid))
 		if t != nil && t.State == ThreadReady {
+			t.MailboxWoken = false
 			return t
 		}
-		// Thread not valid - try next in local queue
 	}
 
-	// 2. Local queue empty - try work stealing from other CPUs
+	// Local queue empty - try work stealing from other CPUs
 	return stealWorkFromOtherCPUs()
 }
 
@@ -2582,6 +2647,7 @@ func stealWorkFromOtherCPUs() *Thread {
 			if t != nil && t.State == ThreadReady {
 				// Update HomeCPU to current CPU (new affinity)
 				t.HomeCPU = int8(myID)
+				t.MailboxWoken = false
 				// Mark that this thread was stolen (for debug output after lock release)
 				t.StolenFromCPU = int8(targetCPU)
 				return t
@@ -2615,15 +2681,31 @@ func findReadyThreadPreferDifferentShepherdSchedLockHeld(currentPID ShepherdId) 
 	myID := GetCPUID()
 	cpuCount := GetCPUCount()
 
-	// First pass: look for a different shepherd in local queue
+	// Priority pass: mailbox-woken threads get highest priority (any shepherd)
 	q := &myPerCPU.LocalReadyQueue
 	idx := q.Head()
 	for seen := 0; seen < len(q.Data); seen++ {
 		if q.InUse[idx] {
 			tid := q.Data[idx]
 			t := threadLookupByTID(int32(tid))
+			if t != nil && t.State == ThreadReady && t.MailboxWoken {
+				q.PluckAt(idx)
+				t.MailboxWoken = false
+				return t
+			}
+		}
+		idx = (idx + 1) % len(q.Data)
+	}
+
+	// First pass: look for a different shepherd in local queue
+	idx = q.Head()
+	for seen := 0; seen < len(q.Data); seen++ {
+		if q.InUse[idx] {
+			tid := q.Data[idx]
+			t := threadLookupByTID(int32(tid))
 			if t != nil && t.State == ThreadReady && t.PID != currentPID {
 				q.PluckAt(idx)
+				t.MailboxWoken = false
 				return t
 			}
 		}
@@ -2644,6 +2726,7 @@ func findReadyThreadPreferDifferentShepherdSchedLockHeld(currentPID ShepherdId) 
 				if t != nil && t.State == ThreadReady && t.PID != currentPID {
 					vq.PluckAt(vidx)
 					t.HomeCPU = int8(myID) // Update affinity
+					t.MailboxWoken = false
 					return t
 				}
 			}
@@ -2657,6 +2740,7 @@ func findReadyThreadPreferDifferentShepherdSchedLockHeld(currentPID ShepherdId) 
 
 		t := threadLookupByTID(int32(tid))
 		if t != nil && t.State == ThreadReady {
+			t.MailboxWoken = false
 			return t
 		}
 	}
@@ -2679,19 +2763,35 @@ func findReadyThreadPreferDifferentShepherdSchedLockHeld(currentPID ShepherdId) 
 func findReadyUserspaceThreadSchedLockHeld(currentPID ShepherdId) *Thread {
 	myPerCPU := GetPerCPU()
 
-	// Scan local queue for a userspace thread from a different shepherd.
-	// Filter by PID > 0 (not just PageTableL0PA != 0) because on AMD64,
-	// kernel threads also have non-zero PageTableL0PA (single CR3, no
-	// TTBR0/TTBR1 split). Without the PID check, kernel threads at the
-	// head of the queue are mistakenly returned, starving userspace shepherds.
+	// Priority pass: mailbox-woken userspace threads get highest priority
 	q := &myPerCPU.LocalReadyQueue
 	idx := q.Head()
 	for seen := 0; seen < len(q.Data); seen++ {
 		if q.InUse[idx] {
 			tid := q.Data[idx]
 			t := threadLookupByTID(int32(tid))
+			if t != nil && t.State == ThreadReady && t.PID > 0 && t.MailboxWoken {
+				q.PluckAt(idx)
+				t.MailboxWoken = false
+				return t
+			}
+		}
+		idx = (idx + 1) % len(q.Data)
+	}
+
+	// Scan local queue for a userspace thread from a different shepherd.
+	// Filter by PID > 0 (not just PageTableL0PA != 0) because on AMD64,
+	// kernel threads also have non-zero PageTableL0PA (single CR3, no
+	// TTBR0/TTBR1 split). Without the PID check, kernel threads at the
+	// head of the queue are mistakenly returned, starving userspace shepherds.
+	idx = q.Head()
+	for seen := 0; seen < len(q.Data); seen++ {
+		if q.InUse[idx] {
+			tid := q.Data[idx]
+			t := threadLookupByTID(int32(tid))
 			if t != nil && t.State == ThreadReady && t.PID > 0 && t.PID != currentPID {
 				q.PluckAt(idx)
+				t.MailboxWoken = false
 				return t
 			}
 		}
@@ -2706,6 +2806,7 @@ func findReadyUserspaceThreadSchedLockHeld(currentPID ShepherdId) *Thread {
 			t := threadLookupByTID(int32(tid))
 			if t != nil && t.State == ThreadReady && t.PID > 0 {
 				q.PluckAt(idx)
+				t.MailboxWoken = false
 				return t
 			}
 		}
@@ -2922,6 +3023,59 @@ func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
 	return threadWakeFutexImpl(&NormalSchedulerFunc, futexAddr, int16(maxWake))
 }
 
+// ThreadWakeFutexWithSwitch wakes futex waiters and returns a context switch
+// target for the first woken thread. This matches Linux behavior: futex_wake
+// triggers immediate scheduling of the woken thread, preempting the waker.
+// Returns (woken count, context pointer). Context pointer is 0 if no thread
+// was woken or the woken thread shouldn't be switched to.
+//
+//go:nosplit
+func ThreadWakeFutexWithSwitch(futexAddr uint64, maxWake int32) (int32, uintptr) {
+	sf := &NormalSchedulerFunc
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
+
+	callerSID := ShepherdId(-1)
+	if caller := GetCurrentThread(); caller != nil {
+		callerSID = caller.PID
+	}
+
+	woken := int32(0)
+	var firstWoken *Thread
+	queueSize := blockedQueue.Size()
+
+	for i := 0; i < queueSize && woken < int32(maxWake); i++ {
+		tid := blockedQueue.Pop()
+		t := threadLookupByTID(int32(tid))
+		if t == nil {
+			continue
+		}
+		if t.FutexAddr == futexAddr && t.PID == callerSID {
+			t.State = ThreadReady
+			t.FutexAddr = 0
+			pluckFromAllQueues(tid)
+			enqueueReadySchedLockHeld(t)
+			if firstWoken == nil {
+				firstWoken = t
+			}
+			woken++
+		} else {
+			if t.FutexAddr == futexAddr && t.PID != callerSID {
+				atomic.AddUint64(&DbgFutexPIDMismatch, 1)
+			}
+			blockedQueue.PushNoDuplicate(tid)
+		}
+	}
+
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
+
+	if firstWoken != nil {
+		return woken, uintptr(unsafe.Pointer(&firstWoken.Context))
+	}
+	return woken, 0
+}
+
 // threadWakeFutexImpl is the internal implementation with sf for testing
 //
 //go:nosplit
@@ -2960,6 +3114,12 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 			enqueueReadySchedLockHeld(t)
 			woken++
 		} else {
+			// Track PID mismatches — if address matches but PID doesn't,
+			// this indicates cross-thread futex wake failure (e.g. sysmon
+			// waking a shepherd M's note).
+			if t.FutexAddr == futexAddr && t.PID != callerSID {
+				atomic.AddUint64(&DbgFutexPIDMismatch, 1)
+			}
 			// Put back if not matching
 			blockedQueue.PushNoDuplicate(tid)
 		}

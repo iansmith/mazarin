@@ -131,8 +131,16 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 
 	case FutexWake:
 		atomic.AddUint64(&FutexWakeCalls, 1)
-		// FUTEX_WAKE: Wake up to 'val' threads waiting on this address
-		woken := ThreadWakeFutex(uaddr, int32(val))
+		// FUTEX_WAKE: Wake up to 'val' threads waiting on this address.
+		// Use ThreadWakeFutexWithSwitch to get the first woken thread's
+		// context pointer — then immediately context-switch to it via
+		// SetSyscallSwitchTarget. This matches Linux's behavior where
+		// futex_wake → wake_up_process → try_to_wake_up preempts the
+		// caller in favor of the woken thread.
+		woken, ctxPtr := ThreadWakeFutexWithSwitch(uaddr, int32(val))
+		if ctxPtr != 0 {
+			SetSyscallSwitchTarget(ctxPtr)
+		}
 		return int64(woken)
 
 	default:

@@ -42,11 +42,32 @@ const (
 	MsgKeyPress int64 = 7
 	// MsgKeyRelease: WM→shepherd. "Key released."
 	MsgKeyRelease int64 = 8
+	// MsgBlit: shepherd→WM. "My backing store is ready, blit me."
+	MsgBlit int64 = 9
 )
 
 // AppStartMsg is sent by a shepherd to the WM when it starts up.
+// Includes the backing store address and screen placement so rachel
+// can blit the window to the framebuffer.
+// Layout: 8+8+8+4+4+4+4+4 + 84 pad = 128 bytes.
 type AppStartMsg struct {
-	Type int64 // MsgAppStart
+	Type             int64 // MsgAppStart
+	SID              int64 // Shepherd ID of the sender
+	BackingStoreAddr int64 // VA of shared-page backing store pixel data
+	X                int32 // screen X position
+	Y                int32 // screen Y position
+	Width            int32 // backing store width in pixels
+	Height           int32 // backing store height in pixels
+	Stride           int32 // bytes per scanline (Width * 4)
+	_                [84]byte
+}
+
+// BlitMsg is sent by a shepherd to the WM after completing a draw pass.
+// Rachel computes the exposed region and copies visible pixels to the
+// framebuffer.
+// Layout: 8+8 + 112 pad = 128 bytes.
+type BlitMsg struct {
+	Type int64 // MsgBlit
 	SID  int64 // Shepherd ID of the sender
 	_    [112]byte
 }

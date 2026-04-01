@@ -125,6 +125,14 @@ var dbgBlockIRQSync uint32        // handled in sync mode (IOComplete)
 var dbgBlockIRQAsync uint32       // handled in async mode (ring push + wake)
 var dbgBlockAsyncEvents uint32    // total async completion events pushed to ring
 
+// Additional instrumentation counters (set by nosplit top-half, read by SVC path)
+var dbgBlockTotalDrained uint32   // total completions drained across all IRQs
+var dbgBlockEmptyIRQ uint32       // IRQs where HasUsed() was false (drained=0)
+var dbgBlockRingFull uint32       // completion ring push failures (ring full)
+var dbgBlockLastNumFree uint32    // last snapshot of VQ.NumFree
+var dbgBlockLastUsedIdx uint32    // last snapshot of VQ.LastUsedIdx
+var dbgBlockLastAvailIdx uint32   // last snapshot of VQ.Available.Idx
+
 // Block async completion state (Phase 4).
 // When blockAsyncMode=1, the top-half drains the Engine used ring,
 // pushes completion events to topHalfBlockRing, and wakes the slot.
@@ -187,6 +195,21 @@ func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, da
 func EnableBlockAsyncMode() {
 	atomic.StoreUint32(&blockAsyncMode, 1)
 }
+
+// GetBlockIRQCount returns the total block IRQ count (for SVC-side logging).
+func GetBlockIRQCount() uint32 { return atomic.LoadUint32(&dbgBlockIRQCount) }
+
+// GetBlockTotalDrained returns the total completions drained (for SVC-side logging).
+func GetBlockTotalDrained() uint32 { return atomic.LoadUint32(&dbgBlockTotalDrained) }
+
+// GetBlockEmptyIRQ returns the count of IRQs with no used entries.
+func GetBlockEmptyIRQ() uint32 { return atomic.LoadUint32(&dbgBlockEmptyIRQ) }
+
+// GetBlockRingFull returns the count of completion ring push failures.
+func GetBlockRingFull() uint32 { return atomic.LoadUint32(&dbgBlockRingFull) }
+
+// GetBlockLastNumFree returns the last snapshot of VQ.NumFree.
+func GetBlockLastNumFree() uint32 { return atomic.LoadUint32(&dbgBlockLastNumFree) }
 
 // SetBlockAsyncMode atomically sets the blockAsyncMode flag and returns the previous value.
 // The sync polling path uses this to temporarily disable async mode so the top-half
@@ -265,6 +288,20 @@ func completionRingPush(kva uintptr, ev hid.HIDEvent) bool {
 	return true
 }
 
+// priorityWakePending is set by mailboxSendFromIRQ when it wakes a thread.
+// The non-timer IRQ return path in exceptions_arm64.s checks this flag and,
+// if set, runs CheckThreadPreemption to immediately switch to the woken thread
+// instead of returning to the interrupted thread and waiting for the next timer tick.
+var priorityWakePending uint32
+
+// Priority wake diagnostics — written from assembly, read from Go status printer
+var dbgPWakeChecked uint32 // priorityWakePending was set when IRQ returned
+var dbgPWakeEL1h uint32    // blocked by EL1h (SPSR.M[0]=1)
+var dbgPWakeSVC uint32     // blocked by svcDepth != 0
+var dbgPWakeNoG0 uint32    // g0 not ready
+var dbgPWakeNoCtx uint32   // CheckThreadPreemption returned 0
+var dbgPWakeSwitched uint32 // successfully switched to priority thread
+
 // mailboxSendFromIRQ sends a completion notification to a shepherd's
 // mailbox from the IRQ top-half. Wakes the shepherd if it's blocked on MailboxRecv.
 //
@@ -286,12 +323,14 @@ func mailboxSendFromIRQ(targetSID int16, code int64) {
 		t := (*Thread)(unsafe.Pointer(mailboxBlockedPtr[idx]))
 		if t != nil && t.State == ThreadBlockedMailbox {
 			t.State = ThreadReady
+			t.MailboxWoken = true
 			mailboxBlockedTID[idx] = -1
 			mailboxBlockedPtr[idx] = 0
 			t.Context.RewindToSyscall()
 			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
 			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-			enqueueReadySchedLockHeld(t)
+			enqueueReadyPrioritySchedLockHeld(t)
+			atomic.StoreUint32(&priorityWakePending, 1)
 			asm.Dsb()
 		}
 	}
@@ -372,11 +411,14 @@ func NonTimerIRQTopHalf() {
 		if atomic.LoadUint32(&blockAsyncMode) != 0 && blockEnginePtr != 0 {
 			// Async mode: drain engine used ring, push completion events
 			eng := (*virtio.Engine)(unsafe.Pointer(blockEnginePtr))
+			drained := uint32(0)
+
 			for eng.HasUsed() {
 				info := eng.PopUsed()
 				if info.Tag == virtio.InvalidIOTag {
 					break
 				}
+				drained++
 				tag := uint16(info.Tag)
 				meta := &blockAsyncSlots[tag]
 
@@ -417,7 +459,9 @@ func NonTimerIRQTopHalf() {
 				// Push to shared completion ring if registered, else legacy ring
 				crKVA := blockCompletionRingKVA
 				if crKVA != 0 {
-					completionRingPush(crKVA, ev)
+					if !completionRingPush(crKVA, ev) {
+						atomic.AddUint32(&dbgBlockRingFull, 1)
+					}
 				} else {
 					ringPush(&topHalfBlockRing, ev)
 				}
@@ -425,6 +469,17 @@ func NonTimerIRQTopHalf() {
 				// Clear metadata slot
 				*meta = blockAsyncSlot{}
 			}
+
+			// Track drain stats via atomics (nosplit-safe, no printing)
+			atomic.AddUint32(&dbgBlockTotalDrained, drained)
+			if drained == 0 {
+				atomic.AddUint32(&dbgBlockEmptyIRQ, 1)
+			}
+			// Snapshot VQ state for SVC-side logging
+			atomic.StoreUint32(&dbgBlockLastNumFree, uint32(eng.VQ.NumFree))
+			atomic.StoreUint32(&dbgBlockLastUsedIdx, uint32(eng.VQ.LastUsedIdx))
+			atomic.StoreUint32(&dbgBlockLastAvailIdx, uint32(eng.VQ.Available.Idx))
+
 			atomic.AddUint32(&dbgBlockIRQAsync, 1)
 			// Wake via mailbox if shared ring registered, else legacy slot wake
 			if blockCompletionRingKVA != 0 {

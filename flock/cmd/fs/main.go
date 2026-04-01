@@ -116,8 +116,13 @@ func main() {
 		fmt.Printf("[fs] AllocContiguous for scratch failed: %v\n", scratchErr)
 		os.Exit(1)
 	}
-	// 4. Mount ext2 on VirtIO block device (read-only)
+	// 4. Create block device and start mailbox loop BEFORE mounting.
+	// The mailbox loop must be running before any block I/O because the
+	// DMA worker blocks on mailbox notifications for completions.
 	blkDev := newAsyncBlockDev(scratch.Addr, completionRing)
+	ipc := newFsIPC(blkDev.notifyCh)
+	go ipc.mailboxLoop()
+
 	fsys, mountErr := ext2.Mount(blkDev)
 	if mountErr != nil {
 		fmt.Printf("[fs] ext2 mount failed: %v\n", mountErr)
@@ -125,7 +130,7 @@ func main() {
 	}
 	fmt.Println("[fs] ext2 root mounted successfully (read-only)")
 
-	// 3b. Create 128MB ext2 ramdisk at /tmp.
+	// 4b. Create 128MB ext2 ramdisk at /tmp.
 	// Backing store is off-heap (kernel-allocated PageRamdisk pages) to avoid
 	// GC pressure — 128MB on the Go heap causes multi-second GC pauses at GOGC=5%.
 	// 512-byte device blocks to match ext2 reader's sectorBuf.
@@ -148,17 +153,13 @@ func main() {
 	}
 	mt := &mountTable{root: fsys, tmpFS: tmpFS}
 
-	// 4. Register as delegate handler for LoadFile and ReadFilePages.
+	// 5. Register as delegate handler for LoadFile and ReadFilePages.
 	delegateCh, err := sys.HandleSyscalls(sysid.LoadFile, sysid.ReadFilePages)
 	if err != nil {
 		fmt.Printf("[fs] HandleSyscalls failed: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("[fs] registered as LoadFile + ReadFilePages delegate")
-
-	// 4b. Start IPC goroutine.
-	ipc := newFsIPC()
-	go ipc.mailboxLoop()
 
 	// 5. Signal readiness — delegate handler is running, serve loop
 	// will start momentarily. Shepherds waiting on fs can proceed.
@@ -223,6 +224,7 @@ func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 // underlying BlockDevice implements BatchBlockDevice, all data blocks
 // are read in a single batch operation.
 func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (va uintptr, numPages int, bytesRead int, err error) {
+	writeRawString("[fs] readFileIntoPages: " + path + "\n")
 	t0 := time.Now()
 	file, ferr := fsys.Open(path)
 	if ferr != nil {
@@ -357,14 +359,14 @@ func bootSequence(fsys *ext2.FileSystem) {
 	// 1. Launch rachel and wait — provides window manager + font service.
 	// Rachel only depends on fs (already ready) for loading fontsvc.maz.
 	launchShepherd(fsys, "rachel", "/rachel.elf")
-	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
+	if err := sys.WaitForShepherdReady("rachel", 30); err != nil {
 		writeRawString("[fs] FATAL: rachel not ready\n")
 		return
 	}
 	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
 	// Linux depends on both fs (IPC) and rachel (fonts/WM).
 	launchShepherd(fsys, "linux", "/linux.elf")
-	if err := sys.WaitForShepherdReady("linux", 10); err != nil {
+	if err := sys.WaitForShepherdReady("linux", 30); err != nil {
 		writeRawString("[fs] FATAL: linux not ready\n")
 		return
 	}
@@ -392,6 +394,7 @@ type asyncBlockDev struct {
 	reqCh     chan dmaRequest
 	scratchVA uintptr              // base of MAZARIN_CONTIGUOUS scratch pages
 	ring      *hid.CompletionRing  // shared completion ring for block I/O
+	notifyCh  chan struct{}         // signaled by mailboxLoop on BlockIOCompleteCode
 }
 
 // dmaRequest is sent to the DMA worker goroutine.
@@ -430,6 +433,7 @@ func newAsyncBlockDev(scratchVA uintptr, ring *hid.CompletionRing) *asyncBlockDe
 		reqCh:     make(chan dmaRequest, 4),
 		scratchVA: scratchVA,
 		ring:      ring,
+		notifyCh:  make(chan struct{}, 16),
 	}
 	go d.dmaWorker()
 	return d
@@ -471,17 +475,37 @@ func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 	if serr != nil {
 		return serr
 	}
-	// Spin-poll shared completion ring. The IRQ top-half writes completions
-	// directly to this page, so data arrives within microseconds.
-	// No mailbox/SVC needed — the IRQ fires while we're in userspace.
+	// Wait for completion via mailbox notification (blocking channel wait).
+	// The IRQ top-half pushes to the completion ring and sends
+	// BlockIOCompleteCode via mailbox. The mailboxLoop forwards it here.
 	var events [1]hid.HIDEvent
-	for {
+	completed := false
+	// Busy-spin the completion ring for up to 1ms before falling back to
+	// blocking MailboxRecv. The ring is shared memory written by IRQ top-half,
+	// so userspace sees completions without any syscall — avoiding P-release
+	// and sysmon P-steal. No Gosched: we keep the M and P the entire spin.
+	deadline := time.Now().Add(500 * time.Microsecond)
+	for time.Now().Before(deadline) {
 		n := sys.PollCompletionRing(d.ring, events[:], 1)
 		if n > 0 {
 			if events[0].Code != 0 {
 				return syscall.EIO
 			}
+			completed = true
 			break
+		}
+	}
+	// Slow path: block on mailbox notification channel
+	if !completed {
+		for {
+			<-d.notifyCh
+			n := sys.PollCompletionRing(d.ring, events[:], 1)
+			if n > 0 {
+				if events[0].Code != 0 {
+					return syscall.EIO
+				}
+				break
+			}
 		}
 	}
 	copy(buf[:asyncBlockSize], dmaBuf)
@@ -530,12 +554,27 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 			remaining := submitted
 			var events [scratchPages]hid.HIDEvent
 			for remaining > 0 {
-				n := sys.PollCompletionRing(d.ring, events[:], remaining)
-				for i := 0; i < n; i++ {
-					if events[i].Code != 0 {
-						return syscall.EIO
+				// Busy-spin completion ring for up to 1ms
+				deadline := time.Now().Add(500 * time.Microsecond)
+				for time.Now().Before(deadline) && remaining > 0 {
+					n := sys.PollCompletionRing(d.ring, events[:], remaining)
+					for i := 0; i < n; i++ {
+						if events[i].Code != 0 {
+							return syscall.EIO
+						}
+						remaining--
 					}
-					remaining--
+				}
+				// Slow path: block on mailbox notification
+				for remaining > 0 {
+					<-d.notifyCh
+					n := sys.PollCompletionRing(d.ring, events[:], remaining)
+					for i := 0; i < n; i++ {
+						if events[i].Code != 0 {
+							return syscall.EIO
+						}
+						remaining--
+					}
 				}
 			}
 		}

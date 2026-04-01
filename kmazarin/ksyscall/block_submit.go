@@ -26,6 +26,9 @@ import (
 // Set to 1 on first SysBlockSubmit call.
 var blockAsyncEnabled uint32
 
+// dbgBlockSubmitCount counts total BlockSubmit syscalls for instrumentation.
+var dbgBlockSubmitCount uint32
+
 // SyscallBlockSubmit submits an async block I/O request.
 //
 // arg0 = requestType  (0 = read, 1 = write)
@@ -122,11 +125,41 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 		asm.DmaWmb()
 	}
 
+	// --- INSTRUMENTATION: log descriptor/sidecar state before submit ---
+	submitCount := atomic.AddUint32(&dbgBlockSubmitCount, 1)
+	preNumFree := dev.Eng.VQ.NumFree
+	preSidecarBits := dev.Sidecars.FreeBits
+	if submitCount%100 == 0 || preNumFree < 6 {
+		serial.RawUARTPuts("[BLK-SUB] #")
+		serial.RawUARTDecimal(uint64(submitCount))
+		serial.RawUARTPuts(" free=")
+		serial.RawUARTDecimal(uint64(preNumFree))
+		serial.RawUARTPuts(" sidecar=0x")
+		serial.RawUARTHex64(preSidecarBits)
+		serial.RawUARTPuts(" irqs=")
+		serial.RawUARTDecimal(uint64(getBlockIRQCount()))
+		serial.RawUARTPuts(" drained=")
+		serial.RawUARTDecimal(uint64(getBlockTotalDrained()))
+		serial.RawUARTPuts(" empty=")
+		serial.RawUARTDecimal(uint64(getBlockEmptyIRQ()))
+		serial.RawUARTPuts(" ringFull=")
+		serial.RawUARTDecimal(uint64(getBlockRingFull()))
+		serial.RawUARTPuts(" lastFree=")
+		serial.RawUARTDecimal(uint64(getBlockLastNumFree()))
+		serial.RawUARTPuts("\r\n")
+	}
+
 	// Submit via engine — use slotIdx=0 (async: one request at a time per submit call)
 	// extDataPA = page-aligned PA from DMA pool
 	tag, err := dev.DoBlockIOSubmit(requestType, startLBA, nil, 0, pa, uint32(totalBytes))
 	if err != nil {
-		serial.RawUARTPuts("[BlockSubmit] submit error\r\n")
+		serial.RawUARTPuts("[BLK-SUB] FAIL #")
+		serial.RawUARTDecimal(uint64(submitCount))
+		serial.RawUARTPuts(" free=")
+		serial.RawUARTDecimal(uint64(preNumFree))
+		serial.RawUARTPuts(" sidecar=0x")
+		serial.RawUARTHex64(preSidecarBits)
+		serial.RawUARTPuts("\r\n")
 		return -5 // EIO
 	}
 

@@ -1644,11 +1644,79 @@ irq_not_timer:
 
 irq_skip_dispatch:
 
-	// Non-timer IRQs don't trigger preemption (only timer does)
+	// ========================================================================
+	// Priority wake check — immediate scheduling for IRQ-woken threads
+	// ========================================================================
+	// Write EOIR first: the handler already cleared the interrupt source,
+	// and if we context-switch below we'd skip irq_write_eoir.
+	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
+	MOVW	R21, (R10)
+
+	// Check if top-half woke a priority thread
+	MOVW	·priorityWakePending(SB), R10
+	CBZ	R10, irq_no_priority_wake
+
+	// Clear the flag and count this check
+	MOVW	$0, R10
+	MOVW	R10, ·priorityWakePending(SB)
+	MOVW	·dbgPWakeChecked(SB), R10
+	ADD	$1, R10
+	MOVW	R10, ·dbgPWakeChecked(SB)
+
+	// Same safety checks as timer preemption path:
+	// Don't preempt EL1h (exception handler has live frame on SP_EL1)
+	MOVD	(EXC_FRAME_ELR_SPSR+8)(RSP), R10	// saved SPSR
+	AND	$0x1, R10, R10				// SPSR.M[0]
+	CBZ	R10, irq_pwake_not_el1h
+	MOVW	·dbgPWakeEL1h(SB), R10
+	ADD	$1, R10
+	MOVW	R10, ·dbgPWakeEL1h(SB)
+	B	irq_no_priority_wake
+irq_pwake_not_el1h:
+
+	// Don't preempt inside SVC handler
+	MOVW	·svcDepth(SB), R10
+	CBZ	R10, irq_pwake_not_svc
+	MOVW	·dbgPWakeSVC(SB), R10
+	ADD	$1, R10
+	MOVW	R10, ·dbgPWakeSVC(SB)
+	B	irq_no_priority_wake
+irq_pwake_not_svc:
+
+	// Safe to schedule — reuse CheckThreadPreemption (same as timer path)
+	MOVD	·kmazarinG0Addr(SB), R10
+	CBZ	R10, irq_pwake_no_g0
+	WORD	$0xaa0a03fc  // mov x28, x10 — set g to kmazarin g0
+
+	MOVD	RSP, R0
+	GO_CALL_1_1(·CheckThreadPreemption, R0)
+	MOVD	R0, R21
+	CBNZ	R21, irq_pwake_switch_ok
+
+	// CheckThreadPreemption returned 0 — no thread to switch to
+	MOVW	·dbgPWakeNoCtx(SB), R10
+	ADD	$1, R10
+	MOVW	R10, ·dbgPWakeNoCtx(SB)
+	B	irq_no_priority_wake
+
+irq_pwake_no_g0:
+	MOVW	·dbgPWakeNoG0(SB), R10
+	ADD	$1, R10
+	MOVW	R10, ·dbgPWakeNoG0(SB)
+	B	irq_no_priority_wake
+
+irq_pwake_switch_ok:
+	MOVW	·dbgPWakeSwitched(SB), R10
+	ADD	$1, R10
+	MOVW	R10, ·dbgPWakeSwitched(SB)
+	B	timer_switch_ok		// Reuse timer's context-copy-to-frame code
+
+irq_no_priority_wake:
+	// No priority wake or not safe to switch — return to interrupted thread
 	MOVD	$0, R20
 	MOVD	$0, R22
 	MOVD	$0, R23
-	B	irq_write_eoir
+	B	irq_return			// EOIR already written above
 
 irq_invalid:
 	// Invalid IRQ number - just acknowledge and return

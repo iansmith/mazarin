@@ -54,3 +54,20 @@ func setBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, da
 //
 //go:linkname enableBlockAsyncMode main.EnableBlockAsyncMode
 func enableBlockAsyncMode()
+
+// Block IRQ instrumentation counters (read from SVC path, written by top-half).
+
+//go:linkname getBlockIRQCount main.GetBlockIRQCount
+func getBlockIRQCount() uint32
+
+//go:linkname getBlockTotalDrained main.GetBlockTotalDrained
+func getBlockTotalDrained() uint32
+
+//go:linkname getBlockEmptyIRQ main.GetBlockEmptyIRQ
+func getBlockEmptyIRQ() uint32
+
+//go:linkname getBlockRingFull main.GetBlockRingFull
+func getBlockRingFull() uint32
+
+//go:linkname getBlockLastNumFree main.GetBlockLastNumFree
+func getBlockLastNumFree() uint32

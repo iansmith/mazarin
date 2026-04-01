@@ -105,7 +105,11 @@ func SyscallMailboxSend(arg0, arg1, arg2, _, _, _ uint64) int64 {
 
 	callerSID := getCurrentThreadSID()
 
-	return mailboxSendKernel(int16(callerSID), targetSID, code, callerVA)
+	result, ctxPtr := mailboxSendKernelWithSwitch(int16(callerSID), targetSID, code, callerVA)
+	if ctxPtr != 0 {
+		SetSyscallSwitchTarget(ctxPtr)
+	}
+	return result
 }
 
 // SyscallMailboxRecv blocks until a mailbox notification arrives.

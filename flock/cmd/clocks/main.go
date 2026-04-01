@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 	"time"
 	_ "time/tzdata"
@@ -16,6 +17,7 @@ import (
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
+	"mazzy/mazarin/mem"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/wm"
@@ -35,13 +37,18 @@ type cityInfo struct {
 	loc     *time.Location
 }
 
-// announceToWM sends AppStart to rachel.
-// The mailbox receiver must already be running (started earlier for font loading).
-func announceToWM() {
-	rachelSID := sys.MustGetShepherdByName("rachel")
+// wmRb is the ring buffer for sending messages to rachel. Created once
+// during announceToWM and reused for MsgBlit in the main loop.
+var wmRb *ringbuf.RingBuffer
+var rachelSID int
+
+// announceToWM sends AppStart (with backing store info) to rachel.
+func announceToWM(bsAddr uintptr, x, y, w, h int32) {
+	rachelSID = sys.MustGetShepherdByName("rachel")
 
 	myPID := os.Getpid()
-	rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
+	var err error
+	wmRb, err = ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
 	if err != nil {
 		sys.UartWriteString("[clocks] ring buffer creation failed: " + err.Error() + "\n")
 		return
@@ -50,13 +57,31 @@ func announceToWM() {
 	var msg wm.AppStartMsg
 	msg.Type = wm.MsgAppStart
 	msg.SID = int64(myPID)
-	rb.Push(unsafe.Pointer(&msg))
+	msg.BackingStoreAddr = int64(bsAddr)
+	msg.X = x
+	msg.Y = y
+	msg.Width = w
+	msg.Height = h
+	msg.Stride = w * 4
+	wmRb.Push(unsafe.Pointer(&msg))
 
-	if err := sys.MailboxSend(rachelSID, wm.WMNotify, rb.Addr()); err != nil {
+	if err := sys.MailboxSend(rachelSID, wm.WMNotify, wmRb.Addr()); err != nil {
 		sys.UartWriteString("[clocks] MailboxSend failed: " + err.Error() + "\n")
 		return
 	}
-	sys.UartWriteString("[clocks] sent AppStart to rachel\n")
+	sys.UartWriteString(fmt.Sprintf("[clocks] sent AppStart to rachel: %dx%d at (%d,%d)\n", w, h, x, y))
+}
+
+// sendBlit tells rachel to copy our backing store to the framebuffer.
+func sendBlit() {
+	if wmRb == nil {
+		return
+	}
+	var msg wm.BlitMsg
+	msg.Type = wm.MsgBlit
+	msg.SID = int64(os.Getpid())
+	wmRb.Push(unsafe.Pointer(&msg))
+	_ = sys.MailboxSend(rachelSID, wm.WMNotify, wmRb.Addr())
 }
 
 // mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus, FontResponse).
@@ -101,7 +126,7 @@ func main() {
 	if err := sys.WaitForShepherdReady("linux", 10); err != nil {
 		panic(fmt.Sprintf("[clocks] FATAL: linux: %v", err))
 	}
-	rachelSID := sys.MustGetShepherdByName("rachel")
+	rachelSID = sys.MustGetShepherdByName("rachel")
 	fc := fontcache.New(rachelSID)
 
 	// Start mailbox receiver early so FontResponse notifications are processed
@@ -242,43 +267,48 @@ func main() {
 	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW = int(screenWAttr.Get())
 	screenH = int(screenHAttr.Get())
-	// 7. Create draw context covering the full screen. Clocks positions itself
-	// within rachel's visibleArea via constraints, so it needs full-screen access.
-	drawCtx := mancini.NewFramebufferContext()
-	fbImage := drawCtx.Image()
-
-	// DrawContext for the entire draw pass — threaded through the tree.
+	// 7. Sizing draw — allocate a screen-sized scratch image and draw at (0,0)
+	// to let the constraint system compute actual dimensions. No pixels from
+	// this draw ever reach the framebuffer.
 	provider := fontcache.NewFontSvcGlyphProvider(fc)
-	dc := mancini.NewDrawContextForImage(fbImage, provider)
-	// 8. Initial sizing draw to publish children's dimensions.
+	scratchImg := image.NewRGBA(image.Rect(0, 0, screenW, screenH))
+	scratchDC := mancini.NewDrawContextForImage(scratchImg, provider)
+
 	appLH := app.GetLayout()
-	initX := float64(screenW)/2 - 400
-	initY := float64(screenH)/2 - 125
-	appLH.X.Set(int64(initX))
-	appLH.Y.Set(int64(initY))
-	app.SetDC(dc)
-	app.Draw(app, int64(initX), int64(initY), appLH.Width.Get(), appLH.Height.Get())
+	appLH.X.Set(0)
+	appLH.Y.Set(0)
+	app.SetDC(scratchDC)
+	app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
 
 	// Read constraint-computed size.
-	winW := float64(appLH.Width.Get())
-	winH := float64(appLH.Height.Get())
+	winW := int(appLH.Width.Get())
+	winH := int(appLH.Height.Get())
 	if winW < 100 {
-		winW = 800 // fallback if constraints not yet valid
+		winW = 800
 	}
 	if winH < 50 {
 		winH = 250
 	}
-	// 9. Force Bounds evaluation so the shared page has a valid rectangle,
-	// then publish Ready. Rachel gates all interaction on Ready.
-	_ = appLH.Bounds.Get()
-	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
-	_ = readyAttr
-	sys.UartWriteString("[clocks] Ready=true\n")
+	// Done with scratch — let it be GC'd.
+	scratchImg = nil
+	scratchDC = nil
 
-	// 10. Rachel already confirmed ready (step 2b). Announce to WM.
-	announceToWM()
+	// 8. Allocate shared-page backing store at the real window size.
+	bsStride := winW * 4
+	bsBytes := bsStride * winH
+	bsPages := (bsBytes + 4095) / 4096
+	bsSlice, err := mem.AllocPagesSlice(bsPages, mem.PageShared)
+	if err != nil {
+		panic(fmt.Sprintf("[clocks] FATAL: AllocPages for backing store: %v", err))
+	}
+	bsImg := &image.RGBA{
+		Pix:    bsSlice,
+		Stride: bsStride,
+		Rect:   image.Rect(0, 0, winW, winH),
+	}
+	dc := mancini.NewDrawContextForImage(bsImg, provider)
 
-	// Use rachel's SID to read her visibleArea attributes.
+	// 9. Compute screen position via rachel's visibleArea constraints.
 	var posXAttr, posYAttr *attr.Attribute[int64]
 	if rachelSID >= 0 {
 		rachelSIDStr := strconv.Itoa(rachelSID)
@@ -297,54 +327,40 @@ func main() {
 
 		_ = posXAttr.Get()
 		_ = posYAttr.Get()
-	} else {
-		sys.UartWriteString("[clocks] WARNING: rachel not found, using fallback position\n")
 	}
 
-	// Compute initial window position.
-	var winX, winY float64
+	var winX, winY int
 	if posXAttr != nil {
-		winX = float64(posXAttr.Get())
-		winY = float64(posYAttr.Get())
+		winX = int(posXAttr.Get())
+		winY = int(posYAttr.Get())
 	} else {
-		// Fallback: center on screen.
-		winX = float64(screenW)/2 - winW/2
-		winY = float64(screenH)/2 - winH/2
+		winX = screenW/2 - winW/2
+		winY = screenH/2 - winH/2
 	}
 
-	// Clear the window area to surface color before final draw (removes sizing draw ghost).
-	clearX0 := winX
-	clearY0 := winY
-	clearX1 := winX + winW
-	clearY1 := winY + winH
-	// Also clear the sizing draw ghost which may be at a different position.
-	if initX < clearX0 {
-		clearX0 = initX
-	}
-	if initY < clearY0 {
-		clearY0 = initY
-	}
-	if initX+winW > clearX1 {
-		clearX1 = initX + winW
-	}
-	if initY+winH > clearY1 {
-		clearY1 = initY + winH
-	}
+	// 10. Draw to the backing store at (0,0) — screen position is rachel's concern.
+	appLH.X.Set(0)
+	appLH.Y.Set(0)
 	dc.SetColor(pal.Surface())
-	dc.FillRectangle(clearX0, clearY0, clearX1-clearX0, clearY1-clearY0)
+	dc.FillRectangle(0, 0, float64(winW), float64(winH))
+	app.SetDC(dc)
+	app.Draw(app, 0, 0, int64(winW), int64(winH))
 
-	// Draw at the constraint-computed position.
-	appLH.X.Set(int64(winX))
-	appLH.Y.Set(int64(winY))
-	app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))
-	drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
-	// 11. Instrumentation counters.
+	// 11. Force Bounds evaluation, publish Ready, announce to rachel.
+	_ = appLH.Bounds.Get()
+	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
+	_ = readyAttr
+	sys.UartWriteString("[clocks] Ready=true\n")
+
+	bsAddr := uintptr(unsafe.Pointer(&bsSlice[0]))
+	announceToWM(bsAddr, int32(winX), int32(winY), int32(winW), int32(winH))
+
+	// 12. Instrumentation counters.
 	eagerAttr := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
 	eagerSlot := eagerAttr.Slot()
 	var drawCount atomic.Int64
 
-	// 12. Main loop: wake on dirty, redraw when second changes.
-	// Position comes from constraints against rachel's visibleArea.
+	// 13. Main loop: wake on dirty, draw to backing store, send blit to rachel.
 	for {
 		attr.WaitDirty()
 		sys.AttrIncrementI64(eagerSlot)
@@ -352,21 +368,10 @@ func main() {
 		_ = timeSec.Get()
 		_ = timeNanos.Get()
 
-		winW = float64(appLH.Width.Get())
-		winH = float64(appLH.Height.Get())
-		if posXAttr != nil {
-			winX = float64(posXAttr.Get())
-			winY = float64(posYAttr.Get())
-		} else {
-			winX = float64(screenW)/2 - winW/2
-			winY = float64(screenH)/2 - winH/2
-		}
-
-		appLH.X.Set(int64(winX))
-		appLH.Y.Set(int64(winY))
-		app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))
+		// Draw to backing store at local (0,0).
+		app.Draw(app, 0, 0, int64(winW), int64(winH))
 		drawCount.Add(1)
-		drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
+		sendBlit()
 	}
 }
 

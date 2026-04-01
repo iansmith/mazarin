@@ -132,10 +132,19 @@ func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
 				if code < 256 {
 					keyHeld[code] = true
 				}
+				// WM hotkey interception — consume and do not forward.
+				if code == KEY_F1 {
+					cycleFocus()
+					return
+				}
 				forwardKeyboardEvent(code, true)
 			} else if ev.Value == 0 { // release
 				if code < 256 {
 					keyHeld[code] = false
+				}
+				// Suppress release for consumed hotkeys.
+				if code == KEY_F1 {
+					return
 				}
 				forwardKeyboardEvent(code, false)
 				return
@@ -165,6 +174,28 @@ func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
 			// Mouse button event
 			x, y := mouseX, mouseY
 			if ev.Value == 1 { // press
+				// Focus-change-on-click: clicking a different window
+				// switches focus. Clicking empty space (rachel's desktop)
+				// clears focus so rachel can handle WM-level interactions.
+				hit := pickWindow(int64(x), int64(y))
+				if hit < 0 {
+					// Desktop click — defocus current window.
+					if focusedSID >= 0 {
+						if ta, ok := trackedApps[focusedSID]; ok && ta.returnRb != nil {
+							var msg wm.YouLostFocusMsg
+							msg.Type = wm.MsgYouLostFocus
+							ta.returnRb.Push(unsafe.Pointer(&msg))
+							_ = sys.MailboxSend(focusedSID, wm.ShepherdNotify, ta.returnRb.Addr())
+						}
+						focusedSID = -1
+					}
+					mouseButtonHeld = int32(ev.Code)
+					// TODO: rachel desktop click handling (context menu, etc.)
+					return
+				}
+				if hit != focusedSID {
+					changeFocus(hit)
+				}
 				mouseButtonHeld = int32(ev.Code)
 				forwardMouseEvent(wm.MsgMousePress, x, y, int32(ev.Code))
 			} else if ev.Value == 0 { // release
@@ -288,6 +319,20 @@ var mouseButtonHeld int32 // 0 = no button held, >0 = button code
 var displayWidth int32
 var displayHeight int32
 
+// Framebuffer state — rachel owns the GPU framebuffer and is the only
+// writer. Shepherds draw to their backing stores; rachel blits to here.
+var fbCtx *mancini.FramebufferContext
+var fbPix []byte  // raw pixel data of the GPU framebuffer
+var fbStride int  // bytes per scanline of the GPU framebuffer
+
+// flushRect tells the GPU to update a rectangular region of the framebuffer.
+func flushRect(x, y, w, h int) {
+	if fbCtx == nil {
+		return
+	}
+	fbCtx.Flush(int32(x), int32(y), int32(x+w), int32(y+h))
+}
+
 // generateStandardCursor returns a 64x64 NRGBA cursor image (white outline, black fill).
 func generateStandardCursor() []byte {
 	img := make([]byte, 64*64*4)
@@ -398,17 +443,7 @@ func initCursors() {
 
 // pointInAnyAppBounds returns true if (x,y) is inside any tracked app's Bounds rectangle.
 func pointInAnyAppBounds(x, y int64) bool {
-	for _, ta := range trackedApps {
-		v := ta.bounds.Get()
-		if v.Type() == vm.TypeTribool {
-			continue
-		}
-		x0, y0, x1, y1 := v.AsRectangle()
-		if x0 <= x && x < x1 && y0 <= y && y < y1 {
-			return true
-		}
-	}
-	return false
+	return pickWindow(x, y) >= 0
 }
 
 // postBatchInputUpdate runs after draining a full batch of input events from
@@ -434,11 +469,16 @@ func postBatchInputUpdate() {
 	}
 }
 
-// trackedApp holds rachel's constraint attributes for a managed shepherd.
+// trackedApp holds rachel's state for a managed shepherd window.
 type trackedApp struct {
-	sid      int
-	bounds   *attr.Attribute[vm.Value]  // tracks shepherd's AppWindow/layout/Bounds
-	returnRb *ringbuf.RingBuffer     // ring buffer for sending messages back to this shepherd
+	sid          int
+	bounds       *attr.Attribute[vm.Value] // tracks shepherd's AppWindow/layout/Bounds
+	returnRb     *ringbuf.RingBuffer       // ring buffer for sending messages back to this shepherd
+	backingStore []byte                     // shared-page pixel data (RGBA, len = bsStride*bsHeight)
+	x, y         int32                      // screen position
+	bsWidth      int32                      // backing store width in pixels
+	bsHeight     int32                      // backing store height in pixels
+	bsStride     int32                      // bytes per scanline (bsWidth * 4)
 }
 
 // focusedSID is the SID of the shepherd that currently has input focus.
@@ -447,6 +487,95 @@ var focusedSID = -1
 
 // trackedApps maps SID → trackedApp for all shepherds rachel is managing.
 var trackedApps = make(map[int]*trackedApp)
+
+// zOrder is the window stack, front-to-back. zOrder[0] is the topmost window.
+var zOrder []int
+
+// raiseToFront moves sid to the front of the z-order stack.
+// If sid is not in the stack, it is prepended.
+func raiseToFront(sid int) {
+	for i, s := range zOrder {
+		if s == sid {
+			// Remove from current position.
+			zOrder = append(zOrder[:i], zOrder[i+1:]...)
+			break
+		}
+	}
+	zOrder = append([]int{sid}, zOrder...)
+}
+
+// removeFromZOrder removes sid from the z-order stack.
+func removeFromZOrder(sid int) {
+	for i, s := range zOrder {
+		if s == sid {
+			zOrder = append(zOrder[:i], zOrder[i+1:]...)
+			return
+		}
+	}
+}
+
+// pickWindow returns the SID of the topmost window whose bounds contain (x,y),
+// or -1 if no window is hit. Iterates front-to-back through zOrder.
+func pickWindow(x, y int64) int {
+	for _, sid := range zOrder {
+		ta, ok := trackedApps[sid]
+		if !ok {
+			continue
+		}
+		v := ta.bounds.Get()
+		if v.Type() == vm.TypeTribool {
+			continue
+		}
+		x0, y0, x1, y1 := v.AsRectangle()
+		if x0 <= x && x < x1 && y0 <= y && y < y1 {
+			return sid
+		}
+	}
+	return -1
+}
+
+// changeFocus switches input focus from the current focusedSID to newSID.
+// Sends YouLostFocus to the old window and YouHaveFocus to the new one.
+// Also raises newSID to the front of the z-order.
+func changeFocus(newSID int) {
+	if newSID == focusedSID {
+		return
+	}
+	// Notify old focused window.
+	if focusedSID >= 0 {
+		if ta, ok := trackedApps[focusedSID]; ok && ta.returnRb != nil {
+			var msg wm.YouLostFocusMsg
+			msg.Type = wm.MsgYouLostFocus
+			ta.returnRb.Push(unsafe.Pointer(&msg))
+			_ = sys.MailboxSend(focusedSID, wm.ShepherdNotify, ta.returnRb.Addr())
+		}
+	}
+	// Raise and focus new window.
+	raiseToFront(newSID)
+	focusedSID = newSID
+	if ta, ok := trackedApps[newSID]; ok && ta.returnRb != nil {
+		var msg wm.YouHaveFocusMsg
+		msg.Type = wm.MsgYouHaveFocus
+		ta.returnRb.Push(unsafe.Pointer(&msg))
+		_ = sys.MailboxSend(newSID, wm.ShepherdNotify, ta.returnRb.Addr())
+	}
+}
+
+// cycleFocus rotates the z-order: the current front window goes to back,
+// and the new front window gets focus. Does nothing if fewer than 2 windows.
+func cycleFocus() {
+	if len(zOrder) < 2 {
+		return
+	}
+	// Move front to back.
+	front := zOrder[0]
+	zOrder = append(zOrder[1:], front)
+	// Focus the new front.
+	changeFocus(zOrder[0])
+}
+
+// Linux evdev keycode for F1.
+const KEY_F1 = 59
 
 // trackAppBounds creates a local constraint that mirrors a shepherd's
 // AppWindow Bounds rectangle. Returns nil if the shepherd is not Ready
@@ -531,16 +660,37 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 						fmt.Printf("[rachel:mailbox] return ring failed: %v\n", err)
 						continue
 					}
-					trackedApps[senderSID].returnRb = returnRb
+					ta := trackedApps[senderSID]
+					ta.returnRb = returnRb
 
-					// Grant focus to this shepherd.
-					focusedSID = senderSID
+					// Map the shepherd's backing store into our address space.
+					ta.x = msg.X
+					ta.y = msg.Y
+					ta.bsWidth = msg.Width
+					ta.bsHeight = msg.Height
+					ta.bsStride = msg.Stride
+					bsSize := int(ta.bsStride) * int(ta.bsHeight)
+					ta.backingStore = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(msg.BackingStoreAddr))), bsSize)
+					fmt.Printf("[rachel:mailbox] SID %d: backing store %dx%d at (%d,%d)\n",
+						senderSID, ta.bsWidth, ta.bsHeight, ta.x, ta.y)
 
-					// Send YouHaveFocus
-					var focusMsg wm.YouHaveFocusMsg
-					focusMsg.Type = wm.MsgYouHaveFocus
-					returnRb.Push(unsafe.Pointer(&focusMsg))
-					_ = sys.MailboxSend(senderSID, wm.ShepherdNotify, returnRb.Addr())
+					// Grant focus to this new shepherd (raises to front of z-order,
+					// sends YouLostFocus to previous, YouHaveFocus to new).
+					changeFocus(senderSID)
+
+					// Initial blit — show the window immediately.
+					blitWindow(senderSID, fbPix, fbStride)
+					flushRect(int(ta.x), int(ta.y), int(ta.bsWidth), int(ta.bsHeight))
+
+				case wm.MsgBlit:
+					msg := (*wm.BlitMsg)(unsafe.Pointer(&raw[0]))
+					sid := int(msg.SID)
+					ta, ok := trackedApps[sid]
+					if !ok || ta.backingStore == nil {
+						continue
+					}
+					blitWindow(sid, fbPix, fbStride)
+					flushRect(int(ta.x), int(ta.y), int(ta.bsWidth), int(ta.bsHeight))
 				}
 			}
 
@@ -615,6 +765,12 @@ func main() {
 	_, _, _, _ = vaX, vaY, vaW, vaH
 	// Register standard and inverse cursors with the GPU.
 	initCursors()
+
+	// Map the GPU framebuffer — rachel is the sole writer.
+	fbCtx = mancini.NewFramebufferContext()
+	fbImage := fbCtx.Image()
+	fbPix = fbImage.Pix
+	fbStride = fbImage.Stride
 
 	// Allocate and register a shared completion ring for HID input events.
 	// The kernel IRQ top-half writes events directly to this page;

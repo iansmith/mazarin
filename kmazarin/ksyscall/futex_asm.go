@@ -14,6 +14,9 @@ func ThreadBlockFutex(futexAddr uint64, expectedVal uint32) uintptr
 //go:linkname ThreadWakeFutex main.ThreadWakeFutex
 func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32
 
+//go:linkname ThreadWakeFutexWithSwitch main.ThreadWakeFutexWithSwitch
+func ThreadWakeFutexWithSwitch(futexAddr uint64, maxWake int32) (int32, uintptr)
+
 // SetSyscallSwitchTarget links to kmazarin's main package (kmazarin/golang/kmazarin/threads.go)
 // Note: "main" refers to kmazarin's main package, not cardinal's, since this is part of the kmazarin binary
 // target is a uintptr (thread node pointer, 0 = no switch)
