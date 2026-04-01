@@ -7,10 +7,10 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 	"os"
 	"runtime"
-	"strconv"
 	"unsafe"
 
 	"golang.org/x/image/font"
@@ -53,6 +53,7 @@ type console struct {
 	lineCount int // number of lines currently in use
 	maxCols   int
 	lastFd    byte
+	inEscape  bool // inside an ANSI escape sequence
 
 	suppressSerialCopy bool
 }
@@ -70,11 +71,30 @@ func (c *console) handleSerialByte(sb serial.SerialByte) {
 		return
 	}
 	if sb.B == '\n' {
+		c.inEscape = false // reset escape state on newline
 		if c.lineCount < maxPoolLines {
 			c.lineCount++
 		} else {
 			c.scroll()
 		}
+		return
+	}
+
+	// Filter ANSI escape sequences: ESC [ ... letter
+	if sb.B == 0x1B {
+		c.inEscape = true
+		return
+	}
+	if c.inEscape {
+		// Consume bytes until we see a letter (the terminator).
+		if (sb.B >= 'A' && sb.B <= 'Z') || (sb.B >= 'a' && sb.B <= 'z') {
+			c.inEscape = false
+		}
+		return
+	}
+
+	// Drop other non-printable control characters.
+	if sb.B < 0x20 && sb.B != '\t' {
 		return
 	}
 
@@ -109,6 +129,28 @@ func (c *console) scroll() {
 	c.lines[maxPoolLines-1] = lineData{}
 	// lineCount stays at maxPoolLines
 }
+
+// wmRb is the ring buffer for sending messages to rachel. Created once
+// during announceToWM and reused for MsgBlit in the main loop.
+var wmRb *ringbuf.RingBuffer
+
+// backingStoreReadyCh delivers the BackingStoreReady message from the mailbox loop.
+var backingStoreReadyCh = make(chan wm.BackingStoreReadyMsg, 1)
+
+// sendBlit tells rachel to copy our backing store to the framebuffer.
+func sendBlit() {
+	if wmRb == nil {
+		return
+	}
+	var msg wm.BlitMsg
+	msg.Type = wm.MsgBlit
+	msg.SID = int64(os.Getpid())
+	wmRb.Push(unsafe.Pointer(&msg))
+	_ = sys.MailboxSend(linuxRachelSID, wm.WMNotify, wmRb.Addr())
+}
+
+// linuxRachelSID is rachel's SID, set during main().
+var linuxRachelSID int
 
 // delegateMsg carries processed delegate data to the main goroutine.
 // The delegate goroutine replies immediately (unblocking callers) and
@@ -198,7 +240,17 @@ func mailboxRecvLoop(fc *fontcache.FontCache, ipc *fsIPCClient) {
 			var raw [wm.SizeWMMessage]byte
 			for rb.Pop(unsafe.Pointer(&raw[0])) {
 				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-				_ = msgType
+				switch msgType {
+				case wm.MsgBackingStoreReady:
+					bsr := *(*wm.BackingStoreReadyMsg)(unsafe.Pointer(&raw[0]))
+					sys.UartWriteString(fmt.Sprintf("[linux:mailbox] BackingStoreReady: VA=0x%x total=%dx%d inset=(%d,%d) app=%dx%d pos=(%d,%d)\n",
+						bsr.BackingStoreAddr, bsr.TotalWidth, bsr.TotalHeight,
+						bsr.LeftInset, bsr.TopInset, bsr.AppWidth, bsr.AppHeight,
+						bsr.AppX, bsr.AppY))
+					backingStoreReadyCh <- bsr
+				default:
+					// Other messages — drain and ignore.
+				}
 			}
 		case fsipc.NotifyReady:
 			ipc.handleReady(notif)
@@ -208,12 +260,13 @@ func mailboxRecvLoop(fc *fontcache.FontCache, ipc *fsIPCClient) {
 	}
 }
 
-// announceToWM sends AppStart to rachel so we get positioned.
-func announceToWM(rachelSID int) {
-	if rachelSID < 0 {
+// announceToWM sends AppStart to rachel with window dimensions.
+func announceToWM(x, y, w, h int32) {
+	if linuxRachelSID < 0 {
 		return
 	}
-	rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
+	var err error
+	wmRb, err = ringbuf.New(linuxRachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
 	if err != nil {
 		sys.UartWriteString("[linux] ring buffer creation failed: " + err.Error() + "\n")
 		return
@@ -221,12 +274,16 @@ func announceToWM(rachelSID int) {
 	var msg wm.AppStartMsg
 	msg.Type = wm.MsgAppStart
 	msg.SID = int64(os.Getpid())
-	rb.Push(unsafe.Pointer(&msg))
-	if err := sys.MailboxSend(rachelSID, wm.WMNotify, rb.Addr()); err != nil {
+	msg.X = x
+	msg.Y = y
+	msg.Width = w
+	msg.Height = h
+	wmRb.Push(unsafe.Pointer(&msg))
+	if err := sys.MailboxSend(linuxRachelSID, wm.WMNotify, wmRb.Addr()); err != nil {
 		sys.UartWriteString("[linux] MailboxSend failed: " + err.Error() + "\n")
 		return
 	}
-	sys.UartWriteString("[linux] sent AppStart to rachel\n")
+	sys.UartWriteString(fmt.Sprintf("[linux] sent AppStart to rachel: %dx%d at (%d,%d)\n", w, h, x, y))
 }
 
 func main() {
@@ -305,7 +362,8 @@ func main() {
 	gt := std.NewGradientTitle(pal, fonts, "Serial Console", 18, 8)
 	app := std.NewAppWindow(nil, pal, *mctheme.NewDefaultNeumorphicParams().Heavy(), fonts, "Serial Console", 26, 900, gt.TitleDraw)
 	app.Focused = false // wait for rachel to grant focus
-	// 6. Screen dimensions and draw context.
+
+	// 6. Constraint-computed sizing (no framebuffer access needed).
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/screen/width")
 	screenWAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
@@ -314,75 +372,70 @@ func main() {
 	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW := int(screenWAttr.Get())
 	screenH := int(screenHAttr.Get())
-	drawCtx := mancini.NewFramebufferContext()
-	fbImage := drawCtx.Image()
-	provider := fontcache.NewFontSvcGlyphProvider(fc)
-	dc := mancini.NewDrawContextForImage(fbImage, provider)
-	// 7. Initial sizing draw.
-	appLH := app.GetLayout()
-	initX := float64(screenW)/2 - 400
-	initY := float64(screenH)/2 - 200
-	appLH.X.Set(int64(initX))
-	appLH.Y.Set(int64(initY))
-	app.SetDC(dc)
-	app.Draw(app, int64(initX), int64(initY), appLH.Width.Get(), appLH.Height.Get())
 
-	// Read constraint-computed size.
-	rawW := appLH.Width.Get()
-	rawH := appLH.Height.Get()
-	contentLH := content.GetLayout()
-	_ = contentLH.Width.Get()
-	_ = contentLH.Height.Get()
-	winW := float64(rawW)
-	winH := float64(rawH)
+	provider := fontcache.NewFontSvcGlyphProvider(fc)
+
+	appLH := app.GetLayout()
+	appLH.X.Set(0)
+	appLH.Y.Set(0)
+
+	// Use constraint-computed dimensions.
+	winW := int(appLH.Width.Get())
+	winH := int(appLH.Height.Get())
 	if winW < 100 {
 		winW = 800
 	}
 	if winH < 50 {
 		winH = 400
 	}
+	contentLH := content.GetLayout()
+	_ = contentLH.Width.Get()
+	_ = contentLH.Height.Get()
+
 	// Force Bounds evaluation for rachel.
 	_ = appLH.Bounds.Get()
 
-	// 8. Rachel is already confirmed ready (step 2b). Announce to WM.
-	announceToWM(rachelSID)
+	// 7. Announce to rachel with our desired position and size.
+	linuxRachelSID = rachelSID
+	initX := screenW/2 - winW/2
+	initY := screenH/2 - winH/2
+	announceToWM(int32(initX), int32(initY), int32(winW), int32(winH))
 
-	var posXAttr, posYAttr *attr.Attribute[int64]
-	rachelSIDStr := strconv.Itoa(rachelSID)
-	vaXURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/x"
-	vaYURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/y"
+	// 8. Wait for rachel to allocate backing store and share it with us.
+	sys.UartWriteString("[linux] waiting for BackingStoreReady...\n")
+	bsr := <-backingStoreReadyCh
 
-	// Stdio left-aligns: X = visibleArea.x, Y = visibleArea.y.
-	xProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaXURI)
-	posXAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
+	totalW := int(bsr.TotalWidth)
+	totalH := int(bsr.TotalHeight)
+	totalStride := int(bsr.TotalStride)
+	bsSlice := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(bsr.BackingStoreAddr))), totalStride*totalH)
 
-	yProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaYURI)
-	posYAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
+	// Create image.RGBA over the full buffer (including border areas).
+	bsImg := &image.RGBA{
+		Pix:    bsSlice,
+		Stride: totalStride,
+		Rect:   image.Rect(0, 0, totalW, totalH),
+	}
+	dc := mancini.NewDrawContextForImage(bsImg, provider)
 
-	winX := float64(posXAttr.Get())
-	winY := float64(posYAttr.Get())
-	// Clear sizing ghost and draw at final position.
+	// Translate origin so (0,0) is the app area, and clip to app bounds.
+	leftInset := float64(bsr.LeftInset)
+	topInset := float64(bsr.TopInset)
+	dc.Push()
+	dc.Translate(leftInset, topInset)
+	dc.DrawRectangle(0, 0, float64(winW), float64(winH))
+	dc.Clip()
+
+	sys.UartWriteString(fmt.Sprintf("[linux] backing store ready: total=%dx%d inset=(%d,%d) app=%dx%d\n",
+		totalW, totalH, bsr.LeftInset, bsr.TopInset, winW, winH))
+
+	// Initial draw at (0,0) — screen position is rachel's concern.
+	app.SetDC(dc)
 	dc.SetColor(pal.Surface())
-	clearX0, clearY0 := initX, initY
-	clearX1, clearY1 := initX+winW, initY+winH
-	if winX < clearX0 {
-		clearX0 = winX
-	}
-	if winY < clearY0 {
-		clearY0 = winY
-	}
-	if winX+winW > clearX1 {
-		clearX1 = winX + winW
-	}
-	if winY+winH > clearY1 {
-		clearY1 = winY + winH
-	}
-	dc.FillRectangle(clearX0, clearY0, clearX1-clearX0, clearY1-clearY0)
+	dc.FillRectangle(0, 0, float64(winW), float64(winH))
+	app.Draw(app, 0, 0, int64(winW), int64(winH))
+	sendBlit()
 
-	appLH.X.Set(int64(winX))
-	appLH.Y.Set(int64(winY))
-	app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))
-	drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
 	// 9. Serial channel and delegated syscalls.
 	// Set up delegate handling BEFORE signalling Ready, so that other shepherds
 	// waiting on our Ready don't send us delegates before we're draining them.
@@ -428,15 +481,43 @@ func main() {
 	sys.UartWriteString("[linux] Ready=true\n")
 	sys.UartWriteString("[linux] Entering event loop\n")
 
+	// textDirty tracks whether console state changed since last redraw.
+	// Serial bytes and delegate writes set this flag; the constraint dirty
+	// tick (~10Hz) triggers the actual redraw, batching many updates into
+	// one draw+blit cycle to avoid flashing.
+	textDirty := false
+
 	redraw := func() {
-		winW = float64(appLH.Width.Get())
-		winH = float64(appLH.Height.Get())
-		winX = float64(posXAttr.Get())
-		winY = float64(posYAttr.Get())
-		appLH.X.Set(int64(winX))
-		appLH.Y.Set(int64(winY))
-		app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))
-		drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
+		app.Draw(app, 0, 0, int64(winW), int64(winH))
+		sendBlit()
+	}
+
+	// drainSerial consumes all buffered serial bytes without redrawing.
+	drainSerial := func() {
+		for {
+			select {
+			case sb := <-serialCh:
+				con.handleSerialByte(sb)
+				textDirty = true
+			default:
+				return
+			}
+		}
+	}
+
+	// drainDelegates consumes all buffered delegate messages without redrawing.
+	drainDelegates := func() {
+		for {
+			select {
+			case msg := <-delegateDataCh:
+				for _, b := range msg.data {
+					con.handleSerialByte(serial.SerialByte{Fd: msg.fd, B: b})
+				}
+				textDirty = true
+			default:
+				return
+			}
+		}
 	}
 
 	for {
@@ -445,38 +526,24 @@ func main() {
 		select {
 		case sb := <-serialCh:
 			con.handleSerialByte(sb)
-			// Drain buffered chars.
-			done := false
-			for !done {
-				select {
-				case sb = <-serialCh:
-					con.handleSerialByte(sb)
-				default:
-					done = true
-				}
-			}
-			redraw()
+			textDirty = true
+			drainSerial()
 
 		case msg := <-delegateDataCh:
 			for _, b := range msg.data {
 				con.handleSerialByte(serial.SerialByte{Fd: msg.fd, B: b})
 			}
-			// Drain queued messages before redrawing.
-			drained := false
-			for !drained {
-				select {
-				case msg = <-delegateDataCh:
-					for _, b := range msg.data {
-						con.handleSerialByte(serial.SerialByte{Fd: msg.fd, B: b})
-					}
-				default:
-					drained = true
-				}
-			}
-			redraw()
+			textDirty = true
+			drainDelegates()
 
 		case <-dirtyCh:
-			redraw()
+			// Drain any pending text before redrawing.
+			drainSerial()
+			drainDelegates()
+			if textDirty {
+				textDirty = false
+				redraw()
+			}
 		}
 	}
 }

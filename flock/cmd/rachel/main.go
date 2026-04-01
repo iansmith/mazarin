@@ -509,6 +509,7 @@ type trackedApp struct {
 	bsStride     int32                      // bytes per scanline (bsWidth * 4)
 	appWidth     int32                      // client drawing area width
 	appHeight    int32                      // client drawing area height
+	zOrder       int                        // higher = on top; assigned at AppStart
 }
 
 // focusedSID is the SID of the shepherd that currently has input focus.
@@ -606,6 +607,23 @@ func cycleFocus() {
 
 // Linux evdev keycode for F1.
 const KEY_F1 = 59
+
+// blitAllWindows re-blits every tracked window back-to-front (z-order)
+// so that overlapping windows are composited correctly.
+func blitAllWindows() {
+	// Walk z-order back-to-front (last element = backmost).
+	for i := len(zOrder) - 1; i >= 0; i-- {
+		sid := zOrder[i]
+		ta, ok := trackedApps[sid]
+		if !ok || ta.backingStore == nil {
+			continue
+		}
+		drawBorders(ta)
+		blitWindow(sid, fbPix, fbStride)
+	}
+	// Flush the entire display once.
+	flushRect(0, 0, int(displayWidth), int(displayHeight))
+}
 
 // trackAppBounds creates a local constraint that mirrors a shepherd's
 // AppWindow Bounds rectangle. Returns nil if the shepherd is not Ready
@@ -769,10 +787,8 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 					// Grant focus to this new shepherd.
 					changeFocus(senderSID)
 
-					// Initial blit.
-					drawBorders(ta)
-					blitWindow(senderSID, fbPix, fbStride)
-					flushRect(int(ta.x)-borderLeft, int(ta.y)-borderTop, totalW, totalH)
+					// Initial blit (all windows, z-ordered).
+					blitAllWindows()
 
 				case wm.MsgBlit:
 					msg := (*wm.BlitMsg)(unsafe.Pointer(&raw[0]))
@@ -781,10 +797,9 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 					if !ok || ta.backingStore == nil {
 						continue
 					}
-					// Draw debug blue borders before blitting.
 					drawBorders(ta)
 					blitWindow(sid, fbPix, fbStride)
-					ox, oy := int(ta.x)-borderLeft, int(ta.y)-borderTop
+					ox, oy := screenOrigin(ta)
 					flushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
 				}
 			}
