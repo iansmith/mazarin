@@ -5,11 +5,79 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"sync/atomic"
+	_ "unsafe"
 
 	"github.com/fogleman/gg"
 
 	"mazzy/mazarin/mancini"
 )
+
+// ── Draw performance instrumentation ────────────────────────────────────────
+
+//go:linkname nanotime runtime.nanotime
+func nanotime() int64
+
+// DrawPerfStats accumulates timing data during a draw pass.
+// All times in nanoseconds. Call ResetDrawPerf before a draw,
+// then PrintDrawPerf after.
+type DrawPerfStats struct {
+	AllocNs    atomic.Int64 // image.NewRGBA / NewNRGBA / NewAlpha
+	AllocCount atomic.Int64
+	AllocBytes atomic.Int64
+	GGDrawNs   atomic.Int64 // gg context create + rasterize + fill
+	GGCount    atomic.Int64
+	ConvertNs  atomic.Int64 // rgbaToNRGBA
+	BlurNs     atomic.Int64 // gaussianBlurNRGBA
+	BlurCount  atomic.Int64
+	ComposeNs  atomic.Int64 // draw.Draw compositing
+	FaceNs     atomic.Int64 // dc.DrawRoundedRect/Circle + Fill (face)
+
+	// Tree-level timing
+	AppDecorateNs atomic.Int64 // AppWindow.DecorateIfNeeded
+	AppClipNs     atomic.Int64 // WithClip + Flush
+	AppChildNs    atomic.Int64 // child.Draw inside AppWindow
+	RowChildNs    [8]atomic.Int64 // per-child draw time in Row (up to 8)
+	RowChildCount atomic.Int64
+	ColChildNs    atomic.Int64 // total Column child draw time
+	NeuDecorNs    atomic.Int64 // NeuCircle.DecorateIfNeeded
+	NeuChildNs    atomic.Int64 // NeuCircle child draw (Clock)
+	ClockFaceNs   atomic.Int64 // Clock.DrawFace
+	LabelNs       atomic.Int64 // Label.Draw total
+	LabelCount    atomic.Int64
+}
+
+var drawPerf DrawPerfStats
+
+func ResetDrawPerf() {
+	drawPerf.AllocNs.Store(0)
+	drawPerf.AllocCount.Store(0)
+	drawPerf.AllocBytes.Store(0)
+	drawPerf.GGDrawNs.Store(0)
+	drawPerf.GGCount.Store(0)
+	drawPerf.ConvertNs.Store(0)
+	drawPerf.BlurNs.Store(0)
+	drawPerf.BlurCount.Store(0)
+	drawPerf.ComposeNs.Store(0)
+	drawPerf.FaceNs.Store(0)
+	drawPerf.AppDecorateNs.Store(0)
+	drawPerf.AppClipNs.Store(0)
+	drawPerf.AppChildNs.Store(0)
+	for i := range drawPerf.RowChildNs {
+		drawPerf.RowChildNs[i].Store(0)
+	}
+	drawPerf.RowChildCount.Store(0)
+	drawPerf.ColChildNs.Store(0)
+	drawPerf.NeuDecorNs.Store(0)
+	drawPerf.NeuChildNs.Store(0)
+	drawPerf.ClockFaceNs.Store(0)
+	drawPerf.LabelNs.Store(0)
+	drawPerf.LabelCount.Store(0)
+}
+
+func GetDrawPerf() *DrawPerfStats {
+	return &drawPerf
+}
 
 // ── Gaussian blur (separable, non-premultiplied) ─────────────────────────────
 
@@ -45,7 +113,11 @@ func gaussianKernel(sigma float64) []float64 {
 func rgbaToNRGBA(src *image.RGBA) *image.NRGBA {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
+	ta := nanotime()
 	dst := image.NewNRGBA(b)
+	drawPerf.AllocNs.Add(nanotime() - ta)
+	drawPerf.AllocCount.Add(1)
+	drawPerf.AllocBytes.Add(int64(w * h * 4))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			soff := y*src.Stride + x*4
@@ -82,7 +154,11 @@ func gaussianBlurNRGBA(src *image.NRGBA, sigma float64) *image.NRGBA {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 
+	ta := nanotime()
 	tmp := image.NewNRGBA(b)
+	drawPerf.AllocNs.Add(nanotime() - ta)
+	drawPerf.AllocCount.Add(1)
+	drawPerf.AllocBytes.Add(int64(w * h * 4))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			var rr, gg, bb, aa float64
@@ -107,7 +183,11 @@ func gaussianBlurNRGBA(src *image.NRGBA, sigma float64) *image.NRGBA {
 		}
 	}
 
+	ta2 := nanotime()
 	dst := image.NewNRGBA(b)
+	drawPerf.AllocNs.Add(nanotime() - ta2)
+	drawPerf.AllocCount.Add(1)
+	drawPerf.AllocBytes.Add(int64(w * h * 4))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			var rr, gg, bb, aa float64
@@ -139,14 +219,31 @@ func gaussianBlurNRGBA(src *image.NRGBA, sigma float64) *image.NRGBA {
 // shadowLayer renders a colored rounded rectangle into a temporary NRGBA
 // buffer, optionally blurred.
 func shadowLayer(w, h int, x1, y1, x2, y2, r float64, c color.NRGBA, alpha uint8, blur float64) *image.NRGBA {
+	t0 := nanotime()
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	t1 := nanotime()
+	drawPerf.AllocNs.Add(t1 - t0)
+	drawPerf.AllocCount.Add(1)
+	drawPerf.AllocBytes.Add(int64(w * h * 4))
+
 	dc := gg.NewContextForRGBA(rgba)
 	dc.SetColor(color.NRGBA{c.R, c.G, c.B, alpha})
 	dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
 	dc.Fill()
+	t2 := nanotime()
+	drawPerf.GGDrawNs.Add(t2 - t1)
+	drawPerf.GGCount.Add(1)
+
 	nrgba := rgbaToNRGBA(rgba)
+	t3 := nanotime()
+	drawPerf.ConvertNs.Add(t3 - t2)
+
 	if blur > 0 {
-		return gaussianBlurNRGBA(nrgba, blur)
+		result := gaussianBlurNRGBA(nrgba, blur)
+		t4 := nanotime()
+		drawPerf.BlurNs.Add(t4 - t3)
+		drawPerf.BlurCount.Add(1)
+		return result
 	}
 	return nrgba
 }
@@ -233,15 +330,22 @@ func neuRaised(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r fl
 	dark := shadowLayer(lw, lh,
 		lx1+p.DarkOff, ly1+p.DarkOff, lx2+p.DarkOff, ly2+p.DarkOff,
 		r, pal.DarkShadow(), p.DarkAlpha, p.DarkBlur)
+	tc0 := nanotime()
 	draw.Draw(canvas, dst, dark, image.Point{}, draw.Over)
+	drawPerf.ComposeNs.Add(nanotime() - tc0)
+
 	light := shadowLayer(lw, lh,
 		lx1-p.LightOff, ly1-p.LightOff, lx2-p.LightOff, ly2-p.LightOff,
 		r, pal.LightShadow(), p.LightAlpha, p.LightBlur)
+	tc1 := nanotime()
 	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
+	drawPerf.ComposeNs.Add(nanotime() - tc1)
 
+	tf0 := nanotime()
 	dc.SetColor(face)
 	dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
 	dc.Fill()
+	drawPerf.FaceNs.Add(nanotime() - tf0)
 }
 
 func neuInset(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r float64, face color.NRGBA, p mancini.InsetParams) {
@@ -351,14 +455,31 @@ func NeuCircleWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.Ne
 }
 
 func circleShadowLayer(w, h int, cx, cy, rad float64, c color.NRGBA, alpha uint8, blur float64) *image.NRGBA {
+	t0 := nanotime()
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	t1 := nanotime()
+	drawPerf.AllocNs.Add(t1 - t0)
+	drawPerf.AllocCount.Add(1)
+	drawPerf.AllocBytes.Add(int64(w * h * 4))
+
 	dc := gg.NewContextForRGBA(rgba)
 	dc.SetColor(color.NRGBA{c.R, c.G, c.B, alpha})
 	dc.DrawCircle(cx, cy, rad)
 	dc.Fill()
+	t2 := nanotime()
+	drawPerf.GGDrawNs.Add(t2 - t1)
+	drawPerf.GGCount.Add(1)
+
 	nrgba := rgbaToNRGBA(rgba)
+	t3 := nanotime()
+	drawPerf.ConvertNs.Add(t3 - t2)
+
 	if blur > 0 {
-		return gaussianBlurNRGBA(nrgba, blur)
+		result := gaussianBlurNRGBA(nrgba, blur)
+		t4 := nanotime()
+		drawPerf.BlurNs.Add(t4 - t3)
+		drawPerf.BlurCount.Add(1)
+		return result
 	}
 	return nrgba
 }
@@ -401,11 +522,16 @@ func neuCircleRaisedShadows(pal mancini.Palette, dc mancini.DrawContext, cx, cy,
 	dark := circleShadowLayer(lw, lh,
 		lcx+p.DarkOff, lcy+p.DarkOff, rad,
 		pal.DarkShadow(), p.DarkAlpha, p.DarkBlur)
+	tc0 := nanotime()
 	draw.Draw(canvas, dst, dark, image.Point{}, draw.Over)
+	drawPerf.ComposeNs.Add(nanotime() - tc0)
+
 	light := circleShadowLayer(lw, lh,
 		lcx-p.LightOff, lcy-p.LightOff, rad,
 		pal.LightShadow(), p.LightAlpha, p.LightBlur)
+	tc1 := nanotime()
 	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
+	drawPerf.ComposeNs.Add(nanotime() - tc1)
 }
 
 func neuCircleInset(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad float64, face color.NRGBA, p mancini.InsetParams) {

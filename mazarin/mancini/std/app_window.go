@@ -120,7 +120,9 @@ func (w *AppWindow) Unfocus() { w.Focused = false }
 // from escaping the window decoration.
 func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 	// 1. Decorate: NeuBox shadow + title bar (skipped if bounds unchanged).
+	td0 := nanotime()
 	w.Decorator.DecorateIfNeeded(self, x, y, ww, hh)
+	drawPerf.AppDecorateNs.Add(nanotime() - td0)
 
 	// 2. Content area inside the decoration insets.
 	contentX := x + w.Left
@@ -147,15 +149,23 @@ func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 	}
 
 	// 4. Clip child to content area (right edge, then bottom edge).
+	tc0 := nanotime()
 	ccR := mancini.WithClip(dc, float64(contentX), float64(contentY),
 		float64(contentW), float64(contentH), 60, mancini.ClipRight)
 	ccB := mancini.WithClip(dc, float64(contentX), float64(contentY),
 		float64(contentW), float64(contentH), 60, mancini.ClipBottom)
+	drawPerf.AppClipNs.Add(nanotime() - tc0)
+
+	tc1 := nanotime()
 	if d, ok := child.(mancini.NewDrawer); ok {
 		d.Draw(child, contentX, contentY, contentW, contentH)
 	}
+	drawPerf.AppChildNs.Add(nanotime() - tc1)
+
+	tc2 := nanotime()
 	ccB.Flush()
 	ccR.Flush()
+	drawPerf.AppClipNs.Add(nanotime() - tc2)
 }
 
 // Decorate implements mancini.Decoratable — draws the NeuBox shadow and

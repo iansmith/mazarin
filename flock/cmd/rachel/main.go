@@ -326,11 +326,31 @@ var fbPix []byte  // raw pixel data of the GPU framebuffer
 var fbStride int  // bytes per scanline of the GPU framebuffer
 
 // flushRect tells the GPU to update a rectangular region of the framebuffer.
+// Coordinates are clamped to the display bounds.
 func flushRect(x, y, w, h int) {
 	if fbCtx == nil {
 		return
 	}
-	fbCtx.Flush(int32(x), int32(y), int32(x+w), int32(y+h))
+	x0, y0 := x, y
+	x1, y1 := x+w, y+h
+	// Clamp to display bounds.
+	if x0 < 0 {
+		x0 = 0
+	}
+	if y0 < 0 {
+		y0 = 0
+	}
+	dw, dh := int(displayWidth), int(displayHeight)
+	if x1 > dw {
+		x1 = dw
+	}
+	if y1 > dh {
+		y1 = dh
+	}
+	if x0 >= x1 || y0 >= y1 {
+		return
+	}
+	fbCtx.Flush(int32(x0), int32(y0), int32(x1), int32(y1))
 }
 
 // generateStandardCursor returns a 64x64 NRGBA cursor image (white outline, black fill).
@@ -469,16 +489,26 @@ func postBatchInputUpdate() {
 	}
 }
 
+// Border sizes around each client's drawing area (in pixels).
+const (
+	borderTop    = 20
+	borderRight  = 10
+	borderBottom = 1
+	borderLeft   = 10
+)
+
 // trackedApp holds rachel's state for a managed shepherd window.
 type trackedApp struct {
 	sid          int
 	bounds       *attr.Attribute[vm.Value] // tracks shepherd's AppWindow/layout/Bounds
 	returnRb     *ringbuf.RingBuffer       // ring buffer for sending messages back to this shepherd
-	backingStore []byte                     // shared-page pixel data (RGBA, len = bsStride*bsHeight)
-	x, y         int32                      // screen position
-	bsWidth      int32                      // backing store width in pixels
-	bsHeight     int32                      // backing store height in pixels
+	backingStore []byte                     // full buffer including borders (RGBA)
+	x, y         int32                      // screen position of app area
+	bsWidth      int32                      // total buffer width (app + borders)
+	bsHeight     int32                      // total buffer height (app + borders)
 	bsStride     int32                      // bytes per scanline (bsWidth * 4)
+	appWidth     int32                      // client drawing area width
+	appHeight    int32                      // client drawing area height
 }
 
 // focusedSID is the SID of the shepherd that currently has input focus.
@@ -663,24 +693,67 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 					ta := trackedApps[senderSID]
 					ta.returnRb = returnRb
 
-					// Map the shepherd's backing store into our address space.
+					// If client didn't specify a window size, skip backing store setup.
+					// (linux shepherd draws directly to framebuffer, doesn't need one.)
+					if msg.Width <= 0 || msg.Height <= 0 {
+						fmt.Printf("[rachel:mailbox] SID %d: no window size, skipping backing store\n", senderSID)
+						changeFocus(senderSID)
+						continue
+					}
+
+					// Rachel owns the backing store. Compute total size including borders.
+					ta.appWidth = msg.Width
+					ta.appHeight = msg.Height
+					totalW := int(msg.Width) + borderLeft + borderRight
+					totalH := int(msg.Height) + borderTop + borderBottom
+					ta.bsWidth = int32(totalW)
+					ta.bsHeight = int32(totalH)
+					ta.bsStride = int32(totalW * 4)
 					ta.x = msg.X
 					ta.y = msg.Y
-					ta.bsWidth = msg.Width
-					ta.bsHeight = msg.Height
-					ta.bsStride = msg.Stride
-					bsSize := int(ta.bsStride) * int(ta.bsHeight)
-					ta.backingStore = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(msg.BackingStoreAddr))), bsSize)
-					fmt.Printf("[rachel:mailbox] SID %d: backing store %dx%d at (%d,%d)\n",
-						senderSID, ta.bsWidth, ta.bsHeight, ta.x, ta.y)
 
-					// Grant focus to this new shepherd (raises to front of z-order,
-					// sends YouLostFocus to previous, YouHaveFocus to new).
+					// Allocate backing store pages.
+					bsBytes := totalW * 4 * totalH
+					bsPages := (bsBytes + 4095) / 4096
+					bsSlice, allocErr := mem.AllocPagesSlice(bsPages, mem.PageShared)
+					if allocErr != nil {
+						fmt.Printf("[rachel:mailbox] SID %d: backing store alloc failed: %v\n", senderSID, allocErr)
+						continue
+					}
+					ta.backingStore = bsSlice
+
+					// Share pages with the client shepherd.
+					bsVA := uintptr(unsafe.Pointer(&bsSlice[0]))
+					clientVA, shareErr := sys.SharePagesWithTarget(senderSID, bsVA, bsPages)
+					if shareErr != nil {
+						fmt.Printf("[rachel:mailbox] SID %d: share pages failed: %v\n", senderSID, shareErr)
+						continue
+					}
+
+					fmt.Printf("[rachel:mailbox] SID %d: backing store %dx%d (app %dx%d) at (%d,%d), clientVA=0x%x\n",
+						senderSID, totalW, totalH, ta.appWidth, ta.appHeight, ta.x, ta.y, clientVA)
+
+					// Send BackingStoreReady to client.
+					var resp wm.BackingStoreReadyMsg
+					resp.Type = wm.MsgBackingStoreReady
+					resp.BackingStoreAddr = int64(clientVA)
+					resp.TotalWidth = int32(totalW)
+					resp.TotalHeight = int32(totalH)
+					resp.TotalStride = int32(totalW * 4)
+					resp.LeftInset = borderLeft
+					resp.TopInset = borderTop
+					resp.AppWidth = msg.Width
+					resp.AppHeight = msg.Height
+					ta.returnRb.Push(unsafe.Pointer(&resp))
+					_ = sys.MailboxSend(senderSID, wm.ShepherdNotify, ta.returnRb.Addr())
+
+					// Grant focus to this new shepherd.
 					changeFocus(senderSID)
 
-					// Initial blit — show the window immediately.
+					// Initial blit.
+					drawBorders(ta)
 					blitWindow(senderSID, fbPix, fbStride)
-					flushRect(int(ta.x), int(ta.y), int(ta.bsWidth), int(ta.bsHeight))
+					flushRect(int(ta.x)-borderLeft, int(ta.y)-borderTop, totalW, totalH)
 
 				case wm.MsgBlit:
 					msg := (*wm.BlitMsg)(unsafe.Pointer(&raw[0]))
@@ -689,8 +762,11 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 					if !ok || ta.backingStore == nil {
 						continue
 					}
+					// Draw debug blue borders before blitting.
+					drawBorders(ta)
 					blitWindow(sid, fbPix, fbStride)
-					flushRect(int(ta.x), int(ta.y), int(ta.bsWidth), int(ta.bsHeight))
+					ox, oy := int(ta.x)-borderLeft, int(ta.y)-borderTop
+					flushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
 				}
 			}
 

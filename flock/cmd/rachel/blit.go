@@ -7,6 +7,7 @@
 package main
 
 import (
+	"fmt"
 	"image"
 )
 
@@ -41,6 +42,12 @@ func rectSubtract(a, b image.Rectangle) []image.Rectangle {
 	return result
 }
 
+// screenOrigin returns the top-left corner of the full buffer (including borders)
+// on the framebuffer. The stored ta.x/ta.y is the app-area position.
+func screenOrigin(ta *trackedApp) (int, int) {
+	return int(ta.x) - borderLeft, int(ta.y) - borderTop
+}
+
 // exposedRegion returns the set of non-overlapping rectangles that
 // represent the visible portion of the window identified by sid.
 // It subtracts the bounds of every window above sid in z-order.
@@ -49,8 +56,8 @@ func exposedRegion(sid int) []image.Rectangle {
 	if !ok {
 		return nil
 	}
-	winRect := image.Rect(int(ta.x), int(ta.y),
-		int(ta.x)+int(ta.bsWidth), int(ta.y)+int(ta.bsHeight))
+	ox, oy := screenOrigin(ta)
+	winRect := image.Rect(ox, oy, ox+int(ta.bsWidth), oy+int(ta.bsHeight))
 
 	// Start with the full window rect.
 	rects := []image.Rectangle{winRect}
@@ -64,8 +71,8 @@ func exposedRegion(sid int) []image.Rectangle {
 		if !ok {
 			continue
 		}
-		aboveRect := image.Rect(int(above.x), int(above.y),
-			int(above.x)+int(above.bsWidth), int(above.y)+int(above.bsHeight))
+		aox, aoy := screenOrigin(above)
+		aboveRect := image.Rect(aox, aoy, aox+int(above.bsWidth), aoy+int(above.bsHeight))
 
 		// Subtract aboveRect from every rect in the current list.
 		var next []image.Rectangle
@@ -80,6 +87,8 @@ func exposedRegion(sid int) []image.Rectangle {
 // blitWindow copies the exposed region of sid's backing store to the
 // framebuffer. Each exposed rect is copied scanline by scanline.
 // fb is the framebuffer pixel slice, fbStride is bytes per framebuffer row.
+var blitDbgCount int
+
 func blitWindow(sid int, fb []byte, fbStride int) {
 	ta, ok := trackedApps[sid]
 	if !ok || ta.backingStore == nil {
@@ -87,19 +96,90 @@ func blitWindow(sid int, fb []byte, fbStride int) {
 	}
 	bs := ta.backingStore
 	bsStride := int(ta.bsStride)
-	winX := int(ta.x)
-	winY := int(ta.y)
+	winX, winY := screenOrigin(ta) // top-left of full buffer on screen
 
-	for _, r := range exposedRegion(sid) {
-		// r is in screen coordinates. Convert to backing store local coords.
+	regions := exposedRegion(sid)
+
+	// Log first 3 blits per SID for debugging.
+	blitDbgCount++
+	if blitDbgCount <= 3 {
+		nonZero := 0
+		for i := 0; i < len(bs) && i < bsStride*4; i += 4 {
+			if bs[i] != 0 || bs[i+1] != 0 || bs[i+2] != 0 || bs[i+3] != 0 {
+				nonZero++
+			}
+		}
+		fmt.Printf("[rachel:blit] SID=%d win=(%d,%d) bs=%dx%d stride=%d regions=%d bsLen=%d bsNonZero=%d/4rows\n",
+			sid, winX, winY, ta.bsWidth, ta.bsHeight, bsStride, len(regions), len(bs), nonZero)
+		for i, r := range regions {
+			if i < 4 {
+				fmt.Printf("[rachel:blit]   region[%d]: (%d,%d)-(%d,%d)\n", i, r.Min.X, r.Min.Y, r.Max.X, r.Max.Y)
+			}
+		}
+	}
+
+	for _, r := range regions {
 		localX0 := r.Min.X - winX
-		w := r.Dx() * 4 // bytes per row to copy
+		w := r.Dx() * 4
 
 		for y := r.Min.Y; y < r.Max.Y; y++ {
 			localY := y - winY
 			fbOff := y*fbStride + r.Min.X*4
 			bsOff := localY*bsStride + localX0*4
-			copy(fb[fbOff:fbOff+w], bs[bsOff:bsOff+w])
+			if fbOff >= 0 && fbOff+w <= len(fb) && bsOff >= 0 && bsOff+w <= len(bs) {
+				copy(fb[fbOff:fbOff+w], bs[bsOff:bsOff+w])
+			}
+		}
+	}
+}
+
+// drawBorders fills the border regions of ta's backing store with debug blue.
+func drawBorders(ta *trackedApp) {
+	bs := ta.backingStore
+	if bs == nil {
+		return
+	}
+	tw := int(ta.bsWidth)
+	th := int(ta.bsHeight)
+	stride := int(ta.bsStride)
+
+	// Blue (BGRA byte order — framebuffer swaps R/B): B=200, G=80, R=40, A=255
+	setPixel := func(x, y int) {
+		off := y*stride + x*4
+		if off+3 < len(bs) {
+			bs[off] = 200  // B
+			bs[off+1] = 80 // G
+			bs[off+2] = 40 // R
+			bs[off+3] = 255 // A
+		}
+	}
+
+	// Top strip
+	for y := 0; y < borderTop && y < th; y++ {
+		for x := 0; x < tw; x++ {
+			setPixel(x, y)
+		}
+	}
+	// Bottom strip
+	for y := th - borderBottom; y < th; y++ {
+		if y >= 0 {
+			for x := 0; x < tw; x++ {
+				setPixel(x, y)
+			}
+		}
+	}
+	// Left strip (between top and bottom)
+	for y := borderTop; y < th-borderBottom; y++ {
+		for x := 0; x < borderLeft && x < tw; x++ {
+			setPixel(x, y)
+		}
+	}
+	// Right strip (between top and bottom)
+	for y := borderTop; y < th-borderBottom; y++ {
+		for x := tw - borderRight; x < tw; x++ {
+			if x >= 0 {
+				setPixel(x, y)
+			}
 		}
 	}
 }

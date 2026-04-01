@@ -63,6 +63,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	57: SyscallRegisterCompletionRing, // RegisterCompletionRing = 0x1039
 	58: SyscallIOUringSetup,           // IOUringSetup = 0x103A
 	59: SyscallIOUringEnter,           // IOUringEnter = 0x103B
+	60: SyscallSharePagesWithTarget,  // SharePagesWithTarget = 0x103C
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

@@ -379,13 +379,74 @@ func (dc *DrawContextImpl) DrawLine(x1, y1, x2, y2 float64) {
 
 // --- Path rendering ---
 
+// pathBounds computes the axis-aligned bounding box of the current path,
+// clamped to the canvas. Returns the integer pixel rect with 1px padding.
+func (dc *DrawContextImpl) pathBounds() image.Rectangle {
+	minX, minY := math.MaxFloat64, math.MaxFloat64
+	maxX, maxY := -math.MaxFloat64, -math.MaxFloat64
+	expand := func(x, y float64) {
+		if x < minX {
+			minX = x
+		}
+		if x > maxX {
+			maxX = x
+		}
+		if y < minY {
+			minY = y
+		}
+		if y > maxY {
+			maxY = y
+		}
+	}
+	for _, seg := range dc.path {
+		switch seg.op {
+		case pathMoveTo, pathLineTo:
+			expand(seg.args[0], seg.args[1])
+		case pathQuadTo:
+			expand(seg.args[0], seg.args[1])
+			expand(seg.args[2], seg.args[3])
+		case pathCubicTo:
+			expand(seg.args[0], seg.args[1])
+			expand(seg.args[2], seg.args[3])
+			expand(seg.args[4], seg.args[5])
+		}
+	}
+	// 1px padding for anti-aliasing, clamped to canvas.
+	x0 := int(math.Floor(minX)) - 1
+	y0 := int(math.Floor(minY)) - 1
+	x1 := int(math.Ceil(maxX)) + 1
+	y1 := int(math.Ceil(maxY)) + 1
+	cb := dc.im.Bounds()
+	if x0 < cb.Min.X {
+		x0 = cb.Min.X
+	}
+	if y0 < cb.Min.Y {
+		y0 = cb.Min.Y
+	}
+	if x1 > cb.Max.X {
+		x1 = cb.Max.X
+	}
+	if y1 > cb.Max.Y {
+		y1 = cb.Max.Y
+	}
+	return image.Rect(x0, y0, x1, y1)
+}
+
 // fillWithPattern rasterizes the current path as a fill onto dc.im using the given pattern.
 func (dc *DrawContextImpl) fillWithPattern(pat Pattern) {
 	if len(dc.path) == 0 {
 		return
 	}
 
-	r := vector.NewRasterizer(dc.width, dc.height)
+	// Compute path bounding box so we only rasterize/composite the affected region.
+	bbox := dc.pathBounds()
+	bw, bh := bbox.Dx(), bbox.Dy()
+	if bw <= 0 || bh <= 0 {
+		return
+	}
+	ox, oy := float32(bbox.Min.X), float32(bbox.Min.Y)
+
+	r := vector.NewRasterizer(bw, bh)
 	// vector.Rasterizer uses non-zero winding by default; even-odd is not
 	// directly supported, so we ignore the fill rule distinction here.
 
@@ -393,18 +454,18 @@ func (dc *DrawContextImpl) fillWithPattern(pat Pattern) {
 	for _, seg := range dc.path {
 		switch seg.op {
 		case pathMoveTo:
-			subStartX = float32(seg.args[0])
-			subStartY = float32(seg.args[1])
+			subStartX = float32(seg.args[0]) - ox
+			subStartY = float32(seg.args[1]) - oy
 			r.MoveTo(subStartX, subStartY)
 		case pathLineTo:
-			r.LineTo(float32(seg.args[0]), float32(seg.args[1]))
+			r.LineTo(float32(seg.args[0])-ox, float32(seg.args[1])-oy)
 		case pathQuadTo:
-			r.QuadTo(float32(seg.args[0]), float32(seg.args[1]),
-				float32(seg.args[2]), float32(seg.args[3]))
+			r.QuadTo(float32(seg.args[0])-ox, float32(seg.args[1])-oy,
+				float32(seg.args[2])-ox, float32(seg.args[3])-oy)
 		case pathCubicTo:
-			r.CubeTo(float32(seg.args[0]), float32(seg.args[1]),
-				float32(seg.args[2]), float32(seg.args[3]),
-				float32(seg.args[4]), float32(seg.args[5]))
+			r.CubeTo(float32(seg.args[0])-ox, float32(seg.args[1])-oy,
+				float32(seg.args[2])-ox, float32(seg.args[3])-oy,
+				float32(seg.args[4])-ox, float32(seg.args[5])-oy)
 		case pathClose:
 			r.ClosePath()
 		}
@@ -414,40 +475,37 @@ func (dc *DrawContextImpl) fillWithPattern(pat Pattern) {
 		r.ClosePath()
 	}
 
-	// Always use Alpha intermediary so we can apply the clip mask.
-	alpha := image.NewAlpha(image.Rect(0, 0, dc.width, dc.height))
+	// Rasterize into a bbox-sized alpha buffer.
+	alpha := image.NewAlpha(image.Rect(0, 0, bw, bh))
 	r.Draw(alpha, alpha.Bounds(), image.Opaque, image.Point{})
 
 	// Apply clip mask: zero out coverage outside the clip region.
 	if dc.gs.clipMask != nil {
-		b := alpha.Bounds()
-		for py := b.Min.Y; py < b.Max.Y; py++ {
-			for px := b.Min.X; px < b.Max.X; px++ {
-				ca := alpha.AlphaAt(px, py).A
+		for py := 0; py < bh; py++ {
+			for px := 0; px < bw; px++ {
+				ca := alpha.Pix[py*alpha.Stride+px]
 				if ca == 0 {
 					continue
 				}
-				cm := dc.gs.clipMask.AlphaAt(px, py).A
+				cm := dc.gs.clipMask.AlphaAt(px+bbox.Min.X, py+bbox.Min.Y).A
 				if cm == 0 {
-					alpha.SetAlpha(px, py, color.Alpha{A: 0})
+					alpha.Pix[py*alpha.Stride+px] = 0
 				} else if cm < 255 {
-					alpha.SetAlpha(px, py, color.Alpha{A: uint8(uint32(ca) * uint32(cm) / 255)})
+					alpha.Pix[py*alpha.Stride+px] = uint8(uint32(ca) * uint32(cm) / 255)
 				}
 			}
 		}
 	}
 
-	// Surface or custom pattern: manual per-pixel composite.
-	// For solid patterns, fall through and use the per-pixel loop as well.
-
-	bounds := alpha.Bounds()
-	for py := bounds.Min.Y; py < bounds.Max.Y; py++ {
-		for px := bounds.Min.X; px < bounds.Max.X; px++ {
-			a := alpha.AlphaAt(px, py).A
+	// Composite only within the bounding box.
+	for py := 0; py < bh; py++ {
+		for px := 0; px < bw; px++ {
+			a := alpha.Pix[py*alpha.Stride+px]
 			if a == 0 {
 				continue
 			}
-			src := pat.ColorAt(px, py)
+			canvasX, canvasY := px+bbox.Min.X, py+bbox.Min.Y
+			src := pat.ColorAt(canvasX, canvasY)
 			sr, sg, sb, sa := src.RGBA()
 			// CSS rendering uses sharp pixel boundaries: any non-zero coverage
 			// is treated as fully opaque. This prevents anti-aliased seams where
@@ -459,17 +517,14 @@ func (dc *DrawContextImpl) fillWithPattern(pat Pattern) {
 			sg = sg * coverage / 255
 			sb = sb * coverage / 255
 			// Porter-Duff Over onto dc.im.
-			dst := dc.im.RGBAAt(px, py)
+			dst := dc.im.RGBAAt(canvasX, canvasY)
 			dr, dg, db, da := uint32(dst.R), uint32(dst.G), uint32(dst.B), uint32(dst.A)
-			// Source is pre-multiplied (from RGBA()); dst pix are also pre-multiplied.
-			// Over: out = src + dst*(1-srcA/255)
-			// Convert src from 0xffff scale to 0xff scale.
 			sr8 := sr >> 8
 			sg8 := sg >> 8
 			sb8 := sb >> 8
 			sa8 := sa >> 8
 			inv := uint32(255) - sa8
-			dc.im.SetRGBA(px, py, color.RGBA{
+			dc.im.SetRGBA(canvasX, canvasY, color.RGBA{
 				R: uint8(sr8 + dr*inv/255),
 				G: uint8(sg8 + dg*inv/255),
 				B: uint8(sb8 + db*inv/255),

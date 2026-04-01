@@ -208,8 +208,14 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 			break
 		}
 
+		trc := nanotime()
 		if d, ok := child.(mancini.NewDrawer); ok {
 			d.Draw(child, curX, childY, childW, childH)
+		}
+		dt := nanotime() - trc
+		idx := drawPerf.RowChildCount.Add(1) - 1
+		if idx < int64(len(drawPerf.RowChildNs)) {
+			drawPerf.RowChildNs[idx].Add(dt)
 		}
 		curX += childW
 		visIndex++

@@ -94,3 +94,126 @@ func SyscallMapSharedPage(arg0, arg1, arg2, _, _, _ uint64) int64 {
 
 	return int64(callerVA)
 }
+
+// SyscallSharePagesWithTarget maps a range of the caller's pages into a target
+// shepherd's address space as shared pages. The caller retains ownership; refcounts
+// are incremented and PD_SHARED is set on each page. Physical pages need not be
+// contiguous — only the VA ranges are contiguous in both address spaces.
+//
+// Args:
+//
+//	arg0 = targetSID
+//	arg1 = callerVA   (page-aligned start of contiguous VA range in caller's space)
+//	arg2 = numPages
+//
+// Returns: target VA base on success, or negative errno on failure.
+func SyscallSharePagesWithTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
+	targetSID := int16(arg0)
+	callerVA := uintptr(arg1)
+	numPages := int(arg2)
+
+	if numPages <= 0 || numPages > 4096 {
+		return -22 // EINVAL
+	}
+	if callerVA&(kmem.PageSize-1) != 0 {
+		return -22 // EINVAL
+	}
+
+	callerShepherd := proc.CurrentShepherd()
+	if callerShepherd == nil {
+		return -1 // EPERM
+	}
+	callerSID := int16(callerShepherd.PID)
+
+	targetShepherd := proc.FindShepherdBySID(proc.ShepherdId(targetSID))
+	if targetShepherd == nil {
+		return -3 // ESRCH
+	}
+	if targetShepherd.PageTableL0PA == 0 {
+		return -3 // ESRCH
+	}
+
+	// Allocate contiguous VA range in target.
+	totalSize := uint64(numPages) * uint64(kmem.PageSize)
+	targetVABase := bumpAllocForShepherd(targetShepherd, totalSize)
+	if targetVABase == 0 {
+		return -12 // ENOMEM
+	}
+
+	// Map each page from caller into target.
+	for i := 0; i < numPages; i++ {
+		srcVA := callerVA + uintptr(i)*kmem.PageSize
+		pa := kmem.WalkUserPageTableWithL0(srcVA, callerShepherd.PageTableL0PA)
+		if pa == 0 {
+			// Rollback pages mapped so far.
+			for j := 0; j < i; j++ {
+				rollPA := kmem.WalkUserPageTableWithL0(
+					callerVA+uintptr(j)*kmem.PageSize, callerShepherd.PageTableL0PA)
+				rollPA = rollPA &^ (kmem.PageSize - 1)
+				if d := kmem.GetPageDescriptor(rollPA); d != nil {
+					d.RefCount--
+					if d.RefCount <= 1 {
+						d.Flags &^= kmem.PD_SHARED
+					}
+				}
+				// Note: we don't unmap from target here because demand-paging
+				// may not have instantiated all intermediate page table entries.
+				// The pages will be cleaned up when the target exits.
+			}
+			serial.RawUARTPuts("[IPC] SharePagesWithTarget: page not mapped in caller at VA 0x")
+			serial.RawUARTHex64(uint64(srcVA))
+			serial.RawUARTPuts("\r\n")
+			return -14 // EFAULT
+		}
+		pa = pa &^ (kmem.PageSize - 1)
+
+		desc := kmem.GetPageDescriptor(pa)
+		if desc == nil || desc.Owner != callerSID {
+			// Rollback.
+			for j := 0; j < i; j++ {
+				rollPA := kmem.WalkUserPageTableWithL0(
+					callerVA+uintptr(j)*kmem.PageSize, callerShepherd.PageTableL0PA)
+				rollPA = rollPA &^ (kmem.PageSize - 1)
+				if d := kmem.GetPageDescriptor(rollPA); d != nil {
+					d.RefCount--
+					if d.RefCount <= 1 {
+						d.Flags &^= kmem.PD_SHARED
+					}
+				}
+			}
+			serial.RawUARTPuts("[IPC] SharePagesWithTarget: page not owned by caller at PA 0x")
+			serial.RawUARTHex64(uint64(pa))
+			serial.RawUARTPuts("\r\n")
+			return -1 // EPERM
+		}
+
+		desc.RefCount++
+		desc.Flags |= kmem.PD_SHARED
+
+		dstVA := uintptr(targetVABase) + uintptr(i)*kmem.PageSize
+		if !kmem.MapPageInProcess(targetSID, dstVA, pa, 0) {
+			// Rollback this page and all prior.
+			desc.RefCount--
+			if desc.RefCount <= 1 {
+				desc.Flags &^= kmem.PD_SHARED
+			}
+			for j := 0; j < i; j++ {
+				rollPA := kmem.WalkUserPageTableWithL0(
+					callerVA+uintptr(j)*kmem.PageSize, callerShepherd.PageTableL0PA)
+				rollPA = rollPA &^ (kmem.PageSize - 1)
+				if d := kmem.GetPageDescriptor(rollPA); d != nil {
+					d.RefCount--
+					if d.RefCount <= 1 {
+						d.Flags &^= kmem.PD_SHARED
+					}
+				}
+			}
+			return -12 // ENOMEM
+		}
+	}
+
+	// Add single span covering all target pages.
+	targetShepherd.Spans.Add(targetVABase, totalSize)
+
+	return int64(targetVABase)
+}

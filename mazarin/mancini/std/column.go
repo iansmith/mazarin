@@ -210,9 +210,11 @@ func (c *Column) Draw(self mancini.Interactor, x, y, w, h int64) {
 			break
 		}
 
+		tcc := nanotime()
 		if d, ok := child.(mancini.NewDrawer); ok {
 			d.Draw(child, childX, curY, childW, childH)
 		}
+		drawPerf.ColChildNs.Add(nanotime() - tcc)
 		curY += childH
 		drawnCount++
 	}

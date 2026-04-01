@@ -65,4 +65,5 @@ const (
 	SysRegisterCompletionRing = MazzySyscallBase + 57 // 0x1039 - Register shared completion ring page
 	SysIOUringSetup           = MazzySyscallBase + 58 // 0x103A - Create io_uring instance (pin ring page)
 	SysIOUringEnter           = MazzySyscallBase + 59 // 0x103B - Submit SQEs + wait for CQEs
+	SysSharePagesWithTarget   = MazzySyscallBase + 60 // 0x103C - Share caller's pages into target shepherd
 )

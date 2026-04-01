@@ -17,7 +17,6 @@ import (
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
-	"mazzy/mazarin/mem"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/wm"
@@ -25,6 +24,9 @@ import (
 	"strconv"
 	"unsafe"
 )
+
+//go:linkname nanotime runtime.nanotime
+func nanotime() int64
 
 // Screen dimensions — read from kernel constraint attributes at startup.
 var screenW, screenH int
@@ -42,10 +44,11 @@ type cityInfo struct {
 var wmRb *ringbuf.RingBuffer
 var rachelSID int
 
-// announceToWM sends AppStart (with backing store info) to rachel.
-func announceToWM(bsAddr uintptr, x, y, w, h int32) {
-	rachelSID = sys.MustGetShepherdByName("rachel")
+// backingStoreReadyCh delivers the BackingStoreReady message from the mailbox loop.
+var backingStoreReadyCh = make(chan wm.BackingStoreReadyMsg, 1)
 
+// announceToWM sends AppStart to rachel (no backing store — rachel allocates it).
+func announceToWM(x, y, w, h int32) {
 	myPID := os.Getpid()
 	var err error
 	wmRb, err = ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
@@ -57,12 +60,10 @@ func announceToWM(bsAddr uintptr, x, y, w, h int32) {
 	var msg wm.AppStartMsg
 	msg.Type = wm.MsgAppStart
 	msg.SID = int64(myPID)
-	msg.BackingStoreAddr = int64(bsAddr)
 	msg.X = x
 	msg.Y = y
 	msg.Width = w
 	msg.Height = h
-	msg.Stride = w * 4
 	wmRb.Push(unsafe.Pointer(&msg))
 
 	if err := sys.MailboxSend(rachelSID, wm.WMNotify, wmRb.Addr()); err != nil {
@@ -84,7 +85,7 @@ func sendBlit() {
 	_ = sys.MailboxSend(rachelSID, wm.WMNotify, wmRb.Addr())
 }
 
-// mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus, FontResponse).
+// mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus, FontResponse, BackingStoreReady).
 func mailboxRecvLoop(fc *fontcache.FontCache) {
 	for {
 		notif, err := sys.MailboxRecv()
@@ -99,7 +100,17 @@ func mailboxRecvLoop(fc *fontcache.FontCache) {
 			rb := ringbuf.Open(uintptr(notif.RingAddr))
 			var raw [wm.SizeWMMessage]byte
 			for rb.Pop(unsafe.Pointer(&raw[0])) {
-				_ = *(*int64)(unsafe.Pointer(&raw[0]))
+				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
+				switch msgType {
+				case wm.MsgBackingStoreReady:
+					bsr := *(*wm.BackingStoreReadyMsg)(unsafe.Pointer(&raw[0]))
+					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] BackingStoreReady: VA=0x%x total=%dx%d inset=(%d,%d) app=%dx%d\n",
+						bsr.BackingStoreAddr, bsr.TotalWidth, bsr.TotalHeight,
+						bsr.LeftInset, bsr.TopInset, bsr.AppWidth, bsr.AppHeight))
+					backingStoreReadyCh <- bsr
+				default:
+					// Other messages (YouHaveFocus, etc.) — drain and ignore for now.
+				}
 			}
 		}
 	}
@@ -297,24 +308,7 @@ func main() {
 		winH = 300
 	}
 
-	// 8. Allocate shared-page backing store at the real window size.
-	sys.UartWriteDirectString("[clocks] allocating backing store\n")
-	bsStride := winW * 4
-	bsBytes := bsStride * winH
-	bsPages := (bsBytes + 4095) / 4096
-	bsSlice, err := mem.AllocPagesSlice(bsPages, mem.PageShared)
-	if err != nil {
-		panic(fmt.Sprintf("[clocks] FATAL: AllocPages for backing store: %v", err))
-	}
-	bsImg := &image.RGBA{
-		Pix:    bsSlice,
-		Stride: bsStride,
-		Rect:   image.Rect(0, 0, winW, winH),
-	}
-	dc := mancini.NewDrawContextForImage(bsImg, provider)
-	sys.UartWriteDirectString("[clocks] backing store allocated, computing position\n")
-
-	// 9. Compute screen position via rachel's visibleArea constraints.
+	// 8. Compute screen position via rachel's visibleArea constraints.
 	var posXAttr, posYAttr *attr.Attribute[int64]
 	if rachelSID >= 0 {
 		rachelSIDStr := strconv.Itoa(rachelSID)
@@ -322,12 +316,10 @@ func main() {
 		vaYURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/y"
 		vaWURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/w"
 
-		// X = visibleArea.x + visibleArea.w - appWindow.Width (right-align)
 		xProg := mancini.BindStrings(mancini.ProgAddSubDeref,
 			"_a_", vaXURI, "_b_", vaWURI, "_c_", appLH.Width.URI())
 		posXAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
 
-		// Y = visibleArea.y (top-align)
 		yProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaYURI)
 		posYAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
 
@@ -344,24 +336,83 @@ func main() {
 		winY = screenH/2 - winH/2
 	}
 
-	// 10. Draw to the backing store at (0,0) — screen position is rachel's concern.
+	// 9. Publish Ready, announce to rachel (no backing store — rachel allocates it).
+	_ = appLH.Bounds.Get()
+	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
+	_ = readyAttr
+	sys.UartWriteString("[clocks] Ready=true\n")
+
+	announceToWM(int32(winX), int32(winY), int32(winW), int32(winH))
+
+	// 10. Wait for rachel to allocate backing store and share it with us.
+	sys.UartWriteDirectString("[clocks] waiting for BackingStoreReady...\n")
+	bsr := <-backingStoreReadyCh
+
+	// Create a []byte slice over the shared backing store.
+	totalW := int(bsr.TotalWidth)
+	totalH := int(bsr.TotalHeight)
+	totalStride := int(bsr.TotalStride)
+	bsSlice := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(bsr.BackingStoreAddr))), totalStride*totalH)
+
+	// Create image.RGBA over the full buffer (including border areas).
+	bsImg := &image.RGBA{
+		Pix:    bsSlice,
+		Stride: totalStride,
+		Rect:   image.Rect(0, 0, totalW, totalH),
+	}
+	dc := mancini.NewDrawContextForImage(bsImg, provider)
+
+	// Translate origin so (0,0) is the app area, and clip to app bounds.
+	leftInset := float64(bsr.LeftInset)
+	topInset := float64(bsr.TopInset)
+	dc.Push()
+	dc.Translate(leftInset, topInset)
+	dc.DrawRectangle(0, 0, float64(winW), float64(winH))
+	dc.Clip()
+
+	sys.UartWriteDirectString(fmt.Sprintf("[clocks] backing store ready: total=%dx%d inset=(%d,%d) app=%dx%d\n",
+		totalW, totalH, bsr.LeftInset, bsr.TopInset, winW, winH))
+
+	// 11. Draw to the backing store at (0,0) — screen position is rachel's concern.
 	sys.UartWriteDirectString("[clocks] starting real draw\n")
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
 	dc.SetColor(pal.Surface())
 	dc.FillRectangle(0, 0, float64(winW), float64(winH))
 	app.SetDC(dc)
+	std.ResetDrawPerf()
+	drawT0 := nanotime()
 	app.Draw(app, 0, 0, int64(winW), int64(winH))
+	drawTotal := nanotime() - drawT0
 	sys.UartWriteDirectString("[clocks] real draw complete\n")
-
-	// 11. Force Bounds evaluation, publish Ready, announce to rachel.
-	_ = appLH.Bounds.Get()
-	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
-	_ = readyAttr
-	sys.UartWriteString("[clocks] Ready=true\n")
-
-	bsAddr := uintptr(unsafe.Pointer(&bsSlice[0]))
-	announceToWM(bsAddr, int32(winX), int32(winY), int32(winW), int32(winH))
+	ps := std.GetDrawPerf()
+	sys.UartWriteDirectString(fmt.Sprintf("[clocks] DRAW PERF total=%dms\n", drawTotal/1e6))
+	sys.UartWriteDirectString(fmt.Sprintf("[clocks]   shadow: alloc=%dms(%d/%dKB) gg=%dms(%d) cvt=%dms blur=%dms(%d) comp=%dms face=%dms\n",
+		ps.AllocNs.Load()/1e6, ps.AllocCount.Load(), ps.AllocBytes.Load()/1024,
+		ps.GGDrawNs.Load()/1e6, ps.GGCount.Load(),
+		ps.ConvertNs.Load()/1e6,
+		ps.BlurNs.Load()/1e6, ps.BlurCount.Load(),
+		ps.ComposeNs.Load()/1e6,
+		ps.FaceNs.Load()/1e6))
+	sys.UartWriteDirectString(fmt.Sprintf("[clocks]   tree: appDecor=%dms appClip=%dms appChild=%dms\n",
+		ps.AppDecorateNs.Load()/1e6,
+		ps.AppClipNs.Load()/1e6,
+		ps.AppChildNs.Load()/1e6))
+	rowLine := fmt.Sprintf("[clocks]   row: children=%d [", ps.RowChildCount.Load())
+	for i := int64(0); i < ps.RowChildCount.Load() && i < int64(len(ps.RowChildNs)); i++ {
+		if i > 0 {
+			rowLine += ","
+		}
+		rowLine += fmt.Sprintf("%dms", ps.RowChildNs[i].Load()/1e6)
+	}
+	rowLine += "]\n"
+	sys.UartWriteDirectString(rowLine)
+	sys.UartWriteDirectString(fmt.Sprintf("[clocks]   detail: neuDecor=%dms neuChild=%dms clockFace=%dms label=%dms(%d) colChild=%dms\n",
+		ps.NeuDecorNs.Load()/1e6,
+		ps.NeuChildNs.Load()/1e6,
+		ps.ClockFaceNs.Load()/1e6,
+		ps.LabelNs.Load()/1e6, ps.LabelCount.Load(),
+		ps.ColChildNs.Load()/1e6))
 
 	// 12. Instrumentation counters.
 	eagerAttr := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
@@ -376,7 +427,7 @@ func main() {
 		_ = timeSec.Get()
 		_ = timeNanos.Get()
 
-		// Draw to backing store at local (0,0).
+		// Draw to backing store at local (0,0) — translate+clip handle offset.
 		app.Draw(app, 0, 0, int64(winW), int64(winH))
 		drawCount.Add(1)
 		sendBlit()

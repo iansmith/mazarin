@@ -44,22 +44,40 @@ const (
 	MsgKeyRelease int64 = 8
 	// MsgBlit: shepherd→WM. "My backing store is ready, blit me."
 	MsgBlit int64 = 9
+	// MsgBackingStoreReady: WM→shepherd. "Here is your shared backing store."
+	MsgBackingStoreReady int64 = 10
 )
 
 // AppStartMsg is sent by a shepherd to the WM when it starts up.
-// Includes the backing store address and screen placement so rachel
-// can blit the window to the framebuffer.
-// Layout: 8+8+8+4+4+4+4+4 + 84 pad = 128 bytes.
+// Rachel allocates the backing store and shares it back via MsgBackingStoreReady.
+// Layout: 8+8+4+4+4+4 + 96 pad = 128 bytes.
 type AppStartMsg struct {
-	Type             int64 // MsgAppStart
-	SID              int64 // Shepherd ID of the sender
-	BackingStoreAddr int64 // VA of shared-page backing store pixel data
-	X                int32 // screen X position
-	Y                int32 // screen Y position
-	Width            int32 // backing store width in pixels
-	Height           int32 // backing store height in pixels
-	Stride           int32 // bytes per scanline (Width * 4)
-	_                [84]byte
+	Type   int64 // MsgAppStart
+	SID    int64 // Shepherd ID of the sender
+	X      int32 // desired screen X position
+	Y      int32 // desired screen Y position
+	Width  int32 // desired app width in pixels
+	Height int32 // desired app height in pixels
+	_      [96]byte
+}
+
+// BackingStoreReadyMsg is sent by the WM to a shepherd after allocating
+// and sharing the backing store. The client uses BackingStoreAddr to create
+// a []byte slice over the full buffer (TotalWidth × TotalHeight), then
+// sets up a DrawContext with Translate(LeftInset, TopInset) and clips to
+// (0, 0, AppWidth, AppHeight) so all drawing is in app-local coordinates.
+// Layout: 8+8+4+4+4+4+4+4+4+4 = 48, + 80 pad = 128 bytes.
+type BackingStoreReadyMsg struct {
+	Type             int64 // MsgBackingStoreReady
+	BackingStoreAddr int64 // client's VA of the shared backing store
+	TotalWidth       int32 // full buffer width including borders
+	TotalHeight      int32 // full buffer height including borders
+	TotalStride      int32 // bytes per scanline (TotalWidth * 4)
+	LeftInset        int32 // pixels from left edge to app area
+	TopInset         int32 // pixels from top edge to app area
+	AppWidth         int32 // app drawing area width
+	AppHeight        int32 // app drawing area height
+	_                [80]byte
 }
 
 // BlitMsg is sent by a shepherd to the WM after completing a draw pass.

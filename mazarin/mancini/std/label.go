@@ -135,11 +135,14 @@ func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if !self.Visible() {
 		return
 	}
+	tl := nanotime()
 
 	// Super — clear background to theme BgColor.
 	l.ThemedInteractor.Draw(self, x, y, w, h)
 
 	if l.textFace == nil {
+		drawPerf.LabelNs.Add(nanotime() - tl)
+		drawPerf.LabelCount.Add(1)
 		return
 	}
 
@@ -147,4 +150,6 @@ func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
 	dc.SetColor(l.Color)
 	l.textFace.SetText(l.resolveText())
 	l.textFace.DrawFace(dc, float64(x), float64(y), float64(w), float64(h))
+	drawPerf.LabelNs.Add(nanotime() - tl)
+	drawPerf.LabelCount.Add(1)
 }

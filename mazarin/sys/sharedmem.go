@@ -38,6 +38,30 @@ func TransferAndUnmap(targetPID int, sourceVA uintptr, numPages int) (uintptr, e
 	return TransferPages(targetPID, sourceVA, numPages, 0) // elfFlags=0 → RW
 }
 
+// SharePagesWithTarget maps a range of the caller's pages into a target
+// shepherd's address space as shared pages. The caller retains ownership.
+// Physical pages need not be contiguous; VAs are contiguous in both spaces.
+// Returns the target VA base address.
+//
+// va must be page-aligned. numPages must be 1..4096.
+func SharePagesWithTarget(targetPID int, va uintptr, numPages int) (uintptr, error) {
+	r1, _, errno := syscall.RawSyscall6(
+		mazzy.SysSharePagesWithTarget,
+		uintptr(targetPID),
+		va,
+		uintptr(numPages),
+		0, 0, 0,
+	)
+
+	if errno != 0 {
+		return 0, errno
+	}
+	if int64(r1) < 0 {
+		return 0, syscall.Errno(-int64(r1))
+	}
+	return r1, nil
+}
+
 // MapSharedPage creates a shared mapping of a page owned by another shepherd
 // into the calling shepherd's address space. Both shepherds can access the same
 // physical page. The page's refcount is incremented. Returns the caller VA.

@@ -69,7 +69,9 @@ func NewNeuCircleNamed(myName, parent string, pal mancini.Palette,
 // the shadow circle remains visible. The full decorator margins are for
 // shadow overflow; the bevel is the visible 3D ring.
 func (n *NeuCircle) Draw(self mancini.Interactor, x, y, w, h int64) {
+	tnd := nanotime()
 	n.Decorator.DecorateIfNeeded(self, x, y, w, h)
+	drawPerf.NeuDecorNs.Add(nanotime() - tnd)
 
 	children := n.GetChildren()
 	if len(children) == 0 {
@@ -93,9 +95,11 @@ func (n *NeuCircle) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
 		cs.SetDC(self.DC())
 	}
+	tnc := nanotime()
 	if drawer, ok := child.(mancini.NewDrawer); ok {
 		drawer.Draw(child, childX, childY, childW, childH)
 	}
+	drawPerf.NeuChildNs.Add(nanotime() - tnc)
 }
 
 // Decorate implements mancini.Decoratable — draws neumorphic circular

@@ -112,7 +112,9 @@ func (c *Clock) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 
 	if c.Face != nil {
+		tcf := nanotime()
 		c.Face.DrawFace(dc, c.Fonts, c.Pal, cx, cy, rad, hour, minute, second, millis)
+		drawPerf.ClockFaceNs.Add(nanotime() - tcf)
 	}
 }
 
