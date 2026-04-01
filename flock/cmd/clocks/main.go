@@ -144,6 +144,8 @@ func main() {
 	}
 	pal := mctheme.NewDefaultPaletteSwapRB()
 
+	sys.UartWriteString("[clocks] fonts configured, building cities\n")
+
 	// 3. Define cities with their timezones.
 	cities := []cityInfo{
 		{name: "Atlanta", id: "Atlanta", tz: "America/New_York", tzLabel: "US/New_York"},
@@ -154,13 +156,17 @@ func main() {
 		{name: "Los Angeles", id: "LosAngeles", tz: "America/Los_Angeles", tzLabel: "US/Los_Angeles"},
 	}
 	for i := range cities {
+		sys.UartWriteDirectString("[clocks] loading tz " + cities[i].tz + "...\n")
 		loc, err := time.LoadLocation(cities[i].tz)
 		if err != nil {
-			sys.UartWriteString("[clocks] tz " + cities[i].tz + " failed: " + err.Error() + "\n")
+			sys.UartWriteDirectString("[clocks] tz " + cities[i].tz + " FAILED\n")
 			loc = time.UTC
+		} else {
+			sys.UartWriteDirectString("[clocks] tz " + cities[i].tz + " OK\n")
 		}
 		cities[i].loc = loc
 	}
+	sys.UartWriteString("[clocks] timezones loaded\n")
 	// 4. Time tracking via constraint system — needed by Clock widgets.
 	timeProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/time/utc_seconds")
@@ -171,6 +177,7 @@ func main() {
 	timeNanos := attr.ConstraintI64(attr.ShepherdURI("int64", "time_nanos"), nanosProg)
 	timeNanos.SetEager(true)
 	_ = timeNanos.Get()
+	sys.UartWriteString("[clocks] time constraints created\n")
 	// 5. Build interactor tree: AppWindow → Row → 6 Columns → [Label, NeuCircle→Clock, Label].
 	// All new-system types. Children discover parents via constraint network.
 	textColor := color.NRGBA{0, 0, 0, 255}
@@ -258,6 +265,7 @@ func main() {
 		_ = i
 	}
 
+	sys.UartWriteString("[clocks] interactor tree built\n")
 	// 6. Read kernel screen dimensions for DrawContext sizing.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/screen/width")
@@ -267,33 +275,30 @@ func main() {
 	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW = int(screenWAttr.Get())
 	screenH = int(screenHAttr.Get())
+	sys.UartWriteString(fmt.Sprintf("[clocks] screen dimensions: %dx%d\n", screenW, screenH))
 	// 7. Sizing draw — allocate a screen-sized scratch image and draw at (0,0)
 	// to let the constraint system compute actual dimensions. No pixels from
 	// this draw ever reach the framebuffer.
 	provider := fontcache.NewFontSvcGlyphProvider(fc)
-	scratchImg := image.NewRGBA(image.Rect(0, 0, screenW, screenH))
-	scratchDC := mancini.NewDrawContextForImage(scratchImg, provider)
 
 	appLH := app.GetLayout()
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
-	app.SetDC(scratchDC)
-	app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
 
-	// Read constraint-computed size.
+	// Skip sizing draw for now — use constraint-computed width
+	// (AppWindow sets 850 + margins) and a reasonable height.
 	winW := int(appLH.Width.Get())
 	winH := int(appLH.Height.Get())
+	sys.UartWriteDirectString("[clocks] constraint size w=" + strconv.Itoa(winW) + " h=" + strconv.Itoa(winH) + "\n")
 	if winW < 100 {
-		winW = 800
+		winW = 850
 	}
 	if winH < 50 {
-		winH = 250
+		winH = 300
 	}
-	// Done with scratch — let it be GC'd.
-	scratchImg = nil
-	scratchDC = nil
 
 	// 8. Allocate shared-page backing store at the real window size.
+	sys.UartWriteDirectString("[clocks] allocating backing store\n")
 	bsStride := winW * 4
 	bsBytes := bsStride * winH
 	bsPages := (bsBytes + 4095) / 4096
@@ -307,6 +312,7 @@ func main() {
 		Rect:   image.Rect(0, 0, winW, winH),
 	}
 	dc := mancini.NewDrawContextForImage(bsImg, provider)
+	sys.UartWriteDirectString("[clocks] backing store allocated, computing position\n")
 
 	// 9. Compute screen position via rachel's visibleArea constraints.
 	var posXAttr, posYAttr *attr.Attribute[int64]
@@ -339,12 +345,14 @@ func main() {
 	}
 
 	// 10. Draw to the backing store at (0,0) — screen position is rachel's concern.
+	sys.UartWriteDirectString("[clocks] starting real draw\n")
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
 	dc.SetColor(pal.Surface())
 	dc.FillRectangle(0, 0, float64(winW), float64(winH))
 	app.SetDC(dc)
 	app.Draw(app, 0, 0, int64(winW), int64(winH))
+	sys.UartWriteDirectString("[clocks] real draw complete\n")
 
 	// 11. Force Bounds evaluation, publish Ready, announce to rachel.
 	_ = appLH.Bounds.Get()

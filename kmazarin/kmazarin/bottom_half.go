@@ -11,6 +11,7 @@ import (
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
+	"mazzy/shared/iouring"
 	"sync/atomic"
 	"unsafe"
 )
@@ -158,6 +159,7 @@ type blockAsyncSlot struct {
 	dataKernelVA    uintptr // Kernel VA of data page (PA + KernelMMIOOffset)
 	dataLen         uint32  // Data buffer size (for cache invalidate)
 	clumpAddr       uintptr // VA of *proc.DMAClump, stored as uintptr (no write barrier)
+	userData        uint64  // Opaque tag from io_uring SQEntry.UserData, written to CQEntry
 }
 
 var blockAsyncSlots [256]blockAsyncSlot // indexed by IOTag (descriptor head index)
@@ -178,7 +180,7 @@ func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32, enginePtr u
 // clumpAddr is the VA of the *proc.DMAClump stored as uintptr (0 if no clump).
 //
 //go:nosplit
-func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32, clumpAddr uintptr) {
+func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32, clumpAddr uintptr, userData uint64) {
 	if tag < 256 {
 		blockAsyncSlots[tag] = blockAsyncSlot{
 			sidecarStatusVA: sidecarStatusVA,
@@ -186,6 +188,7 @@ func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, da
 			dataKernelVA:    dataKernelVA,
 			dataLen:         dataLen,
 			clumpAddr:       clumpAddr,
+			userData:        userData,
 		}
 	}
 }
@@ -451,19 +454,34 @@ func NonTimerIRQTopHalf() {
 				}
 
 				atomic.AddUint32(&dbgBlockAsyncEvents, 1)
-				ev := hid.HIDEvent{
-					Type:  tag,
-					Code:  status,
-					Value: info.UsedLen,
-				}
-				// Push to shared completion ring if registered, else legacy ring
-				crKVA := blockCompletionRingKVA
-				if crKVA != 0 {
-					if !completionRingPush(crKVA, ev) {
-						atomic.AddUint32(&dbgBlockRingFull, 1)
+
+				// Write completion: io_uring CQ if active, else legacy path.
+				if atomic.LoadInt32(&IOUringBlockedRingID) >= 0 {
+					ioSlot, ioRing := GetIOUringSlotForIRQ()
+					if ioSlot != nil && ioRing != nil {
+						cqTail := ioRing.CQTail
+						cqIdx := cqTail & iouring.CQMask
+						ioRing.CQEntries[cqIdx] = iouring.CQEntry{
+							UserData: meta.userData,
+							Res:      int32(info.UsedLen),
+						}
+						asm.Dsb()
+						atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
 					}
 				} else {
-					ringPush(&topHalfBlockRing, ev)
+					ev := hid.HIDEvent{
+						Type:  tag,
+						Code:  status,
+						Value: info.UsedLen,
+					}
+					crKVA := blockCompletionRingKVA
+					if crKVA != 0 {
+						if !completionRingPush(crKVA, ev) {
+							atomic.AddUint32(&dbgBlockRingFull, 1)
+						}
+					} else {
+						ringPush(&topHalfBlockRing, ev)
+					}
 				}
 
 				// Clear metadata slot
@@ -481,8 +499,10 @@ func NonTimerIRQTopHalf() {
 			atomic.StoreUint32(&dbgBlockLastAvailIdx, uint32(eng.VQ.Available.Idx))
 
 			atomic.AddUint32(&dbgBlockIRQAsync, 1)
-			// Wake via mailbox if shared ring registered, else legacy slot wake
-			if blockCompletionRingKVA != 0 {
+			// Wake: io_uring direct wake, else mailbox, else legacy slot.
+			if atomic.LoadInt32(&IOUringBlockedRingID) >= 0 {
+				WakeIOUringFromIRQ()
+			} else if blockCompletionRingKVA != 0 {
 				mailboxSendFromIRQ(blockCompletionRingOwnerSID, hid.BlockIOCompleteCode)
 			} else {
 				WakeSlotForIRQ(hid.BlockVirtualIRQ)

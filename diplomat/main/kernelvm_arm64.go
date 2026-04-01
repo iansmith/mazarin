@@ -170,7 +170,7 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 	// Step 4: Compute unified pool (remaining RAM after all our allocations)
 	// This is the memory kmazarin's allocator will manage
 	// Use RAM after our highest allocation as the unified pool
-	unifiedPoolPages := uint64(65536) // 65536 pages (256MB) for kmazarin's unified allocator
+	unifiedPoolPages := uint64(193536) // 193536 pages (756MB) for kmazarin's unified allocator
 	unifiedPhys, err := allocatePhysPages(unifiedPoolPages)
 	if err != nil {
 		// If we can't allocate more, use what we have

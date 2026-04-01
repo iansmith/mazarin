@@ -2,6 +2,7 @@ package ext2
 
 import (
 	"encoding/binary"
+	"time"
 
 	"mazzy/shared/blockdev"
 )
@@ -18,6 +19,8 @@ type FileSystem struct {
 	numGroups uint32
 	// Scratch buffer for partial-block reads (sized to max device block size)
 	sectorBuf [4096]byte
+	// Reusable LBA buffer for readBlocks — avoids allocation on every call
+	lbaBuf []uint64
 	// Write support (populated by MountRW)
 	writable     bool
 	blockBitmaps [][]byte // one bitmap per group
@@ -169,16 +172,49 @@ func (fs *FileSystem) readBlocks(blockNums []uint32, dst []byte) error {
 
 	// Try batch path.
 	if bdev, ok := fs.device.(blockdev.BatchBlockDevice); ok {
+		if h := ReadBlocksPreHook; h != nil && len(blockNums) > 100 {
+			h(len(blockNums))
+		}
 		// Build LBA list — one device LBA per device sector.
 		// Each fs block may span multiple device sectors.
-		lbas := make([]uint64, 0, len(blockNums)*int(sectorsPerFSBlock))
-		for _, bn := range blockNums {
-			baseLBA := uint64(bn) * sectorsPerFSBlock
-			for s := uint64(0); s < sectorsPerFSBlock; s++ {
-				lbas = append(lbas, baseLBA+s)
+		tLBA := time.Now()
+		// Reuse fs.lbaBuf to avoid allocation on every call.
+		// Grow only when needed — the backing array persists across calls.
+		needed := len(blockNums) * int(sectorsPerFSBlock)
+		if cap(fs.lbaBuf) < needed {
+			fs.lbaBuf = make([]uint64, needed)
+		}
+		lbas := fs.lbaBuf[:needed]
+		tMake := time.Since(tLBA)
+		tLoopStart := time.Now()
+		if sectorsPerFSBlock == 1 {
+			for i, bn := range blockNums {
+				lbas[i] = uint64(bn)
+			}
+		} else {
+			idx := 0
+			for _, bn := range blockNums {
+				baseLBA := uint64(bn) * sectorsPerFSBlock
+				for s := uint64(0); s < sectorsPerFSBlock; s++ {
+					lbas[idx] = baseLBA + s
+					idx++
+				}
 			}
 		}
-		return bdev.ReadBlocks(lbas, dst)
+		tLoop := time.Since(tLoopStart)
+		tLBADone := time.Since(tLBA)
+		tRead := time.Now()
+		err := bdev.ReadBlocks(lbas, dst)
+		tReadDone := time.Since(tRead)
+		if len(blockNums) > 100 {
+			if ReadBlocksTimingHook != nil {
+				ReadBlocksTimingHook(len(blockNums), tMake, tLoop, tLBADone, tReadDone)
+			}
+			if h := ReadBlocksPostHook; h != nil {
+				h(len(blockNums))
+			}
+		}
+		return err
 	}
 
 	// Fallback: individual reads.

@@ -63,4 +63,6 @@ const (
 	SysBlockSubmit     = MazzySyscallBase + 55 // 0x1037 - Async block I/O submit (returns IOTag)
 	SysReadFilePages          = MazzySyscallBase + 56 // 0x1038 - Read file data into caller's DMA pages
 	SysRegisterCompletionRing = MazzySyscallBase + 57 // 0x1039 - Register shared completion ring page
+	SysIOUringSetup           = MazzySyscallBase + 58 // 0x103A - Create io_uring instance (pin ring page)
+	SysIOUringEnter           = MazzySyscallBase + 59 // 0x103B - Submit SQEs + wait for CQEs
 )

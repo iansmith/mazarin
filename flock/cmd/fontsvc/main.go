@@ -240,9 +240,14 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 	maxCachePages := (textshape.MaxCacheSize + 4095) / 4096
 	cache, err2 := mem.AllocPagesSlice(maxCachePages, mem.PageFontCache)
 	if err2 != nil {
-		rawPuts("[fontsvc] AllocPages for cache failed\n")
-		sendOpenFontError(conn, senderSID)
-		return
+		rawPuts("[fontsvc] AllocPages for cache failed — requesting panic\n")
+		rawPutsInt(maxCachePages)
+		rawPuts(" pages for ")
+		rawPuts(path)
+		rawPuts(" size=")
+		rawPutsInt(int(msg.Size))
+		rawPuts("\n")
+		panic("[fontsvc] AllocPages for font cache failed: OOM")
 	}
 
 	// Build V2 cache into kernel-allocated pages.

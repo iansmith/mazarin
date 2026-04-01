@@ -3,10 +3,22 @@ package fontcache
 import (
 	"bytes"
 	"fmt"
+	"mazzy/mazarin/sys"
 	"mazarin/textshape"
+	"strconv"
+	"sync/atomic"
 	"unsafe"
 
 	goFont "github.com/go-text/typesetting/font"
+)
+
+// Instrumentation counters for glyph lookup.
+var (
+	glyphTier1Hits  atomic.Int64
+	glyphTier2Hits  atomic.Int64
+	glyphTier2IPC   atomic.Int64
+	glyphTier2Miss  atomic.Int64
+	glyphNoCacheHit atomic.Int64
 )
 
 // FontSvcGlyphProvider implements textshape.GlyphProvider using IPC to
@@ -94,7 +106,21 @@ func (p *FontSvcGlyphProvider) OpenFont(req textshape.OpenFontRequest) (textshap
 		metrics:  metrics,
 	}
 
+	sys.UartWriteString("[provider] OpenFont fontID=" + strconv.Itoa(int(fontID)) +
+		" cacheLen=" + strconv.Itoa(len(cache)) +
+		" fontDataLen=" + strconv.Itoa(len(fontData)) +
+		" face=" + fmt.Sprintf("%p", face) + "\n")
+
 	return metrics, nil
+}
+
+// DumpGlyphStats prints glyph lookup statistics.
+func DumpGlyphStats() {
+	sys.UartWriteString("[provider] glyph stats: tier1=" + strconv.FormatInt(glyphTier1Hits.Load(), 10) +
+		" tier2=" + strconv.FormatInt(glyphTier2Hits.Load(), 10) +
+		" ipc=" + strconv.FormatInt(glyphTier2IPC.Load(), 10) +
+		" noCache=" + strconv.FormatInt(glyphNoCacheHit.Load(), 10) +
+		" miss=" + strconv.FormatInt(glyphTier2Miss.Load(), 10) + "\n")
 }
 
 // Face returns the go-text Face for the given fontID, parsed from shared
@@ -120,16 +146,27 @@ func (p *FontSvcGlyphProvider) GlyphByGID(fontID int32, gid uint32) (*textshape.
 	if len(ff.cache) > 0 {
 		info, alpha := textshape.LookupByGID(ff.cache, gid)
 		if info != nil {
+			glyphTier1Hits.Add(1)
 			return info, alpha, nil
+		}
+	} else {
+		n := glyphNoCacheHit.Add(1)
+		if n <= 3 {
+			sys.UartWriteString("[provider] GlyphByGID: NO CACHE for fontID=" + strconv.Itoa(int(fontID)) + " gid=" + strconv.Itoa(int(gid)) + "\n")
 		}
 	}
 
 	// Tier 2: check local overflow map.
 	if t2, ok := ff.tier2[gid]; ok {
+		glyphTier2Hits.Add(1)
 		return &t2.info, t2.alpha, nil
 	}
 
 	// Tier 2 miss: request from fontsvc.
+	n := glyphTier2IPC.Add(1)
+	if n <= 5 {
+		sys.UartWriteString("[provider] GlyphByGID: tier2 IPC fontID=" + strconv.Itoa(int(fontID)) + " gid=" + strconv.Itoa(int(gid)) + "\n")
+	}
 	reply := p.fc.RequestGlyphByGID(fontID, gid)
 	if reply == nil || reply.GlyphSize == 0 {
 		return nil, nil, nil

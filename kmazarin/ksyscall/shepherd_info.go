@@ -28,7 +28,7 @@ func SyscallShepherdInfo(bufPtr, maxEntries, _, _, _, _ uint64) int64 {
 		p := &proc.ShepherdListData[i]
 
 		var entry hid.ShepherdInfoEntry
-		entry.PID = int16(p.PID)
+		entry.SID = int16(p.PID)
 		entry.ThreadCount = int16(p.ThreadCount)
 
 		// Copy filename from Go string into fixed-size buffer

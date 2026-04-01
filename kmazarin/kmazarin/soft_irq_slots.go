@@ -48,6 +48,12 @@ func GetBlockDeviceOwnerPID() int16 {
 	return blockDeviceOwnerPID
 }
 
+// SetBlockDeviceOwnerPID sets the block device owner PID.
+// Called from IOUringSetup when a shepherd claims block device ownership.
+func SetBlockDeviceOwnerPID(pid int16) {
+	blockDeviceOwnerPID = pid
+}
+
 // ============================================================================
 // Block Completion Ring — Shared Memory IRQ Delivery
 // ============================================================================

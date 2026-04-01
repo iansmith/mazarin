@@ -25,7 +25,7 @@ func GetShepherdByName(name string) (int, error) {
 	for _, e := range entries {
 		fn := string(e.Filename[:e.FilenameLen])
 		if fn == target {
-			matches = append(matches, int(e.PID))
+			matches = append(matches, int(e.SID))
 		}
 	}
 
@@ -37,7 +37,7 @@ func GetShepherdByName(name string) (int, error) {
 		}
 		// Validate that this SID exists.
 		for _, e := range entries {
-			if int(e.PID) == sid {
+			if int(e.SID) == sid {
 				if !GetReady(sid) {
 					return sid, ErrNotReady
 				}

@@ -18,6 +18,9 @@ func getCurrentThreadSIDAndTID() (proc.ShepherdId, int16)
 //go:linkname getBlockDeviceOwnerPID main.GetBlockDeviceOwnerPID
 func getBlockDeviceOwnerPID() int16
 
+//go:linkname setBlockDeviceOwnerPID main.SetBlockDeviceOwnerPID
+func setBlockDeviceOwnerPID(pid int16)
+
 // saveAndDisableIRQs disables IRQs and returns the previous DAIF state.
 // Used to protect delegate queue critical sections from preemption.
 //
@@ -46,9 +49,10 @@ func blockForEpoll() uintptr
 
 // setBlockAsyncSlot stores per-tag metadata for async block I/O completions.
 // clumpAddr is the VA of *proc.DMAClump stored as uintptr (0 if no clump).
+// userData is the opaque tag from io_uring SQEntry (0 for legacy BlockSubmit path).
 //
 //go:linkname setBlockAsyncSlot main.SetBlockAsyncSlot
-func setBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32, clumpAddr uintptr)
+func setBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32, clumpAddr uintptr, userData uint64)
 
 // enableBlockAsyncMode switches the block device top-half to async completion delivery.
 //

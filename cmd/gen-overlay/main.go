@@ -265,7 +265,6 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"syscall/asm_linux_amd64.s":   "asm_linux_amd64.s",
 		"syscall/asm_linux_riscv64.s": "asm_linux_riscv64.s",
 		"runtime/cgo_mmap.go":         "runtime/cgo_mmap.go",
-		"runtime/proc.go":             "runtime/proc.go",
 
 		"runtime/maz_moduledata.go":     "runtime/maz_moduledata.go",
 

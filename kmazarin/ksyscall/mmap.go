@@ -33,7 +33,7 @@ const (
 // The kernel writes via its own VA mapping (PA + KernelVAOffset).
 const (
 	UserConstraintPagesVA   = 0x00007FFD00000000 // Fixed VA for constraint pages
-	UserConstraintPagesSize = 0x80000            // 512KB = 128 pages (initial capacity)
+	UserConstraintPagesSize = 0x200000           // 2MB = 512 pages (matches ConstraintTotalSize)
 )
 
 // userspaceActive is set to true when we jump to userspace.

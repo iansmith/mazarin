@@ -158,15 +158,6 @@ func buddyAddRange(start, end uintptr) {
 //
 //go:nosplit
 func buddyInsertFree(pa uintptr, order int) {
-	// Guard against inserting kmazarin code pages into free list.
-	// Uses RawUART (not PollWrite) to avoid nosplit stack overflow on AMD64.
-	if pa >= 0x90000000 && pa < 0x90400000 {
-		serial.RawUART('!')
-		serial.RawUART('!')
-		serial.RawUART('!')
-		for {
-		}
-	}
 	va := pa + buddyAlloc.kernelVAOffset
 	// Write current head as next pointer.
 	// Use unsafe pointer arithmetic to avoid bounds-check calls to runtime.panicIndex

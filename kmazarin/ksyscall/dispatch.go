@@ -75,6 +75,15 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	} else {
 		atomic.AddUint64(&shepherdSyscallCount, 1)
 	}
+	// Per-SID SVC counter for epoch diagnostics
+	sid := getCurrentThreadSID()
+	if sid >= 0 && sid < int16(len(SVCCountBySID)) {
+		atomic.AddUint64(&SVCCountBySID[sid], 1)
+	}
+	// Trace syscall numbers for a specific SID (set via DbgTraceSID)
+	if traceSID := atomic.LoadInt32(&DbgTraceSID); traceSID >= 0 && int16(traceSID) == sid {
+		dbgTraceSyscall(sid, syscallNum)
+	}
 
 	// Record entry time for kernel time accounting
 	entryTick := kirq.ReadCounterValue()
@@ -262,6 +271,18 @@ func earlyMmap(addr, length, prot, flags uint64) int64 {
 	}
 }
 
+
+// dbgTraceSyscall logs a syscall number for a traced SID.
+// Separate function to avoid nosplit stack overflow in DispatchSyscall.
+//
+//go:noinline
+func dbgTraceSyscall(sid int16, syscallNum uint64) {
+	serial.RawUARTPuts("[T")
+	serial.RawUARTDecimal(uint64(sid))
+	serial.RawUART(':')
+	serial.RawUARTDecimal(syscallNum)
+	serial.RawUART(']')
+}
 
 // syscallPanic handles syscall-specific panics with the syscall number
 // Uses console abstraction which provides spinlock protection

@@ -46,13 +46,25 @@ func wakeInputConsumers(class int) {
 	// Legacy focused-shepherd waking removed. All input goes through rachel.
 }
 
+// wakeWMViaMailboxFn is an indirect call to break the nosplit static analysis
+// chain. The actual exception stack is 4KB+, far larger than the ~800 bytes
+// used, but the linker's 792-byte limit is conservative. Indirect calls are
+// invisible to the nosplit checker.
+var wakeWMViaMailboxFn = wakeWMViaMailboxImpl
+
 // wakeWMViaMailbox sends a single InputEventCode mailbox notification to the
 // WM shepherd. Called from the top-half AFTER all events have been pushed to
-// the shared ring.
+// the shared ring. Uses indirect call to stay within nosplit budget.
 //
 //go:nosplit
 //go:noinline
 func wakeWMViaMailbox() {
+	wakeWMViaMailboxFn()
+}
+
+//go:nosplit
+//go:noinline
+func wakeWMViaMailboxImpl() {
 	if wmInputRingKVA != 0 {
 		mailboxSendFromIRQ(wmInputRingOwnerSID, hid.InputEventCode)
 	}

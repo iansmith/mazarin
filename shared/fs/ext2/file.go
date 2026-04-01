@@ -1,5 +1,31 @@
 package ext2
 
+import "time"
+
+// ReadIntoTimings captures per-phase timing from ReadInto for diagnostics.
+// Set ReadIntoTimingHook to a non-nil function to receive these after each call.
+type ReadIntoTimings struct {
+	Resolve  time.Duration
+	Separate time.Duration
+	Alloc    time.Duration
+	DMA      time.Duration
+	Copy     time.Duration
+	Total    time.Duration
+	Blocks   int
+}
+
+// ReadIntoTimingHook, if non-nil, is called after each ReadInto with phase timings.
+var ReadIntoTimingHook func(ReadIntoTimings)
+
+// ReadBlocksTimingHook, if non-nil, is called from readBlocks batch path with timing.
+var ReadBlocksTimingHook func(blocks int, makeAlloc, loop, lbaBuild, readCall time.Duration)
+
+// ReadBlocksPreHook, if non-nil, is called before readBlocks batch path (for tracing setup).
+var ReadBlocksPreHook func(blocks int)
+
+// ReadBlocksPostHook, if non-nil, is called after readBlocks batch path (for tracing teardown).
+var ReadBlocksPostHook func(blocks int)
+
 // File represents an open file on an ext2 filesystem.
 type File struct {
 	fs       *FileSystem
@@ -103,6 +129,8 @@ func (f *File) ReadInto(dst []byte) (int, error) {
 		return 0, ErrReadFailed
 	}
 
+	t0 := time.Now()
+
 	blockSize := int(f.fs.blockSize)
 	totalBlocks := uint32((fileSize + blockSize - 1) / blockSize)
 
@@ -111,7 +139,9 @@ func (f *File) ReadInto(dst []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	tResolve := time.Since(t0)
 
+	tSepStart := time.Now()
 	// Separate zero (sparse) blocks from real blocks.
 	// Build a list of non-zero blocks and track their positions.
 	type blockPos struct {
@@ -138,17 +168,24 @@ func (f *File) ReadInto(dst []byte) (int, error) {
 	if len(nonZero) == 0 {
 		return fileSize, nil
 	}
+	tSeparate := time.Since(tSepStart)
 
 	// Batch-read all non-zero blocks into a temporary buffer.
+	tAllocStart := time.Now()
 	batchLBAs := make([]uint32, len(nonZero))
 	for i, bp := range nonZero {
 		batchLBAs[i] = bp.blockNum
 	}
 	batchBuf := make([]byte, len(nonZero)*blockSize)
+	tAlloc := time.Since(tAllocStart)
+
+	tDMAStart := time.Now()
 	if err := f.fs.readBlocks(batchLBAs, batchBuf); err != nil {
 		return 0, err
 	}
+	tDMA := time.Since(tDMAStart)
 
+	tCopyStart := time.Now()
 	// Copy from batch buffer into the correct positions in dst.
 	for i, bp := range nonZero {
 		srcOff := i * blockSize
@@ -158,6 +195,19 @@ func (f *File) ReadInto(dst []byte) (int, error) {
 			end = fileSize
 		}
 		copy(dst[dstOff:end], batchBuf[srcOff:srcOff+(end-dstOff)])
+	}
+	tCopy := time.Since(tCopyStart)
+
+	if h := ReadIntoTimingHook; h != nil {
+		h(ReadIntoTimings{
+			Resolve:  tResolve,
+			Separate: tSeparate,
+			Alloc:    tAlloc,
+			DMA:      tDMA,
+			Copy:     tCopy,
+			Total:    time.Since(t0),
+			Blocks:   len(nonZero),
+		})
 	}
 
 	return fileSize, nil

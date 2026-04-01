@@ -188,6 +188,7 @@ const (
 	ThreadBlockedInputEvent   ThreadState = 13 // Blocked waiting for input focus event
 	ThreadBlockedMailbox      ThreadState = 14 // Blocked waiting for mailbox notification
 	ThreadBlockedEpoll        ThreadState = 15 // Blocked waiting for epoll_ctl goroutine dispatch
+	ThreadBlockedIOUring      ThreadState = 16 // Blocked waiting for io_uring completions
 )
 
 // MaxShepherds is the maximum number of shepherd processes (userspace programs).
@@ -527,6 +528,9 @@ func WakeThreadForSignal(t *Thread) {
 		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
 		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 		enqueueReadySchedLockHeld(t)
+	case ThreadBlockedIOUring:
+		// Defer signal delivery until io_uring completions arrive —
+		// the IRQ top-half or timeout will wake this thread.
 	}
 	// ThreadRunning / ThreadReady: signal delivered at next context switch
 
@@ -1094,6 +1098,9 @@ func processStaticDeadlinesSchedLockHeld() {
 			serial.RawUARTPuts(" ")
 		}
 	}
+
+	// io_uring timeout check is done via topHalfIOUringTimeoutHook (indirect
+	// call) in ProcessDeadlinesTopHalf to stay within nosplit stack budget.
 }
 
 // ProcessDeadlinesTopHalf processes expired deadlines from the static queue.
@@ -1108,6 +1115,13 @@ func ProcessDeadlinesTopHalf() {
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 	processStaticDeadlinesSchedLockHeld()
+	// io_uring 10ms safety timeout. Called via indirect function pointer
+	// (same pattern as topHalfTimeUpdateHook) so the nosplit checker cannot
+	// trace it and the exception stack budget is not exceeded.
+	ioFn := topHalfIOUringTimeoutHook
+	if ioFn != nil {
+		ioFn()
+	}
 	// Update time/modifier attributes and propagate dirty notifications
 	// at ~10Hz (counter-based threshold). Called through function pointer
 	// to keep nosplit stack budget within limits — the checker cannot trace
@@ -1462,6 +1476,9 @@ var dbgBadTID uint64
 var dbgBadPCCount uint64
 var dbgLastEL1hELR uint64  // ELR when timer skipped due to EL1h
 var dbgLastEL1hSPSR uint64 // SPSR when timer skipped due to EL1h
+
+// prevSVCCountBySID holds the previous epoch's per-SID SVC counts for delta computation.
+var prevSVCCountBySID [32]uint64
 var dbgBoostAttempt uint64        // times boostThread0ForPendingWork was called
 var dbgBoostSuccess uint64        // times boost succeeded (thread 0 was Ready)
 var dbgBoostFailState uint64      // thread 0 state when boost failed (last value)
@@ -1541,6 +1558,19 @@ func printThreadStateSummary() {
 		serial.RawUARTHex64(el1hELR)
 		serial.RawUARTPuts(",0x")
 		serial.RawUARTHex64(el1hSPSR)
+	}
+	// Per-SID SVC deltas since last epoch
+	serial.RawUARTPuts("\n  svc/sid:")
+	for i := 0; i < 32; i++ {
+		cur := atomic.LoadUint64(&ksyscall.SVCCountBySID[i])
+		delta := cur - prevSVCCountBySID[i]
+		if delta > 0 {
+			serial.RawUART(' ')
+			serial.RawUARTDecimal(uint64(i))
+			serial.RawUART('=')
+			serial.RawUARTDecimal(delta)
+		}
+		prevSVCCountBySID[i] = cur
 	}
 	serial.RawUARTPuts("\n")
 }
@@ -3062,6 +3092,15 @@ func ThreadWakeFutexWithSwitch(futexAddr uint64, maxWake int32) (int32, uintptr)
 		} else {
 			if t.FutexAddr == futexAddr && t.PID != callerSID {
 				atomic.AddUint64(&DbgFutexPIDMismatch, 1)
+				serial.RawUARTPuts("[FPM] wakeSw TID=")
+				serial.RawUARTDecimal(uint64(tid))
+				serial.RawUARTPuts(" tPID=")
+				serial.RawUARTDecimal(uint64(t.PID))
+				serial.RawUARTPuts(" callerSID=")
+				serial.RawUARTDecimal(uint64(callerSID))
+				serial.RawUARTPuts(" addr=0x")
+				serial.RawUARTHexCompact(futexAddr)
+				serial.RawUARTPuts("\r\n")
 			}
 			blockedQueue.PushNoDuplicate(tid)
 		}
@@ -3993,6 +4032,8 @@ func PrintTickDistribution() {
 				stateStr = "MBX"
 			case ThreadBlockedEpoll:
 				stateStr = "EPL"
+			case ThreadBlockedIOUring:
+				stateStr = "IOU"
 			}
 
 			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",

@@ -101,17 +101,31 @@ func (fc *FontCache) OpenFace(path string, bold bool, size int64) font.Face {
 func (fc *FontCache) OpenFaceByName(family, style string, size int64) font.Face {
 	if !fc.fontIndexLoaded {
 		fc.fontIndexLoaded = true
+		sys.UartWriteString("[fontcache] loading font index /fonts/fonts.csv...\n")
+		t0 := nanotime()
 		idx, err := LoadFontIndex("/fonts/fonts.csv")
+		dt := (nanotime() - t0) / 1e6
 		if err != nil {
+			sys.UartWriteString("[fontcache] font index FAILED: " + err.Error() + "\n")
 			panic("[fontcache] failed to load font index: " + err.Error())
 		}
+		sys.UartWriteString("[fontcache] font index loaded in " + itoa(dt) + "ms\n")
 		fc.fontIndex = idx
 	}
 	path := fc.fontIndex.Resolve(family, style)
 	if path == "" {
 		panic("[fontcache] font not in index: " + family + "/" + style)
 	}
-	return fc.OpenFace(path, IsBoldStyle(style), size)
+	sys.UartWriteString("[fontcache] OpenFace " + path + " size=" + itoa(size) + "...\n")
+	t0 := nanotime()
+	face := fc.OpenFace(path, IsBoldStyle(style), size)
+	dt := (nanotime() - t0) / 1e6
+	if face == nil {
+		sys.UartWriteString("[fontcache] OpenFace RETURNED NIL after " + itoa(dt) + "ms\n")
+	} else {
+		sys.UartWriteString("[fontcache] OpenFace OK in " + itoa(dt) + "ms\n")
+	}
+	return face
 }
 
 // SendOpenFont sends an OpenFont request to fontsvc and blocks until the reply
@@ -125,14 +139,22 @@ func (fc *FontCache) SendOpenFont(path string, bold bool, size int64) (*wm.OpenF
 	msg.Size = int32(size)
 	copy(msg.Path[:], path)
 
+	sys.UartWriteString("[fontcache] SendOpenFont: pushing request...\n")
 	fc.requestRb.Push(unsafe.Pointer(&msg))
+	sys.UartWriteString("[fontcache] SendOpenFont: MailboxSend to rachel...\n")
 	if err := sys.MailboxSend(fc.rachelSID, wm.FontNotify, fc.requestRb.Addr()); err != nil {
+		sys.UartWriteString("[fontcache] SendOpenFont: MailboxSend FAILED: " + err.Error() + "\n")
 		return nil, err
 	}
 
+	sys.UartWriteString("[fontcache] SendOpenFont: waiting on replyCh...\n")
+	t0 := nanotime()
 	raw := <-fc.replyCh
+	dt := (nanotime() - t0) / 1e6
+	sys.UartWriteString("[fontcache] SendOpenFont: reply received after " + itoa(dt) + "ms\n")
 	msgType := *(*int64)(unsafe.Pointer(&raw[0]))
 	if msgType != wm.MsgOpenFontReply {
+		sys.UartWriteString("[fontcache] SendOpenFont: unexpected msg type\n")
 		return nil, nil
 	}
 	reply := (*wm.OpenFontReplyMsg)(unsafe.Pointer(&raw[0]))
@@ -153,7 +175,7 @@ func (fc *FontCache) HandleNotification(notif sys.MailboxNotification) {
 		count++
 		fc.replyCh <- raw
 	}
-	_ = count
+	sys.UartWriteString("[fontcache] HandleNotification: popped " + itoa(int64(count)) + " msgs\n")
 }
 
 // RequestGlyphByGID sends a tier-2 glyph request by GID and blocks until
@@ -200,4 +222,30 @@ func (fc *FontCache) requestGlyphByCodepoint(fontID int32, cp rune) *wm.GlyphRep
 	}
 	reply := (*wm.GlyphReplyMsg)(unsafe.Pointer(&raw[0]))
 	return reply
+}
+
+//go:linkname nanotime runtime.nanotime
+func nanotime() int64
+
+// itoa converts an int64 to a decimal string without importing strconv.
+func itoa(v int64) string {
+	if v == 0 {
+		return "0"
+	}
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	var buf [20]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }

@@ -204,18 +204,7 @@ func InitUnifiedPool() {
 //
 //go:nosplit
 func AllocPage(pageType PageType, owner int16) uintptr {
-	pa := BuddyAllocTyped(0, pageType, owner)
-
-	// DEBUG: Guard against allocating kmazarin code pages
-	if pa >= 0x90000000 && pa < 0x90400000 {
-		serial.RawUARTPuts("[ALLOC_GUARD] ABORT: allocated kmazarin code page! PA=0x")
-		serial.RawUARTHex64(uint64(pa))
-		serial.RawUARTPuts("\r\n")
-		for {
-		}
-	}
-
-	return pa
+	return BuddyAllocTyped(0, pageType, owner)
 }
 
 // AllocContiguousPages allocates a contiguous block of physical pages

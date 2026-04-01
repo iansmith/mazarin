@@ -170,7 +170,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	if requestType == block.VIRTIO_BLK_T_OUT {
 		dataKernelVA = 0 // No cache invalidate needed for writes
 	}
-	setBlockAsyncSlot(tag, sidecarSlot.VA+16, sidecarSlot.Index, dataKernelVA, uint32(totalBytes), uintptr(unsafe.Pointer(clump)))
+	setBlockAsyncSlot(tag, sidecarSlot.VA+16, sidecarSlot.Index, dataKernelVA, uint32(totalBytes), uintptr(unsafe.Pointer(clump)), uint64(tag))
 
 	// Notify device
 	asm.Dsb()

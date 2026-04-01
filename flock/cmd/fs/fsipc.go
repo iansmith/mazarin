@@ -10,7 +10,6 @@ import (
 	"mazzy/mazarin/sys"
 	"mazzy/shared/fs/ext2"
 	"mazzy/shared/fs/fsipc"
-	"mazzy/shared/hid"
 )
 
 const maxFSHandles = 256
@@ -34,13 +33,11 @@ type fsIPC struct {
 	requestCh    chan fsipc.Request
 	handles      [maxFSHandles]*fsHandle
 	nextHnd      uint32
-	blockNotifyCh chan struct{} // forwarded to DMA worker on BlockIOCompleteCode
 }
 
-func newFsIPC(blockNotifyCh chan struct{}) *fsIPC {
+func newFsIPC() *fsIPC {
 	return &fsIPC{
-		requestCh:     make(chan fsipc.Request, 8),
-		blockNotifyCh: blockNotifyCh,
+		requestCh: make(chan fsipc.Request, 8),
 	}
 }
 
@@ -54,12 +51,6 @@ func (s *fsIPC) mailboxLoop() {
 			continue
 		}
 		switch notif.Code {
-		case hid.BlockIOCompleteCode:
-			// Forward block I/O completion to DMA worker (non-blocking send).
-			select {
-			case s.blockNotifyCh <- struct{}{}:
-			default:
-			}
 		case fsipc.NotifyInit:
 			s.handleInit(notif)
 		case fsipc.NotifyRequest:

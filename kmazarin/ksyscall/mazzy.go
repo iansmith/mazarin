@@ -3,6 +3,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/serial"
+	"sync/atomic"
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -60,14 +61,22 @@ var mazzySyscallTable = [64]SyscallHandler{
 	55: SyscallBlockSubmit,            // BlockSubmit = 0x1037
 	56: SyscallReadFilePages,          // ReadFilePages = 0x1038
 	57: SyscallRegisterCompletionRing, // RegisterCompletionRing = 0x1039
+	58: SyscallIOUringSetup,           // IOUringSetup = 0x103A
+	59: SyscallIOUringEnter,           // IOUringEnter = 0x103B
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.
 // arg0 = marker/id, arg1-arg5 = values to print
 // Special case: if v1-v5 are all 0 and marker < 256, print marker as a character
+// Special case: marker == 0xDB6 ("DbgTrace") sets DbgTraceSID to int32(v1)
 //
 //go:nosplit
 func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
+	// Magic marker 0xDB6: set DbgTraceSID for per-SID syscall tracing
+	if marker == 0xDB6 {
+		atomic.StoreInt32(&DbgTraceSID, int32(v1))
+		return 0
+	}
 	// Special case: single character output — always go to serial for debugging.
 	if v1 == 0 && v2 == 0 && v3 == 0 && v4 == 0 && v5 == 0 && marker < 256 {
 		serial.PollWrite(byte(marker))

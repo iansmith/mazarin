@@ -15,9 +15,11 @@ import (
 	"mazzy/shared/constants"
 	"mazzy/shared/fs/ext2"
 	"mazzy/shared/hid"
+	"mazzy/shared/iouring"
 	"mazzy/shared/sysid"
 	"os"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -67,16 +69,53 @@ func (mt *mountTable) getFS(kind mountKind) *ext2.FileSystem {
 	return mt.root
 }
 
-// writeRawString writes a string to stderr using RawSyscall (no entersyscall/exitsyscall).
-// This avoids P-reacquisition hangs that can occur with fmt.Printf → Syscall.
-func writeRawString(s string) {
-	for i := 0; i < len(s); i++ {
-		sys.RawWrite(2, s[i])
-	}
-}
 
 func main() {
 	fmt.Println("[fs] starting filesystem shepherd")
+
+	// Install ReadInto timing hook for diagnostics.
+	ext2.ReadIntoTimingHook = func(t ext2.ReadIntoTimings) {
+		sys.UartWriteString(fmt.Sprintf("[ext2] ReadInto: blocks=%d resolve=%dms sep=%dms alloc=%dms dma=%dms copy=%dms total=%dms\n",
+			t.Blocks, t.Resolve.Milliseconds(), t.Separate.Milliseconds(),
+			t.Alloc.Milliseconds(), t.DMA.Milliseconds(), t.Copy.Milliseconds(),
+			t.Total.Milliseconds()))
+	}
+
+	ext2.ReadBlocksTimingHook = func(blocks int, makeAlloc, loop, lbaBuild, readCall time.Duration) {
+		sys.UartWriteString(fmt.Sprintf("[ext2] readBlocks: blocks=%d make=%dms loop=%dms lbaBuild=%dms readCall=%dms\n",
+			blocks, makeAlloc.Milliseconds(), loop.Milliseconds(), lbaBuild.Milliseconds(), readCall.Milliseconds()))
+	}
+
+	// Experiment 3: Enable per-syscall tracing for this SID around large readBlocks.
+	// Magic marker 0xDB6 sets kernel DbgTraceSID via DebugPrint syscall.
+	var fsSID atomic.Int32
+	fsSID.Store(-1)
+	ext2.ReadBlocksPreHook = func(blocks int) {
+		sid := fsSID.Load()
+		if sid < 0 {
+			// Resolve our own SID once via ShepherdInfo
+			entries, err := sys.ShepherdInfo()
+			if err == nil {
+				for _, e := range entries {
+					fn := string(e.Filename[:e.FilenameLen])
+					if fn == "/fs.elf" || fn == "fs" {
+						sid = int32(e.SID)
+						fsSID.Store(sid)
+						break
+					}
+				}
+			}
+		}
+		if sid >= 0 {
+			sys.UartWriteString(fmt.Sprintf("[ext2] TRACE ON sid=%d blocks=%d\n", sid, blocks))
+			syscall.RawSyscall6(0x1006, 0xDB6, uintptr(sid), 0, 0, 0, 0)
+		}
+	}
+	ext2.ReadBlocksPostHook = func(blocks int) {
+		// Disable tracing: set DbgTraceSID = -1
+		sys.UartWriteString("[ext2] TRACE OFF\n")
+		syscall.RawSyscall6(0x1006, 0xDB6, ^uintptr(0), 0, 0, 0, 0)
+	}
 
 	// 1. Register for block device soft IRQ
 	devices, err := sys.QueryInputDevices()
@@ -97,17 +136,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. Allocate shared completion ring page for block I/O
+	// 2. Allocate io_uring ring page for block I/O completions.
 	ringPage, ringErr := mem.AllocPages(1, mem.PageShared)
 	if ringErr != nil {
-		fmt.Printf("[fs] AllocPages for completion ring failed: %v\n", ringErr)
+		fmt.Printf("[fs] AllocPages for io_uring ring failed: %v\n", ringErr)
 		os.Exit(1)
 	}
-	completionRing := (*hid.CompletionRing)(ringPage)
-	if err := sys.RegisterCompletionRing(uintptr(unsafe.Pointer(completionRing)), 0); err != nil {
-		fmt.Printf("[fs] RegisterCompletionRing failed: %v\n", err)
+	ioRing := (*iouring.IORing)(ringPage)
+	ringID, setupErr := sys.IOUringSetup(ioRing, 0)
+	if setupErr != nil {
+		fmt.Printf("[fs] IOUringSetup failed: %v\n", setupErr)
 		os.Exit(1)
 	}
+	fmt.Printf("[fs] io_uring created: ringID=%d\n", ringID)
 
 	// 3. Allocate DMA scratch buffer for the fs shepherd's own block reads
 	//    (ext2 metadata, boot config, etc.). Self-targeted BlockSubmit.
@@ -117,10 +158,8 @@ func main() {
 		os.Exit(1)
 	}
 	// 4. Create block device and start mailbox loop BEFORE mounting.
-	// The mailbox loop must be running before any block I/O because the
-	// DMA worker blocks on mailbox notifications for completions.
-	blkDev := newAsyncBlockDev(scratch.Addr, completionRing)
-	ipc := newFsIPC(blkDev.notifyCh)
+	blkDev := newAsyncBlockDev(scratch.Addr, ioRing, ringID)
+	ipc := newFsIPC()
 	go ipc.mailboxLoop()
 
 	fsys, mountErr := ext2.Mount(blkDev)
@@ -209,6 +248,8 @@ func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 	if terr != nil {
 		fmt.Printf("[fs] LoadFile %q: TransferAndUnmap failed (%d pages, va=0x%x, targetPID=%d): %v\n",
 			path, numPages, va, req.CallerPID, terr)
+		// TransferAndUnmap failed — pages are still mapped in our address space.
+		syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
 		req.Reply(-5) // EIO
 		return
 	}
@@ -224,7 +265,7 @@ func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 // underlying BlockDevice implements BatchBlockDevice, all data blocks
 // are read in a single batch operation.
 func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (va uintptr, numPages int, bytesRead int, err error) {
-	writeRawString("[fs] readFileIntoPages: " + path + "\n")
+	sys.UartWriteString("[fs] readFileIntoPages: " + path + "\n")
 	t0 := time.Now()
 	file, ferr := fsys.Open(path)
 	if ferr != nil {
@@ -269,14 +310,15 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 	n, rerr := file.ReadInto(dst[:fileSize])
 	tRead := time.Since(tReadStart)
 
-	writeRawString(fmt.Sprintf("[fs] PERF %s: size=%d open=%dms alloc=%dms read=%dms total=%dms\n",
+	sys.UartWriteString(fmt.Sprintf("[fs] PERF %s: size=%d open=%dms alloc=%dms read=%dms total=%dms\n",
 		path, fileSize, tOpen.Milliseconds(), tAlloc.Milliseconds(),
 		tRead.Milliseconds(), time.Since(t0).Milliseconds()))
 
 	if rerr != nil {
+		// Free allocated pages on read failure to avoid leaking memory.
+		syscall.RawSyscall6(syscall.SYS_MUNMAP, va, totalSize, 0, 0, 0, 0)
 		return 0, 0, 0, rerr
 	}
-
 	return va, numPages, n, nil
 }
 
@@ -330,21 +372,21 @@ func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {
 
 // launchShepherd reads an ELF from ext2 and launches it as a new shepherd.
 func launchShepherd(fsys *ext2.FileSystem, name, path string) {
-	writeRawString("[fs] reading " + path + "...\n")
+	sys.UartWriteString("[fs] reading " + path + "...\n")
 	va, numPages, bytesRead, err := readFileIntoPages(fsys, path, false)
 	if err != nil {
-		writeRawString("[fs] failed to read " + path + "\n")
+		sys.UartWriteString("[fs] failed to read " + path + "\n")
 		return
 	}
-	writeRawString("[fs] read " + path + ", calling RunShepherd\n")
+	sys.UartWriteString("[fs] read " + path + ", calling RunShepherd\n")
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead)
 	// Free temporary pages (RunShepherd copies them to the new shepherd).
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
 	if rpErr != nil {
-		writeRawString("[fs] RunShepherd FAILED for " + name + "\n")
+		sys.UartWriteString("[fs] RunShepherd FAILED for " + name + "\n")
 		return
 	}
-	writeRawString("[fs] " + name + " launched\n")
+	sys.UartWriteString("[fs] " + name + " launched\n")
 }
 
 // bootSequence launches the core shepherds in dependency order, then reads
@@ -360,41 +402,40 @@ func bootSequence(fsys *ext2.FileSystem) {
 	// Rachel only depends on fs (already ready) for loading fontsvc.maz.
 	launchShepherd(fsys, "rachel", "/rachel.elf")
 	if err := sys.WaitForShepherdReady("rachel", 30); err != nil {
-		writeRawString("[fs] FATAL: rachel not ready\n")
+		sys.UartWriteString("[fs] FATAL: rachel not ready\n")
 		return
 	}
 	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
 	// Linux depends on both fs (IPC) and rachel (fonts/WM).
 	launchShepherd(fsys, "linux", "/linux.elf")
 	if err := sys.WaitForShepherdReady("linux", 30); err != nil {
-		writeRawString("[fs] FATAL: linux not ready\n")
+		sys.UartWriteString("[fs] FATAL: linux not ready\n")
 		return
 	}
 	// 3. Read startup config and launch remaining application shepherds.
-	writeRawString("[fs] reading startup.toml...\n")
+	sys.UartWriteString("[fs] reading startup.toml...\n")
 	cfg := readStartupConfig(fsys)
 	if cfg != nil {
 		for _, s := range cfg.Shepherds {
-			writeRawString("[fs] launching " + s.Name + " from " + s.Path + "\n")
+			sys.UartWriteString("[fs] launching " + s.Name + " from " + s.Path + "\n")
 			launchShepherd(fsys, s.Name, s.Path)
 		}
 	} else {
-		writeRawString("[fs] no startup.toml\n")
+		sys.UartWriteString("[fs] no startup.toml\n")
 	}
-	writeRawString("[fs] boot sequence complete\n")
+	sys.UartWriteString("[fs] boot sequence complete\n")
 }
 
-// asyncBlockDev implements blockdev.BlockDevice backed by a DMA worker
-// goroutine. All DMA operations (BlockSubmit + completion ring poll) run on a
-// single dedicated goroutine, which is the sole owner of the completion ring
-// and scratch buffer. Other goroutines send requests via channel and block on
-// a per-request response channel. This makes the single-waiter-per-slot
-// invariant structural — no mutex needed, no stolen completion events.
+// asyncBlockDev implements blockdev.BlockDevice backed by io_uring.
+// All DMA operations go through a single DMA worker goroutine that writes
+// SQEs to the io_uring submission ring and calls IOUringEnter to submit +
+// wait for completions. The IRQ top-half writes CQEs directly to the ring
+// and wakes the blocked thread — no mailbox, no channel, no P-release.
 type asyncBlockDev struct {
 	reqCh     chan dmaRequest
-	scratchVA uintptr              // base of MAZARIN_CONTIGUOUS scratch pages
-	ring      *hid.CompletionRing  // shared completion ring for block I/O
-	notifyCh  chan struct{}         // signaled by mailboxLoop on BlockIOCompleteCode
+	scratchVA uintptr          // base of MAZARIN_CONTIGUOUS scratch pages
+	ioRing    *iouring.IORing  // shared io_uring ring page
+	ringID    int              // io_uring instance ID from IOUringSetup
 }
 
 // dmaRequest is sent to the DMA worker goroutine.
@@ -428,18 +469,18 @@ const (
 )
 
 // newAsyncBlockDev creates the block device and starts the DMA worker.
-func newAsyncBlockDev(scratchVA uintptr, ring *hid.CompletionRing) *asyncBlockDev {
+func newAsyncBlockDev(scratchVA uintptr, ring *iouring.IORing, ringID int) *asyncBlockDev {
 	d := &asyncBlockDev{
 		reqCh:     make(chan dmaRequest, 4),
 		scratchVA: scratchVA,
-		ring:      ring,
-		notifyCh:  make(chan struct{}, 16),
+		ioRing:    ring,
+		ringID:    ringID,
 	}
 	go d.dmaWorker()
 	return d
 }
 
-// dmaWorker is the sole goroutine that touches the SoftIRQ slot and scratch
+// dmaWorker is the sole goroutine that touches the io_uring ring and scratch
 // buffer. It processes requests sequentially from reqCh.
 func (d *asyncBlockDev) dmaWorker() {
 	for req := range d.reqCh {
@@ -457,57 +498,49 @@ func (d *asyncBlockDev) dmaWorker() {
 var singleReadCount int
 var singleReadTotal time.Duration
 
-// doReadBlock reads a single 4KB block via DMA. Only called from dmaWorker.
+// doReadBlock reads a single 4KB block via io_uring. Only called from dmaWorker.
 func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 	t0 := time.Now()
 	defer func() {
 		singleReadCount++
 		singleReadTotal += time.Since(t0)
 		if singleReadCount%100 == 0 {
-			writeRawString(fmt.Sprintf("[dma] single: %d reads, avg=%dms total=%dms\n",
+			sys.UartWriteString(fmt.Sprintf("[dma] single: %d reads, avg=%dms total=%dms\n",
 				singleReadCount, singleReadTotal.Milliseconds()/int64(singleReadCount),
 				singleReadTotal.Milliseconds()))
 		}
 	}()
+
 	sectorLBA := lba * sectorsPerBlock
 	dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA)), asyncBlockSize)
-	_, serr := mem.BlockSubmit(0, sectorLBA, sectorsPerBlock, dmaBuf, 0)
-	if serr != nil {
-		return serr
+
+	// Write 1 SQE to the submission ring.
+	sqTail := atomic.LoadUint32(&d.ioRing.SQTail)
+	idx := sqTail & iouring.SQMask
+	d.ioRing.SQEntries[idx] = iouring.SQEntry{
+		Opcode:   iouring.IOUringOpRead,
+		FD:       0, // block device
+		Off:      sectorLBA,
+		Addr:     uint64(uintptr(unsafe.Pointer(&dmaBuf[0]))),
+		Len:      sectorsPerBlock,
+		UserData: 0,
 	}
-	// Wait for completion via mailbox notification (blocking channel wait).
-	// The IRQ top-half pushes to the completion ring and sends
-	// BlockIOCompleteCode via mailbox. The mailboxLoop forwards it here.
-	var events [1]hid.HIDEvent
-	completed := false
-	// Busy-spin the completion ring for up to 1ms before falling back to
-	// blocking MailboxRecv. The ring is shared memory written by IRQ top-half,
-	// so userspace sees completions without any syscall — avoiding P-release
-	// and sysmon P-steal. No Gosched: we keep the M and P the entire spin.
-	deadline := time.Now().Add(500 * time.Microsecond)
-	for time.Now().Before(deadline) {
-		n := sys.PollCompletionRing(d.ring, events[:], 1)
-		if n > 0 {
-			if events[0].Code != 0 {
-				return syscall.EIO
-			}
-			completed = true
-			break
-		}
+	atomic.StoreUint32(&d.ioRing.SQTail, sqTail+1)
+
+	// Submit 1 SQE, wait for 1 CQE.
+	_, err := sys.IOUringEnter(d.ringID, 1, 1, 0)
+	if err != nil {
+		return err
 	}
-	// Slow path: block on mailbox notification channel
-	if !completed {
-		for {
-			<-d.notifyCh
-			n := sys.PollCompletionRing(d.ring, events[:], 1)
-			if n > 0 {
-				if events[0].Code != 0 {
-					return syscall.EIO
-				}
-				break
-			}
-		}
+
+	// Drain 1 CQE.
+	cqHead := atomic.LoadUint32(&d.ioRing.CQHead)
+	cqe := &d.ioRing.CQEntries[cqHead&iouring.CQMask]
+	if cqe.Res < 0 {
+		return syscall.EIO
 	}
+	atomic.StoreUint32(&d.ioRing.CQHead, cqHead+1)
+
 	copy(buf[:asyncBlockSize], dmaBuf)
 	return nil
 }
@@ -528,9 +561,11 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 		batchBlocks := blocks[blockIdx : blockIdx+batch]
 
 		tSubmit := time.Now()
-		submitted := 0
+		submitted := uint32(0)
+		sqTail := atomic.LoadUint32(&d.ioRing.SQTail)
 		for i, bn := range batchBlocks {
 			if bn == 0 {
+				// Sparse block — zero-fill.
 				off := uintptr(i) * asyncBlockSize
 				scratch := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+off)), asyncBlockSize)
 				for k := range scratch {
@@ -541,42 +576,40 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 			sectorLBA := uint64(bn) * sectorsPerBlock
 			off := uintptr(i) * asyncBlockSize
 			dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+off)), asyncBlockSize)
-			_, serr := mem.BlockSubmit(0, sectorLBA, sectorsPerBlock, dmaBuf, 0)
-			if serr != nil {
-				return serr
+
+			idx := sqTail & iouring.SQMask
+			d.ioRing.SQEntries[idx] = iouring.SQEntry{
+				Opcode:   iouring.IOUringOpRead,
+				FD:       0,
+				Off:      sectorLBA,
+				Addr:     uint64(uintptr(unsafe.Pointer(&dmaBuf[0]))),
+				Len:      sectorsPerBlock,
+				UserData: uint64(i),
 			}
+			sqTail++
 			submitted++
 		}
+		atomic.StoreUint32(&d.ioRing.SQTail, sqTail)
 		totalSubmit += time.Since(tSubmit)
 
 		tWait := time.Now()
 		if submitted > 0 {
-			remaining := submitted
-			var events [scratchPages]hid.HIDEvent
-			for remaining > 0 {
-				// Busy-spin completion ring for up to 1ms
-				deadline := time.Now().Add(500 * time.Microsecond)
-				for time.Now().Before(deadline) && remaining > 0 {
-					n := sys.PollCompletionRing(d.ring, events[:], remaining)
-					for i := 0; i < n; i++ {
-						if events[i].Code != 0 {
-							return syscall.EIO
-						}
-						remaining--
-					}
-				}
-				// Slow path: block on mailbox notification
-				for remaining > 0 {
-					<-d.notifyCh
-					n := sys.PollCompletionRing(d.ring, events[:], remaining)
-					for i := 0; i < n; i++ {
-						if events[i].Code != 0 {
-							return syscall.EIO
-						}
-						remaining--
-					}
+			// Submit all SQEs, wait for all completions.
+			_, werr := sys.IOUringEnter(d.ringID, submitted, submitted, 0)
+			if werr != nil {
+				return werr
+			}
+
+			// Drain all CQEs.
+			cqHead := atomic.LoadUint32(&d.ioRing.CQHead)
+			for i := uint32(0); i < submitted; i++ {
+				cqe := &d.ioRing.CQEntries[(cqHead+i)&iouring.CQMask]
+				if cqe.Res < 0 {
+					atomic.StoreUint32(&d.ioRing.CQHead, cqHead+submitted)
+					return syscall.EIO
 				}
 			}
+			atomic.StoreUint32(&d.ioRing.CQHead, cqHead+submitted)
 		}
 		totalWait += time.Since(tWait)
 
@@ -599,13 +632,13 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 		batchCount++
 	}
 
-	writeRawString(fmt.Sprintf("[dma] batch: %d blocks, %d batches, submit=%dms wait=%dms copy=%dms total=%dms\n",
+	sys.UartWriteString(fmt.Sprintf("[dma] batch: %d blocks, %d batches, submit=%dms wait=%dms copy=%dms total=%dms\n",
 		total, batchCount, totalSubmit.Milliseconds(), totalWait.Milliseconds(),
 		totalCopy.Milliseconds(), time.Since(t0).Milliseconds()))
 	return nil
 }
 
-func (d *asyncBlockDev) Name() string      { return "virtio-blk-async" }
+func (d *asyncBlockDev) Name() string      { return "virtio-blk-iouring" }
 func (d *asyncBlockDev) Close() error      { return nil }
 func (d *asyncBlockDev) BlockSize() uint64 { return asyncBlockSize }
 func (d *asyncBlockDev) NumBlocks() uint64 { return 0 }
@@ -640,12 +673,19 @@ func (d *asyncBlockDev) ReadBlocks(lbas []uint64, dst []byte) error {
 		blocks[i] = uint32(lba)
 	}
 	replyCh := make(chan dmaReply, 1)
+	t0 := time.Now()
 	d.reqCh <- dmaRequest{
 		kind:    dmaReadBatch,
 		replyCh: replyCh,
 		blocks:  blocks,
 		dst:     dst,
 	}
+	tSend := time.Since(t0)
 	reply := <-replyCh
+	tTotal := time.Since(t0)
+	if len(lbas) > 100 {
+		sys.UartWriteString(fmt.Sprintf("[ReadBlocks] lbas=%d chSend=%dms chTotal=%dms\n",
+			len(lbas), tSend.Milliseconds(), tTotal.Milliseconds()))
+	}
 	return reply.err
 }
