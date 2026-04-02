@@ -107,6 +107,14 @@ type Shepherd struct {
 	// 0 = not ready, 1 = ready.
 	Ready int32
 
+	// UringID is the 64-bit sequential identifier for this shepherd's IPC uring.
+	// Assigned at shepherd launch, 0 = not yet assigned.
+	UringID uint64
+
+	// UringRingPA is the physical address of the first of 3 ring pages.
+	// 0 = ring not allocated. The second and third pages follow at PA+4096, PA+8192.
+	UringRingPA uintptr
+
 	// DMAClumps tracks physically contiguous page ranges allocated by this
 	// shepherd via mmap(MAZARIN_CONTIGUOUS). Used by BlockSubmit for VA→PA
 	// resolution and by munmap/death for safe deferred page release.

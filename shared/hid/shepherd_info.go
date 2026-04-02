@@ -6,6 +6,7 @@ type ShepherdInfoEntry struct {
 	SID         int16    // Unique shepherd identifier
 	ThreadCount int16    // Number of live threads
 	PageCount   uint32   // Number of 4KB pages mapped in this shepherd's address space
+	UringID     uint64   // 64-bit IPC uring identifier (0 = not assigned)
 	FilenameLen uint8    // Length of Filename (bytes, without NUL)
 	_pad        [7]byte  // Alignment padding
 	Filename    [64]byte // Launch filename (e.g., "/rachel.elf"), not NUL-terminated

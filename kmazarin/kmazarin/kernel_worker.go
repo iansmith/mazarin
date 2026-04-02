@@ -256,13 +256,20 @@ func (epollWorkerImpl) Do(req *ksyscall.EpollWorkRequest) int64 {
 	return ksyscall.DoEpollCtlWork(req)
 }
 
+type uringConnectWorkerImpl struct{}
+
+func (uringConnectWorkerImpl) Do(req *UringConnectWorkRequest) int64 {
+	return DoUringConnectWork(req)
+}
+
 // --- Global instances ---
 
 var (
-	loadMazKW     *KernelSVCWorker[ksyscall.LoadMazWorkRequest]
-	runMazKW      *KernelSVCWorker[ksyscall.RunMazWorkRequest]
-	runShepherdKW *KernelSVCWorker[ksyscall.RunShepherdWorkRequest]
-	epollKW       *KernelSVCWorker[ksyscall.EpollWorkRequest]
+	loadMazKW      *KernelSVCWorker[ksyscall.LoadMazWorkRequest]
+	runMazKW       *KernelSVCWorker[ksyscall.RunMazWorkRequest]
+	runShepherdKW  *KernelSVCWorker[ksyscall.RunShepherdWorkRequest]
+	epollKW        *KernelSVCWorker[ksyscall.EpollWorkRequest]
+	uringConnectKW *KernelSVCWorker[UringConnectWorkRequest]
 )
 
 // initKernelWorkers creates all kernel SVC workers.
@@ -272,6 +279,7 @@ func initKernelWorkers() {
 	runMazKW = NewKernelSVCWorker("RunMaz", runMazWorkerImpl{})
 	runShepherdKW = NewKernelSVCWorker("RunShepherd", runShepherdWorkerImpl{})
 	epollKW = NewKernelSVCWorker("Epoll", epollWorkerImpl{})
+	uringConnectKW = NewKernelSVCWorker("UringConnect", uringConnectWorkerImpl{})
 }
 
 // --- Linkname bridge wrappers (ksyscall → main) ---
@@ -296,6 +304,11 @@ func SubmitEpoll(req ksyscall.EpollWorkRequest) uintptr {
 	return epollKW.Submit(req)
 }
 
+// SubmitUringConnect is the linkname target for ksyscall.submitUringConnect.
+func SubmitUringConnect(req UringConnectWorkRequest) uintptr {
+	return uringConnectKW.Submit(req)
+}
+
 // hasPendingKernelWork returns true if any SVC worker has pending work
 // waiting for thread 0 to relay. Used by the timer ISR to boost thread 0.
 //
@@ -304,5 +317,5 @@ func hasPendingKernelWork() bool {
 	if loadMazKW == nil {
 		return false // called before initKernelWorkers
 	}
-	return loadMazKW.Pending() || runMazKW.Pending() || runShepherdKW.Pending()
+	return loadMazKW.Pending() || runMazKW.Pending() || runShepherdKW.Pending() || uringConnectKW.Pending()
 }

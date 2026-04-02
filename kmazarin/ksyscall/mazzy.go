@@ -27,7 +27,10 @@ var mazzySyscallTable = [64]SyscallHandler{
 	16: SyscallTransferPages,      // TransferPages = 0x1010
 	17: SyscallMapSharedPage,      // MapSharedPage = 0x1011
 	18: SyscallLoadMaz,            // LoadMaz = 0x1012
-	// slots 19-22 freed (were IPC, BlockRead)
+	19: SyscallUringConnect,  // UringConnect = 0x1013
+	20: SyscallUringSend,     // UringSend = 0x1014
+	21: SyscallUringRecv,     // UringRecv = 0x1015
+	22: SyscallUringRelease,  // UringRelease = 0x1016
 	23: SyscallRegisterSyscallHandler,    // RegisterSyscallHandler = 0x1017
 	24: SyscallDelegatedRecv,             // DelegatedRecv = 0x1018
 	25: SyscallReply,                      // SyscallReply = 0x1019

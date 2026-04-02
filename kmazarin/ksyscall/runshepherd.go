@@ -159,14 +159,21 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	// Create a new thread for this shepherd
 	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
 
-	// Cache symbol table, highest VA, and filename on the shepherd struct
+	// Cache symbol table, highest VA, filename, and allocate IPC uring ring
 	for i := 0; i < proc.MaxShepherds; i++ {
 		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PageTableL0PA == processL0PA {
 			proc.ShepherdListData[i].SymbolTable = shepherdSymTable
 			proc.ShepherdListData[i].HighestVA = shepherdHighestVA
 			proc.ShepherdListData[i].Filename = "/" + req.Name + ".elf"
-			console.KPrintf("[RunShepherd] %s launched (TID=%d, PID=%d)\n",
-				req.Name, tid, proc.ShepherdListData[i].PID)
+
+			// Allocate IPC uring ring for the new shepherd
+			uringID := allocateUringID()
+			proc.ShepherdListData[i].UringID = uringID
+			allocateUringIPCRing(&proc.ShepherdListData[i])
+			registerUringID(uringID, int16(proc.ShepherdListData[i].PID))
+
+			console.KPrintf("[RunShepherd] %s launched (TID=%d, PID=%d, UringID=%d)\n",
+				req.Name, tid, proc.ShepherdListData[i].PID, uringID)
 			break
 		}
 	}

@@ -26,10 +26,10 @@ const (
 	SysTransferPages     = MazzySyscallBase + 16 // 0x1010 - Transfer pages between shepherds
 	SysMapSharedPage     = MazzySyscallBase + 17 // 0x1011 - Map shared page from another shepherd
 	SysLoadMaz           = MazzySyscallBase + 18 // 0x1012 - Load .maz PIE ELF into shepherd's address space
-	SysIPCCall           = MazzySyscallBase + 19 // 0x1013 - Send IPC request (blocks for reply)
-	SysIPCRecv           = MazzySyscallBase + 20 // 0x1014 - Receive IPC request (blocks)
-	SysIPCReply          = MazzySyscallBase + 21 // 0x1015 - Reply to IPC request
-	// slot 22 freed (was SysBlockRead)
+	SysUringConnect      = MazzySyscallBase + 19 // 0x1013 - Connect to target shepherd's IPC uring
+	SysUringSend         = MazzySyscallBase + 20 // 0x1014 - Send 128-byte message to target's ring
+	SysUringRecv         = MazzySyscallBase + 21 // 0x1015 - Block until message arrives on own ring
+	SysUringRelease      = MazzySyscallBase + 22 // 0x1016 - Release connection (decrement refcount)
 	SysRegisterSyscallHandler = MazzySyscallBase + 23 // 0x1017 - Register shepherd as handler for a SysID
 	SysDelegatedRecv          = MazzySyscallBase + 24 // 0x1018 - Receive a delegated syscall request
 	SysSyscallReply           = MazzySyscallBase + 25 // 0x1019 - Reply to a delegated syscall

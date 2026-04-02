@@ -242,6 +242,7 @@ const (
 	ThreadBlockedMailbox      ThreadState = 14 // Blocked waiting for mailbox notification
 	// ThreadBlockedEpoll (15) — removed, unified into ThreadBlockedKernelWork (7)
 	ThreadBlockedIOUring      ThreadState = 16 // Blocked waiting for io_uring completions
+	ThreadBlockedUringRecv    ThreadState = 17 // Blocked waiting for IPC uring message
 )
 
 // MaxShepherds is the maximum number of shepherd processes (userspace programs).
@@ -572,6 +573,12 @@ func WakeThreadForSignal(t *Thread) {
 		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 		enqueueReadySchedLockHeld(t)
 	case ThreadBlockedMailbox:
+		t.State = ThreadReady
+		t.Context.RewindToSyscall()
+		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+		enqueueReadySchedLockHeld(t)
+	case ThreadBlockedUringRecv:
 		t.State = ThreadReady
 		t.Context.RewindToSyscall()
 		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
@@ -1580,6 +1587,8 @@ func printThreadStateSummary() {
 			nSoftIRQ++
 		case ThreadBlockedMailbox:
 			nMailbox++
+		case ThreadBlockedUringRecv:
+			nMailbox++ // count with mailbox for now (same IPC category)
 		case ThreadBlockedDelegate, ThreadBlockedDelegateRecv:
 			nDelegate++
 		}
@@ -1682,6 +1691,7 @@ func KernelIdleLoop() {
 		runMazKW.Relay()
 		runShepherdKW.Relay()
 		epollKW.Relay()
+		uringConnectKW.Relay()
 
 		// NOTE: runtime.Gosched() was removed here. When Gosched runs Go's
 		// internal goroutine scheduler, goroutines doing SVC sched_yield cause
@@ -2312,6 +2322,7 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	CleanupSoftIRQSlotsForShepherd(int16(pid))
 	CleanupInputFocusForShepherd(int16(pid))
 	CleanupMailboxForShepherd(int16(pid))
+	CleanupUringIPCForShepherd(int16(pid))
 	return terminateShepherdImpl(&NormalSchedulerFunc, pid, status)
 }
 
@@ -4155,6 +4166,8 @@ func PrintTickDistribution() {
 				stateStr = "KW"
 			case ThreadBlockedIOUring:
 				stateStr = "IOU"
+			case ThreadBlockedUringRecv:
+				stateStr = "URC"
 			}
 
 			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",

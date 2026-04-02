@@ -27,7 +27,7 @@ type IPCRecvResult struct {
 //
 // Uses Syscall6 so entersyscall/exitsyscall release the P while blocked.
 func IPCCall(targetPID int, requestVA uintptr, requestPages int) (replyVA uintptr, replyPages int, err error) {
-	r1, _, errno := syscall.Syscall6(mazzy.SysIPCCall,
+	r1, _, errno := syscall.Syscall6(mazzy.SysUringConnect,
 		uintptr(targetPID),
 		requestVA,
 		uintptr(requestPages),
@@ -54,7 +54,7 @@ func IPCCall(targetPID int, requestVA uintptr, requestPages int) (replyVA uintpt
 func IPCRecv() (senderPID int, requestVA uintptr, requestPages int, err error) {
 	var result IPCRecvResult
 
-	r1, _, errno := syscall.Syscall6(mazzy.SysIPCRecv,
+	r1, _, errno := syscall.Syscall6(mazzy.SysUringRecv,
 		uintptr(unsafe.Pointer(&result)),
 		0, 0, 0, 0, 0)
 
@@ -71,7 +71,7 @@ func IPCRecv() (senderPID int, requestVA uintptr, requestPages int, err error) {
 // IPCReply sends a reply to a client shepherd blocked in IPCCall.
 // replyVA must be page-aligned.
 func IPCReply(clientPID int, replyVA uintptr, replyPages int) error {
-	r1, _, errno := RawSyscall(mazzy.SysIPCReply,
+	r1, _, errno := RawSyscall(mazzy.SysUringRelease,
 		uintptr(clientPID),
 		replyVA,
 		uintptr(replyPages),
