@@ -19,11 +19,19 @@ var (
 	DbgLinuxFutexSyscallNum uint64 // Last syscall number from linux's main
 	shepherdSyscallCount      uint64 // Count of shepherd syscalls (for debug logging)
 	GCCountBySID            [16]uint64 // Per-shepherd GC cycle counter (indexed by PID)
-	NanosleepCallCount uint64     // Total nanosleep calls (all threads)
+	NanosleepCallCount     uint64 // Total nanosleep calls (all threads)
+	NanosleepZeroTickCount uint64 // Nanosleep calls with ticks==0 (instant yield)
+	NanosleepRealSleepCount uint64 // Nanosleep calls that actually block
+	NanosleepDispatchedSID0 uint64 // Nanosleep dispatched for SID 0
+	NanosleepEarlyNull      uint64
+	NanosleepEarlyEfault    uint64
+	NanosleepEarlyReadFail  uint64
 	YieldCallCount     uint64     // Total sched_yield calls (all threads)
 	YieldSwitchCount   uint64     // Yields that actually found a thread to switch to
 	YieldNoReadyCount  uint64     // Yields that found no ready thread
 	SVCCountBySID      [32]uint64 // Per-SID SVC counter for diagnostics
+	// SID0 per-syscall-number counters for diagnosing kernel thread load.
+	SID0SyscallCounts [256]uint64 // indexed by syscall number (clamped to 255)
 	// DbgTraceSID, when >= 0, causes DispatchSyscall to log syscall numbers
 	// for the matching SID. Set from ext2 timing hooks to trace fs during stall.
 	DbgTraceSID int32 = -1

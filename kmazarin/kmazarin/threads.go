@@ -139,6 +139,59 @@ func SetupTopHalfTimeUpdate() {
 	topHalfTimeUpdateHook = topHalfTimeUpdateAndFlush
 }
 
+// topHalfGCWakeHook is called from ProcessDeadlinesTopHalf via indirect
+// function pointer to wake sleeping kernel threads when GC needs STW.
+// Uses the same nosplit-budget pattern as topHalfTimeUpdateHook.
+// Set by InitTopHalfGCWake after thread system is initialized.
+var topHalfGCWakeHook func()
+
+// topHalfGCWakeImpl wakes all sleeping kernel threads (TIDs 0-7) when
+// the Go runtime's GC is waiting to stop the world. sysmon sleeps for
+// 10s to minimize SVC overhead; this tick-driven wake bounds GC STW
+// latency to 4ms (one tick period). Must be called with schedulerLock held.
+//
+//go:nosplit
+//go:noinline
+func topHalfGCWakeImpl() {
+	if !kmazarinGCWaiting() {
+		return
+	}
+	for i := 0; i < ReservedKernelThreads; i++ {
+		t := threadList.ReservedGet(i)
+		if t != nil && t.State == ThreadSleeping {
+			t.State = ThreadReady
+			sleepingQueue.Pluck(t.TID)
+			enqueueReadySchedLockHeld(t)
+		}
+	}
+}
+
+// InitTopHalfGCWake installs the GC wake hook for the timer top-half.
+// Called from InitThreads after the thread system is ready.
+func InitTopHalfGCWake() {
+	topHalfGCWakeHook = topHalfGCWakeImpl
+	epochUptimeHook = epochUptimeImpl
+}
+
+// epochUptimeHook prints kernel uptime at epoch boundaries. Called via
+// indirect function pointer to keep division out of the nosplit budget.
+var epochUptimeHook func()
+
+//go:nosplit
+//go:noinline
+func epochUptimeImpl() {
+	freq := uint64(kirq.GetTimerFrequency())
+	if freq > 0 && kernelBootTick > 0 {
+		elapsed := kirq.ReadCounterValue() - kernelBootTick
+		uptimeSec := elapsed / freq
+		serial.RawUARTPuts("\n[E:up=")
+		serial.RawUARTDecimal(uptimeSec)
+		serial.RawUARTPuts("s]")
+	} else {
+		serial.RawUARTPuts("\n[E]")
+	}
+}
+
 // timerCtxSwitchCount counts timer interrupts that resulted in a context switch.
 var timerCtxSwitchCount uint64
 
@@ -953,6 +1006,7 @@ func InitThreads() {
 
 	// Use SetCurrentThreadGlobal to update both per-CPU and global CurrentThread
 	SetCurrentThreadGlobal(t0)
+	InitTopHalfGCWake()
 	threadsInitialized = true
 }
 
@@ -1131,6 +1185,13 @@ func ProcessDeadlinesTopHalf() {
 	if fn != nil {
 		fn()
 	}
+	// Wake sleeping kernel threads if GC needs to stop the world.
+	// Called via indirect function pointer to stay within nosplit budget
+	// (same pattern as topHalfIOUringTimeoutHook / topHalfTimeUpdateHook).
+	gcFn := topHalfGCWakeHook
+	if gcFn != nil {
+		gcFn()
+	}
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 
@@ -1144,7 +1205,13 @@ func ProcessDeadlinesTopHalf() {
 
 	// Compact stats every ~10 seconds (assuming ~100 Hz timer)
 	if cnt%1000 == 0 {
-		serial.RawUARTPuts("\n[E] svc=")
+		// Print kernel uptime (excluding UEFI boot). Called via function
+		// pointer to avoid division adding to the nosplit stack budget.
+		upFn := epochUptimeHook
+		if upFn != nil {
+			upFn()
+		}
+		serial.RawUARTPuts(" svc=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.TotalSVCCount))
 		serial.RawUARTPuts(" fw=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWaitBlocked))
@@ -1479,6 +1546,7 @@ var dbgLastEL1hSPSR uint64 // SPSR when timer skipped due to EL1h
 
 // prevSVCCountBySID holds the previous epoch's per-SID SVC counts for delta computation.
 var prevSVCCountBySID [32]uint64
+var prevSID0Syscalls [256]uint64
 var dbgBoostAttempt uint64        // times boostThread0ForPendingWork was called
 var dbgBoostSuccess uint64        // times boost succeeded (thread 0 was Ready)
 var dbgBoostFailState uint64      // thread 0 state when boost failed (last value)
@@ -1571,6 +1639,34 @@ func printThreadStateSummary() {
 			serial.RawUARTDecimal(delta)
 		}
 		prevSVCCountBySID[i] = cur
+	}
+	// Nanosleep breakdown
+	serial.RawUARTPuts("\n  ns: zero=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepZeroTickCount))
+	serial.RawUARTPuts(" real=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepRealSleepCount))
+	serial.RawUARTPuts(" total=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepCallCount))
+	serial.RawUARTPuts(" disp0=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepDispatchedSID0))
+	serial.RawUARTPuts(" null=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepEarlyNull))
+	serial.RawUARTPuts(" efault=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepEarlyEfault))
+	serial.RawUARTPuts(" readfail=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepEarlyReadFail))
+	// SID 0 per-syscall-number breakdown (top consumers).
+	serial.RawUARTPuts("\n  sid0/svc:")
+	for i := 0; i < 256; i++ {
+		cur := atomic.LoadUint64(&ksyscall.SID0SyscallCounts[i])
+		delta := cur - prevSID0Syscalls[i]
+		if delta > 100000 { // only print high-volume syscalls
+			serial.RawUART(' ')
+			serial.RawUARTDecimal(uint64(i))
+			serial.RawUART('=')
+			serial.RawUARTDecimal(delta)
+		}
+		prevSID0Syscalls[i] = cur
 	}
 	serial.RawUARTPuts("\n")
 }

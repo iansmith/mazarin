@@ -164,14 +164,11 @@ usleep_spin:
 	RET
 
 usleep_real:
-	// Phase 2: convert microseconds to nanoseconds, call nanosleep via INT $0x80
-	// Build timespec on stack: {tv_sec=0, tv_nsec=usec*1000}
-	MOVL	usec+0(FP), AX		// AX = microseconds
-	MOVQ	$1000, CX
-	MULQ	CX			// RAX = nanoseconds (max ~10ms = 10M ns, fits 64-bit)
+	// Phase 2: sleep 10 seconds (ignore requested duration).
+	// The kernel's 250Hz tick handler wakes us early if GC needs STW.
 	SUBQ	$16, SP			// allocate timespec
-	MOVQ	$0, 0(SP)		// tv_sec = 0
-	MOVQ	AX, 8(SP)		// tv_nsec = usec * 1000
+	MOVQ	$10, 0(SP)		// tv_sec = 10
+	MOVQ	$0, 8(SP)		// tv_nsec = 0
 	MOVQ	SP, DI			// arg0: &timespec
 	MOVQ	$0, SI			// arg1: NULL (remaining)
 	MOVL	$35, AX			// SYS_nanosleep on x86_64

@@ -108,12 +108,11 @@ TEXT runtime·usleep(SB),NOSPLIT,$24-4
 	RET
 
 usleep_real:
-	// Phase 2: convert microseconds to timespec and call nanosleep
-	MOVW	usec+0(FP), A0		// A0 = microseconds (32-bit, zero-extended)
-	MOV	$1000, T0
-	MUL	A0, T0, T1		// T1 = nanoseconds (usec * 1000; max ~10ms = 10M ns)
-	MOV	ZERO, T2		// tv_sec = 0 (sysmon max is 10ms)
+	// Phase 2: sleep 10 seconds (ignore requested duration).
+	// The kernel's 250Hz tick handler wakes us early if GC needs STW.
+	MOV	$10, T2			// tv_sec = 10
 	MOV	T2, 8(X2)		// store tv_sec on stack
+	MOV	ZERO, T1		// tv_nsec = 0
 	MOV	T1, 16(X2)		// store tv_nsec on stack
 	ADD	$8, X2, A0		// A0 = &timespec
 	MOV	ZERO, A1		// A1 = NULL (remaining time)

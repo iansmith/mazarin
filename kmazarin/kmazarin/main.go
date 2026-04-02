@@ -773,7 +773,12 @@ func verifyCodeIntegrityKmazarin(label string) {
 	uartPuts("\r\n")
 }
 
+// kernelBootTick is the hardware counter value when kmazarin's main() starts.
+// Used to compute true kernel uptime (excluding UEFI boot).
+var kernelBootTick uint64
+
 func simpleMain() {
+	kernelBootTick = kirq.ReadCounterValue()
 	Print("[Main] Kmazarin kernel starting...")
 
 	// Test runtime readiness FIRST (before unmapping Cardinal)

@@ -7,16 +7,19 @@ package main
 
 import (
 	"mazzy/kmazarin/asm"
+	"mazzy/kmazarin/ksyscall"
 	"unsafe"
 )
 
 // BlockForDirtyNotify blocks the current thread waiting for dirty notifications.
-// Saves syscall arg0 for rewind restoration.
+// Saves syscall arg0 for rewind restoration. Sets BlockedTID under the
+// scheduler lock to avoid the race where a timer tick sees BlockedTID >= 0
+// before the thread is actually blocked.
 // Returns the context pointer of the next thread to switch to, or 0.
 //
 //go:nosplit
 //go:noinline
-func BlockForDirtyNotify(syscallArg0 uint64) uintptr {
+func BlockForDirtyNotify(syscallArg0 uint64, shepherdSID uint64) uintptr {
 	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
@@ -46,15 +49,20 @@ func BlockForDirtyNotify(syscallArg0 uint64) uintptr {
 		next = findReadyThreadSchedLockHeld()
 	}
 	if next == nil {
+		// No other thread — set BlockedTID so the WFI loop path can be woken,
+		// then return 0 to fall into the WFI loop in SyscallAttrWaitDirty.
+		ksyscall.SetBlockedTID(int(shepherdSID), int32(t.TID))
 		schedulerLock.Unlock()
 		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 		return 0
 	}
 
-	// Block current thread.
+	// Block current thread. Set BlockedTID atomically with the state change
+	// so timer ISR can't see BlockedTID before the thread is actually blocked.
 	t.State = ThreadBlockedDirtyNotify
 	t.SoftIRQSlotArg = syscallArg0    // Save arg0 for rewind
 	t.SoftIRQSyscallNum = 0x102A      // SysAttrWaitDirty — for x86_64 RAX restore
+	ksyscall.SetBlockedTID(int(shepherdSID), int32(t.TID))
 
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)

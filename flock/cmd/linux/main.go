@@ -486,10 +486,12 @@ func main() {
 	// tick (~10Hz) triggers the actual redraw, batching many updates into
 	// one draw+blit cycle to avoid flashing.
 	textDirty := false
+	var linuxDraws, linuxDirtyTicks, linuxSerialEvts, linuxDelegateEvts int64
 
 	redraw := func() {
 		app.Draw(app, 0, 0, int64(winW), int64(winH))
 		sendBlit()
+		linuxDraws++
 	}
 
 	// drainSerial consumes all buffered serial bytes without redrawing.
@@ -527,6 +529,7 @@ func main() {
 		case sb := <-serialCh:
 			con.handleSerialByte(sb)
 			textDirty = true
+			linuxSerialEvts++
 			drainSerial()
 
 		case msg := <-delegateDataCh:
@@ -534,15 +537,21 @@ func main() {
 				con.handleSerialByte(serial.SerialByte{Fd: msg.fd, B: b})
 			}
 			textDirty = true
+			linuxDelegateEvts++
 			drainDelegates()
 
 		case <-dirtyCh:
+			linuxDirtyTicks++
 			// Drain any pending text before redrawing.
 			drainSerial()
 			drainDelegates()
 			if textDirty {
 				textDirty = false
 				redraw()
+			}
+			if linuxDirtyTicks%10 == 0 {
+				sys.UartWriteDirectString(fmt.Sprintf("[linux] dirtyTicks=%d draws=%d serial=%d delegate=%d\n",
+					linuxDirtyTicks, linuxDraws, linuxSerialEvts, linuxDelegateEvts))
 			}
 		}
 	}

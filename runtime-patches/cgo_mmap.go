@@ -213,40 +213,13 @@ func kmazarinPrintHex32(v uint32) {
 func munmap(addr unsafe.Pointer, n uintptr) {
 }
 
-// kmazarinGCStats returns GC state and bump allocator stats without STW.
-// These are approximate (racy) but safe to call from any context.
+// kmazarinGCWaiting returns true when the GC is waiting to stop the world.
+// Called from kmazarin's 250Hz timer tick handler to decide whether sleeping
+// kernel threads (especially sysmon) need to be woken early for STW coordination.
 //
 //go:nosplit
-func kmazarinGCStats() (numgc uint32, phase uint32, panicVal uint32, heapLive uint64, enablegc uint32, gcPct int32, percentGoal uint64, heapMarked uint64, trigger uint64, heapGoal uint64) {
-	var egc uint32
-	if memstats.enablegc {
-		egc = 1
-	}
-	trig, goal := gcController.trigger()
-	return memstats.numgc, gcphase, panicking.Load(), gcController.heapLive.Load(), egc, gcController.gcPercent.Load(), gcController.gcPercentHeapGoal.Load(), gcController.heapMarked, trig, goal
-}
-
-// kmazarinGCGates returns the conditions that gcStart() checks before starting GC.
-// gcStart silently returns if any of: gp==mp.g0, mp.locks>1, mp.preemptoff!="".
-// Also returns sweepDone to check if sweep completion is blocking.
-//
-//go:nosplit
-func kmazarinGCGates() (onG0 uint32, mLocks int32, preemptOff uint32, sweepDone uint32) {
-	gp := getg()
-	mp := gp.m
-	var g0Flag uint32
-	if gp == mp.g0 {
-		g0Flag = 1
-	}
-	var poFlag uint32
-	if mp.preemptoff != "" {
-		poFlag = 1
-	}
-	var sdFlag uint32
-	if sweep.active.isDone() {
-		sdFlag = 1
-	}
-	return g0Flag, mp.locks, poFlag, sdFlag
+func kmazarinGCWaiting() bool {
+	return sched.gcwaiting.Load()
 }
 
 // kmazarinDumpPState prints the P idle list and P[0] status via UART.

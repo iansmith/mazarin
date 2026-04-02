@@ -683,10 +683,13 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 	var events [64]hid.HIDEvent
 	var km input.Keymap
 	var keyHeld [256]bool
+	var rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents int64
+	var rachelNotifyCount int64
 
 	for notif := range ch {
 		switch notif.Code {
 		case wm.WMNotify:
+			rachelNotifyCount++
 			// A shepherd sent us a message — open ring at translated VA
 			rb := ringbuf.Open(uintptr(notif.RingAddr))
 			var raw [wm.SizeWMMessage]byte
@@ -694,6 +697,7 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
 				switch msgType {
 				case wm.MsgAppStart:
+					rachelMsgAppStart++
 					msg := (*wm.AppStartMsg)(unsafe.Pointer(&raw[0]))
 					senderSID := int(msg.SID)
 
@@ -790,7 +794,14 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 					// Initial blit (all windows, z-ordered).
 					blitAllWindows()
 
+				default:
+					rachelMsgOther++
 				case wm.MsgBlit:
+					rachelMsgBlit++
+					if rachelMsgBlit%10 == 0 {
+						fmt.Printf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
+							rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents)
+					}
 					msg := (*wm.BlitMsg)(unsafe.Pointer(&raw[0]))
 					sid := int(msg.SID)
 					ta, ok := trackedApps[sid]
@@ -805,6 +816,7 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 			}
 
 		case hid.InputEventCode:
+			rachelHIDEvents++
 			// Drain shared completion ring and process all events
 			batchTotal := 0
 			for {

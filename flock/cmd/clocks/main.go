@@ -7,8 +7,6 @@ import (
 	"time"
 	_ "time/tzdata"
 
-	"sync/atomic"
-
 	"golang.org/x/image/font"
 
 	"mazzy/mazarin/attr"
@@ -24,9 +22,6 @@ import (
 	"strconv"
 	"unsafe"
 )
-
-//go:linkname nanotime runtime.nanotime
-func nanotime() int64
 
 // Screen dimensions — read from kernel constraint attributes at startup.
 var screenW, screenH int
@@ -377,52 +372,19 @@ func main() {
 		totalW, totalH, bsr.LeftInset, bsr.TopInset, winW, winH))
 
 	// 11. Draw to the backing store at (0,0) — screen position is rachel's concern.
-	sys.UartWriteDirectString("[clocks] starting real draw\n")
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
 	dc.SetColor(pal.Surface())
 	dc.FillRectangle(0, 0, float64(winW), float64(winH))
 	app.SetDC(dc)
-	std.ResetDrawPerf()
-	drawT0 := nanotime()
 	app.Draw(app, 0, 0, int64(winW), int64(winH))
-	drawTotal := nanotime() - drawT0
-	sys.UartWriteDirectString("[clocks] real draw complete\n")
-	ps := std.GetDrawPerf()
-	sys.UartWriteDirectString(fmt.Sprintf("[clocks] DRAW PERF total=%dms\n", drawTotal/1e6))
-	sys.UartWriteDirectString(fmt.Sprintf("[clocks]   shadow: alloc=%dms(%d/%dKB) gg=%dms(%d) cvt=%dms blur=%dms(%d) comp=%dms face=%dms\n",
-		ps.AllocNs.Load()/1e6, ps.AllocCount.Load(), ps.AllocBytes.Load()/1024,
-		ps.GGDrawNs.Load()/1e6, ps.GGCount.Load(),
-		ps.ConvertNs.Load()/1e6,
-		ps.BlurNs.Load()/1e6, ps.BlurCount.Load(),
-		ps.ComposeNs.Load()/1e6,
-		ps.FaceNs.Load()/1e6))
-	sys.UartWriteDirectString(fmt.Sprintf("[clocks]   tree: appDecor=%dms appClip=%dms appChild=%dms\n",
-		ps.AppDecorateNs.Load()/1e6,
-		ps.AppClipNs.Load()/1e6,
-		ps.AppChildNs.Load()/1e6))
-	rowLine := fmt.Sprintf("[clocks]   row: children=%d [", ps.RowChildCount.Load())
-	for i := int64(0); i < ps.RowChildCount.Load() && i < int64(len(ps.RowChildNs)); i++ {
-		if i > 0 {
-			rowLine += ","
-		}
-		rowLine += fmt.Sprintf("%dms", ps.RowChildNs[i].Load()/1e6)
-	}
-	rowLine += "]\n"
-	sys.UartWriteDirectString(rowLine)
-	sys.UartWriteDirectString(fmt.Sprintf("[clocks]   detail: neuDecor=%dms neuChild=%dms clockFace=%dms label=%dms(%d) colChild=%dms\n",
-		ps.NeuDecorNs.Load()/1e6,
-		ps.NeuChildNs.Load()/1e6,
-		ps.ClockFaceNs.Load()/1e6,
-		ps.LabelNs.Load()/1e6, ps.LabelCount.Load(),
-		ps.ColChildNs.Load()/1e6))
 
 	// 12. Instrumentation counters.
 	eagerAttr := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
 	eagerSlot := eagerAttr.Slot()
-	var drawCount atomic.Int64
 
 	// 13. Main loop: wake on dirty, draw to backing store, send blit to rachel.
+	var drawCount int64
 	for {
 		attr.WaitDirty()
 		sys.AttrIncrementI64(eagerSlot)
@@ -432,8 +394,11 @@ func main() {
 
 		// Draw to backing store at local (0,0) — translate+clip handle offset.
 		app.Draw(app, 0, 0, int64(winW), int64(winH))
-		drawCount.Add(1)
 		sendBlit()
+		drawCount++
+		if drawCount%10 == 0 {
+			sys.UartWriteDirectString(fmt.Sprintf("[clocks] draws=%d\n", drawCount))
+		}
 	}
 }
 

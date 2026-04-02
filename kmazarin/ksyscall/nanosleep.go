@@ -17,17 +17,18 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	_ = rem // We don't support interruption
 
 	if req == 0 {
+		atomic.AddUint64(&NanosleepEarlyNull, 1)
 		return 0 // No-op if no request
 	}
 
-	// Validate user buffer address - reject NULL and kernel addresses
-	if !isValidUserAddr(req) {
-		return -14 // EFAULT
-	}
-
-	// Read the timespec structure
+	// Read the timespec structure directly. ReadUserInt64Pair handles both
+	// kernel addresses (direct dereference) and user addresses (page table
+	// walk) via its isKernelAddr check. We do NOT gate on isValidUserAddr
+	// here because kernel goroutines (e.g. sysmon) pass kernel-stack pointers
+	// and CurrentShepherd() can return stale shepherd context on kernel threads.
 	ts, ok := kmem.ReadUserInt64Pair(uintptr(req))
 	if !ok {
+		atomic.AddUint64(&NanosleepEarlyReadFail, 1)
 		return -14 // EFAULT
 	}
 	seconds := ts[0]
@@ -54,6 +55,7 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 
 	// If requested sleep is 0, just yield
 	if ticks == 0 {
+		atomic.AddUint64(&NanosleepZeroTickCount, 1)
 		nextThread := ThreadFindReady()
 		if nextThread != 0 {
 			SetSyscallSwitchTarget(nextThread)
@@ -64,6 +66,8 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	// Calculate deadline tick
 	currentTick := kirq.ReadCounterValue()
 	deadline := currentTick + ticks
+
+	atomic.AddUint64(&NanosleepRealSleepCount, 1)
 
 	// Add to static deadline queue (always available, initialized in InitThreads)
 	AddDeadlineStatic(deadline, currentTID)

@@ -99,6 +99,17 @@ checkWake:
 	}
 }
 
+// SetBlockedTID sets the BlockedTID for a shepherd's notify queue.
+// Called from BlockForDirtyNotify under the scheduler lock to avoid
+// the race between setting BlockedTID and blocking the thread.
+//
+//go:nosplit
+func SetBlockedTID(shepherdSID int, tid int32) {
+	if shepherdSID >= 0 && shepherdSID < proc.MaxShepherds {
+		notifyQueues[shepherdSID].BlockedTID = tid
+	}
+}
+
 // drainNotifyQueue copies pending slot numbers to a kernel buffer and resets
 // the queue. Returns the count of slots drained, or -1 if overflow occurred.
 func drainNotifyQueue(pid int) ([]uint16, int) {
@@ -200,11 +211,11 @@ func SyscallAttrWaitDirty(resultBufPtr, maxSlots, _, _, _, _ uint64) int64 {
 	}
 
 	// No notifications pending — block the thread.
-	q := &notifyQueues[shepherdSID]
-	_, tid := getCurrentThreadSIDAndTID()
-	q.BlockedTID = int32(tid)
-
-	ctxPtr := blockForDirtyNotify(resultBufPtr)
+	// BlockedTID is set inside blockForDirtyNotify under the scheduler lock,
+	// AFTER the thread state is set to ThreadBlockedDirtyNotify, to avoid a
+	// race where a 10Hz tick sees BlockedTID >= 0, attempts a wake, but the
+	// thread isn't blocked yet — clearing BlockedTID and losing the wake.
+	ctxPtr := blockForDirtyNotify(resultBufPtr, uint64(shepherdSID))
 	if ctxPtr != 0 {
 		// Context switch to another thread. The wake path will rewind our
 		// SVC so this syscall re-executes, finding items in the queue.

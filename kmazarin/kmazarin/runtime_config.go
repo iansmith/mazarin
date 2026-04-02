@@ -61,17 +61,12 @@ func SetSyscallReady() {
 	kmazarinSyscallReady = 1
 }
 
-// kmazarinGCStatsNoSTW reads GC state without triggering stop-the-world.
-// Returns (numGC, gcPhase, panicking, heapLive, enablegc, gcPercent, gcPercentHeapGoal, heapMarked, triggered, heapGoal).
+// kmazarinGCWaiting returns true when the GC is waiting to stop the world.
+// Called from ProcessDeadlinesTopHalf (250Hz tick) to wake sleeping kernel
+// threads so sysmon can participate in STW coordination promptly.
 //
-//go:linkname kmazarinGCStatsNoSTW runtime.kmazarinGCStats
-func kmazarinGCStatsNoSTW() (uint32, uint32, uint32, uint64, uint32, int32, uint64, uint64, uint64, uint64)
-
-// kmazarinGCGatesNoSTW returns the conditions that gcStart() checks.
-// (onG0, mLocks, preemptOff, sweepDone)
-//
-//go:linkname kmazarinGCGatesNoSTW runtime.kmazarinGCGates
-func kmazarinGCGatesNoSTW() (uint32, int32, uint32, uint32)
+//go:linkname kmazarinGCWaiting runtime.kmazarinGCWaiting
+func kmazarinGCWaiting() bool
 
 // RuntimeConfig holds the minimal configuration from the bootloader.
 type RuntimeConfig struct {

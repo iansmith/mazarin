@@ -80,6 +80,14 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	if sid >= 0 && sid < int16(len(SVCCountBySID)) {
 		atomic.AddUint64(&SVCCountBySID[sid], 1)
 	}
+	// Per-syscall-number counter for SID 0 (kernel threads).
+	if sid == 0 {
+		idx := syscallNum
+		if idx >= 256 {
+			idx = 255
+		}
+		atomic.AddUint64(&SID0SyscallCounts[idx], 1)
+	}
 	// Trace syscall numbers for a specific SID (set via DbgTraceSID)
 	if traceSID := atomic.LoadInt32(&DbgTraceSID); traceSID >= 0 && int16(traceSID) == sid {
 		dbgTraceSyscall(sid, syscallNum)
@@ -117,6 +125,9 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 					result = -38 // ENOSYS
 				} else {
 					// Call the handler
+					if sysID == SysIDNanosleep && sid == 0 {
+						atomic.AddUint64(&NanosleepDispatchedSID0, 1)
+					}
 					result = handler(arg0, arg1, arg2, arg3, arg4, arg5)
 				}
 			}
