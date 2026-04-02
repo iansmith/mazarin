@@ -234,13 +234,13 @@ const (
 	ThreadSleeping        ThreadState = 4 // Blocked on nanosleep
 	ThreadExited          ThreadState = 5 // Thread has exited (being cleaned up)
 	ThreadBlockedSoftIRQ  ThreadState = 6 // Blocked waiting for soft IRQ
-	ThreadBlockedLoadMaz  ThreadState = 7 // Blocked waiting for .maz load to complete
+	ThreadBlockedKernelWork ThreadState = 7 // Blocked waiting for KernelSVCWorker to complete
 	ThreadBlockedDelegate     ThreadState = 10 // Caller blocked waiting for delegated syscall reply
 	ThreadBlockedDelegateRecv ThreadState = 11 // Handler blocked waiting for delegated syscall request
 	ThreadBlockedDirtyNotify  ThreadState = 12 // Blocked waiting for constraint dirty notification
 	ThreadBlockedInputEvent   ThreadState = 13 // Blocked waiting for input focus event
 	ThreadBlockedMailbox      ThreadState = 14 // Blocked waiting for mailbox notification
-	ThreadBlockedEpoll        ThreadState = 15 // Blocked waiting for epoll_ctl goroutine dispatch
+	// ThreadBlockedEpoll (15) — removed, unified into ThreadBlockedKernelWork (7)
 	ThreadBlockedIOUring      ThreadState = 16 // Blocked waiting for io_uring completions
 )
 
@@ -550,13 +550,9 @@ func WakeThreadForSignal(t *Thread) {
 		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
 		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 		enqueueReadySchedLockHeld(t)
-	case ThreadBlockedLoadMaz:
-		// Defer signal delivery until LoadMaz completes — the worker
-		// goroutine will wake this thread with the result. Waking
-		// prematurely would return a half-filled MazLoadResult.
-	case ThreadBlockedEpoll:
-		// Defer signal delivery until epoll_ctl dispatch completes —
-		// the worker goroutine will wake this thread with the result.
+	case ThreadBlockedKernelWork:
+		// Defer signal delivery until kernel work completes — the worker
+		// goroutine will wake this thread with the result.
 	case ThreadBlockedDelegate:
 		// Defer signal delivery until delegated syscall reply arrives.
 	case ThreadBlockedDelegateRecv:
@@ -1680,12 +1676,12 @@ func KernelIdleLoop() {
 			serial.RawUARTDecimal(dbgIdleCount)
 			serial.RawUARTPuts("]")
 		}
-		// Check for pending kernel work and execute it directly on this
-		// goroutine's growable stack. Both atomic flag and BlockedTID are checked.
-		DispatchLoadMazWork()
-		DispatchRunMazWork()
-		DispatchRunShepherdWork()
-		DispatchEpollWork()
+		// Relay pending SVC work requests to worker goroutines.
+		// Each Relay converts an atomic flag to a channel send.
+		loadMazKW.Relay()
+		runMazKW.Relay()
+		runShepherdKW.Relay()
+		epollKW.Relay()
 
 		// NOTE: runtime.Gosched() was removed here. When Gosched runs Go's
 		// internal goroutine scheduler, goroutines doing SVC sched_yield cause
@@ -2785,6 +2781,61 @@ func stealWorkFromOtherCPUs() *Thread {
 	return nil
 }
 
+// findNextThreadForBlockSchedLockHeld finds the next ready thread for a blocking
+// SVC operation. Must be called with schedulerLock held and IRQs disabled.
+//
+// This is the single implementation of the "find next thread" fallback chain
+// used by all blocking SVC paths (mailbox, delegate, io_uring, softIRQ, etc.).
+// Having one copy eliminates the bug class where individual callers forget to
+// wake sleeping thread 0, causing WFI death loops inside SVC handlers.
+//
+// Search order:
+//  1. Pluck current thread from ready queues (safety: prevent finding self)
+//  2. Prefer userspace threads (if caller is userspace)
+//  3. Process static deadlines (nanosleep/futex) to wake sleeping threads
+//  4. Fall back to any ready thread (including kernel thread 0)
+//  5. Wake sleeping thread 0 as last resort — thread 0 normally sleeps with
+//     short (~4ms) deadlines in the idle loop; without this step callers fall
+//     through to WFI loops where svcDepth>0 blocks timer preemption
+//
+// Returns nil if no thread is available (caller should undo and return 0).
+//
+//go:nosplit
+func findNextThreadForBlockSchedLockHeld(current *Thread) *Thread {
+	pluckFromAllQueues(current.TID)
+
+	var next *Thread
+	if current.PageTableL0PA != 0 {
+		next = findReadyUserspaceThreadSchedLockHeld(-1)
+	} else {
+		next = findReadyThreadSchedLockHeld()
+	}
+	if next == nil {
+		processStaticDeadlinesSchedLockHeld()
+		if current.PageTableL0PA != 0 {
+			next = findReadyUserspaceThreadSchedLockHeld(-1)
+		} else {
+			next = findReadyThreadSchedLockHeld()
+		}
+	}
+	if next == nil && current.PageTableL0PA != 0 {
+		next = findReadyThreadSchedLockHeld()
+	}
+	if next == nil && current.TID != 0 {
+		t0 := threadLookupByTID(0)
+		if t0 != nil && t0.State == ThreadSleeping {
+			t0.State = ThreadReady
+			pluckFromAllQueues(t0.TID)
+			enqueueReadySchedLockHeld(t0)
+			next = findReadyThreadSchedLockHeld()
+		} else if t0 != nil && t0.State == ThreadReady {
+			pluckFromAllQueues(t0.TID)
+			next = t0
+		}
+	}
+	return next
+}
+
 // findReadyThreadSchedLockHeld finds the next READY thread using per-CPU queues with work stealing.
 // Checks local queue first, then steals from other CPUs.
 // Returns thread pointer, or nil if none found.
@@ -3491,21 +3542,6 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
 
-// Called from timer IRQ handler via ABI stub when NeedsThreadPreempt is set.
-//
-// framePtr: pointer to exception frame with saved registers
-// Returns: pointer to new ThreadContext if switch happened, 0 otherwise
-//
-// hasPendingKernelWork returns true if any LoadMaz/RunMaz/RunShepherd work
-// is waiting to be dispatched by thread 0.
-//
-//go:nosplit
-func hasPendingKernelWork() bool {
-	return atomic.LoadUint32(&loadMazPending) != 0 ||
-		atomic.LoadUint32(&runMazPending) != 0 ||
-		atomic.LoadUint32(&runShepherdPending) != 0
-}
-
 // Thread0HasPendingWork returns true if the current thread is thread 0
 // AND there is pending kernel dispatch work (LoadMaz/RunMaz/RunShepherd).
 // Used by SyscallSchedYield to skip OS-level thread switches so that
@@ -3605,17 +3641,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 			}
 		}
 		return ctxPtr
-	}
-
-	// Don't preempt thread 0 while it's dispatching LoadMaz/RunMaz/RunShepherd work.
-	// Without this, the userspace-preferring scheduler starves thread 0
-	// after completing one request, preventing subsequent requests from
-	// being dispatched.
-	if oldThread.TID == 0 && (atomic.LoadUint32(&loadMazDispatching) != 0 ||
-		atomic.LoadUint32(&runMazDispatching) != 0 ||
-		atomic.LoadUint32(&runShepherdDispatching) != 0 ||
-		atomic.LoadUint32(&epollDispatching) != 0) {
-		return 0
 	}
 
 	// Boost thread 0 when kernel work is pending. The userspace-preferring
@@ -4126,8 +4151,8 @@ func PrintTickDistribution() {
 				stateStr = "INP"
 			case ThreadBlockedMailbox:
 				stateStr = "MBX"
-			case ThreadBlockedEpoll:
-				stateStr = "EPL"
+			case ThreadBlockedKernelWork:
+				stateStr = "KW"
 			case ThreadBlockedIOUring:
 				stateStr = "IOU"
 			}

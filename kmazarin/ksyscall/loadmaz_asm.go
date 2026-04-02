@@ -2,12 +2,9 @@ package ksyscall
 
 import _ "unsafe" // for go:linkname
 
-// Forward declarations for LoadMaz bridge functions provided via go:linkname.
-
-// blockForLoadMaz blocks the current thread for a pending LoadMaz request
-// and returns the next thread's context pointer (0 if no thread available).
-// The caller must call SetSyscallSwitchTarget with the returned pointer.
+// submitLoadMaz submits a LoadMaz request to the kernel worker goroutine.
+// Returns the next thread's context pointer for SetSyscallSwitchTarget,
+// or 0 on failure (busy or no ready thread).
 //
-//go:linkname blockForLoadMaz main.BlockForLoadMaz
-func blockForLoadMaz() uintptr
-
+//go:linkname submitLoadMaz main.SubmitLoadMaz
+func submitLoadMaz(req LoadMazWorkRequest) uintptr

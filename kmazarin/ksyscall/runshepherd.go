@@ -11,25 +11,17 @@ import (
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"sync/atomic"
 )
 
 // RunShepherdWorkRequest contains the parameters for a RunShepherd operation.
 type RunShepherdWorkRequest struct {
-	Name       string
-	StartVA    uintptr
-	NumPages   int
-	TotalBytes int
+	Name           string
+	StartVA        uintptr
+	NumPages       int
+	TotalBytes     int
 	CallerShepherd *proc.Shepherd
-	CallerL0PA   uintptr
-	BlockedTID   int32 // Set by BlockForRunShepherd in main package
+	CallerL0PA     uintptr
 }
-
-// RunShepherdReq is the global request struct shared between the SVC handler
-// and the kernel worker goroutine. One request at a time.
-// RunShepherdBusy guards against concurrent access (latent SMP hazard).
-var RunShepherdReq RunShepherdWorkRequest
-var RunShepherdBusy int32
 
 // SyscallRunShepherd creates a new shepherd from ELF data in the caller's pages.
 //
@@ -74,33 +66,23 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		return int64(errInvalidFilename)
 	}
 
-	// Guard against concurrent access (latent SMP hazard).
-	if !atomic.CompareAndSwapInt32(&RunShepherdBusy, 0, 1) {
-		console.KWriteString("[RunShepherd] ERROR: concurrent request\r\n")
-		return -16 // EBUSY
-	}
-
 	console.KWriteString("[RunShepherd] CAS ok, name=")
 	console.KWriteString(name)
 	console.KWriteString("\r\n")
 
-	// Store request for the worker goroutine
-	RunShepherdReq = RunShepherdWorkRequest{
-		Name:         name,
-		StartVA:      startVA,
-		NumPages:     numPages,
-		TotalBytes:   totalBytes,
+	ctxPtr := submitRunShepherd(RunShepherdWorkRequest{
+		Name:           name,
+		StartVA:        startVA,
+		NumPages:       numPages,
+		TotalBytes:     totalBytes,
 		CallerShepherd: shepherd,
-		CallerL0PA:   shepherd.PageTableL0PA,
-	}
-
-	// Block and dispatch to worker goroutine (needs growable stack)
-	ctxPtr := blockForRunShepherd()
+		CallerL0PA:     shepherd.PageTableL0PA,
+	})
 	if ctxPtr != 0 {
-		console.KWriteString("[RunShepherd] blocked, switching\r\n")
+		console.KWriteString("[RunShepherd] submitted, switching\r\n")
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
-		console.KWriteString("[RunShepherd] ERROR: no thread to switch to\r\n")
+		console.KWriteString("[RunShepherd] ERROR: busy or no thread to switch to\r\n")
 		return int64(errNoSpace)
 	}
 

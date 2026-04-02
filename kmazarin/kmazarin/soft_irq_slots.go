@@ -470,41 +470,7 @@ func BlockOnSlot(slotNum int32) uintptr {
 		return 0
 	}
 
-	// Pluck current thread from ready queue if it's there
-	// (It might not be if it was already running and not re-queued)
-	pluckFromAllQueues(t.TID)
-
-	// Use filtered search for userspace threads to avoid returning kernel
-	// thread 0 (EL1t SPSR) when a userspace thread is blocking — same fix
-	// as the other 4 EL0 context-switch paths.
-	var next *Thread
-	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(-1)
-	} else {
-		next = findReadyThreadSchedLockHeld()
-	}
-	if next == nil {
-		// No ready userspace thread — process nanosleep/futex deadlines
-		// while we hold the scheduler lock. This can wake sleeping threads
-		// (e.g. sysmon) immediately, avoiding a round-trip through WFI.
-		processStaticDeadlinesSchedLockHeld()
-		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(-1)
-		} else {
-			next = findReadyThreadSchedLockHeld()
-		}
-	}
-	if next == nil && t.PageTableL0PA != 0 {
-		// Last resort: accept ANY ready thread including kernel thread 0.
-		// Without this fallback, a userspace thread returns 0 and loops at
-		// EL1 (SVC handler doing WFI) where timer preemption can't fire
-		// (SPSR shows EL1). On HVF (native speed) the EL0 window between
-		// SVCs is too brief for timer preemption to catch, causing deadlock.
-		// Switching to thread 0 lets KernelIdleLoop run and reschedule.
-		// The SVC handler's DoContextSwitch handles EL0→EL1 transitions
-		// correctly via SPSR in the target ThreadContext.
-		next = findReadyThreadSchedLockHeld()
-	}
+	next := findNextThreadForBlockSchedLockHeld(t)
 	if next == nil {
 		atomic.AddUint32(&dbgBlockOnSlotNoNext, 1)
 		schedulerLock.Unlock()

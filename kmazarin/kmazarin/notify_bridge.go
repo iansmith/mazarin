@@ -30,24 +30,7 @@ func BlockForDirtyNotify(syscallArg0 uint64, shepherdSID uint64) uintptr {
 		return 0
 	}
 
-	// Find next thread to run.
-	var next *Thread
-	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(-1)
-	} else {
-		next = findReadyThreadSchedLockHeld()
-	}
-	if next == nil {
-		processStaticDeadlinesSchedLockHeld()
-		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(-1)
-		} else {
-			next = findReadyThreadSchedLockHeld()
-		}
-	}
-	if next == nil && t.PageTableL0PA != 0 {
-		next = findReadyThreadSchedLockHeld()
-	}
+	next := findNextThreadForBlockSchedLockHeld(t)
 	if next == nil {
 		// No other thread — set BlockedTID so the WFI loop path can be woken,
 		// then return 0 to fall into the WFI loop in SyscallAttrWaitDirty.

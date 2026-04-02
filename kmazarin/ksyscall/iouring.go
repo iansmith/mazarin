@@ -210,12 +210,17 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			}
 			atomic.AddInt32(&clump.InFlight, 1)
 
-			// Cache management for writes.
+			// Cache management: writes need clean (push dirty lines to RAM),
+			// reads need pre-invalidate (discard dirty lines so DMA'd data
+			// isn't overwritten by stale cache writeback).
 			kernelVA := pa + constants.KernelMMIOOffset
 			requestType := block.VIRTIO_BLK_T_IN
 			if sqe.Opcode == iouring.IOUringOpWrite {
 				requestType = block.VIRTIO_BLK_T_OUT
 				asm.CleanDCacheRange(kernelVA, uintptr(totalBytes))
+				asm.DmaWmb()
+			} else {
+				asm.InvalidateDCacheRange(kernelVA, uintptr(totalBytes))
 				asm.DmaWmb()
 			}
 

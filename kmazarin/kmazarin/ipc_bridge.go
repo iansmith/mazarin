@@ -42,23 +42,7 @@ func BlockForDelegatedSyscall() uintptr {
 		return 0
 	}
 
-	var next *Thread
-	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(-1)
-	} else {
-		next = findReadyThreadSchedLockHeld()
-	}
-	if next == nil {
-		processStaticDeadlinesSchedLockHeld()
-		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(-1)
-		} else {
-			next = findReadyThreadSchedLockHeld()
-		}
-	}
-	if next == nil && t.PageTableL0PA != 0 {
-		next = findReadyThreadSchedLockHeld()
-	}
+	next := findNextThreadForBlockSchedLockHeld(t)
 	if next == nil {
 		schedulerLock.Unlock()
 		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
@@ -90,23 +74,7 @@ func BlockForDelegatedRecv() uintptr {
 		return 0
 	}
 
-	var next *Thread
-	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(-1)
-	} else {
-		next = findReadyThreadSchedLockHeld()
-	}
-	if next == nil {
-		processStaticDeadlinesSchedLockHeld()
-		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(-1)
-		} else {
-			next = findReadyThreadSchedLockHeld()
-		}
-	}
-	if next == nil && t.PageTableL0PA != 0 {
-		next = findReadyThreadSchedLockHeld()
-	}
+	next := findNextThreadForBlockSchedLockHeld(t)
 	if next == nil {
 		schedulerLock.Unlock()
 		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)

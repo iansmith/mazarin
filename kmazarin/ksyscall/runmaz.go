@@ -9,7 +9,6 @@ import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -19,16 +18,9 @@ type RunMazWorkRequest struct {
 	NumPages   int
 	TotalBytes int
 	ResultPtr  uint64
-	Shepherd     *proc.Shepherd
+	Shepherd   *proc.Shepherd
 	L0PA       uintptr
-	BlockedTID int32 // Set by BlockForRunMaz in main package
 }
-
-// RunMazReq is the global request struct shared between the SVC handler
-// and the kernel worker goroutine. One request at a time.
-// RunMazBusy guards against concurrent access (latent SMP hazard).
-var RunMazReq RunMazWorkRequest
-var RunMazBusy int32
 
 // SyscallRunMaz processes pages in the caller's address space as a .maz ELF.
 // The ELF is parsed, segments are loaded, relocations applied, and imports resolved.
@@ -73,28 +65,18 @@ func SyscallRunMaz(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		return int64(errNoSymbol)
 	}
 
-	// Guard against concurrent access (latent SMP hazard).
-	if !atomic.CompareAndSwapInt32(&RunMazBusy, 0, 1) {
-		console.KWriteString("[RunMaz] ERROR: concurrent request\r\n")
-		return -16 // EBUSY
-	}
-
-	// Store request for the worker goroutine
-	RunMazReq = RunMazWorkRequest{
+	ctxPtr := submitRunMaz(RunMazWorkRequest{
 		StartVA:    startVA,
 		NumPages:   numPages,
 		TotalBytes: totalBytes,
 		ResultPtr:  resultPtr,
-		Shepherd:     shepherd,
+		Shepherd:   shepherd,
 		L0PA:       shepherd.PageTableL0PA,
-	}
-
-	// Block and dispatch to worker goroutine (needs growable stack)
-	ctxPtr := blockForRunMaz()
+	})
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
-		console.KWriteString("[RunMaz] ERROR: no thread to switch to\r\n")
+		console.KWriteString("[RunMaz] ERROR: busy or no thread to switch to\r\n")
 		return int64(errNoSpace)
 	}
 

@@ -243,40 +243,8 @@ func BlockForMailboxRecv(shepherdIdx int, bufPtr uint64) uintptr {
 		return 0
 	}
 
-	pluckFromAllQueues(t.TID)
-
-	var next *Thread
-	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(-1)
-	} else {
-		next = findReadyThreadSchedLockHeld()
-	}
+	next := findNextThreadForBlockSchedLockHeld(t)
 	if next == nil {
-		processStaticDeadlinesSchedLockHeld()
-		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(-1)
-		} else {
-			next = findReadyThreadSchedLockHeld()
-		}
-	}
-	if next == nil && t.PageTableL0PA != 0 {
-		next = findReadyThreadSchedLockHeld()
-	}
-	if next == nil && t.TID != 0 {
-		// Last resort: look for thread 0 (idle thread) directly.
-		// Thread 0's idle loop runs with svcDepth=0 and can be preempted,
-		// avoiding the WFI-inside-SVC stall that blocks all scheduling.
-		t0 := threadLookupByTID(0)
-		if t0 != nil && t0.State == ThreadReady {
-			pluckFromAllQueues(t0.TID)
-			next = t0
-		}
-	}
-	if next == nil {
-		// Truly nobody available — return 0 for WFI fallback.
-		// Do NOT set ThreadBlockedMailbox here: the thread will
-		// continue executing the WFI loop, so its state must remain
-		// consistent (ThreadRunning).
 		schedulerLock.Unlock()
 		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 		return 0

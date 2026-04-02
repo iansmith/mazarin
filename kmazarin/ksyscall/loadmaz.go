@@ -15,7 +15,6 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/fs/fat32"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -30,24 +29,14 @@ type MazLoadResult struct {
 }
 
 // LoadMazWorkRequest contains the parameters for a .maz load operation.
-// Stored in the global LoadMazReq by SyscallLoadMaz, then read by the
-// kernel worker goroutine.
 type LoadMazWorkRequest struct {
-	Filename   string
-	ResultPtr  uint64
-	Shepherd     *proc.Shepherd
-	L0PA       uintptr
-	BlockedTID int32 // Set by BlockForLoadMaz in main package
-	DataVA     uintptr // 0 = read from disk, non-zero = pre-loaded pages
-	DataLen    uint64  // Length of pre-loaded ELF data in bytes
+	Filename string
+	ResultPtr uint64
+	Shepherd  *proc.Shepherd
+	L0PA      uintptr
+	DataVA    uintptr // 0 = read from disk, non-zero = pre-loaded pages
+	DataLen   uint64  // Length of pre-loaded ELF data in bytes
 }
-
-// LoadMazReq is the global request struct shared between the SVC handler
-// (which writes it) and the kernel worker goroutine (which reads it).
-// Only one LoadMaz request can be in flight at a time.
-// LoadMazBusy guards against concurrent access (latent SMP hazard).
-var LoadMazReq LoadMazWorkRequest
-var LoadMazBusy int32
 
 // SyscallLoadMaz loads a .maz PIE ELF into the calling shepherd's address space.
 // This is a thin entry point that validates arguments, stores the request, and
@@ -91,32 +80,20 @@ func SyscallLoadMaz(filenamePtr, resultPtr, dataVA, dataLen, _, _ uint64) int64 
 		return int64(errNoSymbol)
 	}
 
-	// Guard against concurrent access. Safe on single-CPU (svcDepth=1
-	// prevents concurrent SVCs), but this CAS catches it under SMP.
-	if !atomic.CompareAndSwapInt32(&LoadMazBusy, 0, 1) {
-		console.KWriteString("[LoadMaz] ERROR: concurrent request\r\n")
-		return -16 // EBUSY
-	}
-
-	// Store the request for the worker goroutine.
-	LoadMazReq = LoadMazWorkRequest{
+	// Submit to kernel worker goroutine. Submit handles the busy CAS guard,
+	// blocks the calling thread, and sets the pending flag for thread 0 relay.
+	ctxPtr := submitLoadMaz(LoadMazWorkRequest{
 		Filename:  filename,
 		ResultPtr: resultPtr,
-		Shepherd:    shepherd,
+		Shepherd:  shepherd,
 		L0PA:      shepherd.PageTableL0PA,
 		DataVA:    uintptr(dataVA),
 		DataLen:   dataLen,
-	}
-
-	// Block this thread and notify the worker goroutine.
-	// BlockForLoadMaz sets LoadMazReq.BlockedTID and the loadMazPending atomic.
-	ctxPtr := blockForLoadMaz()
+	})
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
-		// No other thread to switch to — cannot offload work.
-		// This should be rare (other shepherds should be running).
-		console.KWriteString("[LoadMaz] ERROR: no thread to switch to\r\n")
+		console.KWriteString("[LoadMaz] ERROR: busy or no thread to switch to\r\n")
 		return int64(errNoSpace)
 	}
 

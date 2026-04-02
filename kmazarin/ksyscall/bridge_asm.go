@@ -32,20 +32,20 @@ func saveAndDisableIRQs() uint64
 //go:linkname restoreIRQs main.RestoreIRQs
 func restoreIRQs(savedDAIF uint64)
 
-// blockForRunMaz blocks the calling thread for a RunMaz request.
+// submitRunMaz submits a RunMaz request to the kernel worker goroutine.
 //
-//go:linkname blockForRunMaz main.BlockForRunMaz
-func blockForRunMaz() uintptr
+//go:linkname submitRunMaz main.SubmitRunMaz
+func submitRunMaz(req RunMazWorkRequest) uintptr
 
-// blockForRunShepherd blocks the calling thread for a RunShepherd request.
+// submitRunShepherd submits a RunShepherd request to the kernel worker goroutine.
 //
-//go:linkname blockForRunShepherd main.BlockForRunShepherd
-func blockForRunShepherd() uintptr
+//go:linkname submitRunShepherd main.SubmitRunShepherd
+func submitRunShepherd(req RunShepherdWorkRequest) uintptr
 
-// blockForEpoll blocks the calling thread for an epoll_ctl request.
+// submitEpoll submits an epoll_ctl request to the kernel worker goroutine.
 //
-//go:linkname blockForEpoll main.BlockForEpoll
-func blockForEpoll() uintptr
+//go:linkname submitEpoll main.SubmitEpoll
+func submitEpoll(req EpollWorkRequest) uintptr
 
 // setBlockAsyncSlot stores per-tag metadata for async block I/O completions.
 // clumpAddr is the VA of *proc.DMAClump stored as uintptr (0 if no clump).

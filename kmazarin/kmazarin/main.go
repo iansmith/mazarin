@@ -1011,10 +1011,7 @@ func simpleMain() {
 
 	// Initialize kernel worker goroutines. Must be done
 	// before KernelIdleLoop since the workers need normal goroutine stacks.
-	initLoadMazWorker()
-	initRunMazWorker()
-	initRunShepherdWorker()
-	initEpollWorker()
+	initKernelWorkers()
 
 	// Start kernel attribute updaters (time update goroutine).
 	// Time updates are driven by kirq.TimerIRQCount + kirq.PreemptAfterTicks.

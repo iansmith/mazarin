@@ -78,33 +78,7 @@ func BlockForIOUring(ringID int, minComplete uint32) uintptr {
 		return 0
 	}
 
-	pluckFromAllQueues(t.TID)
-
-	// Find next ready thread (same fallback chain as BlockForMailboxRecv).
-	var next *Thread
-	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(-1)
-	} else {
-		next = findReadyThreadSchedLockHeld()
-	}
-	if next == nil {
-		processStaticDeadlinesSchedLockHeld()
-		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(-1)
-		} else {
-			next = findReadyThreadSchedLockHeld()
-		}
-	}
-	if next == nil && t.PageTableL0PA != 0 {
-		next = findReadyThreadSchedLockHeld()
-	}
-	if next == nil && t.TID != 0 {
-		t0 := threadLookupByTID(0)
-		if t0 != nil && t0.State == ThreadReady {
-			pluckFromAllQueues(t0.TID)
-			next = t0
-		}
-	}
+	next := findNextThreadForBlockSchedLockHeld(t)
 	if next == nil {
 		// No other thread — return 0, caller does WFI loop.
 		if IOUringTimeoutTicks > 0 {

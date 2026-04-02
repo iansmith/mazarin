@@ -15,18 +15,11 @@ const (
 
 // EpollWorkRequest contains the parameters for a goroutine-dispatched epoll_ctl.
 type EpollWorkRequest struct {
-	Args       [6]uint64
-	Shepherd   *proc.Shepherd
-	L0PA       uintptr
-	CallerSID  proc.ShepherdId
-	BlockedTID int32 // Set by BlockForEpoll in main package
+	Args      [6]uint64
+	Shepherd  *proc.Shepherd
+	L0PA      uintptr
+	CallerSID proc.ShepherdId
 }
-
-// EpollReq is the global request struct shared between the SVC handler
-// and the kernel worker goroutine (KernelIdleLoop dispatch).
-// EpollBusy guards against concurrent access.
-var EpollReq EpollWorkRequest
-var EpollBusy int32
 
 // IsMagicFdSyscall returns true if sysID is read/write/close AND fd is one of the
 // shepherd's kernel-internal magic fds (epoll instance or eventfd).
@@ -110,20 +103,16 @@ func SyscallEpollCtl(epfd, op, fd, evtPtr, _, _ uint64) int64 {
 
 		// Slow path: page not mapped. Post to kernel worker goroutine
 		// which can call DemandMapUserPage.
-		if !atomic.CompareAndSwapInt32(&EpollBusy, 0, 1) {
-			return -16 // EBUSY — concurrent epoll_ctl (shouldn't happen)
-		}
-		EpollReq = EpollWorkRequest{
+		ctxPtr := submitEpoll(EpollWorkRequest{
 			Args:      [6]uint64{epfd, op, fd, evtPtr, 0, 0},
 			Shepherd:  p,
 			L0PA:      p.PageTableL0PA,
 			CallerSID: p.PID,
-		}
-		ctxPtr := blockForEpoll()
+		})
 		if ctxPtr != 0 {
 			SetSyscallSwitchTarget(ctxPtr)
 		}
-		// Return value injected by wakeEpollThread via SetReturnValue
+		// Return value injected by wakeBlockedThread via SetReturnValue
 		return 0
 	}
 
