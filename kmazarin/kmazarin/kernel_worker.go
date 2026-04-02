@@ -2,11 +2,10 @@
 //
 // The kernel's SVC handlers run on the exception stack (SP_EL1) where Go's
 // stack cannot grow. Heavy work (ELF loading, page table setup, etc.) needs
-// a growable goroutine stack. This file provides a generic three-layer bridge:
+// a growable goroutine stack. This file provides a generic two-layer bridge:
 //
 //   1. SVC handler calls kw.Submit (stores request, blocks thread, sets atomic flag)
-//   2. Thread 0's KernelIdleLoop calls kw.Relay (converts flag to channel send)
-//   3. Worker goroutine receives, calls SVCWorker.Do, wakes blocked thread
+//   2. Thread 0's KernelIdleLoop calls kw.Relay → run (executes work, wakes thread)
 //
 // Channel operations cannot be used from exception/ISR context (not nosplit-safe,
 // gopark corruption, write barrier hazards). Thread 0's idle loop is the necessary
@@ -16,7 +15,9 @@ package main
 
 import (
 	"mazzy/kmazarin/asm"
+	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/ksyscall"
+	"mazzy/kmazarin/ktimer"
 	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
@@ -28,27 +29,43 @@ type SVCWorker[R any] interface {
 	Do(req *R) int64
 }
 
-// KernelSVCWorker bridges nosplit SVC context to a worker goroutine.
+// KernelSVCWorker bridges nosplit SVC context to thread 0's growable stack.
+//
+// CURRENT STATE: Thread 0 calls run() directly from Relay(). This means
+// run() executes inline on thread 0's stack, which can cause several missed
+// timer ticks for heavy operations (ELF loading, shepherd launch). We accept
+// this tradeoff for now.
+//
+// FUTURE DESIGN: run() should be called from a worker goroutine that reads
+// from a channel, not directly by thread 0. The Relay() method would send
+// on the channel, and the worker goroutine would receive and call run().
+// This requires solving the goroutine scheduling problem: thread 0's idle
+// loop never calls runtime.Gosched() (doing so causes context-switch
+// corruption when the Go scheduler picks sysmon), so worker goroutines
+// currently never get scheduled. The solution is to have the timer top-half
+// detect hasPendingKernelWork() and trigger async preemption of the idle
+// loop goroutine, allowing the Go scheduler to pick the worker goroutine.
+// Once that mechanism exists, both cooperative preemption and async
+// preemption should be enabled during the run() body so the kernel
+// remains responsive to timer interrupts and GC requests.
 type KernelSVCWorker[R any] struct {
-	name    string
-	pending uint32        // atomic: SVC handler → thread 0 relay
-	busy    int32         // CAS: one request in flight
-	req     R             // written by Submit, read by worker goroutine
-	tid     int32         // blocked thread's TID (-1 = none)
-	ch      chan struct{} // thread 0 relay → worker goroutine
-	worker  SVCWorker[R]
+	name        string
+	pending     uint32 // atomic: SVC handler → thread 0 relay
+	busy        int32  // CAS: one request in flight
+	dispatching uint32 // atomic: set while run() is executing (anti-preempt guard)
+	req         R      // written by Submit, read by Relay
+	tid         int32  // blocked thread's TID (-1 = none)
+	worker      SVCWorker[R]
 }
 
-// NewKernelSVCWorker creates a worker and starts its goroutine.
+// NewKernelSVCWorker creates a worker. Work is dispatched inline by Relay()
+// for now; see KernelSVCWorker doc comment for future channel-based design.
 func NewKernelSVCWorker[R any](name string, w SVCWorker[R]) *KernelSVCWorker[R] {
-	kw := &KernelSVCWorker[R]{
+	return &KernelSVCWorker[R]{
 		name:   name,
 		tid:    -1,
-		ch:     make(chan struct{}, 1),
 		worker: w,
 	}
-	go kw.run()
-	return kw
 }
 
 // Submit is called from the SVC handler. It stores the request, blocks
@@ -71,14 +88,22 @@ func (kw *KernelSVCWorker[R]) Submit(req R) uintptr {
 }
 
 // Relay is called from thread 0's KernelIdleLoop. If the pending flag
-// is set, it sends on the channel to wake the worker goroutine.
+// is set, extracts the request and calls run() to execute the work
+// directly on thread 0's growable stack.
+//
+// FUTURE: Instead of calling run() directly, this should send on a
+// channel to wake a worker goroutine that calls run(). See the
+// KernelSVCWorker doc comment for the full design.
 func (kw *KernelSVCWorker[R]) Relay() {
-	if atomic.SwapUint32(&kw.pending, 0) == 1 {
-		select {
-		case kw.ch <- struct{}{}:
-		default:
-		}
+	if atomic.SwapUint32(&kw.pending, 0) != 1 {
+		return
 	}
+
+	req := kw.req
+	tid := kw.tid
+	kw.tid = -1
+
+	kw.run(&req, tid)
 }
 
 // Pending returns true if work is waiting to be relayed. Used by
@@ -89,19 +114,56 @@ func (kw *KernelSVCWorker[R]) Pending() bool {
 	return atomic.LoadUint32(&kw.pending) != 0
 }
 
-// run is the worker goroutine. It blocks on the channel, executes
-// the subsystem's Do method, and wakes the blocked thread with the result.
-func (kw *KernelSVCWorker[R]) run() {
-	for range kw.ch {
-		req := kw.req
-		tid := kw.tid
-		kw.tid = -1
+// Dispatching returns true if this worker is currently executing run().
+// Used by the timer ISR to avoid preempting thread 0 mid-dispatch.
+//
+//go:nosplit
+func (kw *KernelSVCWorker[R]) Dispatching() bool {
+	return atomic.LoadUint32(&kw.dispatching) != 0
+}
 
-		result := kw.worker.Do(&req)
+// setup is called at the start of run() to mark thread 0 as dispatching.
+// The dispatching flag prevents the timer ISR from preempting thread 0
+// mid-work (the userspace-preferring scheduler would starve thread 0,
+// preventing subsequent requests from completing).
+func (kw *KernelSVCWorker[R]) setup() {
+	atomic.StoreUint32(&kw.dispatching, 1)
+}
 
-		wakeBlockedThread(tid, result)
-		atomic.StoreInt32(&kw.busy, 0)
+// tearDown is called (via defer) at the end of run() to clear the
+// dispatching flag and release the busy lock.
+func (kw *KernelSVCWorker[R]) tearDown() {
+	atomic.StoreInt32(&kw.busy, 0)
+	atomic.StoreUint32(&kw.dispatching, 0)
+}
+
+// run executes the subsystem's Do method and wakes the blocked thread
+// with the result. Called directly by Relay() on thread 0 for now.
+//
+// FUTURE: This same method will be called by a worker goroutine that
+// reads from a channel. The goroutine path would call run() with the
+// same arguments after receiving from the channel. Both the thread 0
+// path (Relay → run) and the goroutine path (channel receive → run)
+// share this method. When the goroutine path is active, both cooperative
+// and async preemption should be enabled during the Do() call so the
+// kernel remains responsive.
+func (kw *KernelSVCWorker[R]) run(req *R, tid int32) {
+	kw.setup()
+	defer kw.tearDown()
+
+	startTick := ktimer.ReadCounter()
+
+	result := kw.worker.Do(req)
+
+	elapsed := ktimer.ReadCounter() - startTick
+	freq := uint64(ktimer.Frequency())
+	if freq > 0 {
+		// Convert ticks to microseconds: (elapsed * 1_000_000) / freq
+		usec := elapsed * 1000000 / freq
+		console.KPrintf("[KW:%s] %d us\n", kw.name, usec)
 	}
+
+	wakeBlockedThread(tid, result)
 }
 
 // blockAndSwitch blocks the calling thread and returns any ready thread's
@@ -203,7 +265,7 @@ var (
 	epollKW       *KernelSVCWorker[ksyscall.EpollWorkRequest]
 )
 
-// initKernelWorkers creates all kernel SVC workers and starts their goroutines.
+// initKernelWorkers creates all kernel SVC workers.
 // Called from simpleMain before entering KernelIdleLoop.
 func initKernelWorkers() {
 	loadMazKW = NewKernelSVCWorker("LoadMaz", loadMazWorkerImpl{})

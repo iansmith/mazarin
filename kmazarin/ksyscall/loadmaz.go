@@ -11,10 +11,8 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/console"
-	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/shared/fs/fat32"
 	"unsafe"
 )
 
@@ -123,31 +121,12 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 			return int64(errFileNotFound)
 		}
 	} else {
-		// Direct mode: mount FAT32, read file from disk
-		blk, ok := device.GetBlockDevice()
-		if !ok {
-			console.KWriteString("[LoadMaz] ERROR: no block device\r\n")
-			return int64(errFileNotFound)
-		}
-
-		fs, err := fat32.Mount(blk)
-		if err != nil {
-			console.KWriteString("[LoadMaz] ERROR: FAT32 mount failed\r\n")
-			return int64(errFileNotFound)
-		}
-
-		file, err := fs.Open(req.Filename)
-		if err != nil {
-			console.KWriteString("[LoadMaz] ERROR: file not found\r\n")
-			return int64(errFileNotFound)
-		}
-		defer file.Close()
-
-		elfData, err = file.ReadAll()
-		if err != nil {
-			console.KWriteString("[LoadMaz] ERROR: ReadAll failed\r\n")
-			return int64(errFileNotFound)
-		}
+		// Previously, there was a backup way to load a file here, called
+		// loadMazInternal, but it has been removed. All .maz loading must
+		// go through the LoadFile delegate (fs shepherd) which provides
+		// pre-loaded pages via DataVA/DataLen.
+		console.KWriteString("[LoadMaz] ERROR: direct disk load path removed — use LoadFile delegate\r\n")
+		return int64(errFileNotFound)
 	}
 
 	// === Parse ELF header ===
