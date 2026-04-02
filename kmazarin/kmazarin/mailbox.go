@@ -204,6 +204,13 @@ func mailboxSendKernelWithSwitch(senderSID, targetSID int16, code int64, senderV
 
 	// Wake if blocked — priority enqueue so mailbox-woken threads run quickly
 	var wokenCtx uintptr
+	serial.RawUARTPuts("[MBS:")
+	serial.RawUARTDecimal(uint64(senderSID))
+	serial.RawUARTPuts("->")
+	serial.RawUARTDecimal(uint64(targetSID))
+	serial.RawUARTPuts(" bt=")
+	serial.RawUARTDecimal(uint64(int64(mailboxBlockedTID[targetSID])))
+	serial.RawUARTPuts("]\r\n")
 	if mailboxBlockedTID[targetSID] >= 0 {
 		t := (*Thread)(unsafe.Pointer(mailboxBlockedPtr[targetSID]))
 		if t != nil && t.State == ThreadBlockedMailbox {
@@ -245,6 +252,7 @@ func BlockForMailboxRecv(shepherdIdx int, bufPtr uint64) uintptr {
 
 	next := findNextThreadForBlockSchedLockHeld(t)
 	if next == nil {
+		serial.RawUARTPuts("[BFMR:noNext]\r\n")
 		schedulerLock.Unlock()
 		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 		return 0
@@ -266,6 +274,14 @@ func BlockForMailboxRecv(shepherdIdx int, bufPtr uint64) uintptr {
 		mailboxBlockedTID[shepherdIdx] = t.TID
 		mailboxBlockedPtr[shepherdIdx] = uintptr(unsafe.Pointer(t))
 	}
+
+	serial.RawUARTPuts("[BFMR:ok t=")
+	serial.RawUARTDecimal(uint64(t.TID))
+	serial.RawUARTPuts(" n=")
+	serial.RawUARTDecimal(uint64(next.TID))
+	serial.RawUARTPuts(" np=")
+	serial.RawUARTDecimal(uint64(next.PID))
+	serial.RawUARTPuts("]\r\n")
 
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)

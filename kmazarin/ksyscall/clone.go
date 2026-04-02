@@ -4,6 +4,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
 )
 
 // SyscallClone implements the clone(2) syscall for ARM64 and RISC-V.
@@ -55,6 +56,13 @@ func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
 	if tid < 0 {
 		return -1 // EAGAIN - no free thread slots
 	}
+
+	sid := getCurrentThreadSID()
+	serial.RawUARTPuts("[clone] sid=")
+	serial.RawUARTDecimal(uint64(sid))
+	serial.RawUARTPuts(" tid=")
+	serial.RawUARTDecimal(uint64(tid))
+	serial.RawUARTPuts("\r\n")
 
 	// Return TID to parent
 	// CRITICAL: CloneThread has called SetSyscallSwitchTarget, so after this

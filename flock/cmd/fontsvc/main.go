@@ -161,7 +161,13 @@ func MazarinMain() {
 			handleFontNotify(notif)
 		default:
 			// Forward to rachel's WM code.
+			rawPuts("[fontsvc] fwd code=")
+			rawPutsInt(int(notif.Code))
+			rawPuts(" from=")
+			rawPutsInt(int(notif.SenderSID))
+			rawPuts("\n")
 			rachelCh <- notif
+			rawPuts("[fontsvc] fwd done\n")
 		}
 	}
 }

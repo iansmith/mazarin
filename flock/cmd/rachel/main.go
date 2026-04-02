@@ -687,6 +687,7 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 	var rachelNotifyCount int64
 
 	for notif := range ch {
+		sys.UartWriteString(fmt.Sprintf("[rachel:mboxLoop] code=%d from=%d\n", notif.Code, notif.SenderSID))
 		switch notif.Code {
 		case wm.WMNotify:
 			rachelNotifyCount++
