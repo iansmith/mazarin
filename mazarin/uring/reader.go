@@ -2,6 +2,7 @@ package uring
 
 import (
 	"mazzy/shared/ipc"
+	_ "unsafe"
 )
 
 // Handler is called for each received message. Implementations should
@@ -39,15 +40,39 @@ func (r *Reader) Start() {
 func (r *Reader) loop() {
 	defer close(r.done)
 
+	uartPuts("[uring:reader] loop started, calling Recv...\n")
 	var msg ipc.UringIPCMsg
 	for {
 		err := Recv(&msg)
 		if err != nil {
-			// Kernel returned error — ring torn down or shepherd dying.
+			uartPuts("[uring:reader] Recv error, exiting loop\n")
 			return
 		}
+		uartPuts("[uring:reader] got msg proto=")
+		uartPutsInt(int(msg.Protocol))
+		uartPuts("\n")
 		r.handler(&msg)
 	}
+}
+
+//go:linkname uartWriteString mazzy/mazarin/sys.UartWriteString
+func uartWriteString(s string)
+
+func uartPuts(s string) { uartWriteString(s) }
+
+func uartPutsInt(n int) {
+	if n == 0 {
+		uartPuts("0")
+		return
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	uartPuts(string(buf[i:]))
 }
 
 // Done returns a channel that is closed when the reader goroutine exits.
@@ -55,49 +80,66 @@ func (r *Reader) Done() <-chan struct{} {
 	return r.done
 }
 
-// Dispatcher is a convenience wrapper around Reader that routes messages
-// to protocol-specific Go channels based on msg.Protocol.
+// Decoder converts a raw UringIPCMsg into a typed struct.
+// Each protocol has its own decoder (e.g., wm.DecodeWMNotify).
+type Decoder func(msg *ipc.UringIPCMsg) any
+
+// typedRoute pairs a decoder with its destination (channel or callback).
+type typedRoute struct {
+	decoder  Decoder
+	ch       chan any  // nil if using callback
+	callback func(any) // nil if using channel
+}
+
+// Dispatcher routes incoming uring messages to protocol-specific Go channels
+// or callback functions. Each protocol is registered with a Decoder function
+// that converts the raw 128-byte message into a typed Go struct.
+// The dispatcher panics on messages with unregistered protocols.
 type Dispatcher struct {
-	reader   *Reader
-	channels map[uint32]chan ipc.UringIPCMsg
-	fallback chan ipc.UringIPCMsg
+	reader *Reader
+	routes map[uint32]typedRoute
 }
 
 // NewDispatcher creates a dispatcher that routes messages by protocol.
 // Register protocol channels with On() before calling Start().
-// Messages with unregistered protocols go to the fallback channel (if set).
 func NewDispatcher() *Dispatcher {
 	return &Dispatcher{
-		channels: make(map[uint32]chan ipc.UringIPCMsg),
+		routes: make(map[uint32]typedRoute),
 	}
 }
 
-// On registers a channel for a specific protocol. Messages with the given
-// protocol will be sent to this channel. The channel should be buffered
-// to avoid blocking the reader goroutine.
-func (d *Dispatcher) On(protocol uint32, ch chan ipc.UringIPCMsg) {
-	d.channels[protocol] = ch
+// On registers a typed channel for a specific protocol. The decoder converts
+// the raw UringIPCMsg into a typed struct; the result is sent on ch.
+// The channel should be buffered to avoid blocking the reader goroutine.
+func (d *Dispatcher) On(protocol uint32, decoder Decoder, ch chan any) {
+	d.routes[protocol] = typedRoute{decoder: decoder, ch: ch}
 }
 
-// OnFallback sets a channel for messages with unregistered protocols.
-func (d *Dispatcher) OnFallback(ch chan ipc.UringIPCMsg) {
-	d.fallback = ch
+// OnFunc registers a callback function for a specific protocol. The decoder
+// converts the raw UringIPCMsg into a typed struct; the result is passed
+// directly to the callback (runs synchronously in the reader goroutine).
+func (d *Dispatcher) OnFunc(protocol uint32, decoder Decoder, fn func(any)) {
+	d.routes[protocol] = typedRoute{decoder: decoder, callback: fn}
 }
 
-// Start spawns the reader goroutine with protocol-based dispatch.
+// Start spawns the reader goroutine with protocol-based typed dispatch.
 func (d *Dispatcher) Start() {
-	// Snapshot the channel map so the handler doesn't need synchronization.
-	chMap := make(map[uint32]chan ipc.UringIPCMsg, len(d.channels))
-	for k, v := range d.channels {
-		chMap[k] = v
+	// Snapshot the route map so the handler doesn't need synchronization.
+	routes := make(map[uint32]typedRoute, len(d.routes))
+	for k, v := range d.routes {
+		routes[k] = v
 	}
-	fb := d.fallback
 
 	d.reader = NewReader(func(msg *ipc.UringIPCMsg) {
-		if ch, ok := chMap[msg.Protocol]; ok {
-			ch <- *msg
-		} else if fb != nil {
-			fb <- *msg
+		route, ok := routes[msg.Protocol]
+		if !ok {
+			panic("uring.Dispatcher: unregistered protocol")
+		}
+		typed := route.decoder(msg)
+		if route.callback != nil {
+			route.callback(typed)
+		} else {
+			route.ch <- typed
 		}
 	})
 	d.reader.Start()

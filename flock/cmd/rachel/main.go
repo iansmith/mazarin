@@ -14,11 +14,12 @@ import (
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
-	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
 	"mazzy/mazarin/vm"
 	"mazzy/mazarin/vm/flat"
 	"mazzy/shared/hid"
+	"mazzy/shared/ipc"
 	"mazzy/shared/wm"
 	"os"
 	"runtime"
@@ -181,11 +182,9 @@ func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
 				if hit < 0 {
 					// Desktop click — defocus current window.
 					if focusedSID >= 0 {
-						if ta, ok := trackedApps[focusedSID]; ok && ta.returnRb != nil {
-							var msg wm.YouLostFocusMsg
-							msg.Type = wm.MsgYouLostFocus
-							ta.returnRb.Push(unsafe.Pointer(&msg))
-							_ = sys.MailboxSend(focusedSID, wm.ShepherdNotify, ta.returnRb.Addr())
+						if _, ok := trackedApps[focusedSID]; ok {
+							msg := wm.EncodeYouLostFocus()
+							_ = uring.Send(focusedSID, &msg)
 						}
 						focusedSID = -1
 					}
@@ -242,23 +241,17 @@ func forwardKeyboardEvent(code uint16, pressed bool) {
 	if sid < 0 {
 		return
 	}
-	ta, ok := trackedApps[sid]
-	if !ok || ta.returnRb == nil {
+	if _, ok := trackedApps[sid]; !ok {
 		return
 	}
+	var msg ipc.UringIPCMsg
 	if pressed {
-		var msg wm.KeyPressMsg
-		msg.Type = wm.MsgKeyPress
-		msg.Code = code
-		ta.returnRb.Push(unsafe.Pointer(&msg))
+		msg = wm.EncodeKeyPress(&wm.KeyPress{Code: code})
 	} else {
-		var msg wm.KeyReleaseMsg
-		msg.Type = wm.MsgKeyRelease
-		msg.Code = code
-		ta.returnRb.Push(unsafe.Pointer(&msg))
+		msg = wm.EncodeKeyRelease(&wm.KeyRelease{Code: code})
 	}
-	if err := sys.MailboxSend(sid, wm.ShepherdNotify, ta.returnRb.Addr()); err != nil {
-		fmt.Fprintf(os.Stderr, "[rachel:kbd] MailboxSend to SID %d failed: %v\n", sid, err)
+	if err := uring.Send(sid, &msg); err != nil {
+		fmt.Fprintf(os.Stderr, "[rachel:kbd] uring.Send to SID %d failed: %v\n", sid, err)
 	}
 }
 
@@ -268,34 +261,20 @@ func forwardMouseEvent(msgType int64, x, y, button int32) {
 	if sid < 0 {
 		return
 	}
-	ta, ok := trackedApps[sid]
-	if !ok || ta.returnRb == nil {
+	if _, ok := trackedApps[sid]; !ok {
 		return
 	}
+	var msg ipc.UringIPCMsg
 	switch msgType {
 	case wm.MsgMousePress:
-		var msg wm.MousePressMsg
-		msg.Type = wm.MsgMousePress
-		msg.X = x
-		msg.Y = y
-		msg.Button = button
-		ta.returnRb.Push(unsafe.Pointer(&msg))
+		msg = wm.EncodeMousePress(&wm.MousePress{X: x, Y: y, Button: button})
 	case wm.MsgMouseRelease:
-		var msg wm.MouseReleaseMsg
-		msg.Type = wm.MsgMouseRelease
-		msg.X = x
-		msg.Y = y
-		msg.Button = button
-		ta.returnRb.Push(unsafe.Pointer(&msg))
+		msg = wm.EncodeMouseRelease(&wm.MouseRelease{X: x, Y: y, Button: button})
 	case wm.MsgMouseMove:
-		var msg wm.MouseMoveMsg
-		msg.Type = wm.MsgMouseMove
-		msg.X = x
-		msg.Y = y
-		ta.returnRb.Push(unsafe.Pointer(&msg))
+		msg = wm.EncodeMouseMove(&wm.MouseMove{X: x, Y: y})
 	}
-	if err := sys.MailboxSend(sid, wm.ShepherdNotify, ta.returnRb.Addr()); err != nil {
-		fmt.Fprintf(os.Stderr, "[rachel:mouse] MailboxSend to SID %d failed: %v\n", sid, err)
+	if err := uring.Send(sid, &msg); err != nil {
+		fmt.Fprintf(os.Stderr, "[rachel:mouse] uring.Send to SID %d failed: %v\n", sid, err)
 	}
 }
 
@@ -501,7 +480,6 @@ const (
 type trackedApp struct {
 	sid          int
 	bounds       *attr.Attribute[vm.Value] // tracks shepherd's AppWindow/layout/Bounds
-	returnRb     *ringbuf.RingBuffer       // ring buffer for sending messages back to this shepherd
 	backingStore []byte                     // full buffer including borders (RGBA)
 	x, y         int32                      // screen position of app area
 	bsWidth      int32                      // total buffer width (app + borders)
@@ -574,21 +552,17 @@ func changeFocus(newSID int) {
 	}
 	// Notify old focused window.
 	if focusedSID >= 0 {
-		if ta, ok := trackedApps[focusedSID]; ok && ta.returnRb != nil {
-			var msg wm.YouLostFocusMsg
-			msg.Type = wm.MsgYouLostFocus
-			ta.returnRb.Push(unsafe.Pointer(&msg))
-			_ = sys.MailboxSend(focusedSID, wm.ShepherdNotify, ta.returnRb.Addr())
+		if _, ok := trackedApps[focusedSID]; ok {
+			msg := wm.EncodeYouLostFocus()
+			_ = uring.Send(focusedSID, &msg)
 		}
 	}
 	// Raise and focus new window.
 	raiseToFront(newSID)
 	focusedSID = newSID
-	if ta, ok := trackedApps[newSID]; ok && ta.returnRb != nil {
-		var msg wm.YouHaveFocusMsg
-		msg.Type = wm.MsgYouHaveFocus
-		ta.returnRb.Push(unsafe.Pointer(&msg))
-		_ = sys.MailboxSend(newSID, wm.ShepherdNotify, ta.returnRb.Addr())
+	if _, ok := trackedApps[newSID]; ok {
+		msg := wm.EncodeYouHaveFocus()
+		_ = uring.Send(newSID, &msg)
 	}
 }
 
@@ -671,152 +645,156 @@ func forceFontSvcItab(v interface{}) {
 	if !ok {
 		return
 	}
-	_ = inj.GetRachelChannel()
+	inj.RegisterOpenFontHandler(nil)
+	inj.RegisterRequestGlyphHandler(nil)
 }
 
-// mailboxLoop receives mailbox notifications forwarded by fontsvc.maz.
-// fontsvc owns the MailboxRecv loop and forwards non-font notifications
-// (WMNotify, ShepherdNotify, InputEventCode, etc.) to this channel.
-// When an InputEventCode notification arrives, it drains the shared
-// completion ring and classifies events in userspace.
-func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRing) {
+// hidMailboxRecvLoop handles HID input event notifications that still
+// arrive via mailbox. When the kernel sends InputEventCode, we drain the
+// shared completion ring and forward a signal on hidCh.
+// This runs alongside the uring Dispatcher until HID events migrate to uring.
+func hidMailboxRecvLoop(hidCh chan<- struct{}) {
+	for {
+		notif, err := sys.MailboxRecv()
+		if err != nil {
+			continue
+		}
+		if notif.Code == hid.InputEventCode {
+			hidCh <- struct{}{}
+		}
+	}
+}
+
+// wmEventLoop receives typed WM messages from the uring Dispatcher (wmCh)
+// and HID wake-up signals from the mailbox recv goroutine (hidCh).
+// It replaces the old mailboxLoop that handled everything.
+func wmEventLoop(wmCh <-chan any, hidCh <-chan struct{}, inputRing *hid.CompletionRing) {
 	var events [64]hid.HIDEvent
 	var km input.Keymap
 	var keyHeld [256]bool
 	var rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents int64
 	var rachelNotifyCount int64
 
-	for notif := range ch {
-		sys.UartWriteString(fmt.Sprintf("[rachel:mboxLoop] code=%d from=%d\n", notif.Code, notif.SenderSID))
-		switch notif.Code {
-		case wm.WMNotify:
+	for {
+		select {
+		case raw := <-wmCh:
 			rachelNotifyCount++
-			// A shepherd sent us a message — open ring at translated VA
-			rb := ringbuf.Open(uintptr(notif.RingAddr))
-			var raw [wm.SizeWMMessage]byte
-			for rb.Pop(unsafe.Pointer(&raw[0])) {
-				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-				switch msgType {
-				case wm.MsgAppStart:
-					rachelMsgAppStart++
-					msg := (*wm.AppStartMsg)(unsafe.Pointer(&raw[0]))
-					senderSID := int(msg.SID)
+			wmMsg, ok := raw.(wm.WMNotifyMsg)
+			if !ok {
+				rachelMsgOther++
+				continue
+			}
+			senderSID := int(wmMsg.SenderSID)
+			switch msg := wmMsg.Msg.(type) {
+			case wm.AppStart:
+				rachelMsgAppStart++
 
-					// Track the shepherd's AppWindow Bounds in rachel's constraint space.
-					if trackAppBounds(senderSID) == nil {
-						continue
-					}
-
-					// Create return ring buffer to the sender (reused for all future messages).
-					returnRb, err := ringbuf.New(senderSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
-					if err != nil {
-						fmt.Printf("[rachel:mailbox] return ring failed: %v\n", err)
-						continue
-					}
-					ta := trackedApps[senderSID]
-					ta.returnRb = returnRb
-
-					// If client didn't specify a window size, skip backing store setup.
-					// (linux shepherd draws directly to framebuffer, doesn't need one.)
-					if msg.Width <= 0 || msg.Height <= 0 {
-						fmt.Printf("[rachel:mailbox] SID %d: no window size, skipping backing store\n", senderSID)
-						changeFocus(senderSID)
-						continue
-					}
-
-					// Rachel owns the backing store. Compute total size including borders.
-					ta.appWidth = msg.Width
-					ta.appHeight = msg.Height
-					totalW := int(msg.Width) + borderLeft + borderRight
-					totalH := int(msg.Height) + borderTop + borderBottom
-					ta.bsWidth = int32(totalW)
-					ta.bsHeight = int32(totalH)
-					ta.bsStride = int32(totalW * 4)
-
-					// Clamp position so all 4 borders fit within the framebuffer.
-					dw, dh := int(displayWidth), int(displayHeight)
-					appX := int(msg.X)
-					appY := int(msg.Y)
-					if appX < borderLeft {
-						appX = borderLeft
-					}
-					if appY < borderTop {
-						appY = borderTop
-					}
-					if appX+int(msg.Width)+borderRight > dw {
-						appX = dw - int(msg.Width) - borderRight
-					}
-					if appY+int(msg.Height)+borderBottom > dh {
-						appY = dh - int(msg.Height) - borderBottom
-					}
-					ta.x = int32(appX)
-					ta.y = int32(appY)
-
-					// Allocate backing store pages.
-					bsBytes := totalW * 4 * totalH
-					bsPages := (bsBytes + 4095) / 4096
-					bsSlice, allocErr := mem.AllocPagesSlice(bsPages, mem.PageShared)
-					if allocErr != nil {
-						fmt.Printf("[rachel:mailbox] SID %d: backing store alloc failed: %v\n", senderSID, allocErr)
-						continue
-					}
-					ta.backingStore = bsSlice
-
-					// Share pages with the client shepherd.
-					bsVA := uintptr(unsafe.Pointer(&bsSlice[0]))
-					clientVA, shareErr := sys.SharePagesWithTarget(senderSID, bsVA, bsPages)
-					if shareErr != nil {
-						fmt.Printf("[rachel:mailbox] SID %d: share pages failed: %v\n", senderSID, shareErr)
-						continue
-					}
-
-					fmt.Printf("[rachel:mailbox] SID %d: backing store %dx%d (app %dx%d) at (%d,%d), clientVA=0x%x\n",
-						senderSID, totalW, totalH, ta.appWidth, ta.appHeight, ta.x, ta.y, clientVA)
-
-					// Send BackingStoreReady to client.
-					var resp wm.BackingStoreReadyMsg
-					resp.Type = wm.MsgBackingStoreReady
-					resp.BackingStoreAddr = int64(clientVA)
-					resp.TotalWidth = int32(totalW)
-					resp.TotalHeight = int32(totalH)
-					resp.TotalStride = int32(totalW * 4)
-					resp.LeftInset = borderLeft
-					resp.TopInset = borderTop
-					resp.AppWidth = msg.Width
-					resp.AppHeight = msg.Height
-					resp.AppX = ta.x
-					resp.AppY = ta.y
-					ta.returnRb.Push(unsafe.Pointer(&resp))
-					_ = sys.MailboxSend(senderSID, wm.ShepherdNotify, ta.returnRb.Addr())
-
-					// Grant focus to this new shepherd.
-					changeFocus(senderSID)
-
-					// Initial blit (all windows, z-ordered).
-					blitAllWindows()
-
-				default:
-					rachelMsgOther++
-				case wm.MsgBlit:
-					rachelMsgBlit++
-					if rachelMsgBlit%10 == 0 {
-						fmt.Printf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
-							rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents)
-					}
-					msg := (*wm.BlitMsg)(unsafe.Pointer(&raw[0]))
-					sid := int(msg.SID)
-					ta, ok := trackedApps[sid]
-					if !ok || ta.backingStore == nil {
-						continue
-					}
-					drawBorders(ta)
-					blitWindow(sid, fbPix, fbStride)
-					ox, oy := screenOrigin(ta)
-					flushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
+				// Track the shepherd's AppWindow Bounds in rachel's constraint space.
+				if trackAppBounds(senderSID) == nil {
+					continue
 				}
+				ta := trackedApps[senderSID]
+
+				// If client didn't specify a window size, skip backing store setup.
+				// (linux shepherd draws directly to framebuffer, doesn't need one.)
+				if msg.Width <= 0 || msg.Height <= 0 {
+					fmt.Printf("[rachel:wm] SID %d: no window size, skipping backing store\n", senderSID)
+					changeFocus(senderSID)
+					continue
+				}
+
+				// Rachel owns the backing store. Compute total size including borders.
+				ta.appWidth = msg.Width
+				ta.appHeight = msg.Height
+				totalW := int(msg.Width) + borderLeft + borderRight
+				totalH := int(msg.Height) + borderTop + borderBottom
+				ta.bsWidth = int32(totalW)
+				ta.bsHeight = int32(totalH)
+				ta.bsStride = int32(totalW * 4)
+
+				// Clamp position so all 4 borders fit within the framebuffer.
+				dw, dh := int(displayWidth), int(displayHeight)
+				appX := int(msg.X)
+				appY := int(msg.Y)
+				if appX < borderLeft {
+					appX = borderLeft
+				}
+				if appY < borderTop {
+					appY = borderTop
+				}
+				if appX+int(msg.Width)+borderRight > dw {
+					appX = dw - int(msg.Width) - borderRight
+				}
+				if appY+int(msg.Height)+borderBottom > dh {
+					appY = dh - int(msg.Height) - borderBottom
+				}
+				ta.x = int32(appX)
+				ta.y = int32(appY)
+
+				// Allocate backing store pages.
+				bsBytes := totalW * 4 * totalH
+				bsPages := (bsBytes + 4095) / 4096
+				bsSlice, allocErr := mem.AllocPagesSlice(bsPages, mem.PageShared)
+				if allocErr != nil {
+					fmt.Printf("[rachel:wm] SID %d: backing store alloc failed: %v\n", senderSID, allocErr)
+					continue
+				}
+				ta.backingStore = bsSlice
+
+				// Share pages with the client shepherd.
+				bsVA := uintptr(unsafe.Pointer(&bsSlice[0]))
+				clientVA, shareErr := sys.SharePagesWithTarget(senderSID, bsVA, bsPages)
+				if shareErr != nil {
+					fmt.Printf("[rachel:wm] SID %d: share pages failed: %v\n", senderSID, shareErr)
+					continue
+				}
+
+				fmt.Printf("[rachel:wm] SID %d: backing store %dx%d (app %dx%d) at (%d,%d), clientVA=0x%x\n",
+					senderSID, totalW, totalH, ta.appWidth, ta.appHeight, ta.x, ta.y, clientVA)
+
+				// Send BackingStoreReady to client via uring.
+				bsr := wm.EncodeBackingStoreReady(&wm.BackingStoreReady{
+					BackingStoreAddr: int64(clientVA),
+					TotalWidth:       int32(totalW),
+					TotalHeight:      int32(totalH),
+					TotalStride:      int32(totalW * 4),
+					LeftInset:        borderLeft,
+					TopInset:         borderTop,
+					AppWidth:         msg.Width,
+					AppHeight:        msg.Height,
+					AppX:             ta.x,
+					AppY:             ta.y,
+				})
+				if err := uring.Send(senderSID, &bsr); err != nil {
+					fmt.Fprintf(os.Stderr, "[rachel:wm] SID %d: uring.Send BackingStoreReady failed: %v\n", senderSID, err)
+				}
+
+				// Grant focus to this new shepherd.
+				changeFocus(senderSID)
+
+				// Initial blit (all windows, z-ordered).
+				blitAllWindows()
+
+			case wm.Blit:
+				rachelMsgBlit++
+				if rachelMsgBlit%10 == 0 {
+					fmt.Printf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
+						rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents)
+				}
+				ta, ok := trackedApps[senderSID]
+				if !ok || ta.backingStore == nil {
+					continue
+				}
+				drawBorders(ta)
+				blitWindow(senderSID, fbPix, fbStride)
+				ox, oy := screenOrigin(ta)
+				flushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
+
+			default:
+				rachelMsgOther++
 			}
 
-		case hid.InputEventCode:
+		case <-hidCh:
 			rachelHIDEvents++
 			// Drain shared completion ring and process all events
 			batchTotal := 0
@@ -838,8 +816,6 @@ func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRin
 					inputWakeups, inputEventsProcessed, dropped))
 			}
 			postBatchInputUpdate()
-
-		default:
 		}
 	}
 }
@@ -912,30 +888,17 @@ func main() {
 		panic(fmt.Sprintf("[rachel] FATAL: fs: %v", err))
 	}
 
-	// Load fontsvc.maz — it owns the MailboxRecv loop and forwards non-font
-	// notifications to rachel via a Go channel.
-	rachelCh := make(chan sys.MailboxNotification, 32)
-
 	// Force linker to include FontSvcInjector itab for cross-module type assertions.
-	initData := &fontcache.FontSvcInit{RachelCh: rachelCh}
+	initData := &fontcache.FontSvcInit{}
 	forceFontSvcItab(initData)
 
+	// Load fontsvc.maz — it registers a handler callback for font requests.
 	fontSvcPath := sys.LoadMazByName("/fontsvc")
 	fontSvcMain, fontSvcInitAddr, fontSvcErr := mazhost.LoadMazBootstrap(fontSvcPath, nil)
 	if fontSvcErr != nil {
 		fmt.Printf("[rachel] LoadMazBootstrap(fontsvc) failed: %v\n", fontSvcErr)
-		// Fall back to direct mailbox loop if fontsvc is not available.
-		go func() {
-			for {
-				notif, err := sys.MailboxRecv()
-				if err != nil {
-					continue
-				}
-				rachelCh <- notif
-			}
-		}()
 	} else {
-		// Inject the rachel channel into fontsvc via MazarinShepherd.
+		// Inject the callback registration into fontsvc via MazarinShepherd.
 		if fontSvcInitAddr != 0 {
 			type funcval struct{ fn uintptr }
 			fv := &funcval{fn: fontSvcInitAddr}
@@ -944,15 +907,48 @@ func main() {
 				fmt.Printf("[rachel] fontsvc MazarinShepherd failed: %v\n", err)
 			}
 		}
-		// Start fontsvc's MailboxRecv loop (which forwards non-font messages to rachelCh).
 		go mazhost.RunMaz(fontSvcMain)
 	}
+
+	// Set up uring Dispatcher — WM goes to channel, font requests to fontsvc callbacks.
+	wmCh := make(chan any, 32)
+	disp := uring.NewDispatcher()
+	disp.On(ipc.ProtoWMNotify, wm.DecodeWMNotify, wmCh)
+	if initData.HandleOpenFont != nil {
+		openFontCb := initData.HandleOpenFont
+		glyphCb := initData.HandleRequestGlyph
+		disp.OnFunc(ipc.ProtoFontRequest, wm.DecodeFontRequest, func(raw any) {
+			// Type switch in rachel's runtime context (correct type metadata).
+			frm := raw.(wm.FontRequestMsg)
+			sid := int(frm.SenderSID)
+			switch msg := frm.Msg.(type) {
+			case wm.OpenFont:
+				openFontCb(sid, msg.Variant, msg.Size, msg.Path)
+			case wm.RequestGlyph:
+				glyphCb(sid, msg.FontID, msg.GID, msg.Codepoint)
+			}
+		})
+		sys.UartWriteString("[rachel] font requests wired to fontsvc callbacks\n")
+	}
+	disp.Start()
 	runtime.Gosched()
 
-	// Start mailbox receiver — reads from channel populated by fontsvc.
-	// Also handles InputEventCode notifications by draining the shared ring.
-	go mailboxLoop(rachelCh, inputRing)
+	// Start HID mailbox receiver — HID input events still arrive via mailbox.
+	hidCh := make(chan struct{}, 4)
+	go hidMailboxRecvLoop(hidCh)
 	runtime.Gosched()
+
+	// Start WM event loop — receives typed messages from uring Dispatcher + HID signals.
+	go wmEventLoop(wmCh, hidCh, inputRing)
+	runtime.Gosched()
+
+	// Publish ready status to constraint network using the well-known URI.
+	// This must happen BEFORE LaunchMaz("prefs") because prefs uses fmt.Printf
+	// which delegates to linux (stdio), and linux can't launch until rachel is ready.
+	ready := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
+	_ = ready
+	sys.SetReady(true)
+	sys.UartWriteString("[rachel] Ready=true\n")
 
 	// Stderr test (linux shepherd disabled for now, but keep for diagnostics).
 	go func() {
@@ -960,14 +956,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "[rachel] stderr test: this should be dark red")
 	}()
 
-	// Load and launch prefs.maz
+	// Load and launch prefs.maz (after ready, since this uses FS/stdio delegation).
 	mazhost.LaunchMaz("prefs")
-
-	// Publish ready status to constraint network using the well-known URI.
-	ready := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
-	_ = ready
-	sys.SetReady(true)
-	sys.UartWriteString("[rachel] Ready=true\n")
 
 	// Block main goroutine forever
 	select {}

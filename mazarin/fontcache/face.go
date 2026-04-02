@@ -64,7 +64,7 @@ type localGlyph struct {
 }
 
 // newSharedFace constructs a sharedFace from an OpenFontReply.
-func newSharedFace(fc *FontCache, reply *wm.OpenFontReplyMsg) *sharedFace {
+func newSharedFace(fc *FontCache, reply *wm.OpenFontReply) *sharedFace {
 	cacheBase := uintptr(reply.CacheAddr)
 	header := (*v2Header)(unsafe.Pointer(cacheBase))
 

@@ -21,10 +21,11 @@ import (
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
-	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/serial"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
 	"mazzy/shared/fs/fsipc"
+	"mazzy/shared/ipc"
 	"mazzy/shared/sysid"
 	"mazzy/shared/wm"
 )
@@ -130,23 +131,17 @@ func (c *console) scroll() {
 	// lineCount stays at maxPoolLines
 }
 
-// wmRb is the ring buffer for sending messages to rachel. Created once
-// during announceToWM and reused for MsgBlit in the main loop.
-var wmRb *ringbuf.RingBuffer
-
-// backingStoreReadyCh delivers the BackingStoreReady message from the mailbox loop.
-var backingStoreReadyCh = make(chan wm.BackingStoreReadyMsg, 1)
+// wmCh receives typed WM messages (wm.BackingStoreReady, wm.YouHaveFocus, etc.)
+// from the uring Dispatcher.
+var wmCh = make(chan any, 4)
 
 // sendBlit tells rachel to copy our backing store to the framebuffer.
 func sendBlit() {
-	if wmRb == nil {
+	if linuxRachelSID < 0 {
 		return
 	}
-	var msg wm.BlitMsg
-	msg.Type = wm.MsgBlit
-	msg.SID = int64(os.Getpid())
-	wmRb.Push(unsafe.Pointer(&msg))
-	_ = sys.MailboxSend(linuxRachelSID, wm.WMNotify, wmRb.Addr())
+	msg := wm.EncodeBlit(&wm.Blit{SID: int32(os.Getpid())})
+	_ = uring.Send(linuxRachelSID, &msg)
 }
 
 // linuxRachelSID is rachel's SID, set during main().
@@ -224,34 +219,24 @@ func addCRBeforeLF(data []byte) []byte {
 	return out
 }
 
-// mailboxRecvLoop receives notifications from rachel (font responses, WM messages)
-// and from the fs shepherd (IPC responses).
-func mailboxRecvLoop(fc *fontcache.FontCache, ipc *fsIPCClient) {
+// startUringDispatcher sets up the uring Dispatcher for WM and font messages.
+// WM messages go to wmCh; font responses go to fc.ReplyCh.
+func startUringDispatcher(fc *fontcache.FontCache) {
+	d := uring.NewDispatcher()
+	d.On(ipc.ProtoShepherdNotify, wm.DecodeShepherdNotify, wmCh)
+	d.On(ipc.ProtoFontResponse, wm.DecodeFontResponse, fc.ReplyCh)
+	d.Start()
+}
+
+// fsMailboxRecvLoop handles FS IPC notifications that still use the mailbox.
+// This runs alongside the uring Dispatcher until FS IPC is migrated (Phase 4).
+func fsMailboxRecvLoop(ipc *fsIPCClient) {
 	for {
 		notif, err := sys.MailboxRecv()
 		if err != nil {
 			continue
 		}
 		switch notif.Code {
-		case wm.FontResponse:
-			fc.HandleNotification(notif)
-		case wm.ShepherdNotify:
-			rb := ringbuf.Open(uintptr(notif.RingAddr))
-			var raw [wm.SizeWMMessage]byte
-			for rb.Pop(unsafe.Pointer(&raw[0])) {
-				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-				switch msgType {
-				case wm.MsgBackingStoreReady:
-					bsr := *(*wm.BackingStoreReadyMsg)(unsafe.Pointer(&raw[0]))
-					sys.UartWriteString(fmt.Sprintf("[linux:mailbox] BackingStoreReady: VA=0x%x total=%dx%d inset=(%d,%d) app=%dx%d pos=(%d,%d)\n",
-						bsr.BackingStoreAddr, bsr.TotalWidth, bsr.TotalHeight,
-						bsr.LeftInset, bsr.TopInset, bsr.AppWidth, bsr.AppHeight,
-						bsr.AppX, bsr.AppY))
-					backingStoreReadyCh <- bsr
-				default:
-					// Other messages — drain and ignore.
-				}
-			}
 		case fsipc.NotifyReady:
 			ipc.handleReady(notif)
 		case fsipc.NotifyResponse:
@@ -260,27 +245,20 @@ func mailboxRecvLoop(fc *fontcache.FontCache, ipc *fsIPCClient) {
 	}
 }
 
-// announceToWM sends AppStart to rachel with window dimensions.
+// announceToWM sends AppStart to rachel with window dimensions via uring.
 func announceToWM(x, y, w, h int32) {
 	if linuxRachelSID < 0 {
 		return
 	}
-	var err error
-	wmRb, err = ringbuf.New(linuxRachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
-	if err != nil {
-		sys.UartWriteString("[linux] ring buffer creation failed: " + err.Error() + "\n")
-		return
-	}
-	var msg wm.AppStartMsg
-	msg.Type = wm.MsgAppStart
-	msg.SID = int64(os.Getpid())
-	msg.X = x
-	msg.Y = y
-	msg.Width = w
-	msg.Height = h
-	wmRb.Push(unsafe.Pointer(&msg))
-	if err := sys.MailboxSend(linuxRachelSID, wm.WMNotify, wmRb.Addr()); err != nil {
-		sys.UartWriteString("[linux] MailboxSend failed: " + err.Error() + "\n")
+	msg := wm.EncodeAppStart(&wm.AppStart{
+		SID:    int32(os.Getpid()),
+		X:      x,
+		Y:      y,
+		Width:  w,
+		Height: h,
+	})
+	if err := uring.Send(linuxRachelSID, &msg); err != nil {
+		sys.UartWriteString("[linux] uring.Send AppStart failed: " + err.Error() + "\n")
 		return
 	}
 	sys.UartWriteString(fmt.Sprintf("[linux] sent AppStart to rachel: %dx%d at (%d,%d)\n", w, h, x, y))
@@ -309,7 +287,8 @@ func main() {
 	fsSID := sys.MustGetShepherdByName("fs")
 	fc := fontcache.New(rachelSID)
 	ipcClient := newFsIPCClient(fsSID)
-	go mailboxRecvLoop(fc, ipcClient)
+	startUringDispatcher(fc)
+	go fsMailboxRecvLoop(ipcClient)
 	ipcClient.sendInit()
 	fonts := &mancini.FontConfig{
 		LoadFace: func(bold bool, size int64) font.Face {
@@ -403,7 +382,15 @@ func main() {
 
 	// 8. Wait for rachel to allocate backing store and share it with us.
 	sys.UartWriteString("[linux] waiting for BackingStoreReady...\n")
-	bsr := <-backingStoreReadyCh
+	var bsr wm.BackingStoreReady
+	for {
+		raw := <-wmCh
+		if b, ok := raw.(wm.BackingStoreReady); ok {
+			bsr = b
+			break
+		}
+		// Drain other messages until we get BackingStoreReady.
+	}
 
 	totalW := int(bsr.TotalWidth)
 	totalH := int(bsr.TotalHeight)

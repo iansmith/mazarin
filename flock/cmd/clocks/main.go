@@ -15,8 +15,9 @@ import (
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
-	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
+	"mazzy/shared/ipc"
 	"mazzy/shared/wm"
 	"os"
 	"strconv"
@@ -34,35 +35,22 @@ type cityInfo struct {
 	loc     *time.Location
 }
 
-// wmRb is the ring buffer for sending messages to rachel. Created once
-// during announceToWM and reused for MsgBlit in the main loop.
-var wmRb *ringbuf.RingBuffer
 var rachelSID int
 
-// backingStoreReadyCh delivers the BackingStoreReady message from the mailbox loop.
-var backingStoreReadyCh = make(chan wm.BackingStoreReadyMsg, 1)
+// wmCh receives typed WM messages from the uring Dispatcher.
+var wmCh = make(chan any, 4)
 
-// announceToWM sends AppStart to rachel (no backing store — rachel allocates it).
+// announceToWM sends AppStart to rachel via uring.
 func announceToWM(x, y, w, h int32) {
-	myPID := os.Getpid()
-	var err error
-	wmRb, err = ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
-	if err != nil {
-		sys.UartWriteString("[clocks] ring buffer creation failed: " + err.Error() + "\n")
-		return
-	}
-
-	var msg wm.AppStartMsg
-	msg.Type = wm.MsgAppStart
-	msg.SID = int64(myPID)
-	msg.X = x
-	msg.Y = y
-	msg.Width = w
-	msg.Height = h
-	wmRb.Push(unsafe.Pointer(&msg))
-
-	if err := sys.MailboxSend(rachelSID, wm.WMNotify, wmRb.Addr()); err != nil {
-		sys.UartWriteString("[clocks] MailboxSend failed: " + err.Error() + "\n")
+	msg := wm.EncodeAppStart(&wm.AppStart{
+		SID:    int32(os.Getpid()),
+		X:      x,
+		Y:      y,
+		Width:  w,
+		Height: h,
+	})
+	if err := uring.Send(rachelSID, &msg); err != nil {
+		sys.UartWriteString("[clocks] uring.Send AppStart failed: " + err.Error() + "\n")
 		return
 	}
 	sys.UartWriteString(fmt.Sprintf("[clocks] sent AppStart to rachel: %dx%d at (%d,%d)\n", w, h, x, y))
@@ -70,46 +58,19 @@ func announceToWM(x, y, w, h int32) {
 
 // sendBlit tells rachel to copy our backing store to the framebuffer.
 func sendBlit() {
-	if wmRb == nil {
+	if rachelSID < 0 {
 		return
 	}
-	var msg wm.BlitMsg
-	msg.Type = wm.MsgBlit
-	msg.SID = int64(os.Getpid())
-	wmRb.Push(unsafe.Pointer(&msg))
-	_ = sys.MailboxSend(rachelSID, wm.WMNotify, wmRb.Addr())
+	msg := wm.EncodeBlit(&wm.Blit{SID: int32(os.Getpid())})
+	_ = uring.Send(rachelSID, &msg)
 }
 
-// mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus, FontResponse, BackingStoreReady).
-func mailboxRecvLoop(fc *fontcache.FontCache) {
-	for {
-		notif, err := sys.MailboxRecv()
-		if err != nil {
-			sys.UartWriteString("[clocks:mailbox] recv error\n")
-			continue
-		}
-		switch notif.Code {
-		case wm.FontResponse:
-			fc.HandleNotification(notif)
-		case wm.ShepherdNotify:
-			rb := ringbuf.Open(uintptr(notif.RingAddr))
-			var raw [wm.SizeWMMessage]byte
-			for rb.Pop(unsafe.Pointer(&raw[0])) {
-				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-				switch msgType {
-				case wm.MsgBackingStoreReady:
-					bsr := *(*wm.BackingStoreReadyMsg)(unsafe.Pointer(&raw[0]))
-					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] BackingStoreReady: VA=0x%x total=%dx%d inset=(%d,%d) app=%dx%d pos=(%d,%d)\n",
-						bsr.BackingStoreAddr, bsr.TotalWidth, bsr.TotalHeight,
-						bsr.LeftInset, bsr.TopInset, bsr.AppWidth, bsr.AppHeight,
-						bsr.AppX, bsr.AppY))
-					backingStoreReadyCh <- bsr
-				default:
-					// Other messages (YouHaveFocus, etc.) — drain and ignore for now.
-				}
-			}
-		}
-	}
+// startUringDispatcher sets up the uring Dispatcher for WM and font messages.
+func startUringDispatcher(fc *fontcache.FontCache) {
+	d := uring.NewDispatcher()
+	d.On(ipc.ProtoShepherdNotify, wm.DecodeShepherdNotify, wmCh)
+	d.On(ipc.ProtoFontResponse, wm.DecodeFontResponse, fc.ReplyCh)
+	d.Start()
 }
 
 func main() {
@@ -136,9 +97,9 @@ func main() {
 	rachelSID = sys.MustGetShepherdByName("rachel")
 	fc := fontcache.New(rachelSID)
 
-	// Start mailbox receiver early so FontResponse notifications are processed
+	// Start uring dispatcher early so FontResponse notifications are processed
 	// while OpenFace blocks waiting for replies.
-	go mailboxRecvLoop(fc)
+	startUringDispatcher(fc)
 
 	fonts := &mancini.FontConfig{
 		LoadFace: func(bold bool, size int64) font.Face {
@@ -344,7 +305,14 @@ func main() {
 
 	// 10. Wait for rachel to allocate backing store and share it with us.
 	sys.UartWriteDirectString("[clocks] waiting for BackingStoreReady...\n")
-	bsr := <-backingStoreReadyCh
+	var bsr wm.BackingStoreReady
+	for {
+		raw := <-wmCh
+		if b, ok := raw.(wm.BackingStoreReady); ok {
+			bsr = b
+			break
+		}
+	}
 
 	// Create a []byte slice over the shared backing store.
 	totalW := int(bsr.TotalWidth)

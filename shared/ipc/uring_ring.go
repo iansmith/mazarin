@@ -25,7 +25,8 @@ const (
 	ProtoDeath           uint32 = 3 // Shepherd death notification (kernel → shepherd)
 	ProtoFSRequest       uint32 = 4 // Forwarded filesystem syscall (kernel → fs shepherd)
 	ProtoFSResponse      uint32 = 5 // Filesystem syscall response (fs shepherd → caller)
-	ProtoAppStart        uint32 = 6 // Application start notification
+	ProtoFontRequest     uint32 = 6 // Font request (shepherd → fontsvc)
+	ProtoFontResponse    uint32 = 7 // Font response (fontsvc → shepherd)
 )
 
 // UringIPCRingHeader is the metadata at offset 0 of the ring's first page.

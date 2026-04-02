@@ -10,8 +10,8 @@ import (
 	"bytes"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/mem"
-	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
 	"mazarin/textshape"
 	"mazzy/shared/wm"
 	"unsafe"
@@ -34,9 +34,6 @@ func init() {
 	}
 }
 
-// rachelCh forwards non-font mailbox notifications to rachel's WM code.
-var rachelCh chan<- sys.MailboxNotification
-
 // MazarinShepherd receives the FontSvcInjector injection from rachel.
 // The kernel's LoadMaz looks for this exact symbol name.
 // Uses an interface type assertion (not concrete struct pointer) because
@@ -53,7 +50,12 @@ func MazarinShepherd(injected interface{}) error {
 		rawPuts("[fontsvc] MazarinShepherd: type assertion failed\n")
 		return nil
 	}
-	rachelCh = inj.GetRachelChannel()
+	// Register handlers with rachel. Rachel calls these directly from the
+	// uring Dispatcher goroutine (rachel's runtime), passing scalar/array
+	// values instead of interface{} to avoid cross-.maz type assertions.
+	inj.RegisterOpenFontHandler(handleOpenFontCallback)
+	inj.RegisterRequestGlyphHandler(handleRequestGlyphCallback)
+	rawPuts("[fontsvc] MazarinShepherd: handlers registered\n")
 	return nil
 }
 
@@ -75,11 +77,10 @@ var fonts [fontcache.MaxFonts]fontSlot
 // fontIdx resolves family names to filesystem paths. Loaded lazily.
 var fontIdx *fontcache.FontIndex
 
-// Per-shepherd state for ringbuf communication.
+// Per-shepherd state for font IPC.
 type shepherdConn struct {
-	returnRb   *ringbuf.RingBuffer // fontsvc → shepherd
-	scratchBuf []byte              // scratch page for tier-2 glyphs (4KB)
-	scratchVA  uintptr             // VA of scratch page in shepherd's space
+	scratchBuf []byte  // scratch page for tier-2 glyphs (4KB)
+	scratchVA  uintptr // VA of scratch page in shepherd's space
 }
 
 // shepherdConns is a simple list — avoids Go maps which require
@@ -142,57 +143,28 @@ func findExistingFont(path string, variant int32) (*goFont.Face, []byte) {
 	return nil, nil
 }
 
-// MazarinMain is the fontsvc entry point. It runs the MailboxRecv loop,
-// handling font requests and forwarding other notifications to rachel.
+// MazarinMain is the fontsvc entry point. With the callback-based injection,
+// all work happens in handleFontRequest (called by rachel's Dispatcher).
+// MazarinMain is kept as a no-op for the LoadMaz bootstrap flow.
 //
 //go:noinline
 func MazarinMain() {
-	rawPuts("[fontsvc] starting mailbox loop\n")
-
-	for {
-		notif, err := sys.MailboxRecv()
-		if err != nil {
-			rawPuts("[fontsvc] MailboxRecv error\n")
-			continue
-		}
-
-		switch notif.Code {
-		case wm.FontNotify:
-			handleFontNotify(notif)
-		default:
-			// Forward to rachel's WM code.
-			rawPuts("[fontsvc] fwd code=")
-			rawPutsInt(int(notif.Code))
-			rawPuts(" from=")
-			rawPutsInt(int(notif.SenderSID))
-			rawPuts("\n")
-			rachelCh <- notif
-			rawPuts("[fontsvc] fwd done\n")
-		}
-	}
+	rawPuts("[fontsvc] MazarinMain (callback mode, no loop needed)\n")
 }
 
-func handleFontNotify(notif sys.MailboxNotification) {
-	rb := ringbuf.Open(uintptr(notif.RingAddr))
-	senderSID := int(notif.SenderSID)
-
-	var raw [wm.SizeWMMessage]byte
-	for rb.Pop(unsafe.Pointer(&raw[0])) {
-		msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-		switch msgType {
-		case wm.MsgOpenFont:
-			msg := (*wm.OpenFontMsg)(unsafe.Pointer(&raw[0]))
-			handleOpenFont(senderSID, msg)
-		case wm.MsgRequestGlyph:
-			msg := (*wm.RequestGlyphMsg)(unsafe.Pointer(&raw[0]))
-			handleRequestGlyph(senderSID, msg)
-		default:
-			rawPuts("[fontsvc] unknown font msg type\n")
-		}
-	}
+// handleOpenFontCallback is called by rachel's Dispatcher with scalar values.
+func handleOpenFontCallback(senderSID int, variant, size int32, path [100]byte) {
+	of := &wm.OpenFont{Variant: variant, Size: size, Path: path}
+	handleOpenFont(senderSID, of)
 }
 
-func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
+// handleRequestGlyphCallback is called by rachel's Dispatcher with scalar values.
+func handleRequestGlyphCallback(senderSID int, fontID, gid, codepoint int32) {
+	rg := &wm.RequestGlyph{FontID: fontID, GID: gid, Codepoint: codepoint}
+	handleRequestGlyph(senderSID, rg)
+}
+
+func handleOpenFont(senderSID int, msg *wm.OpenFont) {
 	family := cstring(msg.Path[:])
 
 	// Load font index lazily.
@@ -235,7 +207,7 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 	fontID = allocFontID()
 	if fontID < 0 {
 		rawPuts("[fontsvc] no free font slots\n")
-		sendOpenFontError(conn, senderSID)
+		sendOpenFontError(senderSID)
 		return
 	}
 
@@ -246,7 +218,7 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 		result, loadErr := sys.LoadFile(path)
 		if loadErr != nil {
 			rawPuts("[fontsvc] LoadFile failed: " + path + "\n")
-			sendOpenFontError(conn, senderSID)
+			sendOpenFontError(senderSID)
 			return
 		}
 		fontData = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
@@ -256,7 +228,7 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 		face, err = goFont.ParseTTF(bytes.NewReader(fontData))
 		if err != nil {
 			rawPuts("[fontsvc] ParseTTF failed for " + path + ": " + err.Error() + "\n")
-			sendOpenFontError(conn, senderSID)
+			sendOpenFontError(senderSID)
 			return
 		}
 	}
@@ -355,7 +327,7 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 				rawPuts("[fontsvc] MailboxMapPage cache failed for page ")
 				rawPutsInt(int(i))
 				rawPuts("\n")
-				sendOpenFontError(conn, senderSID)
+				sendOpenFontError(senderSID)
 				return
 			}
 			if i == 0 {
@@ -372,7 +344,7 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 				rawPuts("[fontsvc] MailboxMapPage font failed for page ")
 				rawPutsInt(int(i))
 				rawPuts("\n")
-				sendOpenFontError(conn, senderSID)
+				sendOpenFontError(senderSID)
 				return
 			}
 			if i == 0 {
@@ -388,27 +360,26 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 		}
 	}
 
-	// Send reply.
-	var reply wm.OpenFontReplyMsg
-	reply.Type = wm.MsgOpenFontReply
-	reply.FontID = fontID
-	reply.NumCachePages = numCachePages
-	reply.CacheAddr = uint64(cacheFirstVA)
-	reply.CacheSize = uint64(cacheUsed)
-	reply.Height = textshape.ComputeFontMetrics(slot.face, slot.scale, fontID).Height
-	reply.Ascent = textshape.ComputeFontMetrics(slot.face, slot.scale, fontID).Ascent
-	reply.Descent = textshape.ComputeFontMetrics(slot.face, slot.scale, fontID).Descent
-	reply.NumFontPages = numFontPages
-	reply.FontAddr = uint64(fontFirstVA)
-	reply.FontSize = uint64(len(slot.fontData))
-
-	conn.returnRb.Push(unsafe.Pointer(&reply))
-	if err := sys.MailboxSend(senderSID, wm.FontResponse, conn.returnRb.Addr()); err != nil {
-		rawPuts("[fontsvc] MailboxSend reply failed\n")
+	// Send reply via uring.
+	metrics := textshape.ComputeFontMetrics(slot.face, slot.scale, fontID)
+	encoded := wm.EncodeOpenFontReply(&wm.OpenFontReply{
+		FontID:        fontID,
+		NumCachePages: numCachePages,
+		CacheAddr:     uint64(cacheFirstVA),
+		CacheSize:     uint64(cacheUsed),
+		Height:        metrics.Height,
+		Ascent:        metrics.Ascent,
+		Descent:       metrics.Descent,
+		NumFontPages:  numFontPages,
+		FontAddr:      uint64(fontFirstVA),
+		FontSize:      uint64(len(slot.fontData)),
+	})
+	if err := uring.Send(senderSID, &encoded); err != nil {
+		rawPuts("[fontsvc] uring.Send OpenFontReply failed\n")
 	}
 }
 
-func handleRequestGlyph(senderSID int, msg *wm.RequestGlyphMsg) {
+func handleRequestGlyph(senderSID int, msg *wm.RequestGlyph) {
 	conn, _ := shepherds.get(senderSID)
 	if conn == nil {
 		rawPuts("[fontsvc] RequestGlyph from unknown shepherd\n")
@@ -428,14 +399,12 @@ func handleRequestGlyph(senderSID int, msg *wm.RequestGlyphMsg) {
 	if msg.GID == 0 && msg.Codepoint != 0 {
 		g, ok := slot.face.NominalGlyph(rune(msg.Codepoint))
 		if !ok {
-			// Send empty reply.
-			var reply wm.GlyphReplyMsg
-			reply.Type = wm.MsgGlyphReply
-			reply.FontID = fontID
-			reply.GID = msg.GID
-			reply.GlyphSize = 0
-			conn.returnRb.Push(unsafe.Pointer(&reply))
-			sys.MailboxSend(senderSID, wm.FontResponse, conn.returnRb.Addr())
+			encoded := wm.EncodeGlyphReply(&wm.GlyphReply{
+				FontID:    fontID,
+				GID:       msg.GID,
+				GlyphSize: 0,
+			})
+			uring.Send(senderSID, &encoded)
 			return
 		}
 		gid = g
@@ -444,14 +413,12 @@ func handleRequestGlyph(senderSID int, msg *wm.RequestGlyphMsg) {
 	// Render the glyph using textshape.RenderGlyph.
 	info, alpha := textshape.RenderGlyph(slot.face, gid, slot.scale)
 	if info == nil {
-		// Send empty reply.
-		var reply wm.GlyphReplyMsg
-		reply.Type = wm.MsgGlyphReply
-		reply.FontID = fontID
-		reply.GID = int32(gid)
-		reply.GlyphSize = 0
-		conn.returnRb.Push(unsafe.Pointer(&reply))
-		sys.MailboxSend(senderSID, wm.FontResponse, conn.returnRb.Addr())
+		encoded := wm.EncodeGlyphReply(&wm.GlyphReply{
+			FontID:    fontID,
+			GID:       int32(gid),
+			GlyphSize: 0,
+		})
+		uring.Send(senderSID, &encoded)
 		return
 	}
 
@@ -496,37 +463,26 @@ func handleRequestGlyph(senderSID int, msg *wm.RequestGlyphMsg) {
 	}
 
 	// Send reply with pointer to scratch in shepherd's space.
-	var reply wm.GlyphReplyMsg
-	reply.Type = wm.MsgGlyphReply
-	reply.FontID = fontID
-	reply.GID = int32(gid)
-	reply.ScratchAddr = uint64(conn.scratchVA)
-	reply.GlyphSize = totalSize
-	conn.returnRb.Push(unsafe.Pointer(&reply))
-	sys.MailboxSend(senderSID, wm.FontResponse, conn.returnRb.Addr())
+	encoded := wm.EncodeGlyphReply(&wm.GlyphReply{
+		FontID:      fontID,
+		GID:         int32(gid),
+		ScratchAddr: uint64(conn.scratchVA),
+		GlyphSize:   totalSize,
+	})
+	uring.Send(senderSID, &encoded)
 }
 
-func sendOpenFontError(conn *shepherdConn, senderSID int) {
-	var reply wm.OpenFontReplyMsg
-	reply.Type = wm.MsgOpenFontReply
-	reply.FontID = -1
-	conn.returnRb.Push(unsafe.Pointer(&reply))
-	sys.MailboxSend(senderSID, wm.FontResponse, conn.returnRb.Addr())
+func sendOpenFontError(senderSID int) {
+	encoded := wm.EncodeOpenFontReply(&wm.OpenFontReply{FontID: -1})
+	uring.Send(senderSID, &encoded)
 }
 
 func getOrCreateConn(sid int) (*shepherdConn, int) {
 	if conn, idx := shepherds.get(sid); conn != nil {
 		return conn, idx
 	}
-	// Create return ringbuf to this shepherd.
-	returnRb, err := ringbuf.New(sid, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
-	if err != nil {
-		rawPuts("[fontsvc] ringbuf.New for return channel failed\n")
-		return nil, -1
-	}
-	conn := &shepherdConn{returnRb: returnRb}
+	conn := &shepherdConn{}
 	shepherds.put(sid, conn)
-	// The index is the last added slot.
 	return conn, shepherds.count - 1
 }
 

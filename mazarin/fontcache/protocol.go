@@ -3,27 +3,38 @@
 // pre-rendered glyph data via shared pages.
 package fontcache
 
-import "mazzy/mazarin/sys"
-
 // MaxFonts is the maximum number of concurrently open fonts (IDs 0–31).
 const MaxFonts = 32
 
 // FontSvcInjector is the interface used for cross-module injection into
 // fontsvc.maz. Interface type assertions work across .maz module boundaries
 // (via itabsinit), whereas concrete struct pointer assertions do not.
+//
+// The injection passes callback registration functions. Rachel decodes uring
+// messages in host context (correct type metadata) and calls the registered
+// handlers with typed structs. The handlers run in rachel's runtime context
+// (not .maz's broken runtime), receiving plain struct values (not interfaces
+// requiring cross-module type assertions).
 type FontSvcInjector interface {
-	GetRachelChannel() chan<- sys.MailboxNotification
+	RegisterOpenFontHandler(handler func(senderSID int, variant, size int32, path [100]byte))
+	RegisterRequestGlyphHandler(handler func(senderSID int, fontID, gid, codepoint int32))
 }
 
 // FontSvcInit implements FontSvcInjector. The host (rachel) creates this
 // and passes it to fontsvc.maz's MazarinShepherd.
 type FontSvcInit struct {
-	RachelCh chan<- sys.MailboxNotification
+	HandleOpenFont     func(senderSID int, variant, size int32, path [100]byte)
+	HandleRequestGlyph func(senderSID int, fontID, gid, codepoint int32)
 }
 
-// GetRachelChannel implements FontSvcInjector.
-func (f *FontSvcInit) GetRachelChannel() chan<- sys.MailboxNotification {
-	return f.RachelCh
+// RegisterOpenFontHandler implements FontSvcInjector.
+func (f *FontSvcInit) RegisterOpenFontHandler(handler func(senderSID int, variant, size int32, path [100]byte)) {
+	f.HandleOpenFont = handler
+}
+
+// RegisterRequestGlyphHandler implements FontSvcInjector.
+func (f *FontSvcInit) RegisterRequestGlyphHandler(handler func(senderSID int, fontID, gid, codepoint int32)) {
+	f.HandleRequestGlyph = handler
 }
 
 // GlyphEntry is the per-glyph header stored in the cache data region,

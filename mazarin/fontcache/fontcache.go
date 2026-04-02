@@ -1,10 +1,10 @@
 package fontcache
 
 import (
-	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
 	"mazzy/shared/wm"
-	"unsafe"
+	_ "unsafe"
 
 	"golang.org/x/image/font"
 )
@@ -20,13 +20,12 @@ type faceKey struct {
 // A shepherd creates one FontCache and uses it to open fonts and receive
 // tier-2 glyph responses.
 type FontCache struct {
-	rachelSID  int
-	requestRb  *ringbuf.RingBuffer // shepherd → fontsvc
-	responseRb *ringbuf.RingBuffer // fontsvc → shepherd (set on first response)
+	rachelSID int
 
-	// replyCh carries font responses from the mailbox loop goroutine
-	// to the goroutine blocked in OpenFace or requestGlyph.
-	replyCh chan [wm.SizeWMMessage]byte
+	// ReplyCh receives typed font responses (wm.OpenFontReply, wm.GlyphReply)
+	// from the uring Dispatcher. Wire this to the Dispatcher with:
+	//   dispatcher.On(ipc.ProtoFontResponse, wm.DecodeFontResponse, fc.ReplyCh)
+	ReplyCh chan any
 
 	// Client-side face cache: same path/bold/size returns the same face.
 	cachedFaces [16]struct {
@@ -34,20 +33,14 @@ type FontCache struct {
 		face font.Face
 	}
 	cachedCount int
-
 }
 
-// New creates a FontCache that communicates with fontsvc via rachel's mailbox.
-// Must be called after rachel is ready and before the shepherd's mailbox loop starts.
+// New creates a FontCache that communicates with fontsvc via uring IPC.
+// rachelSID is the SID of the rachel shepherd (where fontsvc runs).
 func New(rachelSID int) *FontCache {
-	rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
-	if err != nil {
-		panic("[fontcache] ringbuf.New failed: " + err.Error())
-	}
 	return &FontCache{
 		rachelSID: rachelSID,
-		requestRb: rb,
-		replyCh:   make(chan [wm.SizeWMMessage]byte, 4),
+		ReplyCh:   make(chan any, 4),
 	}
 }
 
@@ -96,7 +89,6 @@ func (fc *FontCache) OpenFace(family string, bold bool, size int64) font.Face {
 // resolves the family name to a filesystem path server-side. Clients never
 // read font files or the font index from disk.
 func (fc *FontCache) OpenFaceByName(family, style string, size int64) font.Face {
-	// Send family name to fontsvc — server resolves to filesystem path.
 	sys.UartWriteString("[fontcache] OpenFaceByName " + family + "/" + style + " size=" + itoa(size) + "...\n")
 	t0 := nanotime()
 	face := fc.OpenFace(family, IsBoldStyle(style), size)
@@ -112,98 +104,74 @@ func (fc *FontCache) OpenFaceByName(family, style string, size int64) font.Face 
 // SendOpenFont sends an OpenFont request to fontsvc and blocks until the reply
 // arrives. family is the font family name (e.g. "AtkinsonHyperlegibleMono");
 // fontsvc resolves it to a filesystem path server-side.
-func (fc *FontCache) SendOpenFont(family string, bold bool, size int64) (*wm.OpenFontReplyMsg, error) {
-	var msg wm.OpenFontMsg
-	msg.Type = wm.MsgOpenFont
+func (fc *FontCache) SendOpenFont(family string, bold bool, size int64) (*wm.OpenFontReply, error) {
+	var of wm.OpenFont
 	if bold {
-		msg.Variant = 1
+		of.Variant = 1
 	}
-	msg.Size = int32(size)
-	copy(msg.Path[:], family)
+	of.Size = int32(size)
+	copy(of.Path[:], family)
 
-	sys.UartWriteString("[fontcache] SendOpenFont: pushing request...\n")
-	fc.requestRb.Push(unsafe.Pointer(&msg))
-	sys.UartWriteString("[fontcache] SendOpenFont: MailboxSend to rachel...\n")
-	if err := sys.MailboxSend(fc.rachelSID, wm.FontNotify, fc.requestRb.Addr()); err != nil {
-		sys.UartWriteString("[fontcache] SendOpenFont: MailboxSend FAILED: " + err.Error() + "\n")
+	sys.UartWriteString("[fontcache] SendOpenFont: sending via uring...\n")
+	msg := wm.EncodeOpenFont(&of)
+	if err := uring.Send(fc.rachelSID, &msg); err != nil {
+		sys.UartWriteString("[fontcache] SendOpenFont: uring.Send FAILED: " + err.Error() + "\n")
 		return nil, err
 	}
 
-	sys.UartWriteString("[fontcache] SendOpenFont: waiting on replyCh...\n")
+	sys.UartWriteString("[fontcache] SendOpenFont: waiting on ReplyCh...\n")
 	t0 := nanotime()
-	raw := <-fc.replyCh
+	raw := <-fc.ReplyCh
 	dt := (nanotime() - t0) / 1e6
 	sys.UartWriteString("[fontcache] SendOpenFont: reply received after " + itoa(dt) + "ms\n")
-	msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-	if msgType != wm.MsgOpenFontReply {
+	reply, ok := raw.(wm.OpenFontReply)
+	if !ok {
 		sys.UartWriteString("[fontcache] SendOpenFont: unexpected msg type\n")
 		return nil, nil
 	}
-	reply := (*wm.OpenFontReplyMsg)(unsafe.Pointer(&raw[0]))
-	return reply, nil
-}
-
-// HandleNotification is called by the shepherd's mailbox loop when a
-// FontResponse notification arrives. It reads all pending messages from
-// the response ringbuf and forwards them to the blocked OpenFace/requestGlyph call.
-func (fc *FontCache) HandleNotification(notif sys.MailboxNotification) {
-	rb := ringbuf.Open(uintptr(notif.RingAddr))
-	if fc.responseRb == nil {
-		fc.responseRb = rb
-	}
-	var raw [wm.SizeWMMessage]byte
-	count := 0
-	for rb.Pop(unsafe.Pointer(&raw[0])) {
-		count++
-		fc.replyCh <- raw
-	}
-	sys.UartWriteString("[fontcache] HandleNotification: popped " + itoa(int64(count)) + " msgs\n")
+	return &reply, nil
 }
 
 // RequestGlyphByGID sends a tier-2 glyph request by GID and blocks until
-// fontsvc renders it. Returns the raw reply message. The caller must copy
+// fontsvc renders it. Returns the reply message. The caller must copy
 // the glyph data from the scratch page immediately.
-func (fc *FontCache) RequestGlyphByGID(fontID int32, gid uint32) *wm.GlyphReplyMsg {
-	var msg wm.RequestGlyphMsg
-	msg.Type = wm.MsgRequestGlyph
-	msg.FontID = fontID
-	msg.GID = int32(gid)
+func (fc *FontCache) RequestGlyphByGID(fontID int32, gid uint32) *wm.GlyphReply {
+	var rg wm.RequestGlyph
+	rg.FontID = fontID
+	rg.GID = int32(gid)
 
-	fc.requestRb.Push(unsafe.Pointer(&msg))
-	if err := sys.MailboxSend(fc.rachelSID, wm.FontNotify, fc.requestRb.Addr()); err != nil {
+	msg := wm.EncodeRequestGlyph(&rg)
+	if err := uring.Send(fc.rachelSID, &msg); err != nil {
 		return nil
 	}
 
-	raw := <-fc.replyCh
-	msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-	if msgType != wm.MsgGlyphReply {
+	raw := <-fc.ReplyCh
+	reply, ok := raw.(wm.GlyphReply)
+	if !ok {
 		return nil
 	}
-	reply := (*wm.GlyphReplyMsg)(unsafe.Pointer(&raw[0]))
-	return reply
+	return &reply
 }
 
 // requestGlyphByCodepoint sends a tier-2 glyph request by codepoint
 // (used by the legacy sharedFace path). fontsvc converts codepoint→GID internally.
-func (fc *FontCache) requestGlyphByCodepoint(fontID int32, cp rune) *wm.GlyphReplyMsg {
-	var msg wm.RequestGlyphMsg
-	msg.Type = wm.MsgRequestGlyph
-	msg.FontID = fontID
-	msg.GID = 0 // 0 signals "use Codepoint"
-	msg.Codepoint = int32(cp)
+func (fc *FontCache) requestGlyphByCodepoint(fontID int32, cp rune) *wm.GlyphReply {
+	var rg wm.RequestGlyph
+	rg.FontID = fontID
+	rg.GID = 0 // 0 signals "use Codepoint"
+	rg.Codepoint = int32(cp)
 
-	fc.requestRb.Push(unsafe.Pointer(&msg))
-	if err := sys.MailboxSend(fc.rachelSID, wm.FontNotify, fc.requestRb.Addr()); err != nil {
+	msg := wm.EncodeRequestGlyph(&rg)
+	if err := uring.Send(fc.rachelSID, &msg); err != nil {
 		return nil
 	}
 
-	raw := <-fc.replyCh
-	msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-	if msgType != wm.MsgGlyphReply {
+	raw := <-fc.ReplyCh
+	reply, ok := raw.(wm.GlyphReply)
+	if !ok {
 		return nil
 	}
-	reply := (*wm.GlyphReplyMsg)(unsafe.Pointer(&raw[0]))
-	return reply
+	return &reply
 }
 
 //go:linkname nanotime runtime.nanotime
