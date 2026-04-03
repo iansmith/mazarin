@@ -24,8 +24,12 @@ const (
 	MsgTypeMouseMove         uint32 = 6
 	MsgTypeKeyPress          uint32 = 7
 	MsgTypeKeyRelease        uint32 = 8
-	MsgTypeBlit              uint32 = 9
-	MsgTypeBackingStoreReady uint32 = 10
+	MsgTypeBlit                  uint32 = 9
+	MsgTypeBackingStoreReady     uint32 = 10
+	MsgTypeYouHaveKeyboardFocus  uint32 = 11
+	MsgTypeYouLostKeyboardFocus  uint32 = 12
+	MsgTypeYouHaveMouseFocus     uint32 = 13
+	MsgTypeYouLostMouseFocus     uint32 = 14
 )
 
 // --- Typed message structs (WM protocol) ---
@@ -60,10 +64,24 @@ type BackingStoreReady struct {
 }
 
 // YouHaveFocus is sent by rachel to a shepherd when it gains focus.
+// Deprecated: use YouHaveKeyboardFocus / YouHaveMouseFocus.
 type YouHaveFocus struct{}
 
 // YouLostFocus is sent by rachel to a shepherd when it loses focus.
+// Deprecated: use YouLostKeyboardFocus / YouLostMouseFocus.
 type YouLostFocus struct{}
+
+// YouHaveKeyboardFocus is sent by rachel when a shepherd gains keyboard focus.
+type YouHaveKeyboardFocus struct{}
+
+// YouLostKeyboardFocus is sent by rachel when a shepherd loses keyboard focus.
+type YouLostKeyboardFocus struct{}
+
+// YouHaveMouseFocus is sent by rachel when a shepherd gains mouse focus.
+type YouHaveMouseFocus struct{}
+
+// YouLostMouseFocus is sent by rachel when a shepherd loses mouse focus.
+type YouLostMouseFocus struct{}
 
 // MousePress is sent by rachel to a shepherd when a mouse button is pressed.
 type MousePress struct {
@@ -139,6 +157,34 @@ func EncodeYouLostFocus() ipc.UringIPCMsg {
 	var msg ipc.UringIPCMsg
 	msg.Protocol = ipc.ProtoShepherdNotify
 	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeYouLostFocus
+	return msg
+}
+
+func EncodeYouHaveKeyboardFocus() ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoShepherdNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeYouHaveKeyboardFocus
+	return msg
+}
+
+func EncodeYouLostKeyboardFocus() ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoShepherdNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeYouLostKeyboardFocus
+	return msg
+}
+
+func EncodeYouHaveMouseFocus() ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoShepherdNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeYouHaveMouseFocus
+	return msg
+}
+
+func EncodeYouLostMouseFocus() ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoShepherdNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeYouLostMouseFocus
 	return msg
 }
 
@@ -225,6 +271,14 @@ func DecodeShepherdNotify(msg *ipc.UringIPCMsg) any {
 		return YouHaveFocus{}
 	case MsgTypeYouLostFocus:
 		return YouLostFocus{}
+	case MsgTypeYouHaveKeyboardFocus:
+		return YouHaveKeyboardFocus{}
+	case MsgTypeYouLostKeyboardFocus:
+		return YouLostKeyboardFocus{}
+	case MsgTypeYouHaveMouseFocus:
+		return YouHaveMouseFocus{}
+	case MsgTypeYouLostMouseFocus:
+		return YouLostMouseFocus{}
 	case MsgTypeMousePress:
 		return *(*MousePress)(unsafe.Pointer(&msg.Payload[4]))
 	case MsgTypeMouseRelease:

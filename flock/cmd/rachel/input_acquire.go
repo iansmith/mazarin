@@ -58,9 +58,10 @@ func (a *InputAcquirer) Events() <-chan hid.HIDEvent {
 func (a *InputAcquirer) Run() {
 	ring := a.ringPage
 	for {
-		// Block until at least 1 CQE is available. Uses RawSyscall
-		// so the Go P is held — no risk of P-scheduling stall.
-		_, err := sys.IOUringEnter(a.ringID, 0, 1, 0)
+		// Block until at least 1 CQE is available. Uses entersyscallblock
+		// to release the P so other goroutines (wmEventLoop, uring dispatcher,
+		// etc.) can run while we wait for the next HID event.
+		_, err := sys.IOUringEnterBlocking(a.ringID, 0, 1, 0)
 		if err != nil {
 			// Timeout or transient error — retry.
 			continue

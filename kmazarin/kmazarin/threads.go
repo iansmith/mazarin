@@ -2192,6 +2192,17 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 		RestoreIRQs(savedDAIF)
 	}
 
+	// Diagnostic: log which shepherd is cloning a new kernel thread.
+	serial.RawUARTPuts("[clone] SID=")
+	serial.RawUARTDecimal(uint64(t.PID))
+	serial.RawUARTPuts(" TID=")
+	serial.RawUARTDecimal(uint64(t.TID))
+	if parent != nil {
+		serial.RawUARTPuts(" parentTID=")
+		serial.RawUARTDecimal(uint64(parent.TID))
+	}
+	serial.RawUARTPuts("\r\n")
+
 	// CRITICAL: Tell the syscall return path to switch to this new thread!
 	// After SyscallDispatch returns, assembly will:
 	// 1. Call GetSyscallSwitchTarget() - returns B's context pointer

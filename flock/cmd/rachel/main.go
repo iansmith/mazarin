@@ -22,7 +22,6 @@ import (
 	"mazzy/shared/ipc"
 	"mazzy/shared/wm"
 	"os"
-	"runtime"
 	"strconv"
 	"time"
 	"unsafe"
@@ -145,6 +144,19 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 				}
 			} else {
 				return // skip value=2 (explicit repeat)
+			}
+		}
+
+		// Background click: if a mouse button is pressed and nothing is
+		// under the cursor, revoke all focus. This is handled outside the
+		// dispatch pipeline because an empty pick list means no agent fires.
+		if ev.Code >= BTN_LEFT && ev.Value == 1 {
+			if pickWindow(int64(mouseX), int64(mouseY)) < 0 {
+				revokeFocus()
+				wmd.keyFwd.SetFocus(nil)
+				// Also cancel any pending focus-change FSM.
+				wmd.focusChangeAgent.reset()
+				return
 			}
 		}
 
@@ -382,6 +394,9 @@ func pointInAnyAppBounds(x, y int64) bool {
 // Dispatches a synthetic mouse-move event if the cursor moved (for drag
 // forwarding via the DragAgent) and updates cursor appearance.
 func postBatchInputUpdate(posChanged *bool, modState *input.ModifierState, wmd *wmDispatch) {
+	// Check focus-change agent's double/triple-click timer.
+	wmd.focusChangeAgent.CheckTimer()
+
 	if *posChanged {
 		// Dispatch synthetic mouse-move through the pipeline.
 		// The DragAgent (focus policy) will forward to the drag target
@@ -434,9 +449,13 @@ type trackedApp struct {
 	interactor   *WindowInteractor          // dispatch target for this window
 }
 
-// focusedSID is the SID of the shepherd that currently has input focus.
-// -1 means no shepherd has focus.
-var focusedSID = -1
+// keyboardFocusSID is the SID of the shepherd that currently has keyboard focus.
+// -1 means no shepherd has keyboard focus.
+var keyboardFocusSID = -1
+
+// mouseFocusSID is the SID of the shepherd that currently has mouse focus.
+// -1 means no shepherd has mouse focus.
+var mouseFocusSID = -1
 
 // trackedApps maps SID → trackedApp for all shepherds rachel is managing.
 var trackedApps = make(map[int]*trackedApp)
@@ -487,27 +506,49 @@ func pickWindow(x, y int64) int {
 	return -1
 }
 
-// changeFocus switches input focus from the current focusedSID to newSID.
-// Sends YouLostFocus to the old window and YouHaveFocus to the new one.
-// Also raises newSID to the front of the z-order.
-func changeFocus(newSID int) {
-	if newSID == focusedSID {
-		return
-	}
-	// Notify old focused window.
-	if focusedSID >= 0 {
-		if _, ok := trackedApps[focusedSID]; ok {
-			msg := wm.EncodeYouLostFocus()
-			_ = uring.Send(focusedSID, &msg)
-		}
-	}
-	// Raise and focus new window.
+// grantFocus gives both keyboard and mouse focus to newSID and raises it
+// to the front of the z-order. This is the single-click-on-unfocused-window path.
+func grantFocus(newSID int) {
+	grantFocusNoRaise(newSID)
 	raiseToFront(newSID)
-	focusedSID = newSID
+}
+
+// grantFocusNoRaise gives both keyboard and mouse focus to newSID without
+// changing the z-order. This is the double-click-on-unfocused-window path.
+func grantFocusNoRaise(newSID int) {
+	revokeFocus()
+	keyboardFocusSID = newSID
+	mouseFocusSID = newSID
 	if _, ok := trackedApps[newSID]; ok {
-		msg := wm.EncodeYouHaveFocus()
+		msg := wm.EncodeYouHaveKeyboardFocus()
+		_ = uring.Send(newSID, &msg)
+		msg = wm.EncodeYouHaveMouseFocus()
 		_ = uring.Send(newSID, &msg)
 	}
+}
+
+// revokeFocus clears both keyboard and mouse focus, notifying the current
+// focused shepherd(s). Does nothing if no shepherd has focus.
+func revokeFocus() {
+	if keyboardFocusSID >= 0 {
+		if _, ok := trackedApps[keyboardFocusSID]; ok {
+			msg := wm.EncodeYouLostKeyboardFocus()
+			_ = uring.Send(keyboardFocusSID, &msg)
+		}
+	}
+	if mouseFocusSID >= 0 {
+		if _, ok := trackedApps[mouseFocusSID]; ok {
+			msg := wm.EncodeYouLostMouseFocus()
+			_ = uring.Send(mouseFocusSID, &msg)
+		}
+	}
+	keyboardFocusSID = -1
+	mouseFocusSID = -1
+}
+
+// hasFocus returns true if sid currently has both keyboard and mouse focus.
+func hasFocus(sid int) bool {
+	return sid == keyboardFocusSID && sid == mouseFocusSID
 }
 
 // cycleFocus rotates the z-order: the current front window goes to back,
@@ -520,7 +561,7 @@ func cycleFocus() {
 	front := zOrder[0]
 	zOrder = append(zOrder[1:], front)
 	// Focus the new front.
-	changeFocus(zOrder[0])
+	grantFocus(zOrder[0])
 }
 
 // Linux evdev keycode for F1.
@@ -631,10 +672,17 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 				// (linux shepherd draws directly to framebuffer, doesn't need one.)
 				if msg.Width <= 0 || msg.Height <= 0 {
 					sys.UartWriteString("[rachel:wm] no window size, skipping backing store\n")
-					changeFocus(senderSID)
+					grantFocus(senderSID)
 					// Update keyboard forward agent's focus to new window.
 					wmd.keyFwd.SetFocus(ta.interactor)
 					continue
+				}
+
+				// HACK: cascade windows so they overlap for focus testing.
+				// Each window after the first is offset 80px down and left.
+				if windowCount := len(zOrder); windowCount > 0 {
+					msg.X -= int32(windowCount * 80)
+					msg.Y += int32(windowCount * 80)
 				}
 
 				// Rachel owns the backing store. Compute total size including borders.
@@ -706,7 +754,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 					senderSID, totalW, totalH, ta.x, ta.y))
 
 				// Grant focus to this new shepherd.
-				changeFocus(senderSID)
+				grantFocus(senderSID)
 				// Update keyboard forward agent's focus to new window.
 				wmd.keyFwd.SetFocus(ta.interactor)
 
@@ -778,12 +826,15 @@ func main() {
 	sys.UartWriteString("[rachel] Starting window manager\n")
 
 	// Claim window manager role — rachel gets ALL input events automatically
+	sys.UartWriteString("[rachel] requesting WM role...\n")
 	if err := sys.RequestWindowManager(); err != nil {
 		fmt.Printf("[rachel] failed to become window manager: %v\n", err)
 		return
 	}
+	sys.UartWriteString("[rachel] WM role granted, attr.Init...\n")
 	// Initialize constraint system early — mailbox handler creates constraints.
 	attr.Init()
+	sys.UartWriteString("[rachel] attr.Init done\n")
 
 	// Read kernel screen dimensions via constraints.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
@@ -886,15 +937,16 @@ func main() {
 	})
 
 	disp.Start()
-	runtime.Gosched()
+	sys.UartWriteString("[rachel] disp.Start() returned, building dispatcher...\n")
 
 	// Build the subArctic input dispatch pipeline.
 	wmd := buildDispatcher()
 
+	sys.UartWriteString("[rachel] dispatcher built, starting wmEventLoop...\n")
+
 	// Start WM event loop — receives typed messages from uring Dispatcher
 	// and HID events from the InputAcquirer.
 	go wmEventLoop(wmCh, inputAcq.Events(), wmd)
-	runtime.Gosched()
 
 	// Publish ready status to constraint network using the well-known URI.
 	// This must happen BEFORE LaunchMaz("prefs") because prefs uses fmt.Printf

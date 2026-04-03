@@ -531,7 +531,7 @@ func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 	atomic.StoreUint32(&d.ioRing.SQTail, sqTail+1)
 
 	// Submit 1 SQE, wait for 1 CQE.
-	_, err := sys.IOUringEnter(d.ringID, 1, 1, 0)
+	_, err := sys.IOUringEnterBlocking(d.ringID, 1, 1, 0)
 	if err != nil {
 		return err
 	}
@@ -598,7 +598,7 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 		tWait := time.Now()
 		if submitted > 0 {
 			// Submit all SQEs, wait for all completions.
-			_, werr := sys.IOUringEnter(d.ringID, submitted, submitted, 0)
+			_, werr := sys.IOUringEnterBlocking(d.ringID, submitted, submitted, 0)
 			if werr != nil {
 				return werr
 			}
