@@ -57,61 +57,6 @@ func BlockForDelegatedSyscall() uintptr {
 	return uintptr(unsafe.Pointer(&next.Context))
 }
 
-// BlockForDelegatedRecv blocks the current thread (handler shepherd)
-// waiting for a delegated syscall request.
-// Returns the context pointer of the next thread to switch to, or 0.
-//
-//go:nosplit
-//go:noinline
-func BlockForDelegatedRecv() uintptr {
-	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
-	schedulerLock.Lock()
-
-	t := GetCurrentThread()
-	if t == nil {
-		schedulerLock.Unlock()
-		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
-		return 0
-	}
-
-	next := findNextThreadForBlockSchedLockHeld(t)
-	if next == nil {
-		schedulerLock.Unlock()
-		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
-		return 0
-	}
-
-	t.State = ThreadBlockedDelegateRecv
-
-	schedulerLock.Unlock()
-	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
-
-	return uintptr(unsafe.Pointer(&next.Context))
-}
-
-// WakeDelegateThread wakes a thread blocked in ThreadBlockedDelegateRecv,
-// setting its return value.
-//
-//go:nosplit
-//go:noinline
-func WakeDelegateThread(tid int32, returnVal int64) {
-	savedDAIF := SaveAndDisableIRQs()
-	schedulerLock.Lock()
-
-	t := threadLookupByTID(tid)
-	if t != nil && t.State == ThreadBlockedDelegateRecv {
-		t.Context.SetReturnValue(uint64(returnVal))
-		t.PreemptElapsed = 0
-		t.State = ThreadReady
-		enqueueReadySchedLockHeld(t)
-		asm.Dsb()
-
-	}
-
-	schedulerLock.Unlock()
-	RestoreIRQs(savedDAIF)
-}
-
 // WakeDelegateCallerThread wakes the original caller blocked in ThreadBlockedDelegate.
 // Called from SyscallReply when the handler sends the return value.
 //

@@ -153,11 +153,14 @@ func AttrSetEager(slot uint16, eager bool) error {
 // AttrWaitDirty blocks until dirty notifications are available, then returns
 // the dirty slot numbers. Returns the count of dirty slots, or -1 on overflow
 // (caller should re-scan all eager attributes).
+//
+// Uses BlockingSyscall (entersyscallblock) because this is a known-blocking
+// call — the kernel will hold the thread until dirty notifications arrive.
 func AttrWaitDirty(buf []uint16) int {
 	if len(buf) == 0 {
 		return 0
 	}
-	r1, _, _ := Syscall(mazzy.SysAttrWaitDirty,
+	r1, _, _ := BlockingSyscall(mazzy.SysAttrWaitDirty,
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)),
 		0, 0, 0, 0)
 	return int(int64(r1))

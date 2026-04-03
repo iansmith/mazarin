@@ -236,7 +236,7 @@ const (
 	ThreadBlockedSoftIRQ  ThreadState = 6 // Blocked waiting for soft IRQ
 	ThreadBlockedKernelWork ThreadState = 7 // Blocked waiting for KernelSVCWorker to complete
 	ThreadBlockedDelegate     ThreadState = 10 // Caller blocked waiting for delegated syscall reply
-	ThreadBlockedDelegateRecv ThreadState = 11 // Handler blocked waiting for delegated syscall request
+	// ThreadBlockedDelegateRecv (11) — removed, handlers now receive via uring
 	ThreadBlockedDirtyNotify  ThreadState = 12 // Blocked waiting for constraint dirty notification
 	ThreadBlockedInputEvent   ThreadState = 13 // Blocked waiting for input focus event
 	ThreadBlockedMailbox      ThreadState = 14 // Blocked waiting for mailbox notification
@@ -556,10 +556,7 @@ func WakeThreadForSignal(t *Thread) {
 		// goroutine will wake this thread with the result.
 	case ThreadBlockedDelegate:
 		// Defer signal delivery until delegated syscall reply arrives.
-	case ThreadBlockedDelegateRecv:
-		// Wake the handler thread so it can handle the signal.
-		t.State = ThreadReady
-		enqueueReadySchedLockHeld(t)
+	// ThreadBlockedDelegateRecv removed — handlers now receive via uring
 	case ThreadBlockedDirtyNotify:
 		t.State = ThreadReady
 		t.Context.RewindToSyscall()
@@ -1589,7 +1586,7 @@ func printThreadStateSummary() {
 			nMailbox++
 		case ThreadBlockedUringRecv:
 			nMailbox++ // count with mailbox for now (same IPC category)
-		case ThreadBlockedDelegate, ThreadBlockedDelegateRecv:
+		case ThreadBlockedDelegate:
 			nDelegate++
 		}
 	}
@@ -4154,8 +4151,7 @@ func PrintTickDistribution() {
 				stateStr = "IRQ"
 			case ThreadBlockedDelegate:
 				stateStr = "DLG"
-			case ThreadBlockedDelegateRecv:
-				stateStr = "DLR"
+			// ThreadBlockedDelegateRecv ("DLR") removed
 			case ThreadBlockedDirtyNotify:
 				stateStr = "DNT"
 			case ThreadBlockedInputEvent:

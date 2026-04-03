@@ -204,14 +204,21 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 	// Create a new thread for this process
 	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
 
-	// Cache the symbol table, highest VA, and filename on the shepherd struct.
+	// Cache symbol table, highest VA, filename, and allocate IPC uring ring.
 	for i := 0; i < proc.MaxShepherds; i++ {
 		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PageTableL0PA == processL0PA {
 			proc.ShepherdListData[i].SymbolTable = shepherdSymTable
 			proc.ShepherdListData[i].HighestVA = shepherdHighestVA
 			proc.ShepherdListData[i].Filename = filename
-			console.KPrintf("[Launch] cached %d symbols, highestVA=0x%X for shepherd %d\n",
-				len(shepherdSymTable), shepherdHighestVA, proc.ShepherdListData[i].PID)
+
+			// Allocate IPC uring ring for the new shepherd
+			uringID := allocateUringID()
+			proc.ShepherdListData[i].UringID = uringID
+			allocateUringIPCRing(&proc.ShepherdListData[i])
+			registerUringID(uringID, int16(proc.ShepherdListData[i].PID))
+
+			console.KPrintf("[Launch] cached %d symbols, highestVA=0x%X for shepherd %d (UringID=%d)\n",
+				len(shepherdSymTable), shepherdHighestVA, proc.ShepherdListData[i].PID, uringID)
 			break
 		}
 	}

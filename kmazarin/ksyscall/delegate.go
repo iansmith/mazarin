@@ -18,13 +18,11 @@ import (
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
+	"mazzy/shared/ipc"
 	"mazzy/shared/sysid"
 	"sync/atomic"
 	"unsafe"
 )
-
-// MaxDelegateQueueDepth is the max queued delegation requests per SysID.
-const MaxDelegateQueueDepth = 8
 
 // MaxDelegateThreads matches the thread pool size since TIDs are used
 // as direct indices into delegateCallInfos.
@@ -36,24 +34,6 @@ const MaxDelegateThreads = constants.ThreadPoolSize
 // at 2-byte boundaries, causing misaligned load traps (scause=4).
 type delegateHandler struct {
 	pid int32 // handler shepherd PID (-1 = unregistered)
-}
-
-// delegateRecvState tracks a handler shepherd's blocked recv thread.
-// Per-shepherd (not per-SysID) so one recv loop handles all registered syscalls.
-type delegateRecvState struct {
-	recvTID   int16   // TID blocked in DelegatedRecv (-1 = none)
-	resultPtr uintptr // VA of result struct in handler's address space
-}
-
-// DelegateQueueEntry is a queued delegated syscall waiting for the handler.
-type DelegateQueueEntry struct {
-	CallerSID  proc.ShepherdId
-	CallerTID  int16
-	SysID      sysid.ID
-	Args       [6]uint64
-	DataPagePA uintptr // PA of the data page (0 if no data)
-	DataVA     uint64  // VA of data page in the handler's address space
-	DataLen    uint32  // Bytes of data in the page (Write: caller data; Read: 0 initially)
 }
 
 // DelegateCallInfo records per-caller-thread state while a delegated syscall
@@ -73,25 +53,12 @@ type DelegateCallInfo struct {
 // syscallDelegates maps SysID → handler shepherd PID.
 var syscallDelegates [sysid.NumIDs]delegateHandler
 
-// delegateRecvStates tracks recv state per handler shepherd (indexed by PID).
-var delegateRecvStates [proc.MaxShepherds]delegateRecvState
-
-// Per-SysID delegation queues.
-var delegateQueues [sysid.NumIDs]struct {
-	entries [MaxDelegateQueueDepth]DelegateQueueEntry
-	head    uint32
-	tail    uint32
-}
-
 // delegateCallInfos tracks in-flight delegated calls (indexed by caller TID).
 var delegateCallInfos [MaxDelegateThreads]DelegateCallInfo
 
 func init() {
 	for i := range syscallDelegates {
 		syscallDelegates[i].pid = -1
-	}
-	for i := range delegateRecvStates {
-		delegateRecvStates[i].recvTID = -1
 	}
 }
 
@@ -288,33 +255,6 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		// no data page, just args and return value.
 	}
 
-	// Enqueue the request
-	entry := DelegateQueueEntry{
-		CallerSID:  callerShepherd.PID,
-		CallerTID:  callerTID,
-		SysID:      id,
-		DataPagePA: dataPagePA,
-		DataVA:     handlerDataVA,
-		DataLen:    dataLen,
-	}
-	entry.Args = [6]uint64{arg0, arg1, arg2, arg3, arg4, arg5}
-
-	// Disable IRQs around the queue push + recv state check to prevent
-	// preemption mid-operation, which could corrupt the ring buffer or
-	// cause a TOCTOU race on delegateRecvStates.
-	savedDAIF := saveAndDisableIRQs()
-
-	q := &delegateQueues[id]
-	next := (q.tail + 1) % MaxDelegateQueueDepth
-	if next == q.head {
-		restoreIRQs(savedDAIF)
-		reclaimDataPage(dataPagePA, handlerDataVA, handlerSID, handlerShepherd)
-		serial.RawUARTPuts("[DLG] queue full\r\n")
-		return -11 // EAGAIN
-	}
-	q.entries[q.tail] = entry
-	q.tail = next
-
 	// Stash call info for the reply path (indexed by caller TID).
 	// CallerBufVA/CallerBufLen identify the output buffer for copy-back syscalls.
 	// Default: arg1=buf, arg2=count (matches read, getdents64, etc.).
@@ -353,32 +293,28 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		info.InUse = true
 	}
 
-	// If handler has a thread blocked in recv, wake it
-	if handlerSID >= 0 && int(handlerSID) < proc.MaxShepherds {
-		rs := &delegateRecvStates[handlerSID]
-		if rs.recvTID >= 0 {
-			recvTID := rs.recvTID
-			resultPtr := rs.resultPtr
-			rs.recvTID = -1
-			rs.resultPtr = 0
-
-			// Dequeue and deliver to the handler
-			e := delegateQueuePop(id)
-			if e != nil {
-				// Demand-map the handler's result struct pages.
-				kmem.DemandMapUserPage(resultPtr, handlerShepherd.PageTableL0PA)
-				kmem.DemandMapUserPage(resultPtr+71, handlerShepherd.PageTableL0PA)
-				if !writeDelegateRecvResult(resultPtr, handlerShepherd.PageTableL0PA, e) {
-					serial.RawUARTPuts("[DLG] recv result write fault\r\n")
-				}
-				wakeDelegateThread(int32(recvTID), 0)
-			}
+	// Send the request to the handler's uring ring.
+	reqPayload := ipc.FSDelegateReqPayload{
+		SysID:     uint16(id),
+		CallerSID: int16(callerShepherd.PID),
+		CallerTID: callerTID,
+		Args:      [6]uint64{arg0, arg1, arg2, arg3, arg4, arg5},
+		DataVA:    handlerDataVA,
+		DataLen:   dataLen,
+	}
+	msg := ipc.EncodeFSDelegateReq(&reqPayload)
+	result, _ := uringSendKernel(-1, handlerSID, uintptr(unsafe.Pointer(&msg)))
+	if result < 0 {
+		// Ring full or target gone — reclaim and fail.
+		if int(callerTID) < MaxDelegateThreads {
+			delegateCallInfos[callerTID].InUse = false
 		}
+		reclaimDataPage(dataPagePA, handlerDataVA, handlerSID, handlerShepherd)
+		serial.RawUARTPuts("[DLG] uring send failed\r\n")
+		return -11 // EAGAIN
 	}
 
-	restoreIRQs(savedDAIF)
-
-	// Block the caller
+	// Block the caller until the handler replies via SyscallReply.
 	ctx := blockForDelegatedSyscall()
 	if ctx == 0 {
 		serial.RawUARTPuts("[DLG:block] NO NEXT THREAD, EAGAIN\r\n")
@@ -525,32 +461,6 @@ func reclaimDataPage(pa uintptr, handlerVA uint64, handlerSID int16, handlerShep
 	kmem.ReleasePageByPA(pa)
 }
 
-// delegateQueuePop dequeues the next entry for a given SysID.
-func delegateQueuePop(id sysid.ID) *DelegateQueueEntry {
-	q := &delegateQueues[id]
-	if q.head == q.tail {
-		return nil
-	}
-	e := &q.entries[q.head]
-	q.head = (q.head + 1) % MaxDelegateQueueDepth
-	return e
-}
-
-// delegateQueuePopAnyForShepherd scans all SysID queues for entries targeting
-// the given handler shepherd. Returns the first found, or nil.
-func delegateQueuePopAnyForShepherd(handlerSID int16) *DelegateQueueEntry {
-	for i := sysid.ID(0); i < sysid.NumIDs; i++ {
-		hpid := int16(atomic.LoadInt32(&syscallDelegates[i].pid))
-		if hpid != handlerSID {
-			continue
-		}
-		if e := delegateQueuePop(i); e != nil {
-			return e
-		}
-	}
-	return nil
-}
-
 // SyscallRegisterSyscallHandler registers the calling shepherd as the handler
 // for a specific SysID. Can be called multiple times for different SysIDs.
 //
@@ -573,90 +483,6 @@ func SyscallRegisterSyscallHandler(arg0, _, _, _, _, _ uint64) int64 {
 	if !atomic.CompareAndSwapInt32(&h.pid, -1, int32(callerShepherd.PID)) {
 		return -16 // EBUSY — already registered
 	}
-
-	return 0
-}
-
-// SyscallDelegatedRecv blocks until a delegated syscall request arrives
-// for any SysID this shepherd handles.
-//
-// arg0 = pointer to DelegateRecvResult struct in userspace:
-//        {SysID uint16, CallerSID int16, CallerTID int16, pad uint16,
-//         Args [6]uint64, DataVA uint64, DataLen uint64}
-//
-// Returns: 0 on success, negative errno on error.
-//
-//go:noinline
-func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
-	resultPtr := uintptr(arg0)
-
-	callerShepherd := proc.CurrentShepherd()
-	if callerShepherd == nil {
-		return -1 // EPERM
-	}
-	if resultPtr == 0 {
-		return -14 // EFAULT
-	}
-
-	mySID := int16(callerShepherd.PID)
-
-	// Verify this shepherd handles at least one SysID
-	hasAny := false
-	for i := sysid.ID(0); i < sysid.NumIDs; i++ {
-		if int16(atomic.LoadInt32(&syscallDelegates[i].pid)) == mySID {
-			hasAny = true
-			break
-		}
-	}
-	if !hasAny {
-		return -22 // EINVAL — not a handler
-	}
-
-	// Disable IRQs around the queue pop + recv state set to prevent
-	// preemption between checking the queue and recording the recv state.
-	// Without this, a concurrent DelegateSyscall could enqueue + check
-	// recvTID between our pop (empty) and our recvTID set, losing the request.
-	savedDAIF := saveAndDisableIRQs()
-
-	// Check all queues for pending requests
-	e := delegateQueuePopAnyForShepherd(mySID)
-	if e != nil {
-		restoreIRQs(savedDAIF)
-		// Ensure the handler's result pages are mapped before writing.
-		// The delegate recv goroutine allocates the result struct on its
-		// stack, but the page may not be demand-faulted yet. Without
-		// this, writeDelegateRecvResult fails and the request is lost
-		// (already popped from the queue), blocking the caller forever.
-		kmem.DemandMapUserPage(resultPtr, callerShepherd.PageTableL0PA)
-		// Result struct is 72 bytes — demand-map the end too in case
-		// it spans a page boundary.
-		kmem.DemandMapUserPage(resultPtr+71, callerShepherd.PageTableL0PA)
-		if !writeDelegateRecvResult(resultPtr, callerShepherd.PageTableL0PA, e) {
-			serial.RawUARTPuts("[DLG:recv-hit] EFAULT writing result, re-delivering\r\n")
-			return -14 // EFAULT — handler's result buffer is not mapped
-		}
-		return 0
-	}
-
-	// No request pending — record recv state on the shepherd and block
-	_, callerTID := getCurrentThreadSIDAndTID()
-	if int(mySID) < proc.MaxShepherds {
-		rs := &delegateRecvStates[mySID]
-		rs.recvTID = callerTID
-		rs.resultPtr = resultPtr
-	}
-
-	restoreIRQs(savedDAIF)
-
-	ctx := blockForDelegatedRecv()
-	if ctx == 0 {
-		if int(mySID) < proc.MaxShepherds {
-			delegateRecvStates[mySID].recvTID = -1
-			delegateRecvStates[mySID].resultPtr = 0
-		}
-		return -11 // EAGAIN
-	}
-	SetSyscallSwitchTarget(ctx)
 
 	return 0
 }
@@ -768,39 +594,6 @@ func copyDataPageToCaller(pagePA uintptr, callerBufVA uintptr, callerL0PA uintpt
 	return kmem.CopyToUserWithL0(callerBufVA, callerL0PA, src, int(count))
 }
 
-// writeDelegateRecvResult writes the delegate recv result to userspace.
-// Returns false if any write faults — the result struct is partially written
-// and the caller should return -EFAULT.
-func writeDelegateRecvResult(resultPtr uintptr, l0PA uintptr, e *DelegateQueueEntry) bool {
-	// Result layout: SysID(2) + CallerSID(2) + CallerTID(2) + pad(2) +
-	//                Args[6](48) + DataVA(8) + DataLen(8) = 72 bytes
-	if !writeU16ToUser(resultPtr+0, uint16(e.SysID), l0PA) {
-		return false
-	}
-	if !writeI16ToUser(resultPtr+2, int16(e.CallerSID), l0PA) {
-		return false
-	}
-	if !writeI16ToUser(resultPtr+4, e.CallerTID, l0PA) {
-		return false
-	}
-	if !writeU16ToUser(resultPtr+6, 0, l0PA) {
-		return false
-	}
-	for i := 0; i < 6; i++ {
-		if !writeU64ToUserChecked(resultPtr+8+uintptr(i*8), e.Args[i], l0PA) {
-			return false
-		}
-	}
-	// DataVA points directly at the data (no header — data starts at offset 0)
-	if !writeU64ToUserChecked(resultPtr+56, e.DataVA, l0PA) {
-		return false
-	}
-	if !writeU64ToUserChecked(resultPtr+64, uint64(e.DataLen), l0PA) {
-		return false
-	}
-	return true
-}
-
 // writeU16ToUser writes a uint16 to userspace memory via scratch mapping.
 // Returns false if the page is not mapped (no demand-faulting — would use
 // the wrong address space in cross-process contexts).
@@ -845,12 +638,6 @@ func writeU64ToUserChecked(userVA uintptr, val uint64, l0PA uintptr) bool {
 //go:linkname blockForDelegatedSyscall main.BlockForDelegatedSyscall
 func blockForDelegatedSyscall() uintptr
 
-//go:linkname blockForDelegatedRecv main.BlockForDelegatedRecv
-func blockForDelegatedRecv() uintptr
-
-//go:linkname wakeDelegateThread main.WakeDelegateThread
-func wakeDelegateThread(tid int32, returnVal int64)
-
 //go:linkname wakeDelegateCallerThread main.WakeDelegateCallerThread
 func wakeDelegateCallerThread(pid int16, tid int32, returnVal int64)
 
@@ -880,39 +667,14 @@ func CleanupDelegateForDeadShepherd(pid int16) int {
 		info.InUse = false
 	}
 
-	// Part 2: Dying shepherd was a CALLER — neuter queued entries.
-	// Zero out DataPagePA so the handler won't double-free when it dequeues.
-	for sid := sysid.ID(0); sid < sysid.NumIDs; sid++ {
-		q := &delegateQueues[sid]
-		for idx := q.head; idx != q.tail; idx = (idx + 1) % MaxDelegateQueueDepth {
-			e := &q.entries[idx]
-			if int16(e.CallerSID) != pid {
-				continue
-			}
-			if e.DataPagePA != 0 {
-				hpid := int16(atomic.LoadInt32(&syscallDelegates[sid].pid))
-				handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(hpid))
-				reclaimDataPage(e.DataPagePA, e.DataVA, hpid, handlerShepherd)
-				e.DataPagePA = 0
-				e.DataVA = 0
-			}
-		}
-	}
-
-	// Part 3: Dying shepherd was a HANDLER — unregister all SysIDs.
+	// Part 2: Dying shepherd was a HANDLER — unregister all SysIDs.
 	for sid := sysid.ID(0); sid < sysid.NumIDs; sid++ {
 		if int16(atomic.LoadInt32(&syscallDelegates[sid].pid)) == pid {
 			atomic.StoreInt32(&syscallDelegates[sid].pid, -1)
 		}
 	}
 
-	// Part 4: Dying shepherd was a HANDLER — clear recv state.
-	if int(pid) < proc.MaxShepherds {
-		delegateRecvStates[pid].recvTID = -1
-		delegateRecvStates[pid].resultPtr = 0
-	}
-
-	// Part 5: Dying shepherd was a HANDLER — find orphaned callers.
+	// Part 3: Dying shepherd was a HANDLER — find orphaned callers.
 	// Data pages are owned by the dying handler and will be freed by
 	// CleanupShepherdPages. Clear InUse and record caller TIDs to wake.
 	for i := 0; i < MaxDelegateThreads; i++ {

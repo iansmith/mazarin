@@ -353,12 +353,21 @@ func main() {
 
 	// 13. Main loop: wake on dirty, draw to backing store, send blit to rachel.
 	var drawCount int64
+	var lastPrint int64
 	for {
 		attr.WaitDirty()
 		sys.AttrIncrementI64(eagerSlot)
 
-		_ = timeSec.Get()
+		sec := timeSec.Get()
 		_ = timeNanos.Get()
+
+		// Print current time every 10 seconds via fmt.Printf (goes through
+		// write delegate → linux console, exercising the full IPC chain).
+		if sec-lastPrint >= 10 {
+			t := time.Unix(sec, 0).UTC()
+			fmt.Printf("current time: %v\n", t)
+			lastPrint = sec
+		}
 
 		// Draw to backing store at local (0,0) — translate+clip handle offset.
 		app.Draw(app, 0, 0, int64(winW), int64(winH))

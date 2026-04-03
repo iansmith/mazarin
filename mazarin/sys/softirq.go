@@ -11,10 +11,10 @@ import (
 // WaitSoftIRQ blocks until events arrive on the given slot.
 // Uses the kernel's BlockOnSlot mechanism — the thread sleeps until
 // WakeSlotForIRQ wakes it when events are pushed to the ring.
-// Uses Syscall (not RawSyscall) to release the P while blocked,
-// allowing other goroutines to run.
+// Uses BlockingSyscall (entersyscallblock) because this is a known-blocking
+// call — the kernel holds the thread until IRQ events arrive.
 func WaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
-	r1, _, errno := Syscall(mazzy.SysWaitSoftIRQ,
+	r1, _, errno := BlockingSyscall(mazzy.SysWaitSoftIRQ,
 		uintptr(slot),
 		uintptr(unsafe.Pointer(buf)),
 		0, 0, 0, 0) // flag=0 → blocking mode

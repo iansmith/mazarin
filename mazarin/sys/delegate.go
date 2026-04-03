@@ -26,6 +26,7 @@ package sys
 //	}
 
 import (
+	"mazzy/shared/ipc"
 	"mazzy/shared/mazzy"
 	"mazzy/shared/sysid"
 	"unsafe"
@@ -107,35 +108,38 @@ func (r *SyscallRequest) LoadFileReply(returnVal int64, targetVA, numPages, byte
 		uintptr(bytesRead))
 }
 
-// delegateRecvResult matches the kernel-side layout written by writeDelegateRecvResult.
-type delegateRecvResult struct {
-	SysID     uint16
-	CallerPID int16
-	CallerTID int16
-	_pad      uint16
-	Args      [6]uint64
-	DataVA    uint64
-	DataLen   uint64
+// DecodeFSDelegateReq is a uring Dispatcher decoder for ProtoFSDelegateReq messages.
+// Returns a SyscallRequest that the handler can process identically to the old
+// delegate recv loop.
+func DecodeFSDelegateReq(msg *ipc.UringIPCMsg) any {
+	p := ipc.DecodeFSDelegateReq(msg)
+	return SyscallRequest{
+		SysID:     sysid.ID(p.SysID),
+		CallerPID: p.CallerSID,
+		CallerTID: p.CallerTID,
+		Args:      p.Args,
+		dataVA:    uintptr(p.DataVA),
+		dataLen:   p.DataLen,
+	}
 }
 
-// HandleSyscalls registers the calling shepherd as the handler for the given
-// syscalls and returns a single channel that delivers all incoming requests.
-//
-// The caller should process each request and call req.Reply() to unblock the
-// original caller. Failing to reply will leave the caller permanently blocked.
-//
-// The recv goroutine uses Syscall (not RawSyscall), releasing the P while
-// blocked so other goroutines can run.
-func HandleSyscalls(ids ...sysid.ID) (<-chan SyscallRequest, error) {
-	if err := RegisterSyscallHandlers(ids...); err != nil {
-		return nil, err
+// NewSyscallRequest creates a SyscallRequest from uring-delivered payload fields.
+// Used by the handler's uring Dispatcher to convert ProtoFSDelegateReq messages
+// into the SyscallRequest type consumed by the delegate handler goroutine.
+func NewSyscallRequest(sysID sysid.ID, callerSID, callerTID int16, args [6]uint64, dataVA uintptr, dataLen uint32) SyscallRequest {
+	return SyscallRequest{
+		SysID:     sysID,
+		CallerPID: callerSID,
+		CallerTID: callerTID,
+		Args:      args,
+		dataVA:    dataVA,
+		dataLen:   dataLen,
 	}
-	return StartDelegateRecv(), nil
 }
 
 // RegisterSyscallHandlers registers the calling shepherd as the handler for
-// the given syscalls without starting the recv goroutine. Call StartDelegateRecv
-// separately to begin receiving requests.
+// the given syscalls without starting a recv goroutine. The handler receives
+// delegated requests via its uring Dispatcher (ProtoFSDelegateReq).
 func RegisterSyscallHandlers(ids ...sysid.ID) error {
 	for _, id := range ids {
 		r1, _, errno := RawSyscall(mazzy.SysRegisterSyscallHandler,
@@ -148,53 +152,6 @@ func RegisterSyscallHandlers(ids ...sysid.ID) error {
 		}
 	}
 	return nil
-}
-
-// StartDelegateRecv starts the background goroutine that receives delegated
-// syscall requests. Returns the channel that delivers requests.
-func StartDelegateRecv() <-chan SyscallRequest {
-	ch := make(chan SyscallRequest, 4)
-	ready := make(chan struct{})
-	go delegateRecvLoop(ch, ready)
-	<-ready
-	return ch
-}
-
-// HandleSyscall is a convenience wrapper for handling a single syscall.
-func HandleSyscall(id sysid.ID) (<-chan SyscallRequest, error) {
-	return HandleSyscalls(id)
-}
-
-// delegateRecvLoop runs in a dedicated goroutine, calling SysDelegatedRecv
-// in a loop. The kernel returns whichever SysID has a pending request first.
-func delegateRecvLoop(ch chan<- SyscallRequest, ready chan<- struct{}) {
-	close(ready) // Signal that we're about to enter the recv loop
-	var result delegateRecvResult
-	for {
-		// Zero the result struct to force demand-faulting of the stack
-		// page. The kernel writes to this struct via page table walk
-		// (not a normal memory access), so an unmapped page causes
-		// EFAULT and loses the delegate request.
-		result = delegateRecvResult{}
-		r1, _, errno := Syscall(mazzy.SysDelegatedRecv,
-			uintptr(unsafe.Pointer(&result)),
-			0, 0, 0, 0, 0)
-
-		if errno != 0 || int64(r1) < 0 {
-			continue
-		}
-
-		req := SyscallRequest{
-			SysID:     sysid.ID(result.SysID),
-			CallerPID: result.CallerPID,
-			CallerTID: result.CallerTID,
-			dataVA:    uintptr(result.DataVA),
-			dataLen:   uint32(result.DataLen),
-		}
-		req.Args = result.Args
-
-		ch <- req
-	}
 }
 
 // errNo implements error for negative syscall return values.

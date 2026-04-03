@@ -5,6 +5,7 @@ package main
 import (
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
+	"mazzy/shared/ipc"
 	"sync/atomic"
 )
 
@@ -46,27 +47,35 @@ func wakeInputConsumers(class int) {
 	// Legacy focused-shepherd waking removed. All input goes through rachel.
 }
 
-// wakeWMViaMailboxFn is an indirect call to break the nosplit static analysis
+// wakeWMViaUringFn is an indirect call to break the nosplit static analysis
 // chain. The actual exception stack is 4KB+, far larger than the ~800 bytes
 // used, but the linker's 792-byte limit is conservative. Indirect calls are
 // invisible to the nosplit checker.
-var wakeWMViaMailboxFn = wakeWMViaMailboxImpl
+var wakeWMViaUringFn = wakeWMViaUringImpl
 
-// wakeWMViaMailbox sends a single InputEventCode mailbox notification to the
-// WM shepherd. Called from the top-half AFTER all events have been pushed to
-// the shared ring. Uses indirect call to stay within nosplit budget.
+// wakeWMViaMailbox sends a ProtoHIDNotify uring message to the WM shepherd.
+// Called from the top-half AFTER all events have been pushed to the shared
+// ring. Uses indirect call to stay within nosplit budget.
+// Name kept as wakeWMViaMailbox to avoid changing all top-half call sites.
 //
 //go:nosplit
 //go:noinline
 func wakeWMViaMailbox() {
-	wakeWMViaMailboxFn()
+	wakeWMViaUringFn()
+}
+
+// hidNotifyMsg is a pre-initialized ProtoHIDNotify message reused by the
+// IRQ top-half to avoid allocating on the nosplit exception stack.
+var hidNotifyMsg = ipc.UringIPCMsg{
+	Protocol:  ipc.ProtoHIDNotify,
+	SenderSID: -1, // kernel
 }
 
 //go:nosplit
 //go:noinline
-func wakeWMViaMailboxImpl() {
+func wakeWMViaUringImpl() {
 	if wmInputRingKVA != 0 {
-		mailboxSendFromIRQ(wmInputRingOwnerSID, hid.InputEventCode)
+		KernelWriteToRingFromIRQ(wmInputRingOwnerSID, &hidNotifyMsg)
 	}
 }
 

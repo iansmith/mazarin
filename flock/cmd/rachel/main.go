@@ -649,26 +649,17 @@ func forceFontSvcItab(v interface{}) {
 	inj.RegisterRequestGlyphHandler(nil)
 }
 
-// hidMailboxRecvLoop handles HID input event notifications that still
-// arrive via mailbox. When the kernel sends InputEventCode, we drain the
-// shared completion ring and forward a signal on hidCh.
-// This runs alongside the uring Dispatcher until HID events migrate to uring.
-func hidMailboxRecvLoop(hidCh chan<- struct{}) {
-	for {
-		notif, err := sys.MailboxRecv()
-		if err != nil {
-			continue
-		}
-		if notif.Code == hid.InputEventCode {
-			hidCh <- struct{}{}
-		}
-	}
+// decodeHIDNotify decodes a ProtoHIDNotify uring message. The message
+// carries no payload — it's a wake-up signal to drain the shared completion
+// ring. Returns a struct{} sentinel.
+func decodeHIDNotify(msg *ipc.UringIPCMsg) any {
+	return struct{}{}
 }
 
 // wmEventLoop receives typed WM messages from the uring Dispatcher (wmCh)
-// and HID wake-up signals from the mailbox recv goroutine (hidCh).
-// It replaces the old mailboxLoop that handled everything.
-func wmEventLoop(wmCh <-chan any, hidCh <-chan struct{}, inputRing *hid.CompletionRing) {
+// and HID wake-up signals from the uring Dispatcher (hidCh).
+func wmEventLoop(wmCh <-chan any, hidCh <-chan any, inputRing *hid.CompletionRing) {
+	sys.UartWriteString("[rachel:wm] event loop started\n")
 	var events [64]hid.HIDEvent
 	var km input.Keymap
 	var keyHeld [256]bool
@@ -698,7 +689,7 @@ func wmEventLoop(wmCh <-chan any, hidCh <-chan struct{}, inputRing *hid.Completi
 				// If client didn't specify a window size, skip backing store setup.
 				// (linux shepherd draws directly to framebuffer, doesn't need one.)
 				if msg.Width <= 0 || msg.Height <= 0 {
-					fmt.Printf("[rachel:wm] SID %d: no window size, skipping backing store\n", senderSID)
+					sys.UartWriteString("[rachel:wm] no window size, skipping backing store\n")
 					changeFocus(senderSID)
 					continue
 				}
@@ -736,7 +727,7 @@ func wmEventLoop(wmCh <-chan any, hidCh <-chan struct{}, inputRing *hid.Completi
 				bsPages := (bsBytes + 4095) / 4096
 				bsSlice, allocErr := mem.AllocPagesSlice(bsPages, mem.PageShared)
 				if allocErr != nil {
-					fmt.Printf("[rachel:wm] SID %d: backing store alloc failed: %v\n", senderSID, allocErr)
+					sys.UartWriteDirectString("[rachel:wm] backing store alloc failed\n")
 					continue
 				}
 				ta.backingStore = bsSlice
@@ -745,14 +736,14 @@ func wmEventLoop(wmCh <-chan any, hidCh <-chan struct{}, inputRing *hid.Completi
 				bsVA := uintptr(unsafe.Pointer(&bsSlice[0]))
 				clientVA, shareErr := sys.SharePagesWithTarget(senderSID, bsVA, bsPages)
 				if shareErr != nil {
-					fmt.Printf("[rachel:wm] SID %d: share pages failed: %v\n", senderSID, shareErr)
+					sys.UartWriteDirectString("[rachel:wm] share pages failed\n")
 					continue
 				}
 
-				fmt.Printf("[rachel:wm] SID %d: backing store %dx%d (app %dx%d) at (%d,%d), clientVA=0x%x\n",
-					senderSID, totalW, totalH, ta.appWidth, ta.appHeight, ta.x, ta.y, clientVA)
-
 				// Send BackingStoreReady to client via uring.
+				// NOTE: Do NOT use fmt.Printf before sending — it delegates to linux
+				// (Write syscall), but linux may be blocked waiting for this very
+				// BackingStoreReady, causing a deadlock.
 				bsr := wm.EncodeBackingStoreReady(&wm.BackingStoreReady{
 					BackingStoreAddr: int64(clientVA),
 					TotalWidth:       int32(totalW),
@@ -766,8 +757,10 @@ func wmEventLoop(wmCh <-chan any, hidCh <-chan struct{}, inputRing *hid.Completi
 					AppY:             ta.y,
 				})
 				if err := uring.Send(senderSID, &bsr); err != nil {
-					fmt.Fprintf(os.Stderr, "[rachel:wm] SID %d: uring.Send BackingStoreReady failed: %v\n", senderSID, err)
+					sys.UartWriteDirectString("[rachel:wm] uring.Send BackingStoreReady failed\n")
 				}
+				sys.UartWriteString(fmt.Sprintf("[rachel:wm] SID %d: backing store %dx%d at (%d,%d)\n",
+					senderSID, totalW, totalH, ta.x, ta.y))
 
 				// Grant focus to this new shepherd.
 				changeFocus(senderSID)
@@ -930,15 +923,15 @@ func main() {
 		})
 		sys.UartWriteString("[rachel] font requests wired to fontsvc callbacks\n")
 	}
+	// Wire HID input notifications into the Dispatcher — kernel sends
+	// ProtoHIDNotify after pushing events to the shared completion ring.
+	hidCh := make(chan any, 4)
+	disp.On(ipc.ProtoHIDNotify, decodeHIDNotify, hidCh)
+
 	disp.Start()
 	runtime.Gosched()
 
-	// Start HID mailbox receiver — HID input events still arrive via mailbox.
-	hidCh := make(chan struct{}, 4)
-	go hidMailboxRecvLoop(hidCh)
-	runtime.Gosched()
-
-	// Start WM event loop — receives typed messages from uring Dispatcher + HID signals.
+	// Start WM event loop — receives typed messages from uring Dispatcher.
 	go wmEventLoop(wmCh, hidCh, inputRing)
 	runtime.Gosched()
 

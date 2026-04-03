@@ -13,6 +13,18 @@ import (
 	"unsafe"
 )
 
+// entersyscallblock tells the Go runtime "I know I'm going to block."
+// Unlike entersyscall (used by Syscall6), this immediately calls handoffp()
+// which hands the P to another M via startm(). This ensures goroutines
+// parked on channels (e.g. wmEventLoop) can run while we're blocked in
+// the kernel waiting for a uring message.
+//
+//go:linkname runtime_entersyscallblock runtime.entersyscallblock
+func runtime_entersyscallblock()
+
+//go:linkname runtime_exitsyscall runtime.exitsyscall
+func runtime_exitsyscall()
+
 // Connect establishes a connection to a target shepherd's uring ring by uring ID.
 // Returns a handle (small integer) for use with Release.
 //
@@ -52,14 +64,19 @@ func Send(targetSID int, msg *ipc.UringIPCMsg) error {
 // Recv blocks until a message arrives on the caller's own uring ring.
 // The received message is written into msg.
 //
-// Uses Syscall (P released) because this is a blocking operation.
-// When the thread wakes via exitsyscall, it actively acquires the P.
+// Uses entersyscallblock (not entersyscall) because this is a known-blocking
+// operation. entersyscallblock immediately hands off the P via handoffp() →
+// startm(), so other goroutines (e.g. event loops parked on channels) can
+// run while this M is blocked in the kernel. When the kernel wakes us
+// (priority queue, SVC rewind), exitsyscall reacquires the P.
 func Recv(msg *ipc.UringIPCMsg) error {
 	// Touch the buffer to ensure demand-fault before kernel writes.
 	*(*byte)(unsafe.Pointer(msg)) = 0
-	r1, _, errno := syscall.Syscall6(mazzy.SysUringRecv,
+	runtime_entersyscallblock()
+	r1, _, errno := syscall.RawSyscall6(mazzy.SysUringRecv,
 		uintptr(unsafe.Pointer(msg)),
 		0, 0, 0, 0, 0)
+	runtime_exitsyscall()
 	if errno != 0 {
 		return errno
 	}

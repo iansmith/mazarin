@@ -27,6 +27,9 @@ const (
 	ProtoFSResponse      uint32 = 5 // Filesystem syscall response (fs shepherd → caller)
 	ProtoFontRequest     uint32 = 6 // Font request (shepherd → fontsvc)
 	ProtoFontResponse    uint32 = 7 // Font response (fontsvc → shepherd)
+	ProtoHIDNotify       uint32 = 8 // HID input event notification (kernel → WM)
+	ProtoFSDelegateReq   uint32 = 9  // Delegated FS syscall request (kernel → handler)
+	ProtoFSDelegateResp  uint32 = 10 // Delegated FS syscall response (handler → caller via kernel)
 )
 
 // UringIPCRingHeader is the metadata at offset 0 of the ring's first page.

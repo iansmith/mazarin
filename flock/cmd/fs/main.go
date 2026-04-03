@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
 	"mazzy/shared/blockdev"
 	"mazzy/shared/constants"
 	"mazzy/shared/fs/ext2"
 	"mazzy/shared/hid"
 	"mazzy/shared/iouring"
+	uringipc "mazzy/shared/ipc"
 	"mazzy/shared/sysid"
 	"os"
 	"strings"
@@ -193,12 +195,17 @@ func main() {
 	mt := &mountTable{root: fsys, tmpFS: tmpFS}
 
 	// 5. Register as delegate handler for LoadFile and ReadFilePages.
-	delegateCh, err := sys.HandleSyscalls(sysid.LoadFile, sysid.ReadFilePages)
+	// Requests arrive via uring Dispatcher (ProtoFSDelegateReq).
+	err = sys.RegisterSyscallHandlers(sysid.LoadFile, sysid.ReadFilePages)
 	if err != nil {
-		fmt.Printf("[fs] HandleSyscalls failed: %v\n", err)
+		fmt.Printf("[fs] RegisterSyscallHandlers failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("[fs] registered as LoadFile + ReadFilePages delegate")
+	fsDelegateCh := make(chan any, 8)
+	fsDisp := uring.NewDispatcher()
+	fsDisp.On(uringipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, fsDelegateCh)
+	fsDisp.Start()
+	fmt.Println("[fs] registered as LoadFile + ReadFilePages delegate (uring)")
 
 	// 5. Signal readiness — delegate handler is running, serve loop
 	// will start momentarily. Shepherds waiting on fs can proceed.
@@ -217,7 +224,11 @@ func main() {
 	fmt.Println("[fs] entering serve loop")
 	for {
 		select {
-		case req := <-delegateCh:
+		case raw := <-fsDelegateCh:
+			req, ok := raw.(sys.SyscallRequest)
+			if !ok {
+				continue
+			}
 			switch req.SysID {
 			case sysid.LoadFile:
 				handleLoadFile(mt, &req)

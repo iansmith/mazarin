@@ -370,6 +370,71 @@ func KernelWriteToRing(targetSID int16, msg *ipc.UringIPCMsg) (int64, uintptr) {
 	return UringSendKernel(-1, targetSID, uintptr(unsafe.Pointer(msg)))
 }
 
+// KernelWriteToRingFromIRQ is a nosplit-safe version of KernelWriteToRing
+// for use from IRQ top-half handlers. Instead of returning the woken thread's
+// context pointer, it sets the priorityWakePending flag so the IRQ return
+// path triggers an immediate context switch.
+//
+// MUST be called with IRQs already disabled (top-half context).
+// The caller MUST already hold no locks (schedulerLock is acquired internally).
+//
+//go:nosplit
+//go:noinline
+func KernelWriteToRingFromIRQ(targetSID int16, msg *ipc.UringIPCMsg) {
+	if targetSID < 0 || int(targetSID) >= proc.MaxShepherds {
+		return
+	}
+
+	slot := &uringIPCSlots[targetSID]
+	if slot.OwnerSID != targetSID || slot.KVA[0] == 0 {
+		return
+	}
+
+	hdr := ringHeader(slot)
+
+	acquireProducerLock(hdr)
+
+	// Check ring full
+	head := atomic.LoadUint32(&hdr.Head)
+	tail := atomic.LoadUint32(&hdr.Tail)
+	if tail-head >= ipc.UringIPCCapacity {
+		releaseProducerLock(hdr)
+		return // drop message if ring full
+	}
+
+	// Write message to slot
+	slotIdx := tail & ipc.UringIPCMask
+	dstKVA := ringSlotKVA(slot, slotIdx)
+	src := (*[ipc.UringIPCSlotSize]byte)(unsafe.Pointer(msg))
+	dst := (*[ipc.UringIPCSlotSize]byte)(unsafe.Pointer(dstKVA))
+	*dst = *src
+
+	// Advance tail
+	atomic.StoreUint32(&hdr.Tail, tail+1)
+	releaseProducerLock(hdr)
+
+	// Wake blocked receiver if any
+	schedulerLock.Lock()
+
+	if slot.BlockedTID >= 0 {
+		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
+		if t != nil && t.State == ThreadBlockedUringRecv {
+			t.State = ThreadReady
+			t.MailboxWoken = true
+			slot.BlockedTID = -1
+			slot.BlockedPtr = 0
+			t.Context.RewindToSyscall()
+			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+			enqueueReadyPrioritySchedLockHeld(t)
+			atomic.StoreUint32(&priorityWakePending, 1)
+			asm.Dsb()
+		}
+	}
+
+	schedulerLock.Unlock()
+}
+
 // ============================================================================
 // Ring Read (Consumer Path — Blocking)
 // ============================================================================

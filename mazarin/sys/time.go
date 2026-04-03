@@ -44,6 +44,23 @@ func Syscall(num, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, errno syscall
 	return syscall.Syscall6(num, a1, a2, a3, a4, a5, a6)
 }
 
+// BlockingSyscall makes a syscall with 6 arguments using entersyscallblock.
+// Use for known-blocking kernel calls (e.g. AttrWaitDirty, uring Recv) where
+// the thread will definitely block. Unlike Syscall, this immediately hands off
+// the P via handoffp() so other goroutines can run without waiting for sysmon.
+func BlockingSyscall(num, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, errno syscall.Errno) {
+	runtime_entersyscallblock()
+	r1, r2, errno = syscall.RawSyscall6(num, a1, a2, a3, a4, a5, a6)
+	runtime_exitsyscall()
+	return
+}
+
+//go:linkname runtime_entersyscallblock runtime.entersyscallblock
+func runtime_entersyscallblock()
+
+//go:linkname runtime_exitsyscall runtime.exitsyscall
+func runtime_exitsyscall()
+
 // RawWrite writes a single byte to the given fd using RawSyscall (no P release).
 // Used for diagnostic markers that must not disturb Go runtime scheduling.
 var rawWriteBuf [1]byte

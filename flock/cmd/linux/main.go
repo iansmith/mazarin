@@ -155,14 +155,19 @@ type delegateMsg struct {
 	data []byte
 }
 
-// startDelegateHandler runs a goroutine that processes delegated syscalls.
+// startUringDelegateHandler runs a goroutine that processes delegated syscalls
+// received via uring Dispatcher (ProtoFSDelegateReq → sys.SyscallRequest).
 // Write to fd 1/2 (stdout/stderr) is handled as console output: echo to UART,
 // reply immediately, and forward text to the main goroutine for display.
 // All other syscalls (including Write to fd 3+) are routed to the syscallHandler.
-func startDelegateHandler(delegateCh <-chan sys.SyscallRequest, handler *syscallHandler, suppressSerialCopy bool) <-chan delegateMsg {
+func startUringDelegateHandler(delegateCh <-chan any, handler *syscallHandler, suppressSerialCopy bool) <-chan delegateMsg {
 	dataCh := make(chan delegateMsg, 32)
 	go func() {
-		for req := range delegateCh {
+		for raw := range delegateCh {
+			req, ok := raw.(sys.SyscallRequest)
+			if !ok {
+				continue
+			}
 			// Write to stdout/stderr → console display path.
 			if req.SysID == sysid.Write {
 				fd := byte(req.Arg0())
@@ -219,12 +224,14 @@ func addCRBeforeLF(data []byte) []byte {
 	return out
 }
 
-// startUringDispatcher sets up the uring Dispatcher for WM and font messages.
-// WM messages go to wmCh; font responses go to fc.ReplyCh.
-func startUringDispatcher(fc *fontcache.FontCache) {
+// startUringDispatcher sets up the uring Dispatcher for WM, font, and
+// delegated syscall messages. WM messages go to wmCh; font responses go
+// to fc.ReplyCh; delegated syscall requests go to delegateCh.
+func startUringDispatcher(fc *fontcache.FontCache, delegateCh chan any) {
 	d := uring.NewDispatcher()
 	d.On(ipc.ProtoShepherdNotify, wm.DecodeShepherdNotify, wmCh)
 	d.On(ipc.ProtoFontResponse, wm.DecodeFontResponse, fc.ReplyCh)
+	d.On(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, delegateCh)
 	d.Start()
 }
 
@@ -287,7 +294,8 @@ func main() {
 	fsSID := sys.MustGetShepherdByName("fs")
 	fc := fontcache.New(rachelSID)
 	ipcClient := newFsIPCClient(fsSID)
-	startUringDispatcher(fc)
+	delegateCh := make(chan any, 8)
+	startUringDispatcher(fc, delegateCh)
 	go fsMailboxRecvLoop(ipcClient)
 	ipcClient.sendInit()
 	fonts := &mancini.FontConfig{
@@ -437,7 +445,9 @@ func main() {
 
 	handler := newSyscallHandler(ipcClient)
 
-	delegateCh, delegateErr := sys.HandleSyscalls(
+	// Register as delegate handler — requests now arrive via uring Dispatcher
+	// on delegateCh (ProtoFSDelegateReq) instead of the old delegateRecvLoop.
+	delegateErr := sys.RegisterSyscallHandlers(
 		sysid.Write, sysid.Read, sysid.Openat, sysid.Close,
 		sysid.Lseek, sysid.Fstat, sysid.Fstatat,
 		sysid.Mkdirat, sysid.Unlinkat, sysid.Renameat,
@@ -448,14 +458,14 @@ func main() {
 		sysid.Statfs, sysid.Fstatfs, sysid.Fsync, sysid.Fdatasync,
 	)
 	if delegateErr != nil {
-		sys.UartWriteString(fmt.Sprintf("[linux] HandleSyscalls failed: %v\n", delegateErr))
+		sys.UartWriteString(fmt.Sprintf("[linux] RegisterSyscallHandlers failed: %v\n", delegateErr))
 	}
 
 	// Delegate handler goroutine — replies immediately to unblock callers,
 	// forwards text data to delegateDataCh for the main goroutine.
 	var delegateDataCh <-chan delegateMsg
 	if delegateErr == nil {
-		delegateDataCh = startDelegateHandler(delegateCh, handler, con.suppressSerialCopy)
+		delegateDataCh = startUringDelegateHandler(delegateCh, handler, con.suppressSerialCopy)
 	}
 
 	// 10. Event loop — main goroutine owns console state + redraw.
@@ -518,6 +528,10 @@ func main() {
 			textDirty = true
 			linuxSerialEvts++
 			drainSerial()
+			if textDirty {
+				textDirty = false
+				redraw()
+			}
 
 		case msg := <-delegateDataCh:
 			for _, b := range msg.data {
@@ -526,6 +540,10 @@ func main() {
 			textDirty = true
 			linuxDelegateEvts++
 			drainDelegates()
+			if textDirty {
+				textDirty = false
+				redraw()
+			}
 
 		case <-dirtyCh:
 			linuxDirtyTicks++
