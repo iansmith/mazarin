@@ -63,13 +63,19 @@ func routeInputEvent(ev hid.HIDEvent, class int) {
 	wmSID := atomic.LoadInt32(&windowManagerSID)
 	focusSID := atomic.LoadInt32(&inputFocusSID[class])
 
-	if wmSID >= 0 && wmSID < int32(proc.MaxShepherds) {
-		ringPush(&inputQueues[wmSID][class], ev)
+	if wmSID >= 0 {
+		wmSlot := proc.ShepherdIdToSlot(proc.ShepherdId(wmSID))
+		if wmSlot != proc.ShepherdSlotInvalid {
+			ringPush(&inputQueues[wmSlot][class], ev)
+		}
 	}
 
 	// Push to focused shepherd only if different from WM
-	if focusSID >= 0 && focusSID < int32(proc.MaxShepherds) && focusSID != wmSID {
-		ringPush(&inputQueues[focusSID][class], ev)
+	if focusSID >= 0 && focusSID != wmSID {
+		focusSlot := proc.ShepherdIdToSlot(proc.ShepherdId(focusSID))
+		if focusSlot != proc.ShepherdSlotInvalid {
+			ringPush(&inputQueues[focusSlot][class], ev)
+		}
 	}
 }
 
@@ -82,22 +88,28 @@ func wakeInputConsumers(class int) {
 	wmSID := atomic.LoadInt32(&windowManagerSID)
 	focusSID := atomic.LoadInt32(&inputFocusSID[class])
 
-	if wmSID >= 0 && wmSID < int32(proc.MaxShepherds) {
-		wakeInputBlockedThread(int(wmSID), class)
+	if wmSID >= 0 {
+		wmSlot := proc.ShepherdIdToSlot(proc.ShepherdId(wmSID))
+		if wmSlot != proc.ShepherdSlotInvalid {
+			wakeInputBlockedThread(wmSlot, class)
+		}
 	}
-	if focusSID >= 0 && focusSID < int32(proc.MaxShepherds) && focusSID != wmSID {
-		wakeInputBlockedThread(int(focusSID), class)
+	if focusSID >= 0 && focusSID != wmSID {
+		focusSlot := proc.ShepherdIdToSlot(proc.ShepherdId(focusSID))
+		if focusSlot != proc.ShepherdSlotInvalid {
+			wakeInputBlockedThread(focusSlot, class)
+		}
 	}
 }
 
-// wakeInputBlockedThread wakes a thread blocked on inputBlockedTID[sid][class].
+// wakeInputBlockedThread wakes a thread blocked on inputBlockedTID[slot][class].
 // Follows the same pattern as WakeSlotForIRQ: acquires schedulerLock, rewinds PC,
 // restores args, enqueues to ready queue.
 //
 //go:nosplit
 //go:noinline
-func wakeInputBlockedThread(sid, class int) {
-	tid := inputBlockedTID[sid][class]
+func wakeInputBlockedThread(slot proc.ShepherdSlot, class int) {
+	tid := inputBlockedTID[slot][class]
 	if tid < 0 {
 		return
 	}
@@ -106,25 +118,25 @@ func wakeInputBlockedThread(sid, class int) {
 	schedulerLock.Lock()
 
 	// Re-check after lock
-	tid = inputBlockedTID[sid][class]
+	tid = inputBlockedTID[slot][class]
 	if tid < 0 {
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
 		return
 	}
 
-	t := (*Thread)(unsafe.Pointer(inputBlockedPtr[sid][class]))
+	t := (*Thread)(unsafe.Pointer(inputBlockedPtr[slot][class]))
 	if t == nil || t.State != ThreadBlockedInputEvent {
-		inputBlockedTID[sid][class] = -1
-		inputBlockedPtr[sid][class] = 0
+		inputBlockedTID[slot][class] = -1
+		inputBlockedPtr[slot][class] = 0
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
 		return
 	}
 
 	t.State = ThreadReady
-	inputBlockedTID[sid][class] = -1
-	inputBlockedPtr[sid][class] = 0
+	inputBlockedTID[slot][class] = -1
+	inputBlockedPtr[slot][class] = 0
 
 	// Rewind so the SVC re-executes SyscallWaitInputEvent on resume
 	t.Context.RewindToSyscall()
@@ -142,7 +154,7 @@ func wakeInputBlockedThread(sid, class int) {
 //
 //go:nosplit
 //go:noinline
-func BlockOnInputQueue(sid int32, class int) uintptr {
+func BlockOnInputQueue(slot proc.ShepherdSlot, class int) uintptr {
 	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
@@ -180,7 +192,7 @@ func BlockOnInputQueue(sid int32, class int) uintptr {
 	}
 
 	// Clear any previous blocked thread on this queue (M migration)
-	prev := (*Thread)(unsafe.Pointer(inputBlockedPtr[sid][class]))
+	prev := (*Thread)(unsafe.Pointer(inputBlockedPtr[slot][class]))
 	if prev != nil && prev.State == ThreadBlockedInputEvent {
 		prev.State = ThreadReady
 		enqueueReadySchedLockHeld(prev)
@@ -188,10 +200,10 @@ func BlockOnInputQueue(sid int32, class int) uintptr {
 
 	// Commit: block current thread
 	t.State = ThreadBlockedInputEvent
-	t.SoftIRQSlotArg = uint64(class)  // Save deviceClass for arg restore
-	t.SoftIRQSyscallNum = 0x102E      // SysWaitInputEvent
-	inputBlockedTID[sid][class] = t.TID
-	inputBlockedPtr[sid][class] = uintptr(unsafe.Pointer(t))
+	t.SoftIRQSlotArg = uint64(class) // Save deviceClass for arg restore
+	t.SoftIRQSyscallNum = 0x102E     // SysWaitInputEvent
+	inputBlockedTID[slot][class] = t.TID
+	inputBlockedPtr[slot][class] = uintptr(unsafe.Pointer(t))
 
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
@@ -199,52 +211,58 @@ func BlockOnInputQueue(sid int32, class int) uintptr {
 	return uintptr(unsafe.Pointer(&next.Context))
 }
 
-// DrainInputQueue drains events from inputQueues[sid][class] into buf.
+// DrainInputQueue drains events from inputQueues[slot][class] into buf.
 // Returns the number of events drained.
 //
 //go:noinline
-func DrainInputQueue(sid int32, class int, buf []hid.HIDEvent, max int) int {
-	if sid < 0 || sid >= int32(proc.MaxShepherds) {
+func DrainInputQueue(slot proc.ShepherdSlot, class int, buf []hid.HIDEvent, max int) int {
+	if slot < 0 || int(slot) >= proc.MaxShepherds {
 		return 0
 	}
 	if class < 0 || class >= hid.InputClassCount {
 		return 0
 	}
-	return RingDrain(&inputQueues[sid][class], buf, max)
+	return RingDrain(&inputQueues[slot][class], buf, max)
 }
 
 // CleanupInputFocusForShepherd clears focus and WM state for a dying shepherd.
 // Called from TerminateShepherd alongside CleanupSoftIRQSlotsForShepherd.
-func CleanupInputFocusForShepherd(shepherdID int16) {
-	sid := int32(shepherdID)
+// slot is the shepherd list index (for array access); sid is the numeric SID
+// (for comparing against inputFocusSID and windowManagerSID stored values).
+func CleanupInputFocusForShepherd(slot proc.ShepherdSlot, sid proc.ShepherdId) {
+	sidInt32 := int32(sid)
 
-	// Clear any focus this shepherd held
+	// Clear any focus this shepherd held (SID comparison against stored values)
 	for c := 0; c < hid.InputClassCount; c++ {
-		atomic.CompareAndSwapInt32(&inputFocusSID[c], sid, -1)
+		atomic.CompareAndSwapInt32(&inputFocusSID[c], sidInt32, -1)
 	}
 
 	// If this shepherd was window manager, clear it
-	atomic.CompareAndSwapInt32(&windowManagerSID, sid, -1)
+	atomic.CompareAndSwapInt32(&windowManagerSID, sidInt32, -1)
 
-	// Wake any threads blocked on this shepherd's input queues
+	if slot < 0 || int(slot) >= proc.MaxShepherds {
+		return
+	}
+
+	// Wake any threads blocked on this shepherd's input queues (slot-indexed)
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 	for c := 0; c < hid.InputClassCount; c++ {
-		if inputBlockedTID[sid][c] >= 0 {
-			t := (*Thread)(unsafe.Pointer(inputBlockedPtr[sid][c]))
+		if inputBlockedTID[slot][c] >= 0 {
+			t := (*Thread)(unsafe.Pointer(inputBlockedPtr[slot][c]))
 			if t != nil && t.State == ThreadBlockedInputEvent {
 				t.State = ThreadReady
 				enqueueReadySchedLockHeld(t)
 			}
-			inputBlockedTID[sid][c] = -1
-			inputBlockedPtr[sid][c] = 0
+			inputBlockedTID[slot][c] = -1
+			inputBlockedPtr[slot][c] = 0
 		}
 	}
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 
 	serial.RawUARTPuts("[InputFocus] cleaned for shepherd ")
-	serial.RawUARTDecimal(uint64(shepherdID))
+	serial.RawUARTDecimal(uint64(sid))
 	serial.RawUARTPuts("\r\n")
 }
 
@@ -267,7 +285,7 @@ func setInputFocusKernel(target int32, class int) int64 {
 	if class < 0 || class >= hid.InputClassCount {
 		return -22 // EINVAL
 	}
-	if target < 0 || target >= int32(proc.MaxShepherds) {
+	if target < 0 || proc.FindShepherdBySID(proc.ShepherdId(target)) == nil {
 		return -22 // EINVAL
 	}
 	atomic.StoreInt32(&inputFocusSID[class], target)

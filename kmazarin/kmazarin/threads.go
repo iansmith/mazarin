@@ -4,6 +4,7 @@ package main
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/device/virtio/rng"
 	"mazzy/kmazarin/ds"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
@@ -563,7 +564,6 @@ var staticDeadlineQueue ds.StaticOrderedList
 
 // ID allocator backing arrays - statically allocated
 var threadIdStackData [threadArraySize]ThreadId // Backing array for thread ID allocator
-var shepherdIdStackData [proc.MaxShepherds]proc.ShepherdId // Backing array for shepherd ID allocator
 
 // nextKernelThreadId is a counter for allocating kernel thread IDs (0 to ReservedKernelThreads-1).
 // Kernel threads are identified by PID == 0 (the kernel shepherd) and get IDs from this counter.
@@ -591,7 +591,6 @@ var thread0PendingDeadline uint64
 
 // ID allocators - initialized in InitIdAllocators()
 var threadIdAllocator ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
-var shepherdIdAllocator ds.StaticAllocator[proc.ShepherdId] // Manages unique shepherd IDs (0..MaxShepherds-1)
 
 // ========== Scheduler Lock ==========
 
@@ -804,10 +803,6 @@ func InitIdAllocators() {
 	// IDs 0..ReservedKernelThreads-1 are for kernel threads (not in shuffle pool)
 	// IDs ReservedKernelThreads..MaxThreads-1 are shuffled for userspace
 	threadIdAllocator.InitWithReserved(threadIdStackData[:], ReservedKernelThreads)
-
-	// Initialize shepherd ID allocator with ID 0 reserved for kernel
-	// IDs 1..MaxShepherds-1 are shuffled and available for Acquire()
-	shepherdIdAllocator.InitWithReserved(shepherdIdStackData[:], 1)
 
 	// Reset kernel thread counter (starts at 0, used by AcquireKernelThreadId)
 	nextKernelThreadId = 0
@@ -2153,7 +2148,7 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	// protected by IRQ disabling (we're in SVC handler context).
 	terminateShepherdDelegateCleanup(int16(pid))
 	CleanupSoftIRQSlotsForShepherd(int16(pid))
-	CleanupInputFocusForShepherd(int16(pid))
+	CleanupInputFocusForShepherd(proc.ShepherdIdToSlot(pid), pid)
 	CleanupMailboxForShepherd(int16(pid))
 	return terminateShepherdImpl(&NormalSchedulerFunc, pid, status)
 }
@@ -2321,18 +2316,27 @@ func releaseShepherdSchedLockHeld(shepherdIdx int16, pid ShepherdId) {
 
 	// Zero the shepherd struct for security (prevent info leaks)
 	proc.ShepherdListData[shepherdIdx] = proc.Shepherd{}
+}
 
-	// Release the shepherd ID back to the allocator for immediate reuse.
-	// Because StaticAllocator uses LIFO (stack), this ID will be the next
-	// one allocated, enabling aggressive reuse to find bugs.
-	shepherdIdAllocator.Release(pid)
+// allocateShepherdSID generates a random non-kernel shepherd SID using the VirtIO RNG.
+// Bit layout: bit 14 = 1 (non-kernel marker), bits 13–2 = 12 random bits, bits 1–0 = 00.
+// Valid range: 0x4000–0x7FFC (positive int16, never conflicts with kernel reserved 0–3 or -1).
+// Does NOT check for collision; caller must verify uniqueness under the scheduler lock.
+// Panics if the RNG is unavailable (should never happen after boot initialisation).
+func allocateShepherdSID() proc.ShepherdId {
+	var buf [2]byte
+	if rng.Get(buf[:]) == 0 {
+		panic("allocateShepherdSID: VirtIO RNG not available")
+	}
+	raw := uint16(buf[0]) | uint16(buf[1])<<8
+	// Set bit 14 (non-kernel marker), place 12 random bits in bits 13–2, leave bits 1–0 = 0.
+	return proc.ShepherdId(int16((1 << 14) | ((raw & 0xFFF) << 2)))
 }
 
 // CreateUserspaceThread allocates a new thread for a userspace process (like a shepherd).
 // entryPoint: the PC to start executing at (ELR_EL1)
 // stackPtr: the user stack pointer (SP_EL0)
 // pageTableL0PA: physical address of the process's L0 page table
-// shepherdId: the shepherd (process) ID, used as ASID for TLB tagging
 // Returns the TID (thread ID) of the new thread.
 //
 //go:nosplit
@@ -2348,17 +2352,26 @@ func GetShepherdByPID(pid ShepherdId) *Shepherd {
 	return shepherdList.FindById(int32(pid))
 }
 
-// createUserspaceThreadImpl is the internal implementation with sf for testing
-//
-//go:nosplit
+// createUserspaceThreadImpl is the internal implementation with sf for testing.
+// NOT nosplit: calls allocateShepherdSID which does RNG I/O before the critical section.
 func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16 {
+	// Generate SID before acquiring the lock: rng.Get does I/O and is not nosplit-safe.
+	shepherdId := allocateShepherdSID()
+
 	// BEGIN CRITICAL SECTION - protect all scheduling data structures:
-	// shepherdIdAllocator, shepherdList, threadList, readyQueue
+	// shepherdList, threadList, readyQueue
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	// Allocate shepherd ID and shepherd entry inside the critical section
-	shepherdId := shepherdIdAllocator.Acquire()
+	// Collision check under lock (probability ~0.8%); retry outside if needed.
+	for proc.FindShepherdBySID(shepherdId) != nil {
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
+		shepherdId = allocateShepherdSID()
+		savedDAIF = sf.DisableAndSaveDAIF()
+		schedulerLock.Lock()
+	}
+
 	_, p := shepherdList.Allocate()
 	p.PID = shepherdId
 	p.PageTableL0PA = pageTableL0PA

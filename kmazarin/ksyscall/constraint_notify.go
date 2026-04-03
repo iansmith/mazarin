@@ -32,7 +32,7 @@ type NotifyQueue struct {
 }
 
 // notifyQueues is the per-shepherd notification queue array.
-// Indexed by ShepherdId (0 to MaxShepherds-1).
+// Indexed by ShepherdSlot (0 to MaxShepherds-1).
 var notifyQueues [proc.MaxShepherds]NotifyQueue
 
 // initNotifyQueues initializes all notification queues.
@@ -51,12 +51,12 @@ func initNotifyQueues() {
 // Nosplit-safe: only ring buffer operations and array writes.
 //
 //go:nosplit
-func (mgr *KernelAttrManager) enqueueNotificationCollectWake(slot uint16, owner uint16) {
-	pid := int(owner)
-	if pid < 0 || pid >= proc.MaxShepherds {
+func (mgr *KernelAttrManager) enqueueNotificationCollectWake(attrSlot uint16, owner uint16) {
+	shepherdSlot := proc.ShepherdIdToSlot(proc.ShepherdId(owner))
+	if shepherdSlot == proc.ShepherdSlotInvalid {
 		return
 	}
-	q := &notifyQueues[pid]
+	q := &notifyQueues[shepherdSlot]
 
 	if q.Count >= notifyQueueSize {
 		q.Overflowed = true
@@ -67,12 +67,12 @@ func (mgr *KernelAttrManager) enqueueNotificationCollectWake(slot uint16, owner 
 		head := int(q.Head)
 		for i := 0; i < count; i++ {
 			idx := (head - count + i) & (notifyQueueSize - 1)
-			if q.Slots[idx] == slot {
+			if q.Slots[idx] == attrSlot {
 				// Slot already pending, but still check for wake.
 				goto checkWake
 			}
 		}
-		q.Slots[head&(notifyQueueSize-1)] = slot
+		q.Slots[head&(notifyQueueSize-1)] = attrSlot
 		q.Head = uint16((head + 1) & (notifyQueueSize - 1))
 		q.Count++
 	}
@@ -101,11 +101,11 @@ checkWake:
 
 // drainNotifyQueue copies pending slot numbers to a kernel buffer and resets
 // the queue. Returns the count of slots drained, or -1 if overflow occurred.
-func drainNotifyQueue(pid int) ([]uint16, int) {
-	if pid < 0 || pid >= proc.MaxShepherds {
+func drainNotifyQueue(slot proc.ShepherdSlot) ([]uint16, int) {
+	if slot < 0 || int(slot) >= proc.MaxShepherds {
 		return nil, 0
 	}
-	q := &notifyQueues[pid]
+	q := &notifyQueues[slot]
 
 	if q.Overflowed {
 		q.Count = 0
@@ -181,8 +181,8 @@ func SyscallAttrWaitDirty(resultBufPtr, maxSlots, _, _, _, _ uint64) int64 {
 	}
 
 	pid, _ := getCurrentThreadSIDAndTID()
-	shepherdSID := int(pid)
-	if shepherdSID < 0 || shepherdSID >= proc.MaxShepherds {
+	shepherdSlot := proc.ShepherdIdToSlot(pid)
+	if shepherdSlot == proc.ShepherdSlotInvalid {
 		return -22 // EINVAL
 	}
 
@@ -191,16 +191,16 @@ func SyscallAttrWaitDirty(resultBufPtr, maxSlots, _, _, _, _ uint64) int64 {
 	}
 
 	// Try to drain pending notifications.
-	slots, count := drainNotifyQueue(shepherdSID)
+	attrSlots, count := drainNotifyQueue(shepherdSlot)
 	if count == -1 {
 		return -1 // overflow — caller must re-scan all eager attrs
 	}
 	if count > 0 {
-		return writeSlotsToBuf(resultBufPtr, maxSlots, slots, count)
+		return writeSlotsToBuf(resultBufPtr, maxSlots, attrSlots, count)
 	}
 
 	// No notifications pending — block the thread.
-	q := &notifyQueues[shepherdSID]
+	q := &notifyQueues[shepherdSlot]
 	_, tid := getCurrentThreadSIDAndTID()
 	q.BlockedTID = int32(tid)
 
@@ -215,12 +215,12 @@ func SyscallAttrWaitDirty(resultBufPtr, maxSlots, _, _, _, _ uint64) int64 {
 	// No other thread to switch to — WFI loop until notifications arrive.
 	for {
 		enableIRQsAndWait()
-		slots, count = drainNotifyQueue(shepherdSID)
+		attrSlots, count = drainNotifyQueue(shepherdSlot)
 		if count == -1 {
 			return -1 // overflow
 		}
 		if count > 0 {
-			return writeSlotsToBuf(resultBufPtr, maxSlots, slots, count)
+			return writeSlotsToBuf(resultBufPtr, maxSlots, attrSlots, count)
 		}
 	}
 }

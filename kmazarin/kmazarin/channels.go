@@ -258,6 +258,20 @@ func getCurrentThreadSIDWrapper() int16 {
 	return int16(t.PID)
 }
 
+// getCurrentThreadSlotWrapper returns the shepherd list slot (ShepherdIdx) of the
+// currently running thread. Called via linkname from ksyscall package.
+// Returns -1 for kernel threads (no shepherd).
+//
+//go:nosplit
+//go:noinline
+func getCurrentThreadSlotWrapper() int16 {
+	t := GetCurrentThread()
+	if t == nil {
+		return -1
+	}
+	return t.ShepherdIdx
+}
+
 // dequeueKernelAsyncWrapper wraps DequeueKernelAsync for ksyscall linkname access.
 // The bundle type is duplicated in ksyscall, but the memory layout is identical.
 //

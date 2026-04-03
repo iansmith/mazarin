@@ -183,6 +183,9 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 			proc.ShepherdListData[i].SymbolTable = shepherdSymTable
 			proc.ShepherdListData[i].HighestVA = shepherdHighestVA
 			proc.ShepherdListData[i].Filename = "/" + req.Name + ".elf"
+			nameBytes := []byte(req.Name)
+			n := copy(proc.ShepherdListData[i].Name[:], nameBytes)
+			proc.ShepherdListData[i].NameLen = int16(n)
 			console.KPrintf("[RunShepherd] %s launched (TID=%d, PID=%d)\n",
 				req.Name, tid, proc.ShepherdListData[i].PID)
 			break

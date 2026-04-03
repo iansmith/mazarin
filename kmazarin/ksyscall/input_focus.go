@@ -2,6 +2,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/proc"
 	"mazzy/shared/hid"
 	"unsafe"
 )
@@ -66,11 +67,11 @@ func SyscallWaitInputEvent(deviceClass, bufPtr, _, _, _, _ uint64) int64 {
 		return -22 // EINVAL
 	}
 
-	sid := int32(getCurrentThreadSID())
+	slot := proc.ShepherdSlot(getCurrentThreadSlotWrapper())
 	events := &inputEventBufs[class]
 
 	// Non-blocking drain attempt
-	n := DrainInputQueue(sid, class, events[:], hid.MaxHIDEvents)
+	n := DrainInputQueue(slot, class, events[:], hid.MaxHIDEvents)
 	if n > 0 {
 		if err := writeInputEventReturn(bufPtr, events[:n], n, class); err != 0 {
 			return err
@@ -79,7 +80,7 @@ func SyscallWaitInputEvent(deviceClass, bufPtr, _, _, _, _ uint64) int64 {
 	}
 
 	// Blocking path: block this kernel thread on the input queue.
-	ctxPtr := BlockOnInputQueue(sid, class)
+	ctxPtr := BlockOnInputQueue(slot, class)
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 		return -11 // Value doesn't matter — overwritten by re-executed SVC
@@ -88,7 +89,7 @@ func SyscallWaitInputEvent(deviceClass, bufPtr, _, _, _, _ uint64) int64 {
 	// No other thread to switch to — WFI loop until events arrive.
 	for {
 		enableIRQsAndWait()
-		n = DrainInputQueue(sid, class, events[:], hid.MaxHIDEvents)
+		n = DrainInputQueue(slot, class, events[:], hid.MaxHIDEvents)
 		if n > 0 {
 			if err := writeInputEventReturn(bufPtr, events[:n], n, class); err != 0 {
 				return err

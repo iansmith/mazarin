@@ -8,9 +8,13 @@
 // can import proc freely.
 package proc
 
+import "mazzy/shared/constants"
 
 // MaxShepherds is the maximum number of shepherd processes (userspace programs).
 const MaxShepherds = 32
+
+// KernelSIDNone is the sentinel ShepherdId meaning "no shepherd" / "kernel thread".
+const KernelSIDNone = ShepherdId(0)
 
 // SignalNSIG is the number of signals (1-64 + sentinel), matching Linux _NSIG.
 const SignalNSIG = 65
@@ -27,6 +31,42 @@ type ShepherdSignalAction struct {
 // ShepherdId is a unique shepherd (userspace process) identifier (0-MaxShepherds-1).
 type ShepherdId int16
 
+// ShepherdSlot is a shepherd list index (0..MaxShepherds-1), separate from ShepherdId.
+// Used to index per-shepherd arrays in O(1). The slot for a shepherd is assigned at
+// launch and does not change, but is NOT semantically equal to the shepherd's SID.
+// (Currently SID == slot because SIDs are sequential, but this will change in Step 3.)
+type ShepherdSlot int16
+
+// ShepherdSlotInvalid represents an unassigned or not-found shepherd slot.
+const ShepherdSlotInvalid = ShepherdSlot(-1)
+
+// ShepherdIdToSlot returns the list slot for the shepherd with the given SID.
+// O(N) linear scan over ShepherdListData. Returns ShepherdSlotInvalid if not found.
+//
+//go:nosplit
+func ShepherdIdToSlot(pid ShepherdId) ShepherdSlot {
+	for i := 0; i < MaxShepherds; i++ {
+		if ShepherdListInUse[i] && ShepherdListData[i].PID == pid {
+			return ShepherdSlot(i)
+		}
+	}
+	return ShepherdSlotInvalid
+}
+
+// ShepherdSlotToId returns the ShepherdId of the shepherd at the given list slot.
+// Returns ShepherdId(0) if the slot is out of range or unoccupied.
+//
+//go:nosplit
+func ShepherdSlotToId(slot ShepherdSlot) ShepherdId {
+	if slot < 0 || int(slot) >= MaxShepherds {
+		return ShepherdId(0)
+	}
+	if !ShepherdListInUse[slot] {
+		return ShepherdId(0)
+	}
+	return ShepherdListData[slot].PID
+}
+
 // Shepherd represents a userspace process that runs Go code.
 // Each shepherd has its own address space and Go runtime.
 type Shepherd struct {
@@ -36,6 +76,12 @@ type Shepherd struct {
 	// Filename is the ELF filename used to launch this shepherd (e.g., "/rachel.elf").
 	// Stored at launch time for introspection via ShepherdInfo syscall.
 	Filename string
+
+	// Name is the TOML launch name for this shepherd (e.g., "rachel", "fs").
+	// Separate from Filename; used for name-based resolution in mazid.
+	// Fixed-size so it is safe to read from nosplit contexts.
+	Name    [constants.MaxShepherdNameLen]byte
+	NameLen int16
 
 	// Per-shepherd tick accounting — all thread ticks roll up here
 	TotalTicksRunning   uint64 // Cumulative ticks across all threads of this shepherd

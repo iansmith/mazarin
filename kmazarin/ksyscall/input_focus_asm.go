@@ -1,6 +1,7 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/proc"
 	"mazzy/shared/hid"
 	_ "unsafe" // for go:linkname
 )
@@ -11,12 +12,12 @@ import (
 // Returns context pointer of next thread, or 0.
 //
 //go:linkname BlockOnInputQueue main.BlockOnInputQueue
-func BlockOnInputQueue(sid int32, class int) uintptr
+func BlockOnInputQueue(slot proc.ShepherdSlot, class int) uintptr
 
 // DrainInputQueue drains events from a per-shepherd input queue.
 //
 //go:linkname DrainInputQueue main.DrainInputQueue
-func DrainInputQueue(sid int32, class int, buf []hid.HIDEvent, max int) int
+func DrainInputQueue(slot proc.ShepherdSlot, class int, buf []hid.HIDEvent, max int) int
 
 // RequestWindowManagerKernel atomically claims the WM role for a shepherd.
 // Returns true if successful.
@@ -33,3 +34,9 @@ func SetInputFocusKernel(target int32, class int) int64
 //
 //go:linkname GetWindowManagerSID main.GetWindowManagerSID
 func GetWindowManagerSID() int32
+
+// getCurrentThreadSlotWrapper returns the shepherd list slot of the current thread.
+// Returns -1 for kernel threads.
+//
+//go:linkname getCurrentThreadSlotWrapper main.getCurrentThreadSlotWrapper
+func getCurrentThreadSlotWrapper() int16

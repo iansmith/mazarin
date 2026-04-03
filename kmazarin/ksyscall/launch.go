@@ -210,6 +210,9 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 			proc.ShepherdListData[i].SymbolTable = shepherdSymTable
 			proc.ShepherdListData[i].HighestVA = shepherdHighestVA
 			proc.ShepherdListData[i].Filename = filename
+			nameBytes := []byte(name)
+			n := copy(proc.ShepherdListData[i].Name[:], nameBytes)
+			proc.ShepherdListData[i].NameLen = int16(n)
 			console.KPrintf("[Launch] cached %d symbols, highestVA=0x%X for shepherd %d\n",
 				len(shepherdSymTable), shepherdHighestVA, proc.ShepherdListData[i].PID)
 			break
