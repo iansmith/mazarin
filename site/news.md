@@ -6,6 +6,201 @@ author: iansmith
 
 # News
 
+## Apr 3, 2026
+
+**Uring IPC replaces mailbox.** The mailbox IPC system described in the
+Mar 20 update has been completely replaced with an io\_uring-style message
+passing architecture. This is not a refinement -- it is a new IPC
+subsystem that touches every shepherd in the system.
+
+The old mailbox was a minimal 1-to-1 notification channel: it could
+deliver a small notification code and a ring buffer address, one message
+at a time. Actual data still traveled through separate out-of-band shared
+memory rings. Worse, the mailbox had a fundamental scheduling flaw: when
+a receiver entered a blocking `MailboxRecv` syscall, it released its P
+(goroutine processor) and depended on sysmon's 10-20ms polling to
+reacquire it, causing intermittent 30-second stalls during message
+delivery. Font requests, window manager events, and filesystem
+delegation all suffered from this.
+
+The new uring IPC gives each shepherd a kernel-allocated 3-page ring
+(12KB) holding 64 concurrent 128-byte message slots with atomic
+head/tail pointers. Every message uses the same envelope format: a
+protocol discriminator, sender SID (stamped by the kernel), a 64-bit
+sender uring ID, and 112 bytes of typed payload. Four new syscalls
+replace the mailbox primitives:
+
+- `SysUringConnect` -- establish a connection to a target shepherd by
+  uring ID, returning a handle with refcounting
+- `SysUringSend` -- copy a 128-byte message into the target's ring under
+  a producer spinlock and wake any blocked receiver
+- `SysUringRecv` -- block until a message arrives, using
+  `entersyscallblock` to immediately hand off the P so other goroutines
+  can run (this is the key scheduling fix)
+- `SysUringRelease` -- decrement the connection refcount; free when it
+  reaches zero
+
+Twelve protocol types now flow through uring. Rachel (the window
+manager) sends focus events, mouse/keyboard input, and
+`BackingStoreReady` notifications to shepherds via `ProtoShepherdNotify`.
+Shepherds send `AppStart` (window registration) and `Blit` (backing
+store ready) back to rachel via `ProtoWMNotify`. Font requests
+(`OpenFont`, `RequestGlyph`) and replies flow between shepherds and
+fontsvc via `ProtoFontRequest`/`ProtoFontResponse`. Delegated filesystem
+syscalls (open, read, write, close, seek, fstat) travel as
+`ProtoFSDelegateReq`/`ProtoFSDelegateResp` -- the kernel intercepts the
+syscall, allocates a data page, maps it into the fs shepherd, and sends
+the request as a uring message. The fs shepherd processes it, replies,
+and the kernel copies data back to the original caller. Direct
+shepherd-to-fs file operations use `ProtoFSIPCReq`/`ProtoFSIPCResp`.
+
+On the userspace side, each shepherd runs a `Dispatcher` goroutine on a
+dedicated reader thread that loops on `SysUringRecv` and routes incoming
+messages by protocol to typed Go channels. When a shepherd dies, the
+kernel sends `ProtoDeath` messages to all peers holding connections,
+enabling clean resource cleanup.
+
+The `SysMailboxSend` and `SysMailboxRecv` syscalls have been deleted.
+`SysMailboxMapPage` was renamed to `SysSharePages` and remains -- it is
+the mechanism for mapping pages between shepherd address spaces (used for
+font caches, backing stores, and uring ring access).
+
+**Async DMA block I/O (500x speedup).** Block device reads have been
+redesigned from the ground up. The old path was synchronous: each
+`SyscallBlockRead` set up a single VirtIO descriptor chain, notified the
+device, and blocked until completion. The new architecture has three layers.
+First, a VirtIO Engine/SidecarPool abstraction manages multi-flight
+descriptor chains with per-slot DMA metadata. Second, a DMA clump system
+replaces the fixed 8-page kernel DMA pool with userspace-allocated
+physically contiguous page ranges registered via a `MAZARIN_CONTIGUOUS`
+mmap flag -- the kernel tracks up to 16 clumps per shepherd and resolves
+userspace VAs to physical addresses at submit time. Third, a shared-memory
+completion ring lets the kernel write completions directly into a
+userspace-pinned 4KB page, bypassing the syscall return path entirely. The
+fs shepherd spin-polls this ring for up to 500us before blocking,
+eliminating syscall latency for batched reads. Measured improvement: rachel
+ELF loading dropped from 3400ms to 15ms. With priority-wake and immediate
+context switching on top, total block I/O latency is under 30ms for all
+shepherds. The old `SyscallBlockRead` is deprecated.
+
+**Shared-memory completion ring for HID input.** The same completion ring
+pattern was applied to keyboard and mouse events. The kernel IRQ handler
+writes HID events (508 slots per 4KB page) directly into rachel's pinned
+ring. Rachel drains the ring in userspace, classifying events and
+forwarding them to the focused shepherd. This replaced three legacy input
+goroutines and removed 826 lines of per-shepherd input queue
+infrastructure. All input now flows exclusively through rachel -- the
+`WaitInputEvent` and `SetInputFocus` syscalls have been deleted.
+
+**Rachel compositing and z-order.** Rachel's rendering model changed from
+direct-to-framebuffer writes to a shared backing store architecture with
+z-order compositing. Rachel allocates per-window backing stores as shared
+memory pages. Applications render into their own backing stores via
+`SysSharePagesWithTarget`. Rachel performs back-to-front compositing,
+computing exposed regions by subtracting higher-z window bounds from each
+window's drawable area. Click-to-focus raises the clicked window to the
+front. A bbox-scoped rasterization optimization reduced text drawing time
+from 60 seconds to 35ms by limiting rasterization to actual content
+bounds.
+
+**ext2 replaces FAT32.** The data disk is now ext2 instead of FAT32. A
+new `mkext2` build tool generates ext2 filesystem images at build time
+with proper block groups, inode tables, and bitmaps. The fs shepherd
+mounts ext2 from the VirtIO block device and serves file syscalls to
+other shepherds. ext2 provides inode-based addressing, timestamps,
+permissions, symlinks, and directory hierarchy -- all absent from FAT32.
+The fs shepherd also creates a 128MB off-heap ramdisk at `/tmp`, formatted
+as ext2 at boot and mounted read-write. The ramdisk is backed by
+kernel-allocated pages (not Go heap) to avoid multi-second GC pauses at
+low GOGC settings.
+
+**Linux shepherd replaces stdio.** The old stdio shepherd has been
+replaced by a linux shepherd that handles delegated file syscalls (open,
+read, write, close, seek, fstat) and owns the serial port soft IRQ. It
+renders kernel console output inside a mancini AppWindow with a purple
+gradient title bar, displaying text as ConsoleLabel interactors in a
+ColumnOutsideIn container. It communicates with rachel via uring messages
+for backing store allocation and framebuffer blitting.
+
+**Text shaping with HarfBuzz.** A new text shaping pipeline integrates
+HarfBuzz via the `go-text/typesetting` library. The `textshape` package
+provides a `HarfBuzzShaper` for complex script shaping (LTR, RTL,
+vertical), a `GlyphProvider` interface abstracting glyph bitmap retrieval
+(in-process or IPC-backed), and an LRU shape cache to avoid reshaping
+identical text runs. Glyph caches use a V2 binary format: 4MB
+page-aligned files with binary-searchable GID and codepoint maps, storing
+advance metrics, draw-rect offsets, and 8-bit alpha bitmaps. The
+`DrawContext` type unifies rendering across the constraint system and
+mancini toolkit. A `LatinTextFace` abstraction defers font opening to the
+first draw pass when the DrawContext is available, and handles horizontal,
+vertical, and baseline alignment with sub-pixel positioning.
+
+**Mancini damage system.** The interactor toolkit now tracks damage
+rectangles for incremental redraws. Each leaf interactor maintains
+"last-painted" mirrors of its bounds, visibility, colors, and content
+hash. On each frame, a constraint program compares current state against
+the snapshot and produces a damage rectangle covering only what changed.
+Parent interactors union their children's damage rectangles via generated
+constraint bytecode (`parent_damage_default.vbc.go`). After painting,
+`SnapshotDamage` captures visual state for the next comparison. This
+replaces full-window redraws with surgical, bounded
+repaints.
+
+**Constraint VM improvements.** Four new builtins: `findWhere` for
+filtered namespace queries (returns only URIs matching a pattern where a
+dereferenced value equals a target), `collPush` for building filtered
+collections in loops, `collEmpty` for creating typed empty collections,
+and a `continue` statement for `FOR_RANGE` loops. The `Value`/`FlatValue`
+data field was expanded from 24 to 32 bytes to accommodate `Rectangle`
+coordinates as int64. `Handle[T]` was renamed to `Attribute[T]` across the
+constraint system. All 38 snake\_case VM builtins and user-defined `.vgo`
+functions were renamed to camelCase. The vgo standard library gained
+`parent.vgo` and `sibling.vgo` for cross-cutting layout relationships
+(read parent bounds, navigate adjacent siblings by visibility).
+
+**Dirty propagation at 10Hz from timer ISR.** Time-dependent attributes
+(clock seconds, modifier state) are now written directly from the 250Hz
+timer ISR at a 10Hz cadence, replacing idle-loop updates that were
+sensitive to scheduling latency. The dirty propagation walk itself was
+rewritten as an iterative depth-first search with a fixed-size stack,
+making it nosplit-safe for use in kernel interrupt context.
+
+**P-starvation fix.** A class of scheduling deadlocks was identified and
+fixed. The root cause: an epoll overlay (`netpoll_maz.go`) set
+`netpollWaiters=1`, which forced `findRunnable` to enter `epoll_wait(-1)`
+with P0 attached. Since `epoll_wait` used `RawSyscall6` (no
+`entersyscall`), P0 was never released. When another thread returned from
+a blocking SVC, `exitsyscall` could not reacquire the P and the thread
+parked permanently on a futex. The fix removed the netpoll overlay
+entirely, restoring stock Go runtime behavior. A second refinement
+converted all known-blocking syscalls to use `entersyscallblock` instead
+of `entersyscall`, which immediately hands off the P via
+`handoffp`/`startm` rather than waiting for sysmon's 10-20ms polling
+cycle.
+
+**Kernel SVC worker.** A new `KernelSVCWorker` bridges nosplit SVC
+exception handlers to thread 0's growable goroutine stack. Exception
+handlers call `Submit()` to store requests and block; thread 0's idle loop
+calls `Relay()` to execute the work and wake blocked threads with return
+values. This enables complex operations (ELF loading, page table walks)
+that require stack growth to run safely from syscall context.
+
+**sysmon sleep reduction.** sysmon's polling loop was changed from a
+20us-10ms progressive sleep to a flat 10-second sleep on all
+architectures. The 250Hz tick handler checks `sched.gcwaiting` and wakes
+sleeping kernel threads for GC stop-the-world, bounding STW latency to
+approximately 4ms while dramatically reducing CPU burn from sysmon.
+
+**Taskfile decomposition.** The monolithic `Taskfile.yml` was split into
+17 component Taskfiles organized by subsystem (build, run, clean, per-arch
+targets). The top-level Taskfile includes them all, so `$GO tool task run`
+works as before.
+
+**Mancini API reference.** Generated API reference documentation for the
+mancini interactor packages is now published on the project site, covering
+package-level docs for `mancini`, `mancini/impl`, `mancini/std`, and
+`mancini/theme`.
+
 ## Mar 20, 2026
 
 **Constraint-driven UI.** mazarin now has a reactive constraint system
@@ -37,13 +232,14 @@ publishes a `visibleArea` constraint that applications use to position
 themselves. Mouse events carry global screen coordinates so applications
 can hit-test against their interactor trees.
 
-**Mailbox IPC.** A new kernel IPC mechanism based on shared-page ring
-buffers. A shepherd maps a page into another shepherd's address space
-and sends a notification; the receiver pops messages from the ring
-buffer at the mapped address. Page mappings are cached per sender/receiver
-pair. Notification codes (WMNotify, FontNotify, etc.) allow multiplexing
-different message types on the same mailbox. This is how rachel delivers
-mouse events to applications and how font requests reach fontsvc.
+**Mailbox IPC.** *(Superseded by uring IPC -- see Apr 3 entry.)* A kernel
+IPC mechanism based on shared-page ring buffers. A shepherd maps a page
+into another shepherd's address space and sends a notification; the
+receiver pops messages from the ring buffer at the mapped address. Page
+mappings are cached per sender/receiver pair. Notification codes
+(WMNotify, FontNotify, etc.) allow multiplexing different message types
+on the same mailbox. This is how rachel delivers mouse events to
+applications and how font requests reach fontsvc.
 
 **Centralized font service (fontsvc.maz).** Font loading and glyph
 rasterization are now handled by a dedicated .maz module running inside

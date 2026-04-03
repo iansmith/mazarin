@@ -4,21 +4,21 @@ title: mazarin, an introduction
 author: iansmith
 ---
 
-## [News (last updated Mar 20)](news.md). Constraint-Driven UI, Window Manager, and Centralized Font Service!
+## [News (last updated Apr 3)](news.md). Uring IPC, Async DMA, ext2, Text Shaping, and Compositing!
 
 ## [Mancini API Reference](mancini/index.md)
 
 ## What It Means
 
-mazarin now has a reactive constraint system driving its UI.  Layout is
-declarative: applications describe constraints as bytecodes, and the kernel
-evaluates them on shared pages with lock-free reads.  A window manager
-(rachel) routes input to focused applications via shared-page mailbox IPC.
-A centralized font service (fontsvc.maz) pre-renders glyph caches in shared
-memory so shepherds never embed fonts.  The clocks application demonstrates
-the full stack: six world clocks with neumorphic styling, constraint-driven
-layout, and interactive clock face cycling via press-drag-release mouse
-handling.
+mazarin now has uring-based IPC with dedicated reader threads per
+shepherd, replacing the mailbox system and its scheduling stalls.
+Block I/O is async with DMA clumps and shared-memory completion rings
+(500x faster).  The window manager (rachel) composites z-ordered
+backing stores with bbox-scoped rasterization.  Text is shaped via
+HarfBuzz with glyph caches in shared memory.  The data disk is ext2,
+with a 128MB off-heap ramdisk at /tmp.  The constraint VM gained
+filtered queries, collection builders, and damage-rectangle propagation
+for incremental redraws.
 
 
 ## [Quick Start: build and run mazarin](quickstart.md)
