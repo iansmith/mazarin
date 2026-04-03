@@ -7,7 +7,6 @@ import (
 	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
@@ -419,18 +418,16 @@ func NonTimerIRQTopHalf() {
 				atomic.AddUint32(&dbgBlockAsyncEvents, 1)
 
 				// Write completion: io_uring CQ if active, else legacy path.
-				if atomic.LoadInt32(&IOUringBlockedRingID) >= 0 {
-					ioSlot, ioRing := GetIOUringSlotForIRQ()
-					if ioSlot != nil && ioRing != nil {
-						cqTail := ioRing.CQTail
-						cqIdx := cqTail & iouring.CQMask
-						ioRing.CQEntries[cqIdx] = iouring.CQEntry{
-							UserData: meta.userData,
-							Res:      int32(info.UsedLen),
-						}
-						asm.Dsb()
-						atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
+				_, ioRing := GetIOUringSlotForBlockIRQ()
+				if ioRing != nil {
+					cqTail := ioRing.CQTail
+					cqIdx := cqTail & iouring.CQMask
+					ioRing.CQEntries[cqIdx] = iouring.CQEntry{
+						UserData: meta.userData,
+						Res:      int32(info.UsedLen),
 					}
+					asm.Dsb()
+					atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
 				} else {
 					ev := hid.HIDEvent{
 						Type:  tag,
@@ -462,12 +459,9 @@ func NonTimerIRQTopHalf() {
 			atomic.StoreUint32(&dbgBlockLastAvailIdx, uint32(eng.VQ.Available.Idx))
 
 			atomic.AddUint32(&dbgBlockIRQAsync, 1)
-			// Wake: io_uring direct wake, else legacy slot.
-			if atomic.LoadInt32(&IOUringBlockedRingID) >= 0 {
-				WakeIOUringFromIRQ()
-			} else {
-				WakeSlotForIRQ(hid.BlockVirtualIRQ)
-			}
+			// Wake: try io_uring direct wake, fall back to legacy slot.
+			WakeIOUringFromIRQ()
+			WakeSlotForIRQ(hid.BlockVirtualIRQ)
 		} else {
 			// Sync mode: just signal IOComplete for WFI loop
 			atomic.AddUint32(&dbgBlockIRQSync, 1)
@@ -504,6 +498,10 @@ func NonTimerIRQTopHalf() {
 	usedIdx := asm.MmioRead16(dev.usedVA + 2)
 	reposted := false
 
+	// Get io_uring input ring once for the batch.
+	_, inputRing := GetIOUringSlotForInputIRQ()
+	cqPushed := false
+
 	for dev.lastUsedIdx != usedIdx {
 		ringIdx := dev.lastUsedIdx % dev.queueSize
 		entryAddr := dev.usedVA + 4 + uintptr(ringIdx)*8
@@ -521,31 +519,25 @@ func NonTimerIRQTopHalf() {
 			evtValueHi := uint32(asm.MmioRead16(evtAddr + 6))
 			evtValue := evtValueLo | (evtValueHi << 16)
 
-			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
-
-			// Track modifier key state for the constraint attribute system.
-			// Only keyboard EV_KEY events can change modifier state.
-			if dev == &topHalfKbd && evtType == hid.EvKey {
-				ksyscall.TopHalfUpdateModifiers(evtCode, evtValue)
+			// Write HID event as io_uring CQE: type<<48 | code<<32 | value.
+			if inputRing != nil {
+				cqTail := inputRing.CQTail
+				cqHead := atomic.LoadUint32(&inputRing.CQHead)
+				if cqTail-cqHead < iouring.CQCapacity {
+					cqIdx := cqTail & iouring.CQMask
+					inputRing.CQEntries[cqIdx] = iouring.CQEntry{
+						UserData: uint64(evtType)<<48 | uint64(evtCode)<<32 | uint64(evtValue),
+					}
+					asm.Dsb()
+					atomic.StoreUint32(&inputRing.CQTail, cqTail+1)
+					cqPushed = true
+					dev.dbgPushOK++
+				} else {
+					dev.dbgPushFail++ // CQ full — event dropped
+				}
 			}
 
-			if !ringPush(dev.ring, ev) {
-				dev.dbgPushFail++
-				// Ring full — event dropped. Descriptor is ALWAYS reposted
-				// below so the device keeps its buffers. Never hold back
-				// descriptors: that risks permanent device starvation when
-				// all buffers are leaked and no IRQs can fire.
-			} else {
-				dev.dbgPushOK++
-			}
-
-			// Route through focus-based input system (dual delivery to WM + focused shepherd).
-			inputClass := classifyInputEvent(dev, evtType, evtCode)
-			if inputClass >= 0 {
-				routeInputEvent(ev, inputClass)
-			}
-
-			// ALWAYS repost buffer to device, even if ring push failed.
+			// ALWAYS repost buffer to device, even if CQ push failed.
 			descAddr := dev.descVA + uintptr(descIdx)*16
 			bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
 			asm.MmioWrite32(descAddr, uint32(bufPA))
@@ -562,8 +554,7 @@ func NonTimerIRQTopHalf() {
 		dev.lastUsedIdx++
 	}
 
-	// Sync VirtQueue.LastUsedIdx so DrainEvents does not re-drain
-	// events we already pushed into the softIRQ ring.
+	// Sync VirtQueue.LastUsedIdx so DrainEvents does not re-drain.
 	if dev.lastUsedIdxSync != nil {
 		*dev.lastUsedIdxSync = dev.lastUsedIdx
 	}
@@ -577,25 +568,9 @@ func NonTimerIRQTopHalf() {
 		_ = asm.MmioRead16(dev.notifyAddr)
 	}
 
-	if reposted {
-		// Wake any thread blocked on a slot for this IRQ.
-		// Use 'reposted' (not 'pushed') because even when ring push fails
-		// (ring full), the ring already has events that the consumer should
-		// drain. If we only woke on 'pushed', a consumer that blocked
-		// between batches (ring momentarily empty) and then the ring
-		// re-filled with all pushes failing would NEVER be woken.
-		WakeSlotForIRQ(irqNum)
-
-		// Also wake input focus consumers. Wake all three classes since
-		// we may have pushed events of different classes in this batch.
-		if dev == &topHalfKbd {
-			wakeInputConsumers(hid.InputClassKeyboard)
-		} else {
-			wakeInputConsumers(hid.InputClassMouseClick)
-			wakeInputConsumers(hid.InputClassMouseMove)
-		}
-		// Send single mailbox notification to WM (if shared ring registered).
-		wakeWMViaMailbox()
+	// Wake rachel's io_uring reader thread if we pushed any CQEs.
+	if cqPushed {
+		WakeIOUringFromIRQ()
 	}
 }
 
@@ -618,7 +593,11 @@ func topHalfTabletHandler() {
 	usedIdx := asm.MmioRead16(dev.usedVA + 2)
 	reposted := false
 
-	// Track latest absolute position
+	// Get io_uring input ring once for the batch.
+	_, inputRing := GetIOUringSlotForInputIRQ()
+	cqPushed := false
+
+	// Track latest absolute position for hardware cursor.
 	var lastAbsX, lastAbsY uint32
 	gotAbs := false
 
@@ -635,7 +614,7 @@ func topHalfTabletHandler() {
 			evtValueHi := uint32(asm.MmioRead16(evtAddr + 6))
 			evtValue := evtValueLo | (evtValueHi << 16)
 
-			// Track absolute position for cursor
+			// Track absolute position for hardware cursor.
 			if evtType == hid.EvAbs {
 				if evtCode == hid.AbsX {
 					lastAbsX = evtValue
@@ -646,21 +625,25 @@ func topHalfTabletHandler() {
 				}
 			}
 
-			// Push to ring for userspace consumption (same as mouse events)
-			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
-			if ringPush(dev.ring, ev) {
-				dev.dbgPushOK++
-			} else {
-				dev.dbgPushFail++
+			// Write HID event as io_uring CQE: type<<48 | code<<32 | value.
+			if inputRing != nil {
+				cqTail := inputRing.CQTail
+				cqHead := atomic.LoadUint32(&inputRing.CQHead)
+				if cqTail-cqHead < iouring.CQCapacity {
+					cqIdx := cqTail & iouring.CQMask
+					inputRing.CQEntries[cqIdx] = iouring.CQEntry{
+						UserData: uint64(evtType)<<48 | uint64(evtCode)<<32 | uint64(evtValue),
+					}
+					asm.Dsb()
+					atomic.StoreUint32(&inputRing.CQTail, cqTail+1)
+					cqPushed = true
+					dev.dbgPushOK++
+				} else {
+					dev.dbgPushFail++ // CQ full — event dropped
+				}
 			}
 
-			// Route through focus-based input system
-			tabletClass := classifyInputEvent(nil, evtType, evtCode)
-			if tabletClass >= 0 {
-				routeInputEvent(ev, tabletClass)
-			}
-
-			// Repost buffer to device
+			// Repost buffer to device.
 			descAddr := dev.descVA + uintptr(descIdx)*16
 			bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
 			asm.MmioWrite32(descAddr, uint32(bufPA))
@@ -677,7 +660,7 @@ func topHalfTabletHandler() {
 		dev.lastUsedIdx++
 	}
 
-	// Sync LastUsedIdx
+	// Sync LastUsedIdx.
 	if dev.lastUsedIdxSync != nil {
 		*dev.lastUsedIdxSync = dev.lastUsedIdx
 	}
@@ -691,22 +674,16 @@ func topHalfTabletHandler() {
 		_ = asm.MmioRead16(dev.notifyAddr)
 	}
 
-	// Move hardware cursor to latest absolute position
+	// Move hardware cursor to latest absolute position.
 	if gotAbs {
-		// Map tablet coordinates (0-32767) to screen coordinates
 		screenX := (lastAbsX * gpu.DisplayWidth) / (hid.AbsMax + 1)
 		screenY := (lastAbsY * gpu.DisplayHeight) / (hid.AbsMax + 1)
 		gpu.TopHalfMoveCursor(screenX, screenY)
 	}
 
-	// Wake any soft IRQ consumer
-	if reposted {
-		WakeSlotForIRQ(dev.irqNum)
-		// Tablet generates mouse-class events (clicks and movement)
-		wakeInputConsumers(hid.InputClassMouseClick)
-		wakeInputConsumers(hid.InputClassMouseMove)
-		// Send single mailbox notification to WM (if shared ring registered).
-		wakeWMViaMailbox()
+	// Wake rachel's io_uring reader thread if we pushed any CQEs.
+	if cqPushed {
+		WakeIOUringFromIRQ()
 	}
 }
 

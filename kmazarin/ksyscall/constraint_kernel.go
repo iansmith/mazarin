@@ -16,7 +16,6 @@ import (
 	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/serial"
 	"mazzy/mazarin/vm/flat"
-	"mazzy/shared/hid"
 	"sync/atomic"
 )
 
@@ -27,7 +26,6 @@ var (
 	slotScreenW     uint16
 	slotScreenH     uint16
 	slotDarkMode    uint16
-	slotModifiers   uint16
 	slotCharWidth   uint16
 	slotCharHeight  uint16
 )
@@ -44,10 +42,6 @@ var (
 
 // kernelAttrsPublished tracks whether PublishKernelAttributes has run.
 var kernelAttrsPublished bool
-
-// Modifier key bitmask — updated atomically from nosplit top-half IRQ handler.
-var modifierState uint64
-var modifierDirty uint32
 
 // KernelAttrCreate creates an attribute in the kernel namespace (Owner=0).
 // Bypasses the syscall path and ownership checks.
@@ -165,55 +159,6 @@ func KernelAttrWriteStr(slot uint16, val string) {
 	flushPendingDirtyWakes()
 }
 
-// TopHalfUpdateModifiers updates the modifier bitmask from nosplit IRQ context.
-// Called from NonTimerIRQTopHalf for keyboard EV_KEY events.
-//
-//go:nosplit
-func TopHalfUpdateModifiers(code uint16, value uint32) {
-	var bit uint64
-	switch code {
-	case hid.KeyLShift:
-		bit = hid.ModLShift
-	case hid.KeyRShift:
-		bit = hid.ModRShift
-	case hid.KeyLCtrl:
-		bit = hid.ModLCtrl
-	case hid.KeyRCtrl:
-		bit = hid.ModRCtrl
-	case hid.KeyLAlt:
-		bit = hid.ModLAlt
-	case hid.KeyRAlt:
-		bit = hid.ModRAlt
-	case hid.KeyLMeta:
-		bit = hid.ModLMeta
-	case hid.KeyRMeta:
-		bit = hid.ModRMeta
-	default:
-		return
-	}
-
-	if value == 0 {
-		// Release: clear bit.
-		for {
-			old := atomic.LoadUint64(&modifierState)
-			nw := old &^ bit
-			if atomic.CompareAndSwapUint64(&modifierState, old, nw) {
-				break
-			}
-		}
-	} else {
-		// Press or autorepeat: set bit.
-		for {
-			old := atomic.LoadUint64(&modifierState)
-			nw := old | bit
-			if atomic.CompareAndSwapUint64(&modifierState, old, nw) {
-				break
-			}
-		}
-	}
-	atomic.StoreUint32(&modifierDirty, 1)
-}
-
 // PublishKernelAttributes creates kernel-owned attributes and sets initial values.
 // Must be called after InitKernelAttrManager().
 func PublishKernelAttributes() {
@@ -270,14 +215,6 @@ func PublishKernelAttributes() {
 
 	KernelAttrWriteBool(slotDarkMode, false)
 
-	// Input modifier bitmask (keyboard shift/ctrl/alt/meta state).
-	slotModifiers, ok = KernelAttrCreate("attr:///kernel/int64/input/modifiers", flat.TypeI64)
-	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/input/modifiers\r\n")
-		return
-	}
-	KernelAttrWriteI64(slotModifiers, 0)
-
 	// Font metrics — AtkinsonHyperlegibleMono-Regular.otf at 16pt, 72 DPI, full hinting.
 	// charWidth=10, charHeight=19 (matches linux shepherd's font init output).
 	slotCharWidth, ok = KernelAttrCreate("attr:///kernel/int64/screen/charWidth", flat.TypeI64)
@@ -294,7 +231,7 @@ func PublishKernelAttributes() {
 	KernelAttrWriteI64(slotCharHeight, 19)
 
 	kernelAttrsPublished = true
-	serial.RawUARTPuts("[attr] kernel attributes published (time, screen, darkMode, modifiers, charMetrics)\r\n")
+	serial.RawUARTPuts("[attr] kernel attributes published (time, screen, darkMode, charMetrics)\r\n")
 }
 
 // StartKernelAttrUpdaters initializes the tick-based time update state.
@@ -325,7 +262,7 @@ var timeUpdateLastTick uint64
 var timeUpdateThreshold uint64
 
 // TickTimeUpdate checks if enough timer ticks have elapsed and, if so, writes
-// the time and modifier attributes. Called directly from KernelIdleLoop on
+// the time attributes. Called directly from KernelIdleLoop on
 // every iteration — no goroutine needed.
 //
 // Returns true if an update was performed (dirty notifications sent).
@@ -345,12 +282,6 @@ func TickTimeUpdate() bool {
 	KernelAttrWriteI64(slotTimeSeconds, int64(sec))
 	KernelAttrWriteI64(slotTimeNanos, int64(nanos))
 
-	// Flush modifier bitmask if changed by top-half IRQ handler.
-	if atomic.CompareAndSwapUint32(&modifierDirty, 1, 0) {
-		mods := atomic.LoadUint64(&modifierState)
-		KernelAttrWriteI64(slotModifiers, int64(mods))
-	}
-
 	return true
 }
 
@@ -364,7 +295,7 @@ var topHalfUpdateInterval uint64
 // TopHalfFireCount tracks how many times TopHalfTickTimeUpdate actually updated.
 var TopHalfFireCount uint64
 
-// TopHalfTickTimeUpdate writes time and modifier attributes and propagates
+// TopHalfTickTimeUpdate writes time attributes and propagates
 // dirty notifications. Called from ProcessDeadlinesTopHalf under the
 // scheduler lock with IRQs disabled.
 //
@@ -413,19 +344,6 @@ func TopHalfTickTimeUpdate() {
 		nanosNode.CachedValue = nanosVal
 		nanosNode.SeqCounter++
 		attrMgr.dirtyPropagate(slotTimeNanos)
-	}
-
-	// --- Modifier bitmask: flush if top-half IRQ handler flagged a change ---
-	if atomic.CompareAndSwapUint32(&modifierDirty, 1, 0) {
-		mods := atomic.LoadUint64(&modifierState)
-		modNode := attrMgr.node(slotModifiers)
-		modVal := flat.NewI64(int64(mods))
-		if modNode.CachedValue != modVal {
-			modNode.SeqCounter++
-			modNode.CachedValue = modVal
-			modNode.SeqCounter++
-			attrMgr.dirtyPropagate(slotModifiers)
-		}
 	}
 
 	// PendingDirtyWakeTIDs/Count now populated — caller wakes under sched lock.

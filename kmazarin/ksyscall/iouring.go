@@ -24,6 +24,7 @@ import (
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"mazzy/shared/iouring"
+	"mazzy/shared/mazzy"
 	"sync/atomic"
 	"unsafe"
 )
@@ -31,32 +32,35 @@ import (
 // SyscallIOUringSetup creates an io_uring instance.
 // arg0 = capacity hint (ignored, always 32 SQ / 64 CQ)
 // arg1 = ringPageVA (userspace VA of a pre-allocated shared page)
-// arg2 = flags (reserved, must be 0)
+// arg2 = flags: low byte = device type (0=block, 1=input)
 // Returns: ringID (0-3) on success, negative errno on error.
 //
 //go:noinline
 func SyscallIOUringSetup(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	ringPageVA := uintptr(arg1)
-	flags := arg2
+	deviceType := uint8(arg2 & 0xFF)
 
-	if flags != 0 {
-		return -22 // EINVAL
+	if deviceType > 1 {
+		return -22 // EINVAL — unknown device type
 	}
 	if ringPageVA == 0 || ringPageVA&0xFFF != 0 {
 		return -22 // EINVAL — must be page-aligned
 	}
 
-	// Register caller as block device owner (same role as RegisterCompletionRing).
-	// Either no owner yet, or caller is already the owner.
 	shepherd := proc.CurrentShepherd()
 	if shepherd == nil {
 		return -1 // EPERM
 	}
-	ownerSID := getBlockDeviceOwnerPID()
-	if ownerSID >= 0 && int16(shepherd.PID) != ownerSID {
-		return -1 // EPERM — someone else owns the block device
+
+	// Block device rings: register caller as block device owner.
+	// Input device rings: no ownership check needed.
+	if deviceType == 0 {
+		ownerSID := getBlockDeviceOwnerPID()
+		if ownerSID >= 0 && int16(shepherd.PID) != ownerSID {
+			return -1 // EPERM — someone else owns the block device
+		}
+		setBlockDeviceOwnerPID(int16(shepherd.PID))
 	}
-	setBlockDeviceOwnerPID(int16(shepherd.PID))
 
 	// Compute timeout ticks once.
 	initIOUringTimeout()
@@ -115,10 +119,12 @@ func SyscallIOUringSetup(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	ring.CQFlags = 0
 
 	// Store kernel state.
-	setupIOUringSlot(slotIdx, kva, pa, int16(shepherd.PID))
+	setupIOUringSlot(slotIdx, kva, pa, int16(shepherd.PID), deviceType)
 
-	// Enable async block mode (same as RegisterCompletionRing).
-	enableBlockAsyncMode()
+	// Enable async block mode for block device rings only.
+	if deviceType == 0 {
+		enableBlockAsyncMode()
+	}
 
 	serial.RawUARTPuts("[IOUring] setup ring=")
 	serial.RawUARTDecimal(uint64(slotIdx))
@@ -262,7 +268,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		}
 
 		// Block: find next thread, context-switch.
-		ctxPtr := blockForIOUring(ringID, minComplete)
+		ctxPtr := blockForIOUring(ringID, minComplete, uint64(mazzy.SysIOUringEnter))
 		if ctxPtr == ^uintptr(0) {
 			// Sentinel: completions arrived between fast-path check and
 			// IRQ disable. Return them directly.
@@ -297,7 +303,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 // Bridge functions — reach kmazarin/kmazarin (main package) via go:linkname.
 
 //go:linkname blockForIOUring main.BlockForIOUring
-func blockForIOUring(ringID int, minComplete uint32) uintptr
+func blockForIOUring(ringID int, minComplete uint32, syscallNum uint64) uintptr
 
 //go:linkname initIOUringTimeout main.InitIOUringTimeout
 func initIOUringTimeout()
@@ -315,7 +321,10 @@ func ioUringSlotOwnerSID(ringID int) int16
 func getIOUringSlot(ringID int) unsafe.Pointer
 
 //go:linkname setupIOUringSlot main.SetupIOUringSlot
-func setupIOUringSlot(ringID int, kva, pa uintptr, ownerSID int16)
+func setupIOUringSlot(ringID int, kva, pa uintptr, ownerSID int16, deviceType uint8)
 
 //go:linkname checkIOUringWFITimeout main.CheckIOUringWFITimeout
 func checkIOUringWFITimeout(ringID int, currentCompletions uint32) bool
+
+//go:linkname ioUringSlotDeviceType main.IOUringSlotDeviceType
+func ioUringSlotDeviceType(ringID int) uint8

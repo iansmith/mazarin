@@ -24,7 +24,6 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -126,6 +125,7 @@ func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
 		if ev.Code < BTN_LEFT {
 			// Keyboard event
 			code := ev.Code
+			fmt.Printf("[rachel:input] key code=%d (%s) value=%d\n", code, keyName(code), ev.Value)
 			if ev.Value == 1 { // press
 				if code < 256 && keyHeld[code] {
 					return // suppress repeat (already held)
@@ -196,9 +196,11 @@ func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
 					changeFocus(hit)
 				}
 				mouseButtonHeld = int32(ev.Code)
+				fmt.Printf("[rachel:input] mouse press %s at (%d,%d)\n", buttonName(ev.Code), x, y)
 				forwardMouseEvent(wm.MsgMousePress, x, y, int32(ev.Code))
 			} else if ev.Value == 0 { // release
 				mouseButtonHeld = 0
+				fmt.Printf("[rachel:input] mouse release %s at (%d,%d)\n", buttonName(ev.Code), x, y)
 				forwardMouseEvent(wm.MsgMouseRelease, x, y, int32(ev.Code))
 			}
 		}
@@ -652,18 +654,10 @@ func forceFontSvcItab(v interface{}) {
 	inj.RegisterRequestGlyphHandler(nil)
 }
 
-// decodeHIDNotify decodes a ProtoHIDNotify uring message. The message
-// carries no payload — it's a wake-up signal to drain the shared completion
-// ring. Returns a struct{} sentinel.
-func decodeHIDNotify(msg *ipc.UringIPCMsg) any {
-	return struct{}{}
-}
-
 // wmEventLoop receives typed WM messages from the uring Dispatcher (wmCh)
-// and HID wake-up signals from the uring Dispatcher (hidCh).
-func wmEventLoop(wmCh <-chan any, hidCh <-chan any, inputRing *hid.CompletionRing) {
+// and HID events from the InputAcquirer (inputCh).
+func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent) {
 	sys.UartWriteString("[rachel:wm] event loop started\n")
-	var events [64]hid.HIDEvent
 	var km input.Keymap
 	var keyHeld [256]bool
 	var rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents int64
@@ -780,7 +774,6 @@ func wmEventLoop(wmCh <-chan any, hidCh <-chan any, inputRing *hid.CompletionRin
 				if rachelMsgBlit%50 == 0 && !blitRateStart.IsZero() {
 					ms := time.Since(blitRateStart).Milliseconds()
 					if ms > 0 {
-						// rate = blits * 1000 / ms, split into integer + 1 decimal
 						rateX10 := rachelMsgBlit * 10000 / ms
 						whole := rateX10 / 10
 						frac := rateX10 % 10
@@ -805,26 +798,27 @@ func wmEventLoop(wmCh <-chan any, hidCh <-chan any, inputRing *hid.CompletionRin
 				rachelMsgOther++
 			}
 
-		case <-hidCh:
+		case ev := <-inputCh:
 			rachelHIDEvents++
-			// Drain shared completion ring and process all events
-			batchTotal := 0
+			processInputEvent(ev, &km, &keyHeld)
+
+			// Drain any remaining buffered events before blocking again.
+			drained := 1
+		drainLoop:
 			for {
-				n := sys.PollCompletionRing(inputRing, events[:], len(events))
-				if n == 0 {
-					break
-				}
-				batchTotal += n
-				for i := 0; i < n; i++ {
-					processInputEvent(events[i], &km, &keyHeld)
+				select {
+				case ev2 := <-inputCh:
+					processInputEvent(ev2, &km, &keyHeld)
+					drained++
+				default:
+					break drainLoop
 				}
 			}
-			inputEventsProcessed += batchTotal
+			inputEventsProcessed += drained
 			inputWakeups++
 			if inputWakeups%100 == 0 {
-				dropped := atomic.LoadUint32(&inputRing.Flags)
-				sys.UartWriteString(fmt.Sprintf("[rachel:input] wakeups=%d events=%d dropped=%d\n",
-					inputWakeups, inputEventsProcessed, dropped))
+				sys.UartWriteString(fmt.Sprintf("[rachel:input] wakeups=%d events=%d\n",
+					inputWakeups, inputEventsProcessed))
 			}
 			postBatchInputUpdate()
 		}
@@ -882,17 +876,13 @@ func main() {
 	fbPix = fbImage.Pix
 	fbStride = fbImage.Stride
 
-	// Allocate and register a shared completion ring for HID input events.
-	// The kernel IRQ top-half writes events directly to this page;
-	// rachel drains it when woken via mailbox notification.
-	inputRingPage, err := mem.AllocPages(1, mem.PageShared)
+	// Set up io_uring for HID input events. The kernel IRQ top-half writes
+	// CQEs directly; rachel's InputAcquirer blocks in IOUringEnter.
+	inputAcq, err := NewInputAcquirer(128)
 	if err != nil {
-		panic(fmt.Sprintf("[rachel] FATAL: AllocPages for input ring: %v", err))
+		panic(fmt.Sprintf("[rachel] FATAL: NewInputAcquirer: %v", err))
 	}
-	inputRing := (*hid.CompletionRing)(inputRingPage)
-	if err := sys.RegisterCompletionRing(uintptr(inputRingPage), 1); err != nil {
-		panic(fmt.Sprintf("[rachel] FATAL: RegisterCompletionRing(input): %v", err))
-	}
+	go inputAcq.Run()
 
 	// Wait for fs shepherd to be ready before loading .maz files.
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
@@ -941,11 +931,6 @@ func main() {
 		})
 		sys.UartWriteString("[rachel] font requests wired to fontsvc callbacks\n")
 	}
-	// Wire HID input notifications into the Dispatcher — kernel sends
-	// ProtoHIDNotify after pushing events to the shared completion ring.
-	hidCh := make(chan any, 4)
-	disp.On(ipc.ProtoHIDNotify, decodeHIDNotify, hidCh)
-
 	// Handle peer death — remove the dead shepherd from tracked state.
 	disp.OnDeath(func(deadSID int16) {
 		sys.UartWriteString(fmt.Sprintf("[rachel] shepherd %d died\n", deadSID))
@@ -954,8 +939,9 @@ func main() {
 	disp.Start()
 	runtime.Gosched()
 
-	// Start WM event loop — receives typed messages from uring Dispatcher.
-	go wmEventLoop(wmCh, hidCh, inputRing)
+	// Start WM event loop — receives typed messages from uring Dispatcher
+	// and HID events from the InputAcquirer.
+	go wmEventLoop(wmCh, inputAcq.Events())
 	runtime.Gosched()
 
 	// Publish ready status to constraint network using the well-known URI.

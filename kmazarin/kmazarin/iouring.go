@@ -11,13 +11,18 @@ import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/iouring"
-	"mazzy/shared/mazzy"
 	"sync/atomic"
 	"unsafe"
 )
 
 // MaxIORings is the maximum number of io_uring instances.
 const MaxIORings = 4
+
+// IOUring device types — stored in IOUringSlot.DeviceType.
+const (
+	IOUringDeviceBlock uint8 = 0 // block device (fs shepherd)
+	IOUringDeviceInput uint8 = 1 // HID input devices (window manager)
+)
 
 // IOUringSlot holds kernel-side state for one io_uring instance.
 type IOUringSlot struct {
@@ -28,13 +33,15 @@ type IOUringSlot struct {
 	BlockedPtr    uintptr // *Thread as uintptr (nosplit-safe, no write barrier)
 	MinComplete   uint32  // completions needed to wake blocked thread
 	BlockDeadline uint64  // timer tick deadline for 10ms timeout (0 = not blocking)
+	DeviceType    uint8   // IOUringDeviceBlock or IOUringDeviceInput
 }
 
 // IOUringTable holds all io_uring instances.
 var IOUringTable [MaxIORings]IOUringSlot
 
-// IOUringBlockedRingID is the ring index that has a blocked waiter, or -1.
-// Checked by the IRQ top-half after writing CQEs.
+// IOUringBlockedRingID is DEPRECATED — kept only as a compilation target
+// for bottom_half.go references during migration. WakeIOUringFromIRQ now
+// scans all slots. Will be removed after bottom_half.go is updated.
 var IOUringBlockedRingID int32 = -1
 
 // IOUringTimeoutTicks is 10ms worth of hardware timer ticks.
@@ -50,11 +57,12 @@ func InitIOUringTimeout() {
 }
 
 // BlockForIOUring blocks the current thread until io_uring completions arrive.
-// Returns the context pointer of the next
-// thread to run, or 0 if no other thread is available (caller does WFI).
+// syscallNum is the syscall to re-execute on wake (SysIOUringEnter or
+// SysIOUringWaitInput). Returns the context pointer of the next thread to
+// run, or 0 if no other thread is available (caller does WFI).
 //
 //go:noinline
-func BlockForIOUring(ringID int, minComplete uint32) uintptr {
+func BlockForIOUring(ringID int, minComplete uint32, syscallNum uint64) uintptr {
 	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
 
 	// Re-check completions with IRQs disabled to close the TOCTOU race:
@@ -92,7 +100,7 @@ func BlockForIOUring(ringID int, minComplete uint32) uintptr {
 	// Block the current thread.
 	t.State = ThreadBlockedIOUring
 	t.SoftIRQSlotArg = uint64(ringID)
-	t.SoftIRQSyscallNum = uint64(mazzy.SysIOUringEnter)
+	t.SoftIRQSyscallNum = syscallNum
 
 	slot := &IOUringTable[ringID]
 	slot.BlockedTID = int16(t.TID)
@@ -101,7 +109,6 @@ func BlockForIOUring(ringID int, minComplete uint32) uintptr {
 	if IOUringTimeoutTicks > 0 {
 		slot.BlockDeadline = kirq.ReadCounterValue() + IOUringTimeoutTicks
 	}
-	IOUringBlockedRingID = int32(ringID)
 
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
@@ -109,50 +116,62 @@ func BlockForIOUring(ringID int, minComplete uint32) uintptr {
 	return uintptr(unsafe.Pointer(&next.Context))
 }
 
-// WakeIOUringFromIRQ checks if a blocked io_uring thread's minComplete is
-// satisfied and wakes it. Called from the IRQ top-half after writing CQEs.
+// WakeIOUringFromIRQ checks all io_uring slots for blocked threads whose
+// minComplete is satisfied and wakes them. Called from the IRQ top-half
+// after writing CQEs. With MaxIORings=4, the scan is negligible cost.
 // MUST be called with IRQs disabled (from IRQ context).
 //
 //go:nosplit
 //go:noinline
 func WakeIOUringFromIRQ() {
-	ringID := atomic.LoadInt32(&IOUringBlockedRingID)
-	if ringID < 0 || ringID >= MaxIORings {
-		return
+	// Quick scan: any slots with blocked waiters that have enough CQEs?
+	anyToWake := false
+	for i := 0; i < MaxIORings; i++ {
+		slot := &IOUringTable[i]
+		if slot.BlockedTID < 0 || slot.KVA == 0 {
+			continue
+		}
+		ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
+		if atomic.LoadUint32(&ring.CQTail)-atomic.LoadUint32(&ring.CQHead) >= slot.MinComplete {
+			anyToWake = true
+			break
+		}
 	}
-	slot := &IOUringTable[ringID]
-	if slot.BlockedTID < 0 || slot.KVA == 0 {
+	if !anyToWake {
 		return
 	}
 
-	ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
-	cqTail := atomic.LoadUint32(&ring.CQTail)
-	cqHead := atomic.LoadUint32(&ring.CQHead)
-	completions := cqTail - cqHead
-	if completions < slot.MinComplete {
-		return
-	}
-
-	// Wake the blocked thread.
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
-	t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
-	if t != nil && t.State == ThreadBlockedIOUring {
-		t.State = ThreadReady
-		t.PriorityWoken = true // Reuse flag for priority scheduling
-		t.Context.RewindToSyscall()
-		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+	for i := 0; i < MaxIORings; i++ {
+		slot := &IOUringTable[i]
+		if slot.BlockedTID < 0 || slot.KVA == 0 {
+			continue
+		}
 
-		slot.BlockedTID = -1
-		slot.BlockedPtr = 0
-		slot.BlockDeadline = 0
-		atomic.StoreInt32(&IOUringBlockedRingID, -1)
+		ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
+		completions := atomic.LoadUint32(&ring.CQTail) - atomic.LoadUint32(&ring.CQHead)
+		if completions < slot.MinComplete {
+			continue
+		}
 
-		enqueueReadyPrioritySchedLockHeld(t)
-		atomic.StoreUint32(&priorityWakePending, 1)
-		asm.Dsb()
+		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
+		if t != nil && t.State == ThreadBlockedIOUring {
+			t.State = ThreadReady
+			t.PriorityWoken = true
+			t.Context.RewindToSyscall()
+			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+
+			slot.BlockedTID = -1
+			slot.BlockedPtr = 0
+			slot.BlockDeadline = 0
+
+			enqueueReadyPrioritySchedLockHeld(t)
+			atomic.StoreUint32(&priorityWakePending, 1)
+			asm.Dsb()
+		}
 	}
 
 	schedulerLock.Unlock()
@@ -165,58 +184,68 @@ func WakeIOUringFromIRQ() {
 // the full chain — the exception stack is large enough for the actual usage.
 var topHalfIOUringTimeoutHook func() = checkIOUringTimeoutFromTimer
 
-// checkIOUringTimeoutFromTimer checks if a blocked io_uring thread has
+// checkIOUringTimeoutFromTimer checks if any blocked io_uring thread has
 // timed out. Called from timer tick with schedulerLock held and IRQs disabled.
 //
 //go:nosplit
 func checkIOUringTimeoutFromTimer() {
-	ringID := atomic.LoadInt32(&IOUringBlockedRingID)
-	if ringID < 0 || ringID >= MaxIORings {
-		return
-	}
-	slot := &IOUringTable[ringID]
-	if slot.BlockedTID < 0 || slot.BlockDeadline == 0 {
-		return
-	}
-
 	now := kirq.ReadCounterValue()
-	if now < slot.BlockDeadline {
-		return
-	}
+	for i := 0; i < MaxIORings; i++ {
+		slot := &IOUringTable[i]
+		if slot.BlockedTID < 0 || slot.BlockDeadline == 0 {
+			continue
+		}
+		if now < slot.BlockDeadline {
+			continue
+		}
 
-	// Timeout expired — wake thread with whatever completions are available.
-	t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
-	if t != nil && t.State == ThreadBlockedIOUring {
-		t.State = ThreadReady
-		t.Context.RewindToSyscall()
-		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+		// Timeout expired — wake thread with whatever completions are available.
+		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
+		if t != nil && t.State == ThreadBlockedIOUring {
+			t.State = ThreadReady
+			t.Context.RewindToSyscall()
+			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 
-		slot.BlockedTID = -1
-		slot.BlockedPtr = 0
-		slot.BlockDeadline = 0
-		atomic.StoreInt32(&IOUringBlockedRingID, -1)
+			slot.BlockedTID = -1
+			slot.BlockedPtr = 0
+			slot.BlockDeadline = 0
 
-		enqueueReadySchedLockHeld(t) // Regular priority (timeout, not IRQ)
+			enqueueReadySchedLockHeld(t) // Regular priority (timeout, not IRQ)
+		}
 	}
 }
 
-// GetIOUringSlotForIRQ returns the ring slot and IORing pointer for the
-// blocked ring, for use by the IRQ top-half when writing CQEs.
-// Returns nil, nil if no ring is blocked.
+// GetIOUringSlotForBlockIRQ returns the block device ring slot and IORing
+// pointer for writing block I/O CQEs from the IRQ top-half.
+// Returns nil, nil if no block ring is set up.
 //
 //go:nosplit
-func GetIOUringSlotForIRQ() (*IOUringSlot, *iouring.IORing) {
-	ringID := atomic.LoadInt32(&IOUringBlockedRingID)
-	if ringID < 0 || ringID >= MaxIORings {
-		return nil, nil
+func GetIOUringSlotForBlockIRQ() (*IOUringSlot, *iouring.IORing) {
+	for i := 0; i < MaxIORings; i++ {
+		slot := &IOUringTable[i]
+		if slot.KVA != 0 && slot.DeviceType == IOUringDeviceBlock {
+			ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
+			return slot, ring
+		}
 	}
-	slot := &IOUringTable[ringID]
-	if slot.KVA == 0 {
-		return nil, nil
+	return nil, nil
+}
+
+// GetIOUringSlotForInputIRQ returns the input device ring slot and IORing
+// pointer for writing HID event CQEs from the IRQ top-half.
+// Returns nil, nil if no input ring is set up.
+//
+//go:nosplit
+func GetIOUringSlotForInputIRQ() (*IOUringSlot, *iouring.IORing) {
+	for i := 0; i < MaxIORings; i++ {
+		slot := &IOUringTable[i]
+		if slot.KVA != 0 && slot.DeviceType == IOUringDeviceInput {
+			ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
+			return slot, ring
+		}
 	}
-	ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
-	return slot, ring
+	return nil, nil
 }
 
 // --- Accessor functions for ksyscall via go:linkname ---
@@ -240,6 +269,14 @@ func IOUringSlotOwnerSID(ringID int) int16 {
 	return IOUringTable[ringID].OwnerSID
 }
 
+// IOUringSlotDeviceType returns the device type for a ring slot.
+func IOUringSlotDeviceType(ringID int) uint8 {
+	if ringID < 0 || ringID >= MaxIORings {
+		return 0
+	}
+	return IOUringTable[ringID].DeviceType
+}
+
 // GetIOUringSlot returns a pointer to the ring slot (as unsafe.Pointer for ksyscall).
 func GetIOUringSlot(ringID int) unsafe.Pointer {
 	if ringID < 0 || ringID >= MaxIORings {
@@ -250,7 +287,7 @@ func GetIOUringSlot(ringID int) unsafe.Pointer {
 
 // SetupIOUringSlot initializes a ring slot after the ksyscall handler has
 // pinned the page and mapped the KVA.
-func SetupIOUringSlot(ringID int, kva, pa uintptr, ownerSID int16) {
+func SetupIOUringSlot(ringID int, kva, pa uintptr, ownerSID int16, deviceType uint8) {
 	if ringID < 0 || ringID >= MaxIORings {
 		return
 	}
@@ -259,6 +296,7 @@ func SetupIOUringSlot(ringID int, kva, pa uintptr, ownerSID int16) {
 		PA:         pa,
 		OwnerSID:   ownerSID,
 		BlockedTID: -1,
+		DeviceType: deviceType,
 	}
 }
 

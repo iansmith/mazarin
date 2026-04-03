@@ -123,7 +123,7 @@ var timerDiagCount uint64
 // budget. Set by SetupTopHalfTimeUpdate after kernel attrs are published.
 var topHalfTimeUpdateHook func()
 
-// topHalfTimeUpdateAndFlush updates time/modifier attributes and wakes any
+// topHalfTimeUpdateAndFlush updates time attributes and wakes any
 // threads blocked on WaitDirty. Must be called with schedulerLock held.
 //
 //go:nosplit
@@ -1170,7 +1170,7 @@ func ProcessDeadlinesTopHalf() {
 	if ioFn != nil {
 		ioFn()
 	}
-	// Update time/modifier attributes and propagate dirty notifications
+	// Update time attributes and propagate dirty notifications
 	// at ~10Hz (counter-based threshold). Called through function pointer
 	// to keep nosplit stack budget within limits — the checker cannot trace
 	// indirect calls, and our exception stack is large enough for the actual
