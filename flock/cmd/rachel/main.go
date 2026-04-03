@@ -19,6 +19,7 @@ import (
 	"mazzy/mazarin/vm/flat"
 	"mazzy/shared/hid"
 	"mazzy/shared/wm"
+	"mazzy/shep"
 	"os"
 	"runtime"
 	"strconv"
@@ -451,7 +452,7 @@ var trackedApps = make(map[int]*trackedApp)
 // AppWindow Bounds rectangle. Returns nil if the shepherd is not Ready
 // or has no Bounds attribute (shepherd probably crashed).
 func trackAppBounds(sid int) *trackedApp {
-	sidStr := strconv.Itoa(sid)
+	sidStr := shep.NewFromInt16(int16(sid)).Id()
 
 	// Gate on Ready — the shepherd must have published Ready=true before
 	// we read any of its constraint attributes.

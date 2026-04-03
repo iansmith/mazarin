@@ -10,7 +10,6 @@ import (
 	"image/color"
 	"os"
 	"runtime"
-	"strconv"
 	"unsafe"
 
 	"golang.org/x/image/font"
@@ -250,8 +249,8 @@ func main() {
 	}
 	rachelSID := sys.MustGetShepherdByName("rachel")
 	fsSID := sys.MustGetShepherdByName("fs")
-	fc := fontcache.New(rachelSID)
-	ipcClient := newFsIPCClient(fsSID)
+	fc := fontcache.New(int(rachelSID.Sid()))
+	ipcClient := newFsIPCClient(int(fsSID.Sid()))
 	go mailboxRecvLoop(fc, ipcClient)
 	ipcClient.sendInit()
 	fonts := &mancini.FontConfig{
@@ -343,12 +342,11 @@ func main() {
 	_ = appLH.Bounds.Get()
 
 	// 8. Rachel is already confirmed ready (step 2b). Announce to WM.
-	announceToWM(rachelSID)
+	announceToWM(int(rachelSID.Sid()))
 
 	var posXAttr, posYAttr *attr.Attribute[int64]
-	rachelSIDStr := strconv.Itoa(rachelSID)
-	vaXURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/x"
-	vaYURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/y"
+	vaXURI := attr.ShepherdURIFor(rachelSID, "int64", "visibleArea/x")
+	vaYURI := attr.ShepherdURIFor(rachelSID, "int64", "visibleArea/y")
 
 	// Stdio left-aligns: X = visibleArea.x, Y = visibleArea.y.
 	xProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaXURI)

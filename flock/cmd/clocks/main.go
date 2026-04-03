@@ -20,7 +20,6 @@ import (
 	"mazzy/mazarin/sys"
 	"mazzy/shared/wm"
 	"os"
-	"strconv"
 	"unsafe"
 )
 
@@ -41,7 +40,7 @@ func announceToWM() {
 	rachelSID := sys.MustGetShepherdByName("rachel")
 
 	myPID := os.Getpid()
-	rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
+	rb, err := ringbuf.New(int(rachelSID.Sid()), 0, wm.SizeWMMessage, wm.DefaultSlotCount)
 	if err != nil {
 		sys.UartWriteString("[clocks] ring buffer creation failed: " + err.Error() + "\n")
 		return
@@ -52,7 +51,7 @@ func announceToWM() {
 	msg.SID = int64(myPID)
 	rb.Push(unsafe.Pointer(&msg))
 
-	if err := sys.MailboxSend(rachelSID, wm.WMNotify, rb.Addr()); err != nil {
+	if err := sys.MailboxSend(int(rachelSID.Sid()), wm.WMNotify, rb.Addr()); err != nil {
 		sys.UartWriteString("[clocks] MailboxSend failed: " + err.Error() + "\n")
 		return
 	}
@@ -102,7 +101,7 @@ func main() {
 		panic(fmt.Sprintf("[clocks] FATAL: linux: %v", err))
 	}
 	rachelSID := sys.MustGetShepherdByName("rachel")
-	fc := fontcache.New(rachelSID)
+	fc := fontcache.New(int(rachelSID.Sid()))
 
 	// Start mailbox receiver early so FontResponse notifications are processed
 	// while OpenFace blocks waiting for replies.
@@ -280,11 +279,10 @@ func main() {
 
 	// Use rachel's SID to read her visibleArea attributes.
 	var posXAttr, posYAttr *attr.Attribute[int64]
-	if rachelSID >= 0 {
-		rachelSIDStr := strconv.Itoa(rachelSID)
-		vaXURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/x"
-		vaYURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/y"
-		vaWURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/w"
+	if rachelSID.Sid() >= 0 {
+		vaXURI := attr.ShepherdURIFor(rachelSID, "int64", "visibleArea/x")
+		vaYURI := attr.ShepherdURIFor(rachelSID, "int64", "visibleArea/y")
+		vaWURI := attr.ShepherdURIFor(rachelSID, "int64", "visibleArea/w")
 
 		// X = visibleArea.x + visibleArea.w - appWindow.Width (right-align)
 		xProg := mancini.BindStrings(mancini.ProgAddSubDeref,

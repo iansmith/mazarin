@@ -8,8 +8,8 @@ package attr
 import (
 	"mazzy/mazarin/vm/flat"
 	"mazzy/shared/constants"
+	"mazzy/shep"
 	"os"
-	"strconv"
 	"unsafe"
 )
 
@@ -50,7 +50,7 @@ func Init() {
 	}
 
 	trieBase, trieCap = flat.ReadTrieRegion(sharedBase)
-	sidStr = strconv.Itoa(os.Getpid())
+	sidStr = shep.NewFromInt16(int16(os.Getpid())).Id()
 	attrInitialized = true
 }
 
@@ -63,6 +63,11 @@ func SID() string {
 // ShepherdURI builds a URI for this shepherd: attr:///shepherd/{sid}/{typePath}/{rest}.
 func ShepherdURI(typePath, rest string) string {
 	return "attr:///shepherd/" + sidStr + "/" + typePath + "/" + rest
+}
+
+// ShepherdURIFor builds a URI for a different shepherd using its shep.Id.
+func ShepherdURIFor(si shep.Id, typePath, rest string) string {
+	return "attr:///shepherd/" + si.Id() + "/" + typePath + "/" + rest
 }
 
 // trieNode returns a read-only pointer to the TrieNode at the given index.

@@ -4,17 +4,49 @@ import (
 	"errors"
 	"mazzy/shared/hid"
 	"mazzy/shared/mazzy"
+	"mazzy/shep"
 	"syscall"
 	"unsafe"
 )
 
+// ShepherdEntry is the clean userspace representation of a running shepherd.
+type ShepherdEntry struct {
+	Id       shep.Id  // Fully-hydrated identifier (Sid, word-triple Id, and Name all populated)
+	Filename string   // Launch filename (e.g. "/rachel.elf")
+	Threads  []int16  // TIDs of threads belonging to this shepherd
+}
+
 // ShepherdInfo returns information about all running shepherds.
-// Each entry includes the shepherd's PID, thread count, thread IDs,
-// launch filename, and number of mapped pages.
-func ShepherdInfo() ([]hid.ShepherdInfoEntry, error) {
+func ShepherdInfo() ([]ShepherdEntry, error) {
+	raw, err := rawShepherdInfo()
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]ShepherdEntry, len(raw))
+	for i, e := range raw {
+		si := shep.NewFromInt16(e.PID)
+		if e.NameLen > 0 {
+			name := string(e.Name[:e.NameLen])
+			si = si.WithName(name)
+		}
+		var threads []int16
+		for _, tid := range e.ThreadIDs {
+			if tid != -1 {
+				threads = append(threads, tid)
+			}
+		}
+		entries[i] = ShepherdEntry{
+			Id:      si,
+			Filename: string(e.Filename[:e.FilenameLen]),
+			Threads: threads,
+		}
+	}
+	return entries, nil
+}
+
+// rawShepherdInfo returns the raw wire-format entries from the kernel.
+func rawShepherdInfo() ([]hid.ShepherdInfoEntry, error) {
 	var buf [32]hid.ShepherdInfoEntry
-	// Touch every page of the buffer to ensure demand faults fire before
-	// the kernel's CopyToUser writes to these addresses.
 	entrySize := unsafe.Sizeof(buf[0])
 	for i := range buf {
 		p := (*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(&buf[0])) + uintptr(i)*entrySize))

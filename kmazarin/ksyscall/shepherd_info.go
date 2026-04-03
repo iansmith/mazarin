@@ -39,6 +39,14 @@ func SyscallShepherdInfo(bufPtr, maxEntries, _, _, _, _ uint64) int64 {
 		copy(entry.Filename[:n], p.Filename)
 		entry.FilenameLen = uint8(n)
 
+		// Copy TOML launch name
+		nn := int(p.NameLen)
+		if nn > len(entry.Name) {
+			nn = len(entry.Name)
+		}
+		copy(entry.Name[:nn], p.Name[:nn])
+		entry.NameLen = int16(nn)
+
 		// Gather thread IDs belonging to this shepherd
 		for j := range entry.ThreadIDs {
 			entry.ThreadIDs[j] = -1 // sentinel for unused slots

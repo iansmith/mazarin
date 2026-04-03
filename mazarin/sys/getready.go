@@ -1,12 +1,15 @@
 package sys
 
-import "mazzy/shared/mazzy"
+import (
+	"mazzy/shared/mazzy"
+	"mazzy/shep"
+)
 
-// GetReady checks whether the shepherd with the given SID has signaled ready
+// GetReady checks whether the shepherd identified by si has signaled ready
 // via SetReady. Returns true if the shepherd is found and ready.
-func GetReady(sid int) bool {
+func GetReady(si shep.Id) bool {
 	r1, _, _ := RawSyscall(mazzy.SysGetReady,
-		uintptr(sid),
+		uintptr(si.Sid()),
 		0,
 		0, 0, 0, 0,
 	)
