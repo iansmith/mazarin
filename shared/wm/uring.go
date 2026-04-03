@@ -70,6 +70,7 @@ type MousePress struct {
 	X      int32
 	Y      int32
 	Button int32
+	Mods   uint64 // modifier key bitmask (hid.ModXxx)
 }
 
 // MouseRelease is sent by rachel to a shepherd when a mouse button is released.
@@ -77,22 +78,28 @@ type MouseRelease struct {
 	X      int32
 	Y      int32
 	Button int32
+	Mods   uint64 // modifier key bitmask (hid.ModXxx)
 }
 
 // MouseMove is sent by rachel to a shepherd while a button is held.
 type MouseMove struct {
-	X int32
-	Y int32
+	X    int32
+	Y    int32
+	Mods uint64 // modifier key bitmask (hid.ModXxx)
 }
 
 // KeyPress is sent by rachel to a shepherd when a key is pressed.
 type KeyPress struct {
 	Code uint16
+	_    [3]uint16 // pad to 8-byte alignment for Mods
+	Mods uint64    // modifier key bitmask (hid.ModXxx)
 }
 
 // KeyRelease is sent by rachel to a shepherd when a key is released.
 type KeyRelease struct {
 	Code uint16
+	_    [3]uint16 // pad to 8-byte alignment for Mods
+	Mods uint64    // modifier key bitmask (hid.ModXxx)
 }
 
 // --- Encode functions (typed struct → UringIPCMsg) ---

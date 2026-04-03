@@ -115,48 +115,53 @@ func buttonName(code uint16) string {
 	}
 }
 
-// processInputEvent handles a single HID event from the shared completion ring.
-// Classifies the event (keyboard, mouse button, mouse movement) and processes
-// it in userspace, replacing the former keyboardLoop/mouseClickLoop/mouseMovementLoop
-// goroutines.
-func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
+// processRawEvent handles pre-dispatch processing for a single HID event:
+// modifier state tracking, cursor position accumulation, repeat suppression.
+// For EV_KEY events (keyboard and mouse buttons), it creates an InputEvent
+// and dispatches through the subArctic pipeline.
+func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.ModifierState,
+	posChanged *bool, km *input.Keymap, wmd *wmDispatch) {
+
 	switch ev.Type {
 	case EV_KEY:
+		// Update modifier state; consume modifier key events (not forwarded).
+		if input.IsModifierKey(ev.Code) {
+			modState.Update(ev.Code, ev.Value == 1)
+			return
+		}
+
 		if ev.Code < BTN_LEFT {
-			// Keyboard event
-			code := ev.Code
-			fmt.Printf("[rachel:input] key code=%d (%s) value=%d\n", code, keyName(code), ev.Value)
-			if ev.Value == 1 { // press
-				if code < 256 && keyHeld[code] {
-					return // suppress repeat (already held)
-				}
-				if code < 256 {
-					keyHeld[code] = true
-				}
-				// WM hotkey interception — consume and do not forward.
-				if code == KEY_F1 {
-					cycleFocus()
+			// Keyboard: suppress repeats.
+			if ev.Value == 1 {
+				if ev.Code < 256 && keyHeld[ev.Code] {
 					return
 				}
-				forwardKeyboardEvent(code, true)
-			} else if ev.Value == 0 { // release
-				if code < 256 {
-					keyHeld[code] = false
+				if ev.Code < 256 {
+					keyHeld[ev.Code] = true
 				}
-				// Suppress release for consumed hotkeys.
-				if code == KEY_F1 {
-					return
+			} else if ev.Value == 0 {
+				if ev.Code < 256 {
+					keyHeld[ev.Code] = false
 				}
-				forwardKeyboardEvent(code, false)
-				return
 			} else {
 				return // skip value=2 (explicit repeat)
 			}
-			ke := input.KeyEvent{
-				Code:    code,
-				Pressed: true,
-				Repeat:  false,
-			}
+		}
+
+		// Dispatch through the subArctic pipeline.
+		inputEv := &input.InputEvent{
+			Type:  ev.Type,
+			Code:  ev.Code,
+			Value: ev.Value,
+			X:     mouseX,
+			Y:     mouseY,
+			Mods:  modState.Mods(),
+		}
+		wmd.dispatcher.Dispatch(inputEv)
+
+		// Debug: echo keyboard characters to serial console.
+		if ev.Code < BTN_LEFT && ev.Value == 1 {
+			ke := input.KeyEvent{Code: ev.Code, Pressed: true}
 			ch, action := km.Feed(ke)
 			if ch != 0 {
 				switchInput(inputKeyboard)
@@ -170,38 +175,6 @@ func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
 			} else if action == "tab" {
 				switchInput(inputKeyboard)
 				fmt.Print("\t")
-			}
-		} else {
-			// Mouse button event
-			x, y := mouseX, mouseY
-			if ev.Value == 1 { // press
-				// Focus-change-on-click: clicking a different window
-				// switches focus. Clicking empty space (rachel's desktop)
-				// clears focus so rachel can handle WM-level interactions.
-				hit := pickWindow(int64(x), int64(y))
-				if hit < 0 {
-					// Desktop click — defocus current window.
-					if focusedSID >= 0 {
-						if _, ok := trackedApps[focusedSID]; ok {
-							msg := wm.EncodeYouLostFocus()
-							_ = uring.Send(focusedSID, &msg)
-						}
-						focusedSID = -1
-					}
-					mouseButtonHeld = int32(ev.Code)
-					// TODO: rachel desktop click handling (context menu, etc.)
-					return
-				}
-				if hit != focusedSID {
-					changeFocus(hit)
-				}
-				mouseButtonHeld = int32(ev.Code)
-				fmt.Printf("[rachel:input] mouse press %s at (%d,%d)\n", buttonName(ev.Code), x, y)
-				forwardMouseEvent(wm.MsgMousePress, x, y, int32(ev.Code))
-			} else if ev.Value == 0 { // release
-				mouseButtonHeld = 0
-				fmt.Printf("[rachel:input] mouse release %s at (%d,%d)\n", buttonName(ev.Code), x, y)
-				forwardMouseEvent(wm.MsgMouseRelease, x, y, int32(ev.Code))
 			}
 		}
 
@@ -226,6 +199,7 @@ func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
 		case REL_WHEEL:
 			switchInput(inputWheel)
 		}
+		*posChanged = true
 
 	case EV_ABS:
 		switch ev.Code {
@@ -234,49 +208,7 @@ func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
 		case hid.AbsY:
 			mouseY = int32((uint32(ev.Value) * uint32(displayHeight)) / (hid.AbsMax + 1))
 		}
-	}
-}
-
-// forwardKeyboardEvent sends a key press or release to the focused shepherd.
-func forwardKeyboardEvent(code uint16, pressed bool) {
-	sid := focusedSID
-	if sid < 0 {
-		return
-	}
-	if _, ok := trackedApps[sid]; !ok {
-		return
-	}
-	var msg ipc.UringIPCMsg
-	if pressed {
-		msg = wm.EncodeKeyPress(&wm.KeyPress{Code: code})
-	} else {
-		msg = wm.EncodeKeyRelease(&wm.KeyRelease{Code: code})
-	}
-	if err := uring.Send(sid, &msg); err != nil {
-		fmt.Fprintf(os.Stderr, "[rachel:kbd] uring.Send to SID %d failed: %v\n", sid, err)
-	}
-}
-
-// forwardMouseEvent sends a mouse event to the focused shepherd.
-func forwardMouseEvent(msgType int64, x, y, button int32) {
-	sid := focusedSID
-	if sid < 0 {
-		return
-	}
-	if _, ok := trackedApps[sid]; !ok {
-		return
-	}
-	var msg ipc.UringIPCMsg
-	switch msgType {
-	case wm.MsgMousePress:
-		msg = wm.EncodeMousePress(&wm.MousePress{X: x, Y: y, Button: button})
-	case wm.MsgMouseRelease:
-		msg = wm.EncodeMouseRelease(&wm.MouseRelease{X: x, Y: y, Button: button})
-	case wm.MsgMouseMove:
-		msg = wm.EncodeMouseMove(&wm.MouseMove{X: x, Y: y})
-	}
-	if err := uring.Send(sid, &msg); err != nil {
-		fmt.Fprintf(os.Stderr, "[rachel:mouse] uring.Send to SID %d failed: %v\n", sid, err)
+		*posChanged = true
 	}
 }
 
@@ -290,10 +222,6 @@ var cursorIsInverse bool // current cursor state
 var mouseX int32
 var mouseY int32
 
-// mouseButtonHeld tracks whether any mouse button is currently held.
-// Set by mouseClickLoop on press, cleared on release.
-// Read by mouseMovementLoop to decide whether to forward moves.
-var mouseButtonHeld int32 // 0 = no button held, >0 = button code
 
 // displayWidth and displayHeight are set at startup from kernel's screen
 // dimension attributes. Mouse clamping and tablet mapping use these values.
@@ -450,12 +378,22 @@ func pointInAnyAppBounds(x, y int64) bool {
 	return pickWindow(x, y) >= 0
 }
 
-// postBatchInputUpdate runs after draining a full batch of input events from
-// the shared ring. Handles mouse move forwarding and cursor state.
-func postBatchInputUpdate() {
-	// Forward move to focused shepherd while a button is held.
-	if mouseButtonHeld != 0 {
-		forwardMouseEvent(wm.MsgMouseMove, mouseX, mouseY, 0)
+// postBatchInputUpdate runs after draining a full batch of input events.
+// Dispatches a synthetic mouse-move event if the cursor moved (for drag
+// forwarding via the DragAgent) and updates cursor appearance.
+func postBatchInputUpdate(posChanged *bool, modState *input.ModifierState, wmd *wmDispatch) {
+	if *posChanged {
+		// Dispatch synthetic mouse-move through the pipeline.
+		// The DragAgent (focus policy) will forward to the drag target
+		// if a drag is active; otherwise the event is not consumed.
+		moveEv := &input.InputEvent{
+			Type: input.EvMouseMove,
+			X:    mouseX,
+			Y:    mouseY,
+			Mods: modState.Mods(),
+		}
+		wmd.dispatcher.Dispatch(moveEv)
+		*posChanged = false
 	}
 
 	// Check cursor state (inverse when over app bounds).
@@ -493,6 +431,7 @@ type trackedApp struct {
 	appWidth     int32                      // client drawing area width
 	appHeight    int32                      // client drawing area height
 	zOrder       int                        // higher = on top; assigned at AppStart
+	interactor   *WindowInteractor          // dispatch target for this window
 }
 
 // focusedSID is the SID of the shepherd that currently has input focus.
@@ -655,11 +594,13 @@ func forceFontSvcItab(v interface{}) {
 }
 
 // wmEventLoop receives typed WM messages from the uring Dispatcher (wmCh)
-// and HID events from the InputAcquirer (inputCh).
-func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent) {
+// and HID events from the InputAcquirer (inputCh). Input is dispatched
+// through the subArctic-style policy/agent pipeline built by buildDispatcher.
+func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) {
 	sys.UartWriteString("[rachel:wm] event loop started\n")
 	var km input.Keymap
 	var keyHeld [256]bool
+	var modState input.ModifierState
 	var rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents int64
 	var rachelNotifyCount int64
 
@@ -683,11 +624,16 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent) {
 				}
 				ta := trackedApps[senderSID]
 
+				// Create a WindowInteractor for this shepherd.
+				ta.interactor = &WindowInteractor{ta: ta}
+
 				// If client didn't specify a window size, skip backing store setup.
 				// (linux shepherd draws directly to framebuffer, doesn't need one.)
 				if msg.Width <= 0 || msg.Height <= 0 {
 					sys.UartWriteString("[rachel:wm] no window size, skipping backing store\n")
 					changeFocus(senderSID)
+					// Update keyboard forward agent's focus to new window.
+					wmd.keyFwd.SetFocus(ta.interactor)
 					continue
 				}
 
@@ -761,6 +707,8 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent) {
 
 				// Grant focus to this new shepherd.
 				changeFocus(senderSID)
+				// Update keyboard forward agent's focus to new window.
+				wmd.keyFwd.SetFocus(ta.interactor)
 
 				// Initial blit (all windows, z-ordered).
 				blitAllWindows()
@@ -800,7 +748,8 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent) {
 
 		case ev := <-inputCh:
 			rachelHIDEvents++
-			processInputEvent(ev, &km, &keyHeld)
+			var posChanged bool
+			processRawEvent(ev, &keyHeld, &modState, &posChanged, &km, wmd)
 
 			// Drain any remaining buffered events before blocking again.
 			drained := 1
@@ -808,7 +757,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent) {
 			for {
 				select {
 				case ev2 := <-inputCh:
-					processInputEvent(ev2, &km, &keyHeld)
+					processRawEvent(ev2, &keyHeld, &modState, &posChanged, &km, wmd)
 					drained++
 				default:
 					break drainLoop
@@ -820,7 +769,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent) {
 				sys.UartWriteString(fmt.Sprintf("[rachel:input] wakeups=%d events=%d\n",
 					inputWakeups, inputEventsProcessed))
 			}
-			postBatchInputUpdate()
+			postBatchInputUpdate(&posChanged, &modState, wmd)
 		}
 	}
 }
@@ -939,9 +888,12 @@ func main() {
 	disp.Start()
 	runtime.Gosched()
 
+	// Build the subArctic input dispatch pipeline.
+	wmd := buildDispatcher()
+
 	// Start WM event loop — receives typed messages from uring Dispatcher
 	// and HID events from the InputAcquirer.
-	go wmEventLoop(wmCh, inputAcq.Events())
+	go wmEventLoop(wmCh, inputAcq.Events(), wmd)
 	runtime.Gosched()
 
 	// Publish ready status to constraint network using the well-known URI.
