@@ -30,11 +30,13 @@ var nextUringID uint64 = 1
 
 // UringIPCSlot holds per-shepherd kernel state for the IPC ring.
 type UringIPCSlot struct {
-	KVA        [ipc.UringIPCPagesNeeded]uintptr // kernel VAs for the 3 ring pages
-	PA         [ipc.UringIPCPagesNeeded]uintptr // physical addresses for cleanup
-	OwnerSID   int16                            // shepherd that consumes from this ring (-1 = unused)
-	BlockedTID int16                            // TID blocked in SysUringRecv (-1 = none)
-	BlockedPtr uintptr                          // *Thread as uintptr (nosplit-safe pointer)
+	KVA          [ipc.UringIPCPagesNeeded]uintptr // kernel VAs for the 3 ring pages
+	PA           [ipc.UringIPCPagesNeeded]uintptr // physical addresses for cleanup
+	OwnerSID     int16                            // shepherd that consumes from this ring (-1 = unused)
+	BlockedTID   int16                            // TID blocked in SysUringRecv (-1 = none)
+	BlockedPtr   uintptr                          // *Thread as uintptr (nosplit-safe pointer)
+	RingRefCount int32                            // number of connections targeting this ring
+	Dead         bool                             // owner terminated; pages freed when RingRefCount reaches 0
 }
 
 var uringIPCSlots [proc.MaxShepherds]UringIPCSlot
@@ -233,12 +235,15 @@ func DoUringConnectWork(req *UringConnectWorkRequest) int64 {
 				RefCount:      1,
 				TargetRingKVA: slot.KVA[0],
 			}
+			slot.RingRefCount++
 			serial.RawUARTPuts("[UringIPC] Connect: new handle=")
 			serial.RawUARTDecimal(uint64(i))
 			serial.RawUARTPuts(" caller=")
 			serial.RawUARTDecimal(uint64(req.CallerSID))
 			serial.RawUARTPuts(" target=")
 			serial.RawUARTDecimal(uint64(targetSID))
+			serial.RawUARTPuts(" ringRef=")
+			serial.RawUARTDecimal(uint64(slot.RingRefCount))
 			serial.RawUARTPuts("\r\n")
 			return int64(i)
 		}
@@ -302,8 +307,8 @@ func UringSendKernel(senderSID, targetSID int16, msgKVA uintptr) (int64, uintptr
 	}
 
 	slot := &uringIPCSlots[targetSID]
-	if slot.OwnerSID != targetSID || slot.KVA[0] == 0 {
-		return -3, 0 // ESRCH — no ring for target
+	if slot.OwnerSID != targetSID || slot.KVA[0] == 0 || slot.Dead {
+		return -3, 0 // ESRCH — no ring for target (or owner dead)
 	}
 
 	hdr := ringHeader(slot)
@@ -548,11 +553,22 @@ func ReleaseUringConnection(handle int, callerSID int16) int64 {
 
 	conn.RefCount--
 	if conn.RefCount <= 0 {
+		targetSID := conn.TargetSID
 		conn.InUse = false
 		conn.CallerSID = -1
 		conn.TargetSID = -1
 		conn.RefCount = 0
 		conn.TargetRingKVA = 0
+
+		// Decrement target ring's refcount. If the ring owner is dead
+		// and this was the last reference, free the ring pages.
+		if targetSID >= 0 && int(targetSID) < proc.MaxShepherds {
+			slot := &uringIPCSlots[targetSID]
+			slot.RingRefCount--
+			if slot.Dead && slot.RingRefCount <= 0 {
+				freeUringRingPages(slot)
+			}
+		}
 	}
 
 	return 0
@@ -562,17 +578,40 @@ func ReleaseUringConnection(handle int, callerSID int16) int64 {
 // Cleanup (called from TerminateShepherd)
 // ============================================================================
 
-// CleanupUringIPCForShepherd releases all uring IPC resources for a dying shepherd.
+// freeUringRingPages releases the physical pages backing a shepherd's uring ring
+// and zeroes the slot. Called when the ring owner is dead and all references
+// (connections targeting this ring) have been released.
+func freeUringRingPages(slot *UringIPCSlot) {
+	for i := 0; i < ipc.UringIPCPagesNeeded; i++ {
+		if slot.PA[i] != 0 {
+			kmem.ReleasePageByPA(slot.PA[i])
+			slot.PA[i] = 0
+			slot.KVA[i] = 0
+		}
+	}
+	slot.OwnerSID = -1
+	slot.Dead = false
+	slot.RingRefCount = 0
+}
+
+// CleanupUringIPCForShepherd handles uring teardown when a shepherd dies.
+//
+// 1. Wake any thread blocked in SysUringRecv on the dying shepherd's ring.
+// 2. Send ProtoDeath to all peers that hold connections TO the dead shepherd.
+// 3. Free all connections FROM the dead shepherd (decrement target ring refcounts).
+// 4. Mark ring Dead. Free pages only if RingRefCount is already 0.
+// 5. Clear the uring ID map entry.
 func CleanupUringIPCForShepherd(sid int16) {
 	if sid < 0 || int(sid) >= proc.MaxShepherds {
 		return
 	}
 
-	// Wake any thread blocked on this shepherd's uring
+	slot := &uringIPCSlots[sid]
+
+	// 1. Wake any thread blocked on the dying shepherd's uring.
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
-	slot := &uringIPCSlots[sid]
 	if slot.BlockedTID >= 0 {
 		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 		if t != nil && t.State == ThreadBlockedUringRecv {
@@ -586,26 +625,57 @@ func CleanupUringIPCForShepherd(sid int16) {
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 
-	// Release ring pages
-	for i := 0; i < ipc.UringIPCPagesNeeded; i++ {
-		if slot.PA[i] != 0 {
-			kmem.ReleasePageByPA(slot.PA[i])
-			slot.PA[i] = 0
-			slot.KVA[i] = 0
-		}
-	}
-	slot.OwnerSID = -1
-
-	// Clear connections involving this shepherd
+	// 2. Send ProtoDeath to peers connected TO the dead shepherd.
+	// These are connections where TargetSID == sid (someone else connected to us).
+	deathMsg := ipc.EncodeDeathNotification(sid)
 	for i := range uringConnections {
-		if uringConnections[i].InUse &&
-			(uringConnections[i].CallerSID == sid || uringConnections[i].TargetSID == sid) {
-			uringConnections[i].InUse = false
-			uringConnections[i].RefCount = 0
+		conn := &uringConnections[i]
+		if conn.InUse && conn.TargetSID == sid {
+			// Deliver death notification to the caller's ring.
+			KernelWriteToRing(conn.CallerSID, &deathMsg)
 		}
 	}
 
-	// Clear ID map entry
+	// 3. Free connections FROM the dead shepherd (we can no longer Release them).
+	// Also free connections TO the dead shepherd (peers will Release later,
+	// but the connection is useless now — sends will fail with ESRCH).
+	for i := range uringConnections {
+		conn := &uringConnections[i]
+		if !conn.InUse {
+			continue
+		}
+		if conn.CallerSID == sid {
+			// Connection FROM the dead shepherd to some target.
+			// Decrement target ring's refcount.
+			targetSID := conn.TargetSID
+			if targetSID >= 0 && int(targetSID) < proc.MaxShepherds {
+				targetSlot := &uringIPCSlots[targetSID]
+				targetSlot.RingRefCount--
+				if targetSlot.Dead && targetSlot.RingRefCount <= 0 {
+					freeUringRingPages(targetSlot)
+				}
+			}
+			conn.InUse = false
+			conn.RefCount = 0
+			conn.CallerSID = -1
+			conn.TargetSID = -1
+			conn.TargetRingKVA = 0
+		} else if conn.TargetSID == sid {
+			// Connection TO the dead shepherd. Mark it dead so sends fail.
+			// Don't free the connection — the caller owns it and will Release.
+			// But decrement our ring's refcount now.
+			slot.RingRefCount--
+		}
+	}
+
+	// 4. Mark ring Dead. Free pages only if no outstanding references.
+	if slot.RingRefCount <= 0 {
+		freeUringRingPages(slot)
+	} else {
+		slot.Dead = true
+	}
+
+	// 5. Clear the ID map entry.
 	for i := range uringIDMap {
 		if uringIDMap[i].InUse && uringIDMap[i].SID == sid {
 			uringIDMap[i].InUse = false
@@ -614,5 +684,10 @@ func CleanupUringIPCForShepherd(sid int16) {
 
 	serial.RawUARTPuts("[UringIPC] cleaned for shepherd ")
 	serial.RawUARTDecimal(uint64(sid))
+	if slot.Dead {
+		serial.RawUARTPuts(" (deferred, ringRef=")
+		serial.RawUARTDecimal(uint64(slot.RingRefCount))
+		serial.RawUARTPuts(")")
+	}
 	serial.RawUARTPuts("\r\n")
 }

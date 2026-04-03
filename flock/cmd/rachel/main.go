@@ -928,6 +928,11 @@ func main() {
 	hidCh := make(chan any, 4)
 	disp.On(ipc.ProtoHIDNotify, decodeHIDNotify, hidCh)
 
+	// Handle peer death — remove the dead shepherd from tracked state.
+	disp.OnDeath(func(deadSID int16) {
+		sys.UartWriteString(fmt.Sprintf("[rachel] shepherd %d died\n", deadSID))
+	})
+
 	disp.Start()
 	runtime.Gosched()
 

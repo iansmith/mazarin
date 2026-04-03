@@ -159,10 +159,9 @@ func main() {
 		fmt.Printf("[fs] AllocContiguous for scratch failed: %v\n", scratchErr)
 		os.Exit(1)
 	}
-	// 4. Create block device and start mailbox loop BEFORE mounting.
+	// 4. Create block device.
 	blkDev := newAsyncBlockDev(scratch.Addr, ioRing, ringID)
-	ipc := newFsIPC()
-	go ipc.mailboxLoop()
+	ipcSrv := newFsIPCServer()
 
 	fsys, mountErr := ext2.Mount(blkDev)
 	if mountErr != nil {
@@ -196,14 +195,20 @@ func main() {
 
 	// 5. Register as delegate handler for LoadFile and ReadFilePages.
 	// Requests arrive via uring Dispatcher (ProtoFSDelegateReq).
+	// Shepherd file operations arrive via ProtoFSIPCReq.
 	err = sys.RegisterSyscallHandlers(sysid.LoadFile, sysid.ReadFilePages)
 	if err != nil {
 		fmt.Printf("[fs] RegisterSyscallHandlers failed: %v\n", err)
 		os.Exit(1)
 	}
 	fsDelegateCh := make(chan any, 8)
+	fsIPCCh := make(chan any, 8)
 	fsDisp := uring.NewDispatcher()
 	fsDisp.On(uringipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, fsDelegateCh)
+	fsDisp.On(uringipc.ProtoFSIPCReq, DecodeReq, fsIPCCh)
+	fsDisp.OnDeath(func(deadSID int16) {
+		sys.UartWriteString(fmt.Sprintf("[fs] shepherd %d died\n", deadSID))
+	})
 	fsDisp.Start()
 	fmt.Println("[fs] registered as LoadFile + ReadFilePages delegate (uring)")
 
@@ -218,7 +223,7 @@ func main() {
 	// requests during shepherd boot (e.g., rachel loading fontsvc.maz).
 	go bootSequence(fsys)
 
-	// 7. Serve delegate requests + IPC requests.
+	// 7. Serve delegate requests + shepherd IPC requests.
 	// Both are processed in the main goroutine to avoid concurrent
 	// filesystem access (ext2 is not thread-safe).
 	fmt.Println("[fs] entering serve loop")
@@ -235,8 +240,12 @@ func main() {
 			case sysid.ReadFilePages:
 				handleReadFilePages(&req)
 			}
-		case ipcReq := <-ipc.requestCh:
-			ipc.processRequest(&ipcReq, mt)
+		case raw := <-fsIPCCh:
+			req, ok := raw.(fsIPCRequest)
+			if !ok {
+				continue
+			}
+			ipcSrv.processRequest(req, mt)
 		}
 	}
 }
@@ -339,24 +348,7 @@ func handleReadFilePages(req *sys.SyscallRequest) {
 	req.Reply(-38) // ENOSYS
 }
 
-// drainDelegateRequests processes any pending delegate requests between
-// shepherd launches. If a request is found, the caller did not wait for
-// fs readiness — log a warning but serve the request anyway.
-func drainDelegateRequests(delegateCh <-chan sys.SyscallRequest, mt *mountTable) {
-	for {
-		select {
-		case req := <-delegateCh:
-			switch req.SysID {
-			case sysid.LoadFile:
-				handleLoadFile(mt, &req)
-			case sysid.ReadFilePages:
-				handleReadFilePages(&req)
-			}
-		default:
-			return
-		}
-	}
-}
+
 
 // readStartupConfig reads and parses /startup.toml from the ext2 filesystem.
 func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {

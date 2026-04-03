@@ -3,22 +3,22 @@ package main
 import (
 	"encoding/binary"
 
+	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/sys"
-	"mazzy/shared/fs/fsipc"
 	"mazzy/shared/sysid"
 )
 
 // syscallHandler processes delegated file syscalls for the linux shepherd.
-// It owns the FD table and communicates with the fs shepherd via IPC.
+// It owns the FD table and communicates with the fs shepherd via uring IPC.
 type syscallHandler struct {
 	fdt *fdTable
-	ipc *fsIPCClient
+	fs  *fsclient.Client
 }
 
-func newSyscallHandler(ipc *fsIPCClient) *syscallHandler {
+func newSyscallHandler(fs *fsclient.Client) *syscallHandler {
 	return &syscallHandler{
 		fdt: newFDTable(),
-		ipc: ipc,
+		fs:  fs,
 	}
 }
 
@@ -86,11 +86,6 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 	}
 }
 
-// ipcReady returns true if the fs IPC channel is established.
-func (h *syscallHandler) ipcReady() bool {
-	return h.ipc != nil && h.ipc.ready()
-}
-
 // ============================================================
 // Local-only syscalls
 // ============================================================
@@ -106,12 +101,8 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 		req.Reply(EOK)
 		return
 	}
-	// Tell fs to release the handle.
-	if h.ipcReady() && e.handle != 0 {
-		var ipcReq fsipc.Request
-		ipcReq.Op = fsipc.OpClose
-		ipcReq.Handle = e.handle
-		h.ipc.call(&ipcReq)
+	if e.handle != 0 {
+		h.fs.Close(e.handle)
 	}
 	h.fdt.free(fd)
 	req.Reply(EOK)
@@ -176,20 +167,14 @@ func (h *syscallHandler) sysChdir(req sys.SyscallRequest) {
 	}
 	absPath := h.fdt.resolvePath(path)
 
-	if h.ipcReady() {
-		var ipcReq fsipc.Request
-		ipcReq.Op = fsipc.OpResolve
-		fsipc.SetPath(ipcReq.Path[:], absPath)
-		resp := h.ipc.call(&ipcReq)
-		if resp.Err != 0 {
-			req.Reply(int64(resp.Err))
-			return
-		}
-		isDir := resp.Result0
-		if isDir == 0 {
-			req.Reply(ENOTDIR)
-			return
-		}
+	isDir, _, err := h.fs.Resolve(absPath)
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
+		return
+	}
+	if !isDir {
+		req.Reply(ENOTDIR)
+		return
 	}
 
 	h.fdt.cwd = absPath
@@ -205,14 +190,9 @@ func (h *syscallHandler) sysIoctl(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysFsync(req sys.SyscallRequest) {
-	if h.ipcReady() {
-		var ipcReq fsipc.Request
-		ipcReq.Op = fsipc.OpSync
-		resp := h.ipc.call(&ipcReq)
-		if resp.Err != 0 {
-			req.Reply(int64(resp.Err))
-			return
-		}
+	if err := h.fs.Sync(); err != nil {
+		req.Reply(int64(errToErrno(err)))
+		return
 	}
 	req.Reply(EOK)
 }
@@ -235,35 +215,15 @@ func (h *syscallHandler) sysOpenat(req sys.SyscallRequest) {
 		return
 	}
 
-	if !h.ipcReady() {
-		sys.UartWriteString("[linux] openat: IPC not ready\n")
-		req.Reply(ENOSYS)
+	handle, ftype, size, err := h.fs.Open(absPath, uint32(flags), mode)
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
 		return
 	}
-
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpOpen
-	ipcReq.Flags = uint32(flags)
-	ipcReq.Mode = mode
-	fsipc.SetPath(ipcReq.Path[:], absPath)
-
-	resp := h.ipc.call(&ipcReq)
-	if resp.Err != 0 {
-		req.Reply(int64(resp.Err))
-		return
-	}
-
-	handle := uint32(resp.Result0)
-	ftype := uint8(resp.Result1 >> 32)
-	size := uint32(resp.Result1 & 0xFFFFFFFF)
 
 	newFD := h.fdt.alloc(3)
 	if newFD < 0 {
-		// Release the handle on fs side.
-		var closeReq fsipc.Request
-		closeReq.Op = fsipc.OpClose
-		closeReq.Handle = handle
-		h.ipc.call(&closeReq)
+		h.fs.Close(handle)
 		req.Reply(EMFILE)
 		return
 	}
@@ -303,21 +263,17 @@ func (h *syscallHandler) sysFstat(req sys.SyscallRequest) {
 		return
 	}
 
-	if !h.ipcReady() {
-		req.Reply(ENOSYS)
+	fsErr, err := h.fs.Fstat(e.handle)
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
+		return
+	}
+	if fsErr != 0 {
+		req.Reply(int64(fsErr))
 		return
 	}
 
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpFstat
-	ipcReq.Handle = e.handle
-	resp := h.ipc.call(&ipcReq)
-	if resp.Err != 0 {
-		req.Reply(int64(resp.Err))
-		return
-	}
-
-	copy(buf[:128], h.ipc.dataSlice(128))
+	copy(buf[:128], h.fs.DataSlice(128))
 	req.Reply(128)
 }
 
@@ -327,19 +283,15 @@ func (h *syscallHandler) sysFstatat(req sys.SyscallRequest) {
 		req.Reply(EINVAL)
 		return
 	}
-	if !h.ipcReady() {
-		req.Reply(ENOSYS)
-		return
-	}
 
 	absPath := h.fdt.resolvePath(path)
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpStat
-	fsipc.SetPath(ipcReq.Path[:], absPath)
-
-	resp := h.ipc.call(&ipcReq)
-	if resp.Err != 0 {
-		req.Reply(int64(resp.Err))
+	fsErr, err := h.fs.Stat(absPath)
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
+		return
+	}
+	if fsErr != 0 {
+		req.Reply(int64(fsErr))
 		return
 	}
 
@@ -348,7 +300,7 @@ func (h *syscallHandler) sysFstatat(req sys.SyscallRequest) {
 		req.Reply(EFAULT)
 		return
 	}
-	copy(buf[:128], h.ipc.dataSlice(128))
+	copy(buf[:128], h.fs.DataSlice(128))
 	req.Reply(128)
 }
 
@@ -358,17 +310,12 @@ func (h *syscallHandler) sysMkdirat(req sys.SyscallRequest) {
 		req.Reply(EINVAL)
 		return
 	}
-	if !h.ipcReady() {
-		req.Reply(ENOSYS)
+	absPath := h.fdt.resolvePath(path)
+	if err := h.fs.Mkdir(absPath, uint32(req.Args[2])); err != nil {
+		req.Reply(int64(errToErrno(err)))
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpMkdir
-	ipcReq.Mode = uint32(req.Args[2])
-	fsipc.SetPath(ipcReq.Path[:], absPath)
-	resp := h.ipc.call(&ipcReq)
-	req.Reply(int64(resp.Err))
+	req.Reply(EOK)
 }
 
 func (h *syscallHandler) sysUnlinkat(req sys.SyscallRequest) {
@@ -377,16 +324,12 @@ func (h *syscallHandler) sysUnlinkat(req sys.SyscallRequest) {
 		req.Reply(EINVAL)
 		return
 	}
-	if !h.ipcReady() {
-		req.Reply(ENOSYS)
+	absPath := h.fdt.resolvePath(path)
+	if err := h.fs.Remove(absPath); err != nil {
+		req.Reply(int64(errToErrno(err)))
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpRemove
-	fsipc.SetPath(ipcReq.Path[:], absPath)
-	resp := h.ipc.call(&ipcReq)
-	req.Reply(int64(resp.Err))
+	req.Reply(EOK)
 }
 
 func (h *syscallHandler) sysRenameat(req sys.SyscallRequest) {
@@ -408,10 +351,6 @@ func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
 		req.Reply(ENOTDIR)
 		return
 	}
-	if !h.ipcReady() {
-		req.Reply(ENOSYS)
-		return
-	}
 
 	buf := req.DataBuf()
 	if buf == nil {
@@ -419,27 +358,22 @@ func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
 		return
 	}
 
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpReadDir
-	ipcReq.Handle = e.handle
-	ipcReq.Arg0 = uint64(e.offset)
-
-	resp := h.ipc.call(&ipcReq)
-	if resp.Err != 0 {
-		req.Reply(int64(resp.Err))
+	dataLen, entryCount, err := h.fs.ReadDir(e.handle, int(e.offset))
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
 		return
 	}
 
-	n := int(resp.DataLen)
-	if n == 0 {
+	if dataLen == 0 {
 		req.Reply(EOK) // no more entries
 		return
 	}
+	n := dataLen
 	if n > len(buf) {
 		n = len(buf)
 	}
-	copy(buf[:n], h.ipc.dataSlice(n))
-	e.offset += int64(resp.Result0) // entries marshaled
+	copy(buf[:n], h.fs.DataSlice(n))
+	e.offset += int64(entryCount) // entries marshaled
 	req.Reply(int64(n))
 }
 
@@ -449,16 +383,12 @@ func (h *syscallHandler) sysFaccessat(req sys.SyscallRequest) {
 		req.Reply(EINVAL)
 		return
 	}
-	if !h.ipcReady() {
-		req.Reply(ENOSYS)
+	absPath := h.fdt.resolvePath(path)
+	if err := h.fs.Access(absPath); err != nil {
+		req.Reply(int64(errToErrno(err)))
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpAccess
-	fsipc.SetPath(ipcReq.Path[:], absPath)
-	resp := h.ipc.call(&ipcReq)
-	req.Reply(int64(resp.Err))
+	req.Reply(EOK)
 }
 
 func (h *syscallHandler) sysFchmodat(req sys.SyscallRequest) {
@@ -467,17 +397,12 @@ func (h *syscallHandler) sysFchmodat(req sys.SyscallRequest) {
 		req.Reply(EINVAL)
 		return
 	}
-	if !h.ipcReady() {
-		req.Reply(ENOSYS)
+	absPath := h.fdt.resolvePath(path)
+	if err := h.fs.SetMode(absPath, uint32(req.Args[2])); err != nil {
+		req.Reply(int64(errToErrno(err)))
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpSetMode
-	ipcReq.Mode = uint32(req.Args[2])
-	fsipc.SetPath(ipcReq.Path[:], absPath)
-	resp := h.ipc.call(&ipcReq)
-	req.Reply(int64(resp.Err))
+	req.Reply(EOK)
 }
 
 func (h *syscallHandler) sysUtimensat(req sys.SyscallRequest) {
@@ -486,16 +411,12 @@ func (h *syscallHandler) sysUtimensat(req sys.SyscallRequest) {
 		req.Reply(EINVAL)
 		return
 	}
-	if !h.ipcReady() {
-		req.Reply(ENOSYS)
+	absPath := h.fdt.resolvePath(path)
+	if err := h.fs.SetTimes(absPath); err != nil {
+		req.Reply(int64(errToErrno(err)))
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpSetTimes
-	fsipc.SetPath(ipcReq.Path[:], absPath)
-	resp := h.ipc.call(&ipcReq)
-	req.Reply(int64(resp.Err))
+	req.Reply(EOK)
 }
 
 func (h *syscallHandler) sysReadlinkat(req sys.SyscallRequest) {
@@ -533,10 +454,6 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 		req.Reply(EISDIR)
 		return
 	}
-	if !h.ipcReady() {
-		req.Reply(ENOSYS)
-		return
-	}
 
 	buf := req.DataBuf()
 	if buf == nil {
@@ -547,26 +464,15 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 	if count > len(buf) {
 		count = len(buf)
 	}
-	// Cap at data area size.
-	if count > len(h.ipc.dataArea) {
-		count = len(h.ipc.dataArea)
-	}
 
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpRead
-	ipcReq.Handle = e.handle
-	ipcReq.Arg0 = uint64(e.offset)
-	ipcReq.Arg1 = uint64(count)
-
-	resp := h.ipc.call(&ipcReq)
-	if resp.Err != 0 {
-		req.Reply(int64(resp.Err))
+	n, err := h.fs.Read(e.handle, e.offset, count)
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
 		return
 	}
 
-	n := int(resp.DataLen)
 	if n > 0 {
-		copy(buf[:n], h.ipc.dataSlice(n))
+		copy(buf[:n], h.fs.DataSlice(n))
 	}
 	e.offset += int64(n)
 	req.Reply(int64(n))
@@ -586,32 +492,26 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 		req.Reply(EBADF)
 		return
 	}
-	if !h.ipcReady() || data == nil {
+	if data == nil {
 		req.Reply(ENOSYS)
 		return
 	}
 
 	// Copy data to shared area and send write request.
-	n := h.ipc.writeData(data)
-	var ipcReq fsipc.Request
-	ipcReq.Op = fsipc.OpWrite
-	ipcReq.Handle = e.handle
-	ipcReq.Arg0 = uint64(e.offset)
-	ipcReq.DataLen = uint32(n)
+	n := h.fs.WriteData(data)
 
-	resp := h.ipc.call(&ipcReq)
-	if resp.Err != 0 {
-		req.Reply(int64(resp.Err))
+	written, err := h.fs.Write(e.handle, e.offset, n)
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
 		return
 	}
 
-	written := int64(resp.Result0)
-	e.offset += written
+	e.offset += int64(written)
 	// Update cached size if file grew.
 	if uint32(e.offset) > e.size {
 		e.size = uint32(e.offset)
 	}
-	req.Reply(written)
+	req.Reply(int64(written))
 }
 
 func (h *syscallHandler) sysWritev(req sys.SyscallRequest) {
@@ -634,4 +534,15 @@ func fillStdioStatBuf(buf []byte) {
 	// st_mode = S_IFCHR | 0666
 	le := binary.LittleEndian
 	le.PutUint32(buf[16:], 0020666)
+}
+
+// errToErrno converts an fsclient error to a negative errno value.
+func errToErrno(err error) int32 {
+	if err == nil {
+		return 0
+	}
+	if errno, ok := fsclient.IsErrno(err); ok {
+		return errno
+	}
+	return -5 // EIO
 }

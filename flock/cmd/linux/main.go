@@ -17,6 +17,8 @@ import (
 
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
+	"mazzy/mazarin/fsclient"
+	"mazzy/mazarin/mazhost"
 	mfont "mazzy/shared/font"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
@@ -24,7 +26,6 @@ import (
 	"mazzy/mazarin/serial"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
-	"mazzy/shared/fs/fsipc"
 	"mazzy/shared/ipc"
 	"mazzy/shared/sysid"
 	"mazzy/shared/wm"
@@ -224,32 +225,18 @@ func addCRBeforeLF(data []byte) []byte {
 	return out
 }
 
-// startUringDispatcher sets up the uring Dispatcher for WM, font, and
-// delegated syscall messages. WM messages go to wmCh; font responses go
-// to fc.ReplyCh; delegated syscall requests go to delegateCh.
-func startUringDispatcher(fc *fontcache.FontCache, delegateCh chan any) {
+// startUringDispatcher sets up the uring Dispatcher for WM, font, delegated
+// syscall, and fs IPC response messages.
+func startUringDispatcher(fc *fontcache.FontCache, fsClient *fsclient.Client, delegateCh chan any) {
 	d := uring.NewDispatcher()
 	d.On(ipc.ProtoShepherdNotify, wm.DecodeShepherdNotify, wmCh)
 	d.On(ipc.ProtoFontResponse, wm.DecodeFontResponse, fc.ReplyCh)
 	d.On(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, delegateCh)
+	d.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
+	d.OnDeath(func(deadSID int16) {
+		sys.UartWriteString(fmt.Sprintf("[linux] shepherd %d died\n", deadSID))
+	})
 	d.Start()
-}
-
-// fsMailboxRecvLoop handles FS IPC notifications that still use the mailbox.
-// This runs alongside the uring Dispatcher until FS IPC is migrated (Phase 4).
-func fsMailboxRecvLoop(ipc *fsIPCClient) {
-	for {
-		notif, err := sys.MailboxRecv()
-		if err != nil {
-			continue
-		}
-		switch notif.Code {
-		case fsipc.NotifyReady:
-			ipc.handleReady(notif)
-		case fsipc.NotifyResponse:
-			ipc.handleResponse()
-		}
-	}
 }
 
 // announceToWM sends AppStart to rachel with window dimensions via uring.
@@ -293,11 +280,13 @@ func main() {
 	rachelSID := sys.MustGetShepherdByName("rachel")
 	fsSID := sys.MustGetShepherdByName("fs")
 	fc := fontcache.New(rachelSID)
-	ipcClient := newFsIPCClient(fsSID)
+	fsClient := fsclient.New(fsSID)
 	delegateCh := make(chan any, 8)
-	startUringDispatcher(fc, delegateCh)
-	go fsMailboxRecvLoop(ipcClient)
-	ipcClient.sendInit()
+	startUringDispatcher(fc, fsClient, delegateCh)
+	if err := fsClient.Connect(); err != nil {
+		panic(fmt.Sprintf("[linux] FATAL: fsclient.Connect: %v", err))
+	}
+	sys.UartWriteString("[linux] fs IPC connected via uring\n")
 	fonts := &mancini.FontConfig{
 		LoadFace: func(bold bool, size int64) font.Face {
 			return fc.OpenFaceByName(mfont.DefaultMono, mfont.Regular, size)
@@ -440,10 +429,7 @@ func main() {
 		return
 	}
 
-	// Wait for fs IPC handshake before registering as syscall handler.
-	<-ipcClient.readyCh
-
-	handler := newSyscallHandler(ipcClient)
+	handler := newSyscallHandler(fsClient)
 
 	// Register as delegate handler — requests now arrive via uring Dispatcher
 	// on delegateCh (ProtoFSDelegateReq) instead of the old delegateRecvLoop.
@@ -476,6 +462,10 @@ func main() {
 	readyAttr.Set(true)
 	sys.SetReady(true)
 	sys.UartWriteString("[linux] Ready=true\n")
+
+	// Launch helloworld.maz — tests .maz loading and Write syscall delegation.
+	mazhost.LaunchMaz("helloworld")
+
 	sys.UartWriteString("[linux] Entering event loop\n")
 
 	// textDirty tracks whether console state changed since last redraw.

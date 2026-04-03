@@ -30,6 +30,8 @@ const (
 	ProtoHIDNotify       uint32 = 8 // HID input event notification (kernel → WM)
 	ProtoFSDelegateReq   uint32 = 9  // Delegated FS syscall request (kernel → handler)
 	ProtoFSDelegateResp  uint32 = 10 // Delegated FS syscall response (handler → caller via kernel)
+	ProtoFSIPCReq        uint32 = 11 // Shepherd → fs file operation request
+	ProtoFSIPCResp       uint32 = 12 // fs → shepherd file operation response
 )
 
 // UringIPCRingHeader is the metadata at offset 0 of the ring's first page.
@@ -58,6 +60,27 @@ type UringIPCMsg struct {
 	Flags     uint16    // reserved, must be 0
 	SenderID  uint64    // sender's uring ID (for verification)
 	Payload   [112]byte // protocol-specific payload
+}
+
+// DeathNotification is the payload for ProtoDeath messages.
+// Sent by the kernel to all peers connected to a shepherd that has died.
+type DeathNotification struct {
+	DeadSID int16
+}
+
+// EncodeDeathNotification builds a ProtoDeath UringIPCMsg.
+// SenderSID is set to -1 (kernel-originated).
+func EncodeDeathNotification(deadSID int16) UringIPCMsg {
+	var msg UringIPCMsg
+	msg.Protocol = ProtoDeath
+	msg.SenderSID = -1 // kernel
+	*(*DeathNotification)(unsafe.Pointer(&msg.Payload[0])) = DeathNotification{DeadSID: deadSID}
+	return msg
+}
+
+// DecodeDeathNotification extracts the DeathNotification from a UringIPCMsg.
+func DecodeDeathNotification(msg *UringIPCMsg) DeathNotification {
+	return *(*DeathNotification)(unsafe.Pointer(&msg.Payload[0]))
 }
 
 // Compile-time size assertions.

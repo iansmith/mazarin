@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"unsafe"
 
-	"mazzy/mazarin/mem"
-	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
 	"mazzy/shared/fs/ext2"
-	"mazzy/shared/fs/fsipc"
+	"mazzy/shared/ipc"
 )
 
 const maxFSHandles = 256
@@ -23,189 +22,176 @@ type fsHandle struct {
 	isDir bool
 }
 
-// fsIPC manages the fs shepherd's side of the linux↔fs IPC channel.
-type fsIPC struct {
-	reqRing      *ringbuf.RingBuffer
-	respRing     *ringbuf.RingBuffer
-	respAddr     uintptr // respRing page VA in fs's space (for MailboxSend)
-	dataArea     []byte  // shared data area (4KB)
-	linuxSID     int
-	requestCh    chan fsipc.Request
-	handles      [maxFSHandles]*fsHandle
-	nextHnd      uint32
+// fsIPCConn tracks one connected shepherd's IPC state.
+type fsIPCConn struct {
+	sid     int16   // sender shepherd ID
+	dataVA  uintptr // shared data area VA in our (fs's) address space
+	dataLen int
+	handles [maxFSHandles]*fsHandle
+	nextHnd uint32
 }
 
-func newFsIPC() *fsIPC {
-	return &fsIPC{
-		requestCh: make(chan fsipc.Request, 8),
-	}
+func (c *fsIPCConn) dataArea() []byte {
+	return unsafe.Slice((*byte)(unsafe.Pointer(c.dataVA)), c.dataLen)
 }
 
-// mailboxLoop runs in a dedicated goroutine, receiving mailbox notifications
-// from the linux shepherd. It handles the handshake and forwards IPC requests
-// to the requestCh for processing by the main goroutine.
-func (s *fsIPC) mailboxLoop() {
-	for {
-		notif, err := sys.MailboxRecv()
-		if err != nil {
-			continue
-		}
-		switch notif.Code {
-		case fsipc.NotifyInit:
-			s.handleInit(notif)
-		case fsipc.NotifyRequest:
-			if s.reqRing == nil {
-				sys.UartWriteString("[fs:ipc] NotifyRequest but reqRing is nil!\n")
-				continue
-			}
-			var req fsipc.Request
-			for s.reqRing.Pop(unsafe.Pointer(&req)) {
-				s.requestCh <- req
-			}
-		}
-	}
-}
+// --- Handle table (per-connection) ---
 
-// handleInit processes the handshake from the linux shepherd.
-func (s *fsIPC) handleInit(notif sys.MailboxNotification) {
-	s.linuxSID = int(notif.SenderSID)
-	s.reqRing = ringbuf.Open(uintptr(notif.RingAddr))
-	fmt.Printf("[fs] IPC init from linux SID=%d\n", s.linuxSID)
-
-	// Pop the handshake request.
-	var req fsipc.Request
-	if !s.reqRing.Pop(unsafe.Pointer(&req)) {
-		fmt.Println("[fs] IPC: no handshake message in ring")
-		return
-	}
-
-	// Create response ring (fs-owned, mapped into linux).
-	respPage, err := mem.AllocPages(1, mem.PageIPC)
-	if err != nil {
-		fmt.Printf("[fs] IPC: alloc response ring failed: %v\n", err)
-		return
-	}
-	*(*byte)(unsafe.Pointer(uintptr(respPage))) = 0
-	respPageLinux, err := sys.MailboxMapPage(s.linuxSID, uintptr(respPage))
-	if err != nil {
-		fmt.Printf("[fs] IPC: map response ring failed: %v\n", err)
-		return
-	}
-	s.respRing = ringbuf.Init(uintptr(respPage), fsipc.SlotSize, fsipc.SlotCount)
-	s.respAddr = uintptr(respPage)
-
-	// Create shared data area (fs-owned, mapped into linux).
-	dataPage, err := mem.AllocPages(fsipc.DataPages, mem.PageIPC)
-	if err != nil {
-		fmt.Printf("[fs] IPC: alloc data area failed: %v\n", err)
-		return
-	}
-	*(*byte)(unsafe.Pointer(uintptr(dataPage))) = 0
-	dataPageLinux, err := sys.MailboxMapPage(s.linuxSID, uintptr(dataPage))
-	if err != nil {
-		fmt.Printf("[fs] IPC: map data area failed: %v\n", err)
-		return
-	}
-	s.dataArea = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(dataPage))), fsipc.DataPages*4096)
-
-	// Push handshake ack with translated addresses for linux.
-	var ack fsipc.Response
-	ack.ID = 0
-	ack.Result0 = uint64(respPageLinux)
-	ack.Result1 = uint64(dataPageLinux)
-	ack.DataLen = uint32(fsipc.DataPages * 4096)
-	s.respRing.Push(unsafe.Pointer(&ack))
-
-	if err := sys.MailboxSend(s.linuxSID, fsipc.NotifyReady, s.respAddr); err != nil {
-		fmt.Printf("[fs] IPC: MailboxSend NotifyReady failed: %v\n", err)
-		return
-	}
-	fmt.Printf("[fs] IPC ready: resp=0x%x(linux:0x%x) data=0x%x(linux:0x%x)\n",
-		respPage, respPageLinux, dataPage, dataPageLinux)
-}
-
-// respond pushes a response and notifies linux.
-func (s *fsIPC) respond(resp *fsipc.Response) {
-	s.respRing.Push(unsafe.Pointer(resp))
-	err := sys.MailboxSend(s.linuxSID, fsipc.NotifyResponse, s.respAddr)
-	if err != nil {
-		sys.UartWriteString("[fs:ipc] MailboxSend response FAILED\n")
-	}
-}
-
-// --- Handle table ---
-
-func (s *fsIPC) allocHandle(h *fsHandle) uint32 {
+func (c *fsIPCConn) allocHandle(h *fsHandle) uint32 {
 	for i := uint32(0); i < maxFSHandles; i++ {
-		idx := (s.nextHnd + i) % maxFSHandles
-		if s.handles[idx] == nil {
-			s.handles[idx] = h
-			s.nextHnd = (idx + 1) % maxFSHandles
+		idx := (c.nextHnd + i) % maxFSHandles
+		if c.handles[idx] == nil {
+			c.handles[idx] = h
+			c.nextHnd = (idx + 1) % maxFSHandles
 			return idx + 1 // 1-based
 		}
 	}
 	return 0
 }
 
-func (s *fsIPC) getHandle(handle uint32) *fsHandle {
+func (c *fsIPCConn) getHandle(handle uint32) *fsHandle {
 	if handle == 0 || handle > maxFSHandles {
 		return nil
 	}
-	return s.handles[handle-1]
+	return c.handles[handle-1]
 }
 
-func (s *fsIPC) freeHandle(handle uint32) {
+func (c *fsIPCConn) freeHandle(handle uint32) {
 	if handle > 0 && handle <= maxFSHandles {
-		s.handles[handle-1] = nil
+		c.handles[handle-1] = nil
 	}
 }
 
-// --- Request dispatch ---
+// --- Uring IPC server ---
 
-func (s *fsIPC) processRequest(req *fsipc.Request, mt *mountTable) {
-	var resp fsipc.Response
-	resp.ID = req.ID
+// fsIPCServer manages per-shepherd connections and processes file operation
+// requests delivered via uring (ProtoFSIPCReq). Each connected shepherd has
+// its own handle table and shared data area.
+type fsIPCServer struct {
+	conns map[int16]*fsIPCConn
+}
+
+func newFsIPCServer() *fsIPCServer {
+	return &fsIPCServer{
+		conns: make(map[int16]*fsIPCConn),
+	}
+}
+
+// DecodeReq is the uring Dispatcher decoder for ProtoFSIPCReq messages.
+// Returns a fsIPCRequest wrapping the payload and sender info.
+func DecodeReq(msg *ipc.UringIPCMsg) any {
+	return fsIPCRequest{
+		senderSID: msg.SenderSID,
+		payload:   *ipc.DecodeFSIPCReq(msg),
+	}
+}
+
+// fsIPCRequest pairs a decoded payload with sender identification.
+type fsIPCRequest struct {
+	senderSID int16
+	payload   ipc.FSIPCReqPayload
+}
+
+// processRequest handles one uring-delivered file operation request.
+func (s *fsIPCServer) processRequest(raw fsIPCRequest, mt *mountTable) {
+	req := &raw.payload
+	sid := raw.senderSID
+
+	// Handle OpConnect — establish a new connection.
+	if req.Op == ipc.FSOpConnect {
+		s.handleConnect(sid, req)
+		return
+	}
+
+	conn := s.conns[sid]
+	if conn == nil {
+		sys.UartWriteString(fmt.Sprintf("[fs:ipc] request from unconnected SID=%d, dropping\n", sid))
+		return
+	}
+
+	var resp ipc.FSIPCRespPayload
+	resp.ReqID = req.ReqID
 
 	switch req.Op {
-	case fsipc.OpOpen:
-		s.ipcOpen(req, &resp, mt)
-	case fsipc.OpClose:
-		s.ipcClose(req, &resp)
-	case fsipc.OpRead:
-		s.ipcRead(req, &resp, mt)
-	case fsipc.OpWrite:
-		s.ipcWrite(req, &resp, mt)
-	case fsipc.OpStat:
-		s.ipcStat(req, &resp, mt)
-	case fsipc.OpFstat:
-		s.ipcFstat(req, &resp, mt)
-	case fsipc.OpMkdir:
-		s.ipcMkdir(req, &resp, mt)
-	case fsipc.OpRemove:
-		s.ipcRemove(req, &resp, mt)
-	case fsipc.OpReadDir:
-		s.ipcReadDir(req, &resp, mt)
-	case fsipc.OpAccess:
-		s.ipcAccess(req, &resp, mt)
-	case fsipc.OpResolve:
-		s.ipcResolve(req, &resp, mt)
-	case fsipc.OpSetMode:
-		s.ipcSetMode(req, &resp, mt)
-	case fsipc.OpSetTimes:
-		s.ipcSetTimes(req, &resp, mt)
-	case fsipc.OpSync:
-		s.ipcSync(req, &resp, mt)
+	case ipc.FSOpOpen:
+		s.ipcOpen(conn, req, &resp, mt)
+	case ipc.FSOpClose:
+		s.ipcClose(conn, req, &resp)
+	case ipc.FSOpRead:
+		s.ipcRead(conn, req, &resp, mt)
+	case ipc.FSOpWrite:
+		s.ipcWrite(conn, req, &resp, mt)
+	case ipc.FSOpStat:
+		s.ipcStat(conn, req, &resp, mt)
+	case ipc.FSOpFstat:
+		s.ipcFstat(conn, req, &resp, mt)
+	case ipc.FSOpMkdir:
+		s.ipcMkdir(conn, req, &resp, mt)
+	case ipc.FSOpRemove:
+		s.ipcRemove(conn, req, &resp, mt)
+	case ipc.FSOpReadDir:
+		s.ipcReadDir(conn, req, &resp, mt)
+	case ipc.FSOpAccess:
+		s.ipcAccess(conn, req, &resp, mt)
+	case ipc.FSOpResolve:
+		s.ipcResolve(conn, req, &resp, mt)
+	case ipc.FSOpSetMode:
+		s.ipcSetMode(conn, req, &resp, mt)
+	case ipc.FSOpSetTimes:
+		s.ipcSetTimes(conn, req, &resp, mt)
+	case ipc.FSOpSync:
+		s.ipcSync(conn, req, &resp, mt)
 	default:
 		resp.Err = -38 // ENOSYS
 	}
 
-	s.respond(&resp)
+	s.respond(sid, &resp)
+}
+
+// handleConnect registers a new shepherd connection.
+func (s *fsIPCServer) handleConnect(sid int16, req *ipc.FSIPCReqPayload) {
+	s.conns[sid] = &fsIPCConn{
+		sid:     sid,
+		dataVA:  uintptr(req.DataVA),
+		dataLen: int(req.DataLen),
+	}
+	fmt.Printf("[fs] IPC connect from SID=%d dataVA=0x%x len=%d\n", sid, req.DataVA, req.DataLen)
+
+	resp := ipc.FSIPCRespPayload{ReqID: req.ReqID}
+	s.respond(sid, &resp)
+}
+
+// respond sends a ProtoFSIPCResp back to the requesting shepherd via uring.
+func (s *fsIPCServer) respond(sid int16, resp *ipc.FSIPCRespPayload) {
+	msg := ipc.EncodeFSIPCResp(resp)
+	if err := uring.Send(int(sid), &msg); err != nil {
+		sys.UartWriteString(fmt.Sprintf("[fs:ipc] Send response to SID=%d failed: %v\n", sid, err))
+	}
+}
+
+// pathFromReq reads the null-terminated path from the connection's data area.
+func pathFromReq(conn *fsIPCConn, req *ipc.FSIPCReqPayload) string {
+	if req.PathLen == 0 {
+		return ""
+	}
+	area := conn.dataArea()
+	n := int(req.PathLen)
+	if n > len(area) {
+		n = len(area)
+	}
+	// Strip null terminator.
+	for i := 0; i < n; i++ {
+		if area[i] == 0 {
+			return string(area[:i])
+		}
+	}
+	return string(area[:n])
 }
 
 // --- Operation handlers ---
 
-func (s *fsIPC) ipcOpen(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	path := fsipc.PathString(req.Path[:])
+func (s *fsIPCServer) ipcOpen(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	path := pathFromReq(conn, req)
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 	flags := req.Flags
@@ -223,7 +209,7 @@ func (s *fsIPC) ipcOpen(req *fsipc.Request, resp *fsipc.Response, mt *mountTable
 			}
 			h := &fsHandle{kind: kind, inum: f.InodeNum(), size: f.Size(), ftype: ext2.FTFile}
 			f.Close()
-			handle := s.allocHandle(h)
+			handle := conn.allocHandle(h)
 			if handle == 0 {
 				resp.Err = -24 // EMFILE
 				return
@@ -244,7 +230,7 @@ func (s *fsIPC) ipcOpen(req *fsipc.Request, resp *fsipc.Response, mt *mountTable
 	if inode.IsDir() {
 		h.ftype = ext2.FTDir
 	}
-	handle := s.allocHandle(h)
+	handle := conn.allocHandle(h)
 	if handle == 0 {
 		resp.Err = -24
 		return
@@ -253,20 +239,21 @@ func (s *fsIPC) ipcOpen(req *fsipc.Request, resp *fsipc.Response, mt *mountTable
 	resp.Result1 = uint64(h.ftype)<<32 | uint64(h.size)
 }
 
-func (s *fsIPC) ipcClose(req *fsipc.Request, resp *fsipc.Response) {
-	s.freeHandle(req.Handle)
+func (s *fsIPCServer) ipcClose(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload) {
+	conn.freeHandle(req.Handle)
 }
 
-func (s *fsIPC) ipcRead(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	h := s.getHandle(req.Handle)
+func (s *fsIPCServer) ipcRead(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	h := conn.getHandle(req.Handle)
 	if h == nil {
 		resp.Err = -9 // EBADF
 		return
 	}
+	area := conn.dataArea()
 	offset := req.Arg0
 	count := int(req.Arg1)
-	if count > len(s.dataArea) {
-		count = len(s.dataArea)
+	if count > len(area) {
+		count = len(area)
 	}
 
 	fsys := mt.getFS(h.kind)
@@ -277,7 +264,7 @@ func (s *fsIPC) ipcRead(req *fsipc.Request, resp *fsipc.Response, mt *mountTable
 	}
 	defer f.Close()
 	_ = f.Seek(uint64(offset))
-	n, err := f.Read(s.dataArea[:count])
+	n, err := f.Read(area[:count])
 	if err != nil && err != ext2.ErrEndOfFile {
 		resp.Err = ext2ToErrno(err)
 		return
@@ -285,16 +272,17 @@ func (s *fsIPC) ipcRead(req *fsipc.Request, resp *fsipc.Response, mt *mountTable
 	resp.DataLen = uint32(n)
 }
 
-func (s *fsIPC) ipcWrite(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	h := s.getHandle(req.Handle)
+func (s *fsIPCServer) ipcWrite(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	h := conn.getHandle(req.Handle)
 	if h == nil {
 		resp.Err = -9
 		return
 	}
+	area := conn.dataArea()
 	offset := req.Arg0
 	count := int(req.DataLen)
-	if count > len(s.dataArea) {
-		count = len(s.dataArea)
+	if count > len(area) {
+		count = len(area)
 	}
 
 	fsys := mt.getFS(h.kind)
@@ -305,7 +293,7 @@ func (s *fsIPC) ipcWrite(req *fsipc.Request, resp *fsipc.Response, mt *mountTabl
 	}
 	defer f.Close()
 	_ = f.Seek(uint64(offset))
-	n, err := f.Write(s.dataArea[:count])
+	n, err := f.Write(area[:count])
 	if err != nil {
 		resp.Err = ext2ToErrno(err)
 		return
@@ -314,8 +302,8 @@ func (s *fsIPC) ipcWrite(req *fsipc.Request, resp *fsipc.Response, mt *mountTabl
 	resp.Result0 = uint64(n)
 }
 
-func (s *fsIPC) ipcStat(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	path := fsipc.PathString(req.Path[:])
+func (s *fsIPCServer) ipcStat(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	path := pathFromReq(conn, req)
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 
@@ -329,12 +317,12 @@ func (s *fsIPC) ipcStat(req *fsipc.Request, resp *fsipc.Response, mt *mountTable
 		resp.Err = ext2ToErrno(err)
 		return
 	}
-	writeStatBuf(s.dataArea, inode, inum)
+	writeStatBuf(conn.dataArea(), inode, inum)
 	resp.DataLen = 128
 }
 
-func (s *fsIPC) ipcFstat(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	h := s.getHandle(req.Handle)
+func (s *fsIPCServer) ipcFstat(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	h := conn.getHandle(req.Handle)
 	if h == nil {
 		resp.Err = -9
 		return
@@ -346,26 +334,26 @@ func (s *fsIPC) ipcFstat(req *fsipc.Request, resp *fsipc.Response, mt *mountTabl
 		resp.Err = ext2ToErrno(err)
 		return
 	}
-	writeStatBuf(s.dataArea, inode, h.inum)
+	writeStatBuf(conn.dataArea(), inode, h.inum)
 	resp.DataLen = 128
 }
 
-func (s *fsIPC) ipcMkdir(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	path := fsipc.PathString(req.Path[:])
+func (s *fsIPCServer) ipcMkdir(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	path := pathFromReq(conn, req)
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 	resp.Err = ext2ToErrno(fsys.Mkdir(relPath, uint16(req.Mode)))
 }
 
-func (s *fsIPC) ipcRemove(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	path := fsipc.PathString(req.Path[:])
+func (s *fsIPCServer) ipcRemove(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	path := pathFromReq(conn, req)
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 	resp.Err = ext2ToErrno(fsys.Remove(relPath))
 }
 
-func (s *fsIPC) ipcReadDir(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	h := s.getHandle(req.Handle)
+func (s *fsIPCServer) ipcReadDir(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	h := conn.getHandle(req.Handle)
 	if h == nil {
 		resp.Err = -9
 		return
@@ -382,21 +370,21 @@ func (s *fsIPC) ipcReadDir(req *fsipc.Request, resp *fsipc.Response, mt *mountTa
 		return
 	}
 	startIdx := int(req.Arg0)
-	n, count := marshalDirents(s.dataArea, entries, startIdx)
+	n, count := marshalDirents(conn.dataArea(), entries, startIdx)
 	resp.DataLen = uint32(n)
 	resp.Result0 = uint64(count)
 }
 
-func (s *fsIPC) ipcAccess(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	path := fsipc.PathString(req.Path[:])
+func (s *fsIPCServer) ipcAccess(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	path := pathFromReq(conn, req)
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 	_, err := fsys.ResolveInode(relPath)
 	resp.Err = ext2ToErrno(err)
 }
 
-func (s *fsIPC) ipcResolve(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	path := fsipc.PathString(req.Path[:])
+func (s *fsIPCServer) ipcResolve(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	path := pathFromReq(conn, req)
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 
@@ -418,21 +406,21 @@ func (s *fsIPC) ipcResolve(req *fsipc.Request, resp *fsipc.Response, mt *mountTa
 	resp.Result1 = uint64(inode.Size)
 }
 
-func (s *fsIPC) ipcSetMode(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	path := fsipc.PathString(req.Path[:])
+func (s *fsIPCServer) ipcSetMode(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	path := pathFromReq(conn, req)
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 	resp.Err = ext2ToErrno(fsys.SetMode(relPath, uint16(req.Mode)))
 }
 
-func (s *fsIPC) ipcSetTimes(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
-	path := fsipc.PathString(req.Path[:])
+func (s *fsIPCServer) ipcSetTimes(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	path := pathFromReq(conn, req)
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 	resp.Err = ext2ToErrno(fsys.SetTimes(relPath, 0, 0))
 }
 
-func (s *fsIPC) ipcSync(req *fsipc.Request, resp *fsipc.Response, mt *mountTable) {
+func (s *fsIPCServer) ipcSync(_ *fsIPCConn, _ *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
 	if mt.tmpFS != nil {
 		resp.Err = ext2ToErrno(mt.tmpFS.Sync())
 	}
