@@ -1,4 +1,4 @@
-package mazid
+package shep
 
 // wordlist1 contains 128 adjectives (2^7), positive and negative,
 // selected for lower frequency of use.
