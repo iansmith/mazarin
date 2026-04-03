@@ -348,7 +348,7 @@ func UringSendKernel(senderSID, targetSID int16, msgKVA uintptr) (int64, uintptr
 		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 		if t != nil && t.State == ThreadBlockedUringRecv {
 			t.State = ThreadReady
-			t.MailboxWoken = true
+			t.PriorityWoken = true
 			slot.BlockedTID = -1
 			slot.BlockedPtr = 0
 			t.Context.RewindToSyscall()
@@ -425,7 +425,7 @@ func KernelWriteToRingFromIRQ(targetSID int16, msg *ipc.UringIPCMsg) {
 		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 		if t != nil && t.State == ThreadBlockedUringRecv {
 			t.State = ThreadReady
-			t.MailboxWoken = true
+			t.PriorityWoken = true
 			slot.BlockedTID = -1
 			slot.BlockedPtr = 0
 			t.Context.RewindToSyscall()

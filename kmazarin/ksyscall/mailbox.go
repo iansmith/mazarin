@@ -4,17 +4,16 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
-	"unsafe"
 )
 
-// SyscallMailboxMapPage maps a page from the caller's address space into
+// SyscallSharePages maps a page from the caller's address space into
 // a target shepherd's address space and caches the VA↔VA translation.
 // arg0 = targetSID (shepherd to map page into)
 // arg1 = callerVA  (VA of the page/ring in caller's space — need not be page-aligned)
 // Returns: target VA (with offset preserved) on success, or negative errno.
 //
 //go:noinline
-func SyscallMailboxMapPage(arg0, arg1, _, _, _, _ uint64) int64 {
+func SyscallSharePages(arg0, arg1, _, _, _, _ uint64) int64 {
 	targetSID := int16(arg0)
 	callerVA := uintptr(arg1)
 
@@ -46,7 +45,7 @@ func SyscallMailboxMapPage(arg0, arg1, _, _, _, _ uint64) int64 {
 	if pa == 0 {
 		pa = kmem.DemandMapUserPage(callerPageVA, callerShepherd.PageTableL0PA)
 		if pa == 0 {
-			serial.RawUARTPuts("[Mailbox] page not mapped in caller\r\n")
+			serial.RawUARTPuts("[SharePages] page not mapped in caller\r\n")
 			return -14 // EFAULT
 		}
 	}
@@ -55,7 +54,7 @@ func SyscallMailboxMapPage(arg0, arg1, _, _, _, _ uint64) int64 {
 	// Verify ownership
 	desc := kmem.GetPageDescriptor(pa)
 	if desc == nil || desc.Owner != callerSID {
-		serial.RawUARTPuts("[Mailbox] page not owned by caller\r\n")
+		serial.RawUARTPuts("[SharePages] page not owned by caller\r\n")
 		return -1 // EPERM
 	}
 
@@ -89,99 +88,4 @@ func SyscallMailboxMapPage(arg0, arg1, _, _, _, _ uint64) int64 {
 	addVACacheEntry(callerSID, targetSID, callerPageVA, targetPageVA)
 
 	return int64(targetPageVA + pageOffset)
-}
-
-// SyscallMailboxSend sends a notification to a target shepherd.
-// arg0 = targetSID
-// arg1 = code (WMNotify or ShepherdNotify)
-// arg2 = callerVA (ring buffer VA in caller's address space)
-// Returns: 0 on success, or negative errno.
-//
-//go:noinline
-func SyscallMailboxSend(arg0, arg1, arg2, _, _, _ uint64) int64 {
-	targetSID := int16(arg0)
-	code := int64(arg1)
-	callerVA := uintptr(arg2)
-
-	callerSID := getCurrentThreadSID()
-
-	result, ctxPtr := mailboxSendKernelWithSwitch(int16(callerSID), targetSID, code, callerVA)
-	if ctxPtr != 0 {
-		SetSyscallSwitchTarget(ctxPtr)
-	}
-	return result
-}
-
-// SyscallMailboxRecv blocks until a mailbox notification arrives.
-// arg0 = pointer to MailboxNotification struct in userspace
-// Returns: 0 on success (notification written to buf), or negative errno.
-//
-//go:noinline
-func SyscallMailboxRecv(arg0, _, _, _, _, _ uint64) int64 {
-	bufPtr := arg0
-	if bufPtr == 0 {
-		return -14 // EFAULT
-	}
-
-	sid := getCurrentThreadSID()
-	shepherdIdx := int(sid)
-
-	// Try to drain immediately
-	notif, ok := drainMailboxQueue(shepherdIdx)
-	if ok {
-		return writeMailboxNotification(bufPtr, notif)
-	}
-
-	// Block until notification arrives
-	ctxPtr := BlockForMailboxRecv(shepherdIdx, bufPtr)
-	if ctxPtr != 0 {
-		SetSyscallSwitchTarget(ctxPtr)
-		return -11 // Value overwritten by re-executed SVC
-	}
-
-	// No other thread — WFI loop (should rarely be reached with thread 0 fallback)
-	serial.RawUARTPuts("[MBR:WFI sid=")
-	serial.RawUARTDecimal(uint64(shepherdIdx))
-	serial.RawUARTPuts("]\r\n")
-	for {
-		enableIRQsAndWait()
-		notif, ok = drainMailboxQueue(shepherdIdx)
-		if ok {
-			serial.RawUARTPuts("[MBR:WFI-drain]\r\n")
-			return writeMailboxNotification(bufPtr, notif)
-		}
-	}
-}
-
-// writeMailboxNotification writes a notification struct to userspace.
-func writeMailboxNotification(bufPtr uint64, notif mailboxNotification) int64 {
-	if kmem.WalkUserPageTable(uintptr(bufPtr)) == 0 {
-		if !kmem.HandleUserPageFault(uintptr(bufPtr), 0) {
-			return -14
-		}
-	}
-
-	userPA := kmem.WalkUserPageTable(uintptr(bufPtr))
-	if userPA == 0 {
-		return -14
-	}
-
-	pageOffset := bufPtr & 0xFFF
-	scratchVA := kmem.MapPAToKernelScratch(userPA &^ 0xFFF)
-	if scratchVA == 0 {
-		return -14
-	}
-
-	type userNotif struct {
-		Code      int64
-		SenderSID int64
-		RingAddr  uint64
-	}
-
-	dst := (*userNotif)(unsafe.Pointer(scratchVA + uintptr(pageOffset)))
-	dst.Code = notif.Code
-	dst.SenderSID = int64(notif.SenderSID)
-	dst.RingAddr = uint64(notif.RingAddr)
-
-	return 0
 }

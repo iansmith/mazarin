@@ -298,6 +298,9 @@ var mouseButtonHeld int32 // 0 = no button held, >0 = button code
 var displayWidth int32
 var displayHeight int32
 
+// blitRateStart is the time rachel became ready (for blit rate reporting).
+var blitRateStart time.Time
+
 // Framebuffer state — rachel owns the GPU framebuffer and is the only
 // writer. Shepherds draw to their backing stores; rachel blits to here.
 var fbCtx *mancini.FramebufferContext
@@ -774,6 +777,21 @@ func wmEventLoop(wmCh <-chan any, hidCh <-chan any, inputRing *hid.CompletionRin
 					fmt.Printf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
 						rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents)
 				}
+				if rachelMsgBlit%50 == 0 && !blitRateStart.IsZero() {
+					ms := time.Since(blitRateStart).Milliseconds()
+					if ms > 0 {
+						// rate = blits * 1000 / ms, split into integer + 1 decimal
+						rateX10 := rachelMsgBlit * 10000 / ms
+						whole := rateX10 / 10
+						frac := rateX10 % 10
+						secs := ms / 1000
+						secFrac := (ms / 100) % 10
+						sys.UartWriteString("[rachel:rate] " + strconv.FormatInt(rachelMsgBlit, 10) +
+							" blits in " + strconv.FormatInt(secs, 10) + "." + strconv.FormatInt(secFrac, 10) + "s = " +
+							strconv.FormatInt(whole, 10) + "." + strconv.FormatInt(frac, 10) +
+							" blits/sec\n")
+					}
+				}
 				ta, ok := trackedApps[senderSID]
 				if !ok || ta.backingStore == nil {
 					continue
@@ -947,6 +965,9 @@ func main() {
 	_ = ready
 	sys.SetReady(true)
 	sys.UartWriteString("[rachel] Ready=true\n")
+
+	// Record time at rachel ready for blit rate reporting.
+	blitRateStart = time.Now()
 
 	// Stderr test (linux shepherd disabled for now, but keep for diagnostics).
 	go func() {

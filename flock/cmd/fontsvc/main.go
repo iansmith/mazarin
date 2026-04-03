@@ -1,5 +1,5 @@
 // fontsvc is a .maz module loaded by rachel that provides centralized font
-// loading and glyph rendering. It owns rachel's MailboxRecv loop: font
+// loading and glyph rendering. It owns rachel's uring IPC loop: font
 // messages are handled directly; all other notifications are forwarded to
 // rachel via a Go channel injected through MazarinPriest.
 //
@@ -322,9 +322,9 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 		cacheBase := uintptr(unsafe.Pointer(&cache[0]))
 		for i := int32(0); i < numCachePages; i++ {
 			pageVA := cacheBase + uintptr(i)*4096
-			targetVA, err := sys.MailboxMapPage(senderSID, pageVA)
+			targetVA, err := sys.SharePages(senderSID, pageVA)
 			if err != nil {
-				rawPuts("[fontsvc] MailboxMapPage cache failed for page ")
+				rawPuts("[fontsvc] SharePages cache failed for page ")
 				rawPutsInt(int(i))
 				rawPuts("\n")
 				sendOpenFontError(senderSID)
@@ -339,9 +339,9 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 		fontBase := uintptr(unsafe.Pointer(&slot.fontData[0]))
 		for i := int32(0); i < numFontPages; i++ {
 			pageVA := fontBase + uintptr(i)*4096
-			targetVA, err := sys.MailboxMapPage(senderSID, pageVA)
+			targetVA, err := sys.SharePages(senderSID, pageVA)
 			if err != nil {
-				rawPuts("[fontsvc] MailboxMapPage font failed for page ")
+				rawPuts("[fontsvc] SharePages font failed for page ")
 				rawPutsInt(int(i))
 				rawPuts("\n")
 				sendOpenFontError(senderSID)
@@ -431,9 +431,9 @@ func handleRequestGlyph(senderSID int, msg *wm.RequestGlyph) {
 			return
 		}
 		scratchBase := uintptr(unsafe.Pointer(&conn.scratchBuf[0]))
-		targetVA, err := sys.MailboxMapPage(senderSID, scratchBase)
+		targetVA, err := sys.SharePages(senderSID, scratchBase)
 		if err != nil {
-			rawPuts("[fontsvc] scratch MailboxMapPage failed\n")
+			rawPuts("[fontsvc] scratch SharePages failed\n")
 			return
 		}
 		conn.scratchVA = targetVA

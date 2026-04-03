@@ -291,7 +291,7 @@ func completionRingPush(kva uintptr, ev hid.HIDEvent) bool {
 	return true
 }
 
-// priorityWakePending is set by mailboxSendFromIRQ when it wakes a thread.
+// priorityWakePending is set by uring IPC wakeups when a thread is woken.
 // The non-timer IRQ return path in exceptions_arm64.s checks this flag and,
 // if set, runs CheckThreadPreemption to immediately switch to the woken thread
 // instead of returning to the interrupted thread and waiting for the next timer tick.
@@ -304,43 +304,6 @@ var dbgPWakeSVC uint32     // blocked by svcDepth != 0
 var dbgPWakeNoG0 uint32    // g0 not ready
 var dbgPWakeNoCtx uint32   // CheckThreadPreemption returned 0
 var dbgPWakeSwitched uint32 // successfully switched to priority thread
-
-// mailboxSendFromIRQ sends a completion notification to a shepherd's
-// mailbox from the IRQ top-half. Wakes the shepherd if it's blocked on MailboxRecv.
-//
-//go:nosplit
-//go:noinline
-func mailboxSendFromIRQ(targetSID int16, code int64) {
-	idx := int(targetSID)
-	if idx < 0 || idx >= len(mailboxQueues) {
-		return
-	}
-
-	notif := MailboxNotification{Code: code, SenderSID: 0}
-	savedDAIF := SaveAndDisableIRQs()
-	schedulerLock.Lock()
-
-	mailboxQueues[idx].push(notif)
-
-	if mailboxBlockedTID[idx] >= 0 {
-		t := (*Thread)(unsafe.Pointer(mailboxBlockedPtr[idx]))
-		if t != nil && t.State == ThreadBlockedMailbox {
-			t.State = ThreadReady
-			t.MailboxWoken = true
-			mailboxBlockedTID[idx] = -1
-			mailboxBlockedPtr[idx] = 0
-			t.Context.RewindToSyscall()
-			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-			enqueueReadyPrioritySchedLockHeld(t)
-			atomic.StoreUint32(&priorityWakePending, 1)
-			asm.Dsb()
-		}
-	}
-
-	schedulerLock.Unlock()
-	RestoreIRQs(savedDAIF)
-}
 
 // RingDrain copies up to max events from the ring into buf.
 // Returns the number of events drained.
@@ -499,11 +462,9 @@ func NonTimerIRQTopHalf() {
 			atomic.StoreUint32(&dbgBlockLastAvailIdx, uint32(eng.VQ.Available.Idx))
 
 			atomic.AddUint32(&dbgBlockIRQAsync, 1)
-			// Wake: io_uring direct wake, else mailbox, else legacy slot.
+			// Wake: io_uring direct wake, else legacy slot.
 			if atomic.LoadInt32(&IOUringBlockedRingID) >= 0 {
 				WakeIOUringFromIRQ()
-			} else if blockCompletionRingKVA != 0 {
-				mailboxSendFromIRQ(blockCompletionRingOwnerSID, hid.BlockIOCompleteCode)
 			} else {
 				WakeSlotForIRQ(hid.BlockVirtualIRQ)
 			}

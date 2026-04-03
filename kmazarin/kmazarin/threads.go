@@ -239,7 +239,7 @@ const (
 	// ThreadBlockedDelegateRecv (11) — removed, handlers now receive via uring
 	ThreadBlockedDirtyNotify  ThreadState = 12 // Blocked waiting for constraint dirty notification
 	ThreadBlockedInputEvent   ThreadState = 13 // Blocked waiting for input focus event
-	ThreadBlockedMailbox      ThreadState = 14 // Blocked waiting for mailbox notification
+	// ThreadBlockedMailbox (14) — removed, all IPC uses uring now
 	// ThreadBlockedEpoll (15) — removed, unified into ThreadBlockedKernelWork (7)
 	ThreadBlockedIOUring      ThreadState = 16 // Blocked waiting for io_uring completions
 	ThreadBlockedUringRecv    ThreadState = 17 // Blocked waiting for IPC uring message
@@ -432,12 +432,12 @@ type Thread struct {
 	InSignalHandler uint32 // 1 = executing signal handler, 0 = normal
 	SigreturnPending uint32 // 1 = rt_sigreturn called, load Context for ERET
 
-	// MailboxWoken: set when this thread is woken from ThreadBlockedMailbox.
-	// The scheduler favors mailbox-woken threads so they run before sysmon's
-	// 10ms P-retake window, allowing Go's exitsyscall fast path to reacquire
-	// the P immediately (no 100ms futex safety-net delay).
+	// PriorityWoken: set when this thread is woken from a blocking IPC state
+	// (uring recv, io_uring). The scheduler favors priority-woken threads so
+	// they run before sysmon's 10ms P-retake window, allowing Go's exitsyscall
+	// fast path to reacquire the P immediately (no 100ms futex safety-net delay).
 	// Cleared by the scheduler when the thread is picked.
-	MailboxWoken bool
+	PriorityWoken bool
 }
 
 // Thread struct field offsets for assembly access.
@@ -564,12 +564,6 @@ func WakeThreadForSignal(t *Thread) {
 		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 		enqueueReadySchedLockHeld(t)
 	case ThreadBlockedInputEvent:
-		t.State = ThreadReady
-		t.Context.RewindToSyscall()
-		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-		enqueueReadySchedLockHeld(t)
-	case ThreadBlockedMailbox:
 		t.State = ThreadReady
 		t.Context.RewindToSyscall()
 		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
@@ -1582,10 +1576,8 @@ func printThreadStateSummary() {
 			nSleep++
 		case ThreadBlockedSoftIRQ:
 			nSoftIRQ++
-		case ThreadBlockedMailbox:
-			nMailbox++
 		case ThreadBlockedUringRecv:
-			nMailbox++ // count with mailbox for now (same IPC category)
+			nMailbox++ // IPC category
 		case ThreadBlockedDelegate:
 			nDelegate++
 		}
@@ -2318,7 +2310,7 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	CleanupInputCompletionRing(int16(pid))
 	CleanupSoftIRQSlotsForShepherd(int16(pid))
 	CleanupInputFocusForShepherd(int16(pid))
-	CleanupMailboxForShepherd(int16(pid))
+	CleanupPageSharingForShepherd(int16(pid))
 	CleanupUringIPCForShepherd(int16(pid))
 	return terminateShepherdImpl(&NormalSchedulerFunc, pid, status)
 }
@@ -2729,9 +2721,9 @@ func findReadyThreadWithStealing() *Thread {
 		if q.InUse[idx] {
 			tid := q.Data[idx]
 			t := threadLookupByTID(int32(tid))
-			if t != nil && t.State == ThreadReady && t.MailboxWoken {
+			if t != nil && t.State == ThreadReady && t.PriorityWoken {
 				q.PluckAt(idx)
-				t.MailboxWoken = false
+				t.PriorityWoken = false
 				return t
 			}
 		}
@@ -2744,7 +2736,7 @@ func findReadyThreadWithStealing() *Thread {
 
 		t := threadLookupByTID(int32(tid))
 		if t != nil && t.State == ThreadReady {
-			t.MailboxWoken = false
+			t.PriorityWoken = false
 			return t
 		}
 	}
@@ -2777,7 +2769,7 @@ func stealWorkFromOtherCPUs() *Thread {
 			if t != nil && t.State == ThreadReady {
 				// Update HomeCPU to current CPU (new affinity)
 				t.HomeCPU = int8(myID)
-				t.MailboxWoken = false
+				t.PriorityWoken = false
 				// Mark that this thread was stolen (for debug output after lock release)
 				t.StolenFromCPU = int8(targetCPU)
 				return t
@@ -2873,9 +2865,9 @@ func findReadyThreadPreferDifferentShepherdSchedLockHeld(currentPID ShepherdId) 
 		if q.InUse[idx] {
 			tid := q.Data[idx]
 			t := threadLookupByTID(int32(tid))
-			if t != nil && t.State == ThreadReady && t.MailboxWoken {
+			if t != nil && t.State == ThreadReady && t.PriorityWoken {
 				q.PluckAt(idx)
-				t.MailboxWoken = false
+				t.PriorityWoken = false
 				return t
 			}
 		}
@@ -2890,7 +2882,7 @@ func findReadyThreadPreferDifferentShepherdSchedLockHeld(currentPID ShepherdId) 
 			t := threadLookupByTID(int32(tid))
 			if t != nil && t.State == ThreadReady && t.PID != currentPID {
 				q.PluckAt(idx)
-				t.MailboxWoken = false
+				t.PriorityWoken = false
 				return t
 			}
 		}
@@ -2911,7 +2903,7 @@ func findReadyThreadPreferDifferentShepherdSchedLockHeld(currentPID ShepherdId) 
 				if t != nil && t.State == ThreadReady && t.PID != currentPID {
 					vq.PluckAt(vidx)
 					t.HomeCPU = int8(myID) // Update affinity
-					t.MailboxWoken = false
+					t.PriorityWoken = false
 					return t
 				}
 			}
@@ -2925,7 +2917,7 @@ func findReadyThreadPreferDifferentShepherdSchedLockHeld(currentPID ShepherdId) 
 
 		t := threadLookupByTID(int32(tid))
 		if t != nil && t.State == ThreadReady {
-			t.MailboxWoken = false
+			t.PriorityWoken = false
 			return t
 		}
 	}
@@ -2955,9 +2947,9 @@ func findReadyUserspaceThreadSchedLockHeld(currentPID ShepherdId) *Thread {
 		if q.InUse[idx] {
 			tid := q.Data[idx]
 			t := threadLookupByTID(int32(tid))
-			if t != nil && t.State == ThreadReady && t.PID > 0 && t.MailboxWoken {
+			if t != nil && t.State == ThreadReady && t.PID > 0 && t.PriorityWoken {
 				q.PluckAt(idx)
-				t.MailboxWoken = false
+				t.PriorityWoken = false
 				return t
 			}
 		}
@@ -2976,7 +2968,7 @@ func findReadyUserspaceThreadSchedLockHeld(currentPID ShepherdId) *Thread {
 			t := threadLookupByTID(int32(tid))
 			if t != nil && t.State == ThreadReady && t.PID > 0 && t.PID != currentPID {
 				q.PluckAt(idx)
-				t.MailboxWoken = false
+				t.PriorityWoken = false
 				return t
 			}
 		}
@@ -2991,7 +2983,7 @@ func findReadyUserspaceThreadSchedLockHeld(currentPID ShepherdId) *Thread {
 			t := threadLookupByTID(int32(tid))
 			if t != nil && t.State == ThreadReady && t.PID > 0 {
 				q.PluckAt(idx)
-				t.MailboxWoken = false
+				t.PriorityWoken = false
 				return t
 			}
 		}
@@ -4156,8 +4148,6 @@ func PrintTickDistribution() {
 				stateStr = "DNT"
 			case ThreadBlockedInputEvent:
 				stateStr = "INP"
-			case ThreadBlockedMailbox:
-				stateStr = "MBX"
 			case ThreadBlockedKernelWork:
 				stateStr = "KW"
 			case ThreadBlockedIOUring:

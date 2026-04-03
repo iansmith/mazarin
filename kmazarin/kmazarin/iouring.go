@@ -50,7 +50,7 @@ func InitIOUringTimeout() {
 }
 
 // BlockForIOUring blocks the current thread until io_uring completions arrive.
-// Modeled on BlockForMailboxRecv. Returns the context pointer of the next
+// Returns the context pointer of the next
 // thread to run, or 0 if no other thread is available (caller does WFI).
 //
 //go:noinline
@@ -140,7 +140,7 @@ func WakeIOUringFromIRQ() {
 	t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 	if t != nil && t.State == ThreadBlockedIOUring {
 		t.State = ThreadReady
-		t.MailboxWoken = true // Reuse flag for priority scheduling
+		t.PriorityWoken = true // Reuse flag for priority scheduling
 		t.Context.RewindToSyscall()
 		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
 		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)

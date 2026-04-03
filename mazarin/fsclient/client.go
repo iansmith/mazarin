@@ -68,7 +68,7 @@ func (c *Client) Connect() error {
 	c.dataLen = dataPages * 4096
 
 	// Map into fs's address space.
-	remote, mapErr := sys.MailboxMapPage(c.fsSID, c.localVA)
+	remote, mapErr := sys.SharePages(c.fsSID, c.localVA)
 	if mapErr != nil {
 		return fmt.Errorf("fsclient: SharePages: %w", mapErr)
 	}

@@ -54,9 +54,8 @@ var mazzySyscallTable = [64]SyscallHandler{
 	43: SyscallAttrIncrementI64,          // AttrIncrementI64 = 0x102B
 	44: SyscallRequestWindowManager,     // RequestWindowManager = 0x102C
 	// slots 45-46 freed (were SetInputFocus/WaitInputEvent — rachel uses completion ring now)
-	47: SyscallMailboxMapPage,           // MailboxMapPage = 0x102F
-	48: SyscallMailboxSend,              // MailboxSend = 0x1030
-	49: SyscallMailboxRecv,              // MailboxRecv = 0x1031
+	47: SyscallSharePages,               // SharePages = 0x102F
+	// slots 48-49 freed (were MailboxSend/MailboxRecv — all IPC uses uring now)
 	50: SyscallRegisterCursor,          // RegisterCursor = 0x1032
 	51: SyscallSetCursor,               // SetCursor = 0x1033
 	52: SyscallGetReady,               // GetReady = 0x1034

@@ -30,7 +30,7 @@ func New(targetSID int, pageAddr uintptr, slotSize, slotCount uint32) (*RingBuff
 	*p = 0
 
 	// Map the page into the target shepherd's address space
-	_, err := sys.MailboxMapPage(targetSID, pageAddr)
+	_, err := sys.SharePages(targetSID, pageAddr)
 	if err != nil {
 		return nil, err
 	}

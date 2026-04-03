@@ -19,7 +19,7 @@ import (
 
 // MAZZY: exitsyscall breadcrumbs — write single-char markers to stderr (fd 2).
 // These let us trace the P-reacquisition path when a shepherd thread returns
-// from a blocking syscall (MailboxRecv). Characters:
+// from a blocking syscall (UringRecv). Characters:
 //   'O' = fast path: reacquired old P (CAS _Psyscall → _Pidle)
 //   'I' = fast path: got idle P from pidleget
 //   'S' = entering slow path (exitsyscall0)

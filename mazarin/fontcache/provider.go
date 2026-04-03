@@ -23,7 +23,7 @@ var (
 
 // FontSvcGlyphProvider implements textshape.GlyphProvider using IPC to
 // fontsvc.maz for font loading and glyph cache access. Cache and font
-// file pages are shared read-only via MailboxMapPage.
+// file pages are shared read-only via SharePages.
 type FontSvcGlyphProvider struct {
 	fc    *FontCache
 	fonts [MaxFonts]*fontsvcFont

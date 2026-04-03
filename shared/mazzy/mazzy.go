@@ -53,9 +53,8 @@ const (
 	SysAttrIncrementI64       = MazzySyscallBase + 43 // 0x102B - Atomically increment int64 attribute
 	SysRequestWindowManager   = MazzySyscallBase + 44 // 0x102C - Claim window manager role
 	// slots 45-46 freed (were SetInputFocus/WaitInputEvent — rachel uses completion ring now)
-	SysMailboxMapPage         = MazzySyscallBase + 47 // 0x102F - Map caller's page into target shepherd's space
-	SysMailboxSend            = MazzySyscallBase + 48 // 0x1030 - Send mailbox notification
-	SysMailboxRecv            = MazzySyscallBase + 49 // 0x1031 - Wait for mailbox notification
+	SysSharePages             = MazzySyscallBase + 47 // 0x102F - Map caller's page into target shepherd's space
+	// slots 48-49 freed (were SysMailboxSend/SysMailboxRecv — all IPC uses uring now)
 	SysRegisterCursor         = MazzySyscallBase + 50 // 0x1032 - Register cursor image
 	SysSetCursor              = MazzySyscallBase + 51 // 0x1033 - Switch active cursor by ID
 	SysGetReady               = MazzySyscallBase + 52 // 0x1034 - Check if named shepherd is ready
