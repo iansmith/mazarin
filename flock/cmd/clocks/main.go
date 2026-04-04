@@ -179,10 +179,6 @@ func main() {
 		"attr:///kernel/int64/screen/width", "attr:///kernel/int64/screen/height")
 	app.Focused = false // wait for rachel to grant focus
 
-	// Column: single child of AppWindow, contains row + scrollbar.
-	outerCol := std.NewColumn("outer_col", "AppWindow", pal, 0, mancini.AxisMiddle, 1, false)
-	outerCol.SetSpacing(4)
-
 	// Scroller height = row height (constraint). Build the constraint
 	// before the scroller so it's passed to the constructor.
 	rowHeightURI := mancini.LayoutURI("main_row", mancini.DataTypeInt64, mancini.LayoutHeight)
@@ -190,7 +186,7 @@ func main() {
 		"_source_", rowHeightURI)
 	scrollerHeight := attr.ConstraintI64(
 		std.ScrollerHeightURI("scroller"), scrollerHeightProg)
-	scroller := std.NewScroller("scroller", "outer_col", pal, scrollerHeight)
+	scroller := std.NewScroller("scroller", "AppWindow", pal, scrollerHeight)
 
 	// Row: parent = "scroller" (child of the scroller viewport).
 	row := std.NewRow("main_row", "scroller", pal, 0, mancini.AxisMinimum, 1)
@@ -218,7 +214,7 @@ func main() {
 
 		// Column: parent = "main_row". Created first so its name is registered.
 		col := std.NewColumn(colName, "main_row", pal, 0, mancini.AxisMiddle, 1, false)
-		col.SetSpacing(15)
+		col.SetSpacing(4)
 
 		// Children created in display order — sequence numbers give deterministic ordering.
 		_ = std.NewLabelNamedBold(city.id+"_name", colName, theme, city.name, 18)
@@ -250,16 +246,7 @@ func main() {
 		spacer.GetLayout().Visible.Set(false)
 	}
 
-	// Horizontal scrollbar below the clock row. Width = viewport (set after
-	// winW is known); ThumbFrac = viewport / content (set after both known).
 	rowLH := row.GetLayout()
-	sbLH := mancini.NewLayoutAttributesBase("hscroll", "outer_col")
-	sbLH.Width = attr.ValueI64(
-		mancini.LayoutURI("hscroll", mancini.DataTypeInt64, mancini.LayoutWidth), 0)
-	sbLH.Height = attr.ValueI64(
-		mancini.LayoutURI("hscroll", mancini.DataTypeInt64, mancini.LayoutHeight), 15)
-	sbLH.InitBounds("hscroll")
-	hscroll := std.NewScrollbar(sbLH, theme, false, 15, 0.05, 0.0, false)
 
 	sys.UartWriteString("[clocks] interactor tree built\n")
 	// 6. Read kernel screen dimensions for DrawContext sizing.
@@ -281,11 +268,11 @@ func main() {
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
 
-	// Scroller width = viewport showing ~2 clocks (value attr, set below).
+	// Scroller width = viewport showing one clock column.
 	scrollerLH := scroller.GetLayout()
 
 	rowContentW := rowLH.Width.Get()
-	winW := int(rowContentW * 2 / int64(len(cities)))
+	winW := int(rowContentW / int64(len(cities)))
 	if winW < 100 {
 		winW = 300 // fallback
 	}
@@ -294,28 +281,13 @@ func main() {
 	// Virtual width = full row content (no vertical scrolling).
 	scroller.SetVirtualSize(rowContentW, 0)
 
-	// winH from AppWindow constraint (outer_col sums scroller + scrollbar + spacing).
 	winH := int(appLH.Height.Get())
-	outerColLH := outerCol.GetLayout()
-	sys.UartWriteDirectString(fmt.Sprintf("[clocks] winW=%d winH=%d rowH=%d rowW=%d scrollerH=%d sbH=%d outerColH=%d spacing=%d\n",
+	sys.UartWriteDirectString(fmt.Sprintf("[clocks] winW=%d winH=%d rowH=%d rowW=%d scrollerH=%d\n",
 		winW, winH,
 		rowLH.Height.Get(), rowContentW,
-		scrollerLH.Height.Get(),
-		sbLH.Height.Get(),
-		outerColLH.Height.Get(),
-		outerColLH.SpacingAttr.Get()))
+		scrollerLH.Height.Get()))
 	if winH < 50 {
 		winH = 300
-	}
-
-	// Set scrollbar width to the visible viewport and ThumbFrac to viewport/content.
-	sbLH.Width.Set(int64(winW))
-	contentW := float64(rowContentW)
-	if contentW > 0 {
-		hscroll.ThumbFrac = float64(winW) / contentW
-		if hscroll.ThumbFrac > 1 {
-			hscroll.ThumbFrac = 1
-		}
 	}
 
 	// 8. Compute screen position via rachel's visibleArea constraints.
@@ -414,8 +386,6 @@ func main() {
 	dirtyCh := attr.OnDirty()
 	var drawCount int64
 	var lastPrint int64
-	lastThumbPos := hscroll.ThumbPos // track scrollbar changes
-
 	redraw := func() {
 		sec := timeSec.Get()
 		_ = timeNanos.Get()
@@ -424,29 +394,6 @@ func main() {
 			t := time.Unix(sec, 0).UTC()
 			sys.UartWriteString(fmt.Sprintf("[clocks] time: %v\n", t))
 			lastPrint = sec
-		}
-
-		// Sync scrollbar ↔ scroller. Track which one was dragged by
-		// comparing ThumbPos against its value from the previous frame.
-		trueW := scrollerLH.Width.Get()
-		if maxScroll := scroller.VirtualWidth - trueW; maxScroll > 0 {
-			if hscroll.ThumbPos != lastThumbPos {
-				// Scrollbar thumb was dragged — scrollbar drives scroller.
-				newVX := int64(hscroll.ThumbPos * float64(maxScroll))
-				fmt.Printf("[clocks:scroll] ThumbPos=%.3f maxScroll=%d → VX=%d (vw=%d tw=%d)\n",
-					hscroll.ThumbPos, maxScroll, newVX, scroller.VirtualWidth, trueW)
-				scroller.ScrollTo(newVX, scroller.VirtualY)
-			} else {
-				// Scroller body may have been dragged — scroller drives scrollbar.
-				hscroll.ThumbPos = float64(scroller.VirtualX) / float64(maxScroll)
-				if hscroll.ThumbPos < 0 {
-					hscroll.ThumbPos = 0
-				}
-				if hscroll.ThumbPos > 1 {
-					hscroll.ThumbPos = 1
-				}
-			}
-			lastThumbPos = hscroll.ThumbPos
 		}
 
 		app.Draw(app, 0, 0, int64(winW), int64(winH))
