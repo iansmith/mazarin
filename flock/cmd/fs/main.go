@@ -524,8 +524,13 @@ func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 	}
 	atomic.StoreUint32(&d.ioRing.SQTail, sqTail+1)
 
-	// Submit 1 SQE, wait for 1 CQE.
-	_, err := sys.IOUringEnterBlocking(d.ringID, 1, 1, 0)
+	// Submit 1 SQE (non-blocking, P held).
+	_, err := sys.IOUringEnter(d.ringID, 1, 0, 0)
+	if err != nil {
+		return err
+	}
+	// Wait for 1 CQE (blocking, P released) — same pattern as rachel's InputAcquirer.
+	_, err = sys.IOUringEnterBlocking(d.ringID, 0, 1, 0)
 	if err != nil {
 		return err
 	}
@@ -596,8 +601,13 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 
 		tWait := time.Now()
 		if submitted > 0 {
-			// Submit all SQEs, wait for all completions.
-			nret, werr := sys.IOUringEnterBlocking(d.ringID, submitted, submitted, 0)
+			// Submit SQEs (non-blocking, P held).
+			_, serr := sys.IOUringEnter(d.ringID, submitted, 0, 0)
+			if serr != nil {
+				return serr
+			}
+			// Wait for all completions (blocking, P released) — same pattern as rachel's InputAcquirer.
+			nret, werr := sys.IOUringEnterBlocking(d.ringID, 0, submitted, 0)
 			if werr != nil {
 				return werr
 			}
