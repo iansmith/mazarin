@@ -411,10 +411,12 @@ func bootSequence(fsys *ext2.FileSystem) {
 	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
 	// Linux depends on both fs (IPC) and rachel (fonts/WM).
 	launchShepherd(fsys, "linux", "/linux.elf")
+	sys.UartWriteString("[fs] waiting for linux ready...\n")
 	if err := sys.WaitForShepherdReady("linux", 30); err != nil {
-		sys.UartWriteString("[fs] FATAL: linux not ready\n")
+		sys.UartWriteString("[fs] FATAL: linux not ready: " + err.Error() + "\n")
 		return
 	}
+	sys.UartWriteString("[fs] linux is ready!\n")
 	// 3. Read startup config and launch remaining application shepherds.
 	sys.UartWriteString("[fs] reading startup.toml...\n")
 	cfg := readStartupConfig(fsys)
@@ -429,41 +431,29 @@ func bootSequence(fsys *ext2.FileSystem) {
 	sys.UartWriteString("[fs] boot sequence complete\n")
 }
 
-// asyncBlockDev implements blockdev.BlockDevice backed by io_uring.
-// All DMA operations go through a single DMA worker goroutine that writes
-// SQEs to the io_uring submission ring and calls IOUringEnter to submit +
-// wait for completions. The IRQ top-half writes CQEs directly to the ring
-// and wakes the blocked thread — no mailbox, no channel, no P-release.
-type asyncBlockDev struct {
-	reqCh     chan dmaRequest
-	scratchVA uintptr          // base of MAZARIN_CONTIGUOUS scratch pages
-	ioRing    *iouring.IORing  // shared io_uring ring page
-	ringID    int              // io_uring instance ID from IOUringSetup
-}
-
-// dmaRequest is sent to the DMA worker goroutine.
-type dmaRequest struct {
-	kind    dmaRequestKind
-	replyCh chan dmaReply
-
-	// For single-block reads (dmaReadBlock):
+// dmaReq is a request sent to the dedicated DMA worker goroutine.
+type dmaReq struct {
+	// Single-block read (lba != 0, blocks == nil).
 	lba uint64
 	buf []byte
-
-	// For batched reads (dmaReadBatch):
-	blocks []uint32 // ext2 block numbers
-	dst    []byte   // destination buffer (len >= len(blocks)*asyncBlockSize)
+	// Batch read (blocks != nil).
+	blocks []uint32
+	dst    []byte
+	// Response channel — worker sends exactly one result.
+	result chan<- error
 }
 
-type dmaRequestKind int
-
-const (
-	dmaReadBlock dmaRequestKind = iota // single 4KB block read
-	dmaReadBatch                       // batched multi-block read
-)
-
-type dmaReply struct {
-	err error
+// asyncBlockDev implements blockdev.BlockDevice backed by io_uring.
+// A dedicated worker goroutine owns all ring access and calls
+// IOUringEnterBlocking exclusively. This mirrors the uring.Reader
+// pattern (dedicated goroutine blocking on a syscall) which is
+// proven reliable. Callers send requests via channel and wait
+// for results.
+type asyncBlockDev struct {
+	scratchVA uintptr         // base of MAZARIN_CONTIGUOUS scratch pages
+	ioRing    *iouring.IORing // shared io_uring ring page
+	ringID    int             // io_uring instance ID from IOUringSetup
+	reqCh     chan dmaReq     // requests to the worker goroutine
 }
 
 const (
@@ -471,30 +461,34 @@ const (
 	sectorsPerBlock = asyncBlockSize / 512
 )
 
-// newAsyncBlockDev creates the block device and starts the DMA worker.
+// newAsyncBlockDev creates the block device and starts the dedicated
+// DMA worker goroutine. The worker owns all ring access.
 func newAsyncBlockDev(scratchVA uintptr, ring *iouring.IORing, ringID int) *asyncBlockDev {
 	d := &asyncBlockDev{
-		reqCh:     make(chan dmaRequest, 4),
 		scratchVA: scratchVA,
 		ioRing:    ring,
 		ringID:    ringID,
+		reqCh:     make(chan dmaReq),
 	}
-	go d.dmaWorker()
+	go d.worker()
 	return d
 }
 
-// dmaWorker is the sole goroutine that touches the io_uring ring and scratch
-// buffer. It processes requests sequentially from reqCh.
-func (d *asyncBlockDev) dmaWorker() {
+// worker is the dedicated goroutine that processes all DMA requests.
+// It loops on reqCh, executing I/O directly. This mirrors the
+// uring.Reader.loop() pattern — a dedicated goroutine that blocks
+// on syscalls, ensuring the Go runtime handles M/P transitions
+// correctly.
+func (d *asyncBlockDev) worker() {
+	sys.UartWriteString("[dma:worker] started\n")
 	for req := range d.reqCh {
 		var err error
-		switch req.kind {
-		case dmaReadBlock:
-			err = d.doReadBlock(req.lba, req.buf)
-		case dmaReadBatch:
+		if req.blocks != nil {
 			err = d.doReadBatch(req.blocks, req.dst)
+		} else {
+			err = d.doReadBlock(req.lba, req.buf)
 		}
-		req.replyCh <- dmaReply{err: err}
+		req.result <- err
 	}
 }
 
@@ -566,6 +560,11 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 		tSubmit := time.Now()
 		submitted := uint32(0)
 		sqTail := atomic.LoadUint32(&d.ioRing.SQTail)
+		sqHead := atomic.LoadUint32(&d.ioRing.SQHead)
+		if batchCount == 0 || (batchCount+1)%50 == 0 {
+			sys.UartWriteString(fmt.Sprintf("[dma:sub] batch=%d/%d sqH=%d sqT=%d blk[0]=%d\n",
+				batchCount, (total+scratchPages-1)/scratchPages, sqHead, sqTail, blocks[blockIdx]))
+		}
 		for i, bn := range batchBlocks {
 			if bn == 0 {
 				// Sparse block — zero-fill.
@@ -598,13 +597,23 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 		tWait := time.Now()
 		if submitted > 0 {
 			// Submit all SQEs, wait for all completions.
-			_, werr := sys.IOUringEnterBlocking(d.ringID, submitted, submitted, 0)
+			nret, werr := sys.IOUringEnterBlocking(d.ringID, submitted, submitted, 0)
 			if werr != nil {
 				return werr
 			}
 
-			// Drain all CQEs.
+			// Verify completions actually arrived.
 			cqHead := atomic.LoadUint32(&d.ioRing.CQHead)
+			cqTail := atomic.LoadUint32(&d.ioRing.CQTail)
+			actual := cqTail - cqHead
+			if actual < submitted {
+				sys.UartWriteString(fmt.Sprintf("[dma:UNDERFLOW] batch=%d ret=%d submitted=%d cqH=%d cqT=%d actual=%d\n",
+					batchCount, nret, submitted, cqHead, cqTail, actual))
+				// Don't drain non-existent CQEs — return EIO.
+				return syscall.EIO
+			}
+
+			// Drain all CQEs.
 			for i := uint32(0); i < submitted; i++ {
 				cqe := &d.ioRing.CQEntries[(cqHead+i)&iouring.CQMask]
 				if cqe.Res < 0 {
@@ -655,40 +664,20 @@ func (d *asyncBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	if len(buf) < asyncBlockSize {
 		return fmt.Errorf("buffer too small")
 	}
-	replyCh := make(chan dmaReply, 1)
-	d.reqCh <- dmaRequest{
-		kind:    dmaReadBlock,
-		replyCh: replyCh,
-		lba:     lba,
-		buf:     buf,
-	}
-	reply := <-replyCh
-	return reply.err
+	ch := make(chan error, 1)
+	d.reqCh <- dmaReq{lba: lba, buf: buf, result: ch}
+	return <-ch
 }
 
-// ReadBlocks implements blockdev.BatchBlockDevice. Sends a batched multi-block
-// read request to the DMA worker. lbas are in device block units (4KB each).
-// Safe to call from any goroutine.
+// ReadBlocks implements blockdev.BatchBlockDevice. Sends a batch read
+// request to the DMA worker and waits for the result. Safe to call
+// from any goroutine.
 func (d *asyncBlockDev) ReadBlocks(lbas []uint64, dst []byte) error {
-	// Convert uint64 LBAs to uint32 block numbers for doReadBatch.
 	blocks := make([]uint32, len(lbas))
 	for i, lba := range lbas {
 		blocks[i] = uint32(lba)
 	}
-	replyCh := make(chan dmaReply, 1)
-	t0 := time.Now()
-	d.reqCh <- dmaRequest{
-		kind:    dmaReadBatch,
-		replyCh: replyCh,
-		blocks:  blocks,
-		dst:     dst,
-	}
-	tSend := time.Since(t0)
-	reply := <-replyCh
-	tTotal := time.Since(t0)
-	if len(lbas) > 100 {
-		sys.UartWriteString(fmt.Sprintf("[ReadBlocks] lbas=%d chSend=%dms chTotal=%dms\n",
-			len(lbas), tSend.Milliseconds(), tTotal.Milliseconds()))
-	}
-	return reply.err
+	ch := make(chan error, 1)
+	d.reqCh <- dmaReq{blocks: blocks, dst: dst, result: ch}
+	return <-ch
 }
