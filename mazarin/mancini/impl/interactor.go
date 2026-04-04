@@ -1,6 +1,10 @@
 package impl
 
-import "mazzy/mazarin/mancini"
+import (
+	"fmt"
+
+	"mazzy/mazarin/mancini"
+)
 
 // Interactor is the root base type for all UI elements in the Mancini
 // toolkit. Concrete interactor types embed this struct (directly or via
@@ -81,6 +85,21 @@ func (i *Interactor) H() int64       { return i.layout.Height.Get() }
 func (i *Interactor) Visible() bool  { return i.layout.Visible.Get() }
 func (i *Interactor) DC() mancini.DrawContext { return i.dc }
 
+// ScreenCoordConvertTo converts interactor-local coordinates to screen
+// coordinates. (0,0) returns the screen position of this interactor's
+// top-left corner.
+func (i *Interactor) ScreenCoordConvertTo(localX, localY int64) (int64, int64) {
+	ox, oy := mancini.ScreenOrigin()
+	return localX + i.layout.X.Get() + ox, localY + i.layout.Y.Get() + oy
+}
+
+// ScreenCoordConvertFrom converts screen-absolute coordinates to this
+// interactor's local coordinate frame.
+func (i *Interactor) ScreenCoordConvertFrom(screenX, screenY int64) (int64, int64) {
+	ox, oy := mancini.ScreenOrigin()
+	return screenX - i.layout.X.Get() - ox, screenY - i.layout.Y.Get() - oy
+}
+
 // SetDC sets the [mancini.DrawContext] for this interactor. Called by
 // parent interactors during the draw pass to propagate the drawing
 // surface down the tree before calling Draw.
@@ -100,3 +119,69 @@ func (i *Interactor) Layout() *mancini.LayoutAttributes { return i.layout }
 // [mancini.LayoutAttributes] that publish this interactor's position,
 // size, and visibility in the constraint network.
 func (i *Interactor) GetLayout() *mancini.LayoutAttributes { return i.layout }
+
+// Pick performs hit testing in this interactor's local coordinate frame.
+// It checks bounds, recurses into children (last-to-first for z-order),
+// and appends this interactor if hit. Returns front-to-back order
+// (deepest children first).
+//
+// Concrete types (e.g., Scroller) may override Pick to apply coordinate
+// transforms before recursing into children.
+func (i *Interactor) Pick(localX, localY int64) []mancini.Interactor {
+	lh := i.layout
+	if lh == nil {
+		return nil
+	}
+	iw, ih := lh.Width.Get(), lh.Height.Get()
+	if localX < 0 || localX >= iw || localY < 0 || localY >= ih {
+		if mancini.PickDebugEnabled() {
+			fmt.Printf("[pick] %s size=(%dx%d) MISS for local=(%d,%d)\n",
+				lh.Name(), iw, ih, localX, localY)
+		}
+		return nil
+	}
+	if !i.owner.Visible() {
+		return nil
+	}
+
+	var result []mancini.Interactor
+
+	// Recurse into children (last-to-first for front-to-back z-order).
+	ix, iy := lh.X.Get(), lh.Y.Get()
+	if p, ok := i.owner.(mancini.Parent); ok {
+		children := p.GetChildren()
+		for j := len(children) - 1; j >= 0; j-- {
+			child := children[j]
+			cl, cok := child.(mancini.Layouter)
+			if !cok {
+				continue
+			}
+			clh := cl.GetLayout()
+			if clh == nil {
+				continue
+			}
+			childRelX := clh.X.Get() - ix
+			childRelY := clh.Y.Get() - iy
+			childLocalX := localX - childRelX
+			childLocalY := localY - childRelY
+			if picker, ok := child.(mancini.Picker); ok {
+				result = append(result, picker.Pick(childLocalX, childLocalY)...)
+			}
+		}
+	}
+
+	// DetailedHit for fine-grained testing (e.g., circular regions).
+	if dh, ok := i.owner.(mancini.DetailedHit); ok {
+		if !dh.DetailedHit(localX, localY) {
+			if mancini.PickDebugEnabled() {
+				fmt.Printf("[pick] %s DetailedHit REJECTED local=(%d,%d)\n",
+					lh.Name(), localX, localY)
+			}
+			return result
+		}
+	}
+
+	result = append(result, i.owner)
+	return result
+}
+

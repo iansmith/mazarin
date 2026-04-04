@@ -9,6 +9,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"mazzy/mazarin/sys"
 )
 
 // rectSubtract returns the parts of a that are not covered by b.
@@ -84,12 +85,72 @@ func exposedRegion(sid int) []image.Rectangle {
 	return rects
 }
 
+// sampleBorderZone checks 5 scanlines in the right border zone for non-zero
+// pixels and reports what it finds. phase is "pre-blit", "post-blit", or
+// "post-border". Returns the count of non-zero pixels found.
+func sampleBorderZone(phase string, sid int, ta *trackedApp, fb []byte, fbStride int) int {
+	ox, oy := screenOrigin(ta)
+	bsW := int(ta.bsWidth)
+	bsH := int(ta.bsHeight)
+	bsStride := int(ta.bsStride)
+	bs := ta.backingStore
+
+	// Sample 5 evenly-spaced scanlines in the content area (skip top/bottom border).
+	contentH := bsH - borderTop - borderBottom
+	if contentH <= 0 {
+		return 0
+	}
+	nonZero := 0
+	for i := 0; i < 5; i++ {
+		localY := borderTop + (contentH * (2*i + 1) / 10)
+		if localY < 0 || localY >= bsH {
+			continue
+		}
+		screenY := oy + localY
+
+		// Check right border zone: last borderRight pixels.
+		for dx := 0; dx < borderRight; dx++ {
+			localX := bsW - borderRight + dx
+			screenX := ox + localX
+
+			// Backing store pixel.
+			bsOff := localY*bsStride + localX*4
+			var bsR, bsG, bsB, bsA byte
+			if bsOff >= 0 && bsOff+3 < len(bs) {
+				bsB, bsG, bsR, bsA = bs[bsOff], bs[bsOff+1], bs[bsOff+2], bs[bsOff+3]
+			}
+
+			// Framebuffer pixel.
+			fbOff := screenY*fbStride + screenX*4
+			var fbB, fbG, fbR, fbA byte
+			if fbOff >= 0 && fbOff+3 < len(fb) {
+				fbB, fbG, fbR, fbA = fb[fbOff], fb[fbOff+1], fb[fbOff+2], fb[fbOff+3]
+			}
+
+			// Report if either is non-zero and not the expected blue border color (BGRA 200,80,40,255).
+			isBorderColor := fbB == 200 && fbG == 80 && fbR == 40 && fbA == 255
+			bsNonZero := bsB != 0 || bsG != 0 || bsR != 0 || bsA != 0
+			if bsNonZero || (phase != "pre-blit" && !isBorderColor && (fbR != 0 || fbG != 0 || fbB != 0)) {
+				nonZero++
+				if nonZero <= 3 {
+					sys.UartWriteString(fmt.Sprintf("[blit:diag:%s] SID=%d bs(%d,%d)=BGRA(%d,%d,%d,%d) fb(%d,%d)=BGRA(%d,%d,%d,%d)\n",
+						phase, sid, localX, localY, bsB, bsG, bsR, bsA,
+						screenX, screenY, fbB, fbG, fbR, fbA))
+				}
+			}
+		}
+	}
+	return nonZero
+}
+
+var borderDiagCount int
+
 // blitWindow copies the exposed region of sid's backing store to the
 // framebuffer. Each exposed rect is copied scanline by scanline.
 // fb is the framebuffer pixel slice, fbStride is bytes per framebuffer row.
 var blitDbgCount int
 
-func blitWindow(sid int, fb []byte, fbStride int) {
+func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int) {
 	ta, ok := trackedApps[sid]
 	if !ok || ta.backingStore == nil {
 		return
@@ -98,10 +159,29 @@ func blitWindow(sid int, fb []byte, fbStride int) {
 	bsStride := int(ta.bsStride)
 	winX, winY := screenOrigin(ta) // top-left of full buffer on screen
 
-	regions := exposedRegion(sid)
+	// Scan border zone of backing store for non-zero pixels (every 200 blits).
+	blitDbgCount++
+	if blitDbgCount%200 == 100 {
+		contentRight := borderLeft + int(ta.appWidth)
+		nonZero := 0
+		for y := borderTop; y < int(ta.bsHeight)-borderBottom; y++ {
+			for x := contentRight; x < int(ta.bsWidth); x++ {
+				off := y*bsStride + x*4
+				if off+3 < len(bs) && (bs[off] != 0 || bs[off+1] != 0 || bs[off+2] != 0 || bs[off+3] != 0) {
+					nonZero++
+					if nonZero <= 5 {
+						sys.UartWriteString(fmt.Sprintf("[blit:leak] SID=%d bs(%d,%d) BGRA=%d,%d,%d,%d\n",
+							sid, x, y, bs[off], bs[off+1], bs[off+2], bs[off+3]))
+					}
+				}
+			}
+		}
+		if nonZero > 0 {
+			sys.UartWriteString(fmt.Sprintf("[blit:leak] SID=%d total=%d nonzero pixels in right border zone\n", sid, nonZero))
+		}
+	}
 
 	// Log first 3 blits per SID for debugging.
-	blitDbgCount++
 	if blitDbgCount <= 3 {
 		nonZero := 0
 		for i := 0; i < len(bs) && i < bsStride*4; i += 4 {
@@ -109,11 +189,11 @@ func blitWindow(sid int, fb []byte, fbStride int) {
 				nonZero++
 			}
 		}
-		fmt.Printf("[rachel:blit] SID=%d win=(%d,%d) bs=%dx%d stride=%d regions=%d bsLen=%d bsNonZero=%d/4rows\n",
-			sid, winX, winY, ta.bsWidth, ta.bsHeight, bsStride, len(regions), len(bs), nonZero)
+		sys.UartWriteString(fmt.Sprintf("[rachel:blit] SID=%d win=(%d,%d) bs=%dx%d stride=%d regions=%d bsLen=%d bsNonZero=%d/4rows\n",
+			sid, winX, winY, ta.bsWidth, ta.bsHeight, bsStride, len(regions), len(bs), nonZero))
 		for i, r := range regions {
 			if i < 4 {
-				fmt.Printf("[rachel:blit]   region[%d]: (%d,%d)-(%d,%d)\n", i, r.Min.X, r.Min.Y, r.Max.X, r.Max.Y)
+				sys.UartWriteString(fmt.Sprintf("[rachel:blit]   region[%d]: (%d,%d)-(%d,%d)\n", i, r.Min.X, r.Min.Y, r.Max.X, r.Max.Y))
 			}
 		}
 	}
@@ -133,52 +213,69 @@ func blitWindow(sid int, fb []byte, fbStride int) {
 	}
 }
 
-// drawBorders fills the border regions of ta's backing store with debug blue.
-func drawBorders(ta *trackedApp) {
-	bs := ta.backingStore
-	if bs == nil {
-		return
-	}
+// drawBordersToFB draws the border regions of ta directly onto the framebuffer,
+// clipped to the given exposed rectangles so that borders of a background window
+// never overwrite content of a foreground window.
+var borderDbgPerSID = map[int]int{}
+
+func drawBordersToFB(ta *trackedApp, regions []image.Rectangle, fb []byte, fbStride int) {
 	tw := int(ta.bsWidth)
 	th := int(ta.bsHeight)
-	stride := int(ta.bsStride)
+	ox, oy := screenOrigin(ta) // screen position of backing store top-left
 
-	// Blue (BGRA byte order — framebuffer swaps R/B): B=200, G=80, R=40, A=255
-	setPixel := func(x, y int) {
-		off := y*stride + x*4
-		if off+3 < len(bs) {
-			bs[off] = 200  // B
-			bs[off+1] = 80 // G
-			bs[off+2] = 40 // R
-			bs[off+3] = 255 // A
+	fbW := fbStride / 4        // framebuffer width in pixels
+
+	// setPixel writes one border pixel if it falls within any exposed region.
+	setPixel := func(sx, sy int) {
+		if sx < 0 || sx >= fbW || sy < 0 {
+			return
+		}
+		// Check that (sx,sy) is inside at least one exposed rect.
+		pt := image.Pt(sx, sy)
+		visible := false
+		for _, r := range regions {
+			if pt.In(r) {
+				visible = true
+				break
+			}
+		}
+		if !visible {
+			return
+		}
+		off := sy*fbStride + sx*4
+		if off+3 < len(fb) {
+			fb[off] = 200   // B
+			fb[off+1] = 80  // G
+			fb[off+2] = 40  // R
+			fb[off+3] = 255 // A
 		}
 	}
 
 	// Top strip
 	for y := 0; y < borderTop && y < th; y++ {
 		for x := 0; x < tw; x++ {
-			setPixel(x, y)
+			setPixel(ox+x, oy+y)
 		}
 	}
 	// Bottom strip
 	for y := th - borderBottom; y < th; y++ {
 		if y >= 0 {
 			for x := 0; x < tw; x++ {
-				setPixel(x, y)
+				setPixel(ox+x, oy+y)
 			}
 		}
 	}
 	// Left strip (between top and bottom)
 	for y := borderTop; y < th-borderBottom; y++ {
 		for x := 0; x < borderLeft && x < tw; x++ {
-			setPixel(x, y)
+			setPixel(ox+x, oy+y)
 		}
 	}
 	// Right strip (between top and bottom)
 	for y := borderTop; y < th-borderBottom; y++ {
 		for x := tw - borderRight; x < tw; x++ {
 			if x >= 0 {
-				setPixel(x, y)
+				setPixel(ox+x, oy+y)
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package std
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -34,6 +35,10 @@ type Scrollbar struct {
 	ThumbFrac  float64 // visible fraction 0..1 (determines thumb length)
 	ThumbPos   float64 // thumb position 0..1 along available travel
 	ShowArrows bool    // draw arrow triangles at each end
+
+	// Drag state — active during ClickDraggable interaction.
+	dragOffset  float64 // offset within thumb where press occurred
+	dragOrigPos float64 // ThumbPos at drag start, for revert on outside release
 }
 
 const defaultScrollbarThick = 22.5
@@ -204,6 +209,123 @@ func (s *Scrollbar) Draw(self mancini.Interactor, x, y, w, h int64) {
 		dc.DrawCircle(dotCX, dotCY, tDotRad)
 		dc.Fill()
 	}
+}
+
+// ── ClickDraggable protocol ──────────────────────────────────────────
+
+// trackGeometry computes the track's main-axis start, length, and thumb
+// travel for the current scrollbar layout. Used by both Draw and input.
+func (s *Scrollbar) trackGeometry(x, y, w, h int64) (trackStart, length, thumbLen, travel float64) {
+	thick := s.TrackWidth
+	if thick < 5 {
+		thick = defaultScrollbarThick
+	}
+	scale := thick / defaultScrollbarThick
+	thumbInset := 4.5 * scale
+
+	if s.IsVertical {
+		trackStart = float64(y)
+		length = float64(h)
+	} else {
+		trackStart = float64(x)
+		length = float64(w)
+	}
+
+	thumbThick := thick - thumbInset
+	_ = thumbThick
+	minThumbLen := 40.0 * scale
+	maxThumbLen := length * 0.8
+	thumbLen = length * s.ThumbFrac
+	if thumbLen < minThumbLen {
+		thumbLen = minThumbLen
+	}
+	if thumbLen > maxThumbLen {
+		thumbLen = maxThumbLen
+	}
+	travel = length - thumbLen
+	return
+}
+
+// ClickDragStart implements mancini.ClickDraggable.
+func (s *Scrollbar) ClickDragStart(ev *mancini.InputEvent) bool {
+	sx, sy := s.X(), s.Y()
+	sw, sh := s.W(), s.H()
+	trackStart, _, thumbLen, travel := s.trackGeometry(sx, sy, sw, sh)
+
+	s.dragOrigPos = s.ThumbPos
+
+	thumbOffset := travel * s.ThumbPos
+	thumbStart := trackStart + thumbOffset
+
+	// Cursor position along track axis.
+	var cursor float64
+	if s.IsVertical {
+		cursor = float64(ev.Y)
+	} else {
+		cursor = float64(ev.X)
+	}
+
+	// Check if press is on the thumb.
+	if cursor >= thumbStart && cursor < thumbStart+thumbLen {
+		s.dragOffset = cursor - thumbStart
+		fmt.Printf("[scrollbar] ClickDragStart on thumb, offset=%.1f origPos=%.3f\n", s.dragOffset, s.dragOrigPos)
+		return true
+	}
+
+	// Press on track (not thumb): jump thumb to click position.
+	if travel > 0 {
+		newPos := (cursor - trackStart - thumbLen/2) / travel
+		if newPos < 0 {
+			newPos = 0
+		}
+		if newPos > 1 {
+			newPos = 1
+		}
+		s.ThumbPos = newPos
+		s.dragOffset = thumbLen / 2
+		s.FullDamage()
+		fmt.Printf("[scrollbar] ClickDragStart on track, jumped to %.3f\n", newPos)
+	}
+	return true
+}
+
+// ClickDragMove implements mancini.ClickDraggable.
+func (s *Scrollbar) ClickDragMove(ev *mancini.InputEvent, outsideBounds bool) bool {
+	// Track the main axis even when the cursor drifts off the cross axis.
+	// A 15px-tall horizontal scrollbar is too thin to keep the cursor inside.
+	sx, sy := s.X(), s.Y()
+	sw, sh := s.W(), s.H()
+	trackStart, _, _, travel := s.trackGeometry(sx, sy, sw, sh)
+
+	if travel <= 0 {
+		return true
+	}
+
+	var cursor float64
+	if s.IsVertical {
+		cursor = float64(ev.Y)
+	} else {
+		cursor = float64(ev.X)
+	}
+
+	newPos := (cursor - trackStart - s.dragOffset) / travel
+	if newPos < 0 {
+		newPos = 0
+	}
+	if newPos > 1 {
+		newPos = 1
+	}
+	s.ThumbPos = newPos
+	s.FullDamage()
+	return true
+}
+
+// ClickDragEnd implements mancini.ClickDraggable.
+func (s *Scrollbar) ClickDragEnd(ev *mancini.InputEvent, outsideBounds bool) bool {
+	// Commit wherever the thumb ended up — don't revert on outside release.
+	fmt.Printf("[scrollbar] ClickDragEnd pos=%.3f outside=%v\n", s.ThumbPos, outsideBounds)
+	s.FullDamage()
+	return true
 }
 
 // ── Arrow rendering ────────────────────────────────────────────────

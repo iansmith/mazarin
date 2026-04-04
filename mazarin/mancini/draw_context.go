@@ -57,7 +57,10 @@ func WithClip(dc DrawContext, clipX, clipY, clipW, clipH, pad float64, edge Clip
 	canvas := dc.Image().(*image.RGBA)
 	cb := canvas.Bounds()
 
-	clip := image.Rect(int(clipX), int(clipY), int(clipX+clipW), int(clipY+clipH))
+	// Transform app-local coordinates to canvas pixel coordinates.
+	tx0, ty0 := dc.TransformPoint(clipX, clipY)
+	tx1, ty1 := dc.TransformPoint(clipX+clipW, clipY+clipH)
+	clip := image.Rect(int(tx0), int(ty0), int(tx1), int(ty1))
 	clip = clip.Intersect(cb)
 
 	padI := int(pad) + 2

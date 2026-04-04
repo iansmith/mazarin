@@ -38,7 +38,9 @@ type graphicsState struct {
 	lineJoin      LineJoin
 	fillRule      FillRule
 	dashes        []float64
-	clipMask      *image.Alpha // nil means no clipping
+	clipMask      *image.Alpha          // nil means no clipping
+	clipRect      image.Rectangle       // bounding box of clip (valid when clipMask != nil)
+	hasClipRect   bool
 }
 
 // groupEntry holds the image buffer saved by PushGroup.
@@ -234,12 +236,39 @@ func (dc *DrawContextImpl) Clip() {
 		}
 	}
 	dc.gs.clipMask = newMask
+
+	// Compute axis-aligned bounding box of non-zero alpha pixels.
+	// For common rectangular clips this gives an exact tight rect.
+	b := newMask.Bounds()
+	minX, minY, maxX, maxY := b.Max.X, b.Max.Y, b.Min.X, b.Min.Y
+	for py := b.Min.Y; py < b.Max.Y; py++ {
+		for px := b.Min.X; px < b.Max.X; px++ {
+			if newMask.AlphaAt(px, py).A > 0 {
+				if px < minX {
+					minX = px
+				}
+				if px+1 > maxX {
+					maxX = px + 1
+				}
+				if py < minY {
+					minY = py
+				}
+				if py+1 > maxY {
+					maxY = py + 1
+				}
+			}
+		}
+	}
+	dc.gs.clipRect = image.Rect(minX, minY, maxX, maxY)
+	dc.gs.hasClipRect = minX < maxX && minY < maxY
+
 	dc.ClearPath()
 }
 
 // ResetClip removes the active clip mask.
 func (dc *DrawContextImpl) ResetClip() {
 	dc.gs.clipMask = nil
+	dc.gs.hasClipRect = false
 }
 
 func (dc *DrawContextImpl) Translate(x, y float64) {
@@ -789,6 +818,9 @@ func (dc *DrawContextImpl) FillRectangle(x, y, w, h float64) {
 	y1 := int(math.Round(ty1))
 
 	bounds := dc.im.Bounds()
+	if dc.gs.hasClipRect {
+		bounds = bounds.Intersect(dc.gs.clipRect)
+	}
 	if x0 < bounds.Min.X {
 		x0 = bounds.Min.X
 	}
@@ -1068,6 +1100,9 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 		// Fast path: plain pixel copy.
 		dst := image.Rect(int(math.Round(m.X0)), int(math.Round(m.Y0)),
 			int(math.Round(m.X0))+s.X, int(math.Round(m.Y0))+s.Y)
+		if dc.gs.hasClipRect {
+			dst = dst.Intersect(dc.gs.clipRect)
+		}
 		xdraw.Draw(dc.im, dst, im, im.Bounds().Min, xdraw.Over)
 		return
 	}

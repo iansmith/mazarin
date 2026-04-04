@@ -10,7 +10,7 @@ func decorationHeight() int64 {
 		size = childHeight(seg)
 	}
 	result := size + margin + margin
-	if result > maxSize {
+	if maxSize > 0 && result > maxSize {
 		return maxSize
 	}
 	return result

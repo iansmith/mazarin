@@ -8,7 +8,6 @@ package main
 import (
 	"fmt"
 	"image"
-	"image/color"
 	"os"
 	"runtime"
 	"unsafe"
@@ -32,105 +31,13 @@ import (
 )
 
 const (
-	maxPoolLines = 10 // pre-allocated label pool size (limited by kernel attr node slots)
 	fontSize     int64 = 16
+	consoleCols  = 120
+	consoleRows  = 12
 )
 
-// Console text colors (pre-swapped for BGR framebuffer).
-var (
-	nContent = mancini.SwapRB(color.NRGBA{40, 42, 48, 255})    // content well background
-	nText    = mancini.SwapRB(color.NRGBA{200, 205, 215, 255})  // stdout text
-	nStderr  = mancini.SwapRB(color.NRGBA{200, 80, 80, 255})    // stderr text
-)
-
-// lineData holds one line of console output.
-type lineData struct {
-	text  string
-	color color.NRGBA
-}
-
-// console tracks the text state for the serial console.
-type console struct {
-	lines     [maxPoolLines]lineData
-	lineCount int // number of lines currently in use
-	maxCols   int
-	lastFd    byte
-	inEscape  bool // inside an ANSI escape sequence
-
-	suppressSerialCopy bool
-}
-
-func (c *console) currentLineIdx() int {
-	if c.lineCount == 0 {
-		c.lineCount = 1
-	}
-	return c.lineCount - 1
-}
-
-// handleSerialByte processes a single serial byte, updating line state.
-func (c *console) handleSerialByte(sb serial.SerialByte) {
-	if sb.B == '\r' {
-		return
-	}
-	if sb.B == '\n' {
-		c.inEscape = false // reset escape state on newline
-		if c.lineCount < maxPoolLines {
-			c.lineCount++
-		} else {
-			c.scroll()
-		}
-		return
-	}
-
-	// Filter ANSI escape sequences: ESC [ ... letter
-	if sb.B == 0x1B {
-		c.inEscape = true
-		return
-	}
-	if c.inEscape {
-		// Consume bytes until we see a letter (the terminator).
-		if (sb.B >= 'A' && sb.B <= 'Z') || (sb.B >= 'a' && sb.B <= 'z') {
-			c.inEscape = false
-		}
-		return
-	}
-
-	// Drop other non-printable control characters.
-	if sb.B < 0x20 && sb.B != '\t' {
-		return
-	}
-
-	lineIdx := c.currentLineIdx()
-
-	// Force newline when fd changes mid-line so stdout/stderr
-	// appear on separate lines.
-	if c.lastFd != 0 && sb.Fd != c.lastFd && len(c.lines[lineIdx].text) > 0 {
-		c.lastFd = sb.Fd
-		c.handleSerialByte(serial.SerialByte{Fd: sb.Fd, B: '\n'})
-		lineIdx = c.currentLineIdx()
-	}
-	c.lastFd = sb.Fd
-
-	// Clamp line length.
-	if len(c.lines[lineIdx].text) >= c.maxCols {
-		return
-	}
-
-	c.lines[lineIdx].text += string(sb.B)
-	if sb.Fd == 2 {
-		c.lines[lineIdx].color = nStderr
-	} else if len(c.lines[lineIdx].text) == 1 {
-		// Set color on first char of line (whole-line coloring).
-		c.lines[lineIdx].color = nText
-	}
-}
-
-// scroll shifts all lines up by one, dropping the oldest.
-func (c *console) scroll() {
-	copy(c.lines[:], c.lines[1:])
-	c.lines[maxPoolLines-1] = lineData{}
-	// lineCount stays at maxPoolLines
-}
+// suppressSerialCopy is set via SUPPRESS_SERIAL_STDIO_COPY env var.
+var suppressSerialCopy bool
 
 // wmCh receives typed WM messages (wm.BackingStoreReady, wm.YouHaveFocus, etc.)
 // from the uring Dispatcher.
@@ -296,56 +203,25 @@ func main() {
 	}
 	pal := mctheme.NewDefaultPaletteSwapRB()
 
-	// Theme for ConsoleLabel (monospaced font, console colors).
-	theme := mctheme.NewTheme(mctheme.NewDefaultPaletteWithColors(nContent, nText), mctheme.NewDefaultNeumorphicParams(), mfont.DefaultMono, fontSize,
-		func(family string, feature mancini.Feature, size int64) font.Face {
-			return fc.OpenFaceByName(family, mfont.Regular, size)
-		})
-	// 3. Console state.
-	const maxCols = 120
-	con := &console{
-		maxCols:            maxCols,
-		suppressSerialCopy: os.Getenv("SUPPRESS_SERIAL_STDIO_COPY") == "1",
-	}
+	suppressSerialCopy = os.Getenv("SUPPRESS_SERIAL_STDIO_COPY") == "1"
 
-	// 4. Build UI tree: AppWindow → ColumnOutsideIn → ConsoleLabels.
-	// ConsoleLabels are children of "console_col" via the constraint network.
-	labels := make([]*std.ConsoleLabel, maxPoolLines)
-	for i := range labels {
-		idx := i
-		labels[i] = std.NewConsoleLabel(fmt.Sprintf("line_%d", i), "console_col",
-			theme, fontSize, nContent, maxCols)
-		labels[i].TextFunc = func() string {
-			if idx < con.lineCount {
-				return con.lines[idx].text
-			}
-			return ""
-		}
-		labels[i].ColorFunc = func() color.NRGBA {
-			if idx < con.lineCount {
-				return con.lines[idx].color
-			}
-			return nText
-		}
-	}
-
-	// Height: grows with children, clamped to [1 line .. all lines + spacing].
-	lineH := fontSize
-	minH := lineH
-	maxH := int64(maxPoolLines)*lineH + int64(maxPoolLines-1)
-	content := std.NewColumnOutsideIn("console_col", "AppWindow", nContent, minH, maxH)
-
-	gt := std.NewGradientTitle(pal, fonts, "Serial Console", 18, 8)
-	app := std.NewAppWindow(nil, pal, *mctheme.NewDefaultNeumorphicParams().Heavy(), fonts, "Serial Console", 26, 900, gt.TitleDraw)
-	app.Focused = false // wait for rachel to grant focus
-
-	// 6. Constraint-computed sizing (no framebuffer access needed).
+	// 3. Screen size attributes — must exist before AppWindow constraints.
+	screenWURI := "attr:///kernel/int64/screen/width"
+	screenHURI := "attr:///kernel/int64/screen/height"
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"_source_", "attr:///kernel/int64/screen/width")
+		"_source_", screenWURI)
 	screenWAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
 	screenHProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"_source_", "attr:///kernel/int64/screen/height")
+		"_source_", screenHURI)
 	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
+
+	// 4. Build UI tree: AppWindow → NeuBox (depressed) → Console.
+	neuLight := *mctheme.NewDefaultNeumorphicParams().Light()
+	_, console := std.NewConsoleWithBox("console", "AppWindow", pal, neuLight,
+		fonts, fontSize, consoleCols, consoleRows)
+
+	app := std.NewAppWindow(pal, "Serial Console", screenWURI, screenHURI)
+	app.Focused = false // wait for rachel to grant focus
 	screenW := int(screenWAttr.Get())
 	screenH := int(screenHAttr.Get())
 
@@ -364,9 +240,6 @@ func main() {
 	if winH < 50 {
 		winH = 400
 	}
-	contentLH := content.GetLayout()
-	_ = contentLH.Width.Get()
-	_ = contentLH.Height.Get()
 
 	// Force Bounds evaluation for rachel.
 	_ = appLH.Bounds.Get()
@@ -451,7 +324,7 @@ func main() {
 	// forwards text data to delegateDataCh for the main goroutine.
 	var delegateDataCh <-chan delegateMsg
 	if delegateErr == nil {
-		delegateDataCh = startUringDelegateHandler(delegateCh, handler, con.suppressSerialCopy)
+		delegateDataCh = startUringDelegateHandler(delegateCh, handler, suppressSerialCopy)
 	}
 
 	// 10. Event loop — main goroutine owns console state + redraw.
@@ -486,7 +359,7 @@ func main() {
 		for {
 			select {
 			case sb := <-serialCh:
-				con.handleSerialByte(sb)
+				console.HandleByte(sb.B, sb.Fd)
 				textDirty = true
 			default:
 				return
@@ -500,7 +373,7 @@ func main() {
 			select {
 			case msg := <-delegateDataCh:
 				for _, b := range msg.data {
-					con.handleSerialByte(serial.SerialByte{Fd: msg.fd, B: b})
+					console.HandleByte(b, msg.fd)
 				}
 				textDirty = true
 			default:
@@ -514,7 +387,7 @@ func main() {
 
 		select {
 		case sb := <-serialCh:
-			con.handleSerialByte(sb)
+			console.HandleByte(sb.B, sb.Fd)
 			textDirty = true
 			linuxSerialEvts++
 			drainSerial()
@@ -525,7 +398,7 @@ func main() {
 
 		case msg := <-delegateDataCh:
 			for _, b := range msg.data {
-				con.handleSerialByte(serial.SerialByte{Fd: msg.fd, B: b})
+				console.HandleByte(b, msg.fd)
 			}
 			textDirty = true
 			linuxDelegateEvts++
@@ -534,6 +407,9 @@ func main() {
 				textDirty = false
 				redraw()
 			}
+
+		case <-wmCh:
+			// Drain focus/WM messages so the uring dispatcher doesn't block.
 
 		case <-dirtyCh:
 			linuxDirtyTicks++

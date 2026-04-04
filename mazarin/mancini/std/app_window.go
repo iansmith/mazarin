@@ -5,108 +5,66 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// AppWindow is the root application window, implemented as an
-// [impl.Decorator] whose decoration includes both neumorphic box
-// shadows (via [NeuBoxWith]) and a title bar. The single child (content)
-// is positioned below the title bar, clipped to the content area using
-// [mancini.WithClip].
+// AppWindow is the root application window — a thin, zero-inset decorator
+// whose only job is to anchor the constraint tree at the well-known name
+// "AppWindow", propagate DrawContext to its child, clip child rendering to
+// window bounds, and track focus state for rachel (the window manager).
+//
+// AppWindow has no decoration of its own — window chrome (title bar,
+// borders, shadows) is rachel's responsibility. The single child is
+// "the app": whatever interactor tree the shepherd assembles.
+//
+// Width and height are inside-out from the child, clamped to [10%, 90%]
+// of screen dimensions via constraint programs.
 //
 // There is one AppWindow per shepherd — its constraint name is always
 // "AppWindow" so that rachel can locate it at a well-known attribute path.
-//
-// # Focus and Depth
-//
-// Focus state controls the neumorphic depth: [mancini.Raised] when
-// focused, [mancini.Flush] when unfocused.
-//
-// # Title Bar
-//
-// The TitleDraw callback customizes the focused title bar appearance.
-// Two standard implementations are provided:
-//
-//   - [GradientTitle] — animated horizontal gradient with oscillating peak
-//   - [StripedTitle] — classic Mac OS horizontal pinstripes
-//
-// When TitleDraw is nil or the window is unfocused, plain centered text
-// is drawn as a fallback.
 //
 // See also [FreeFloatingWindow] for non-root floating panels.
 type AppWindow struct {
 	impl.Decorator
 
-	Pal       mancini.Palette
-	NeuPrms   mancini.NeuParams
-	Title     string
-	Focused   bool
-	Radius    float64
+	Pal     mancini.Palette
+	Focused bool
+	Title   string // informational — passed to rachel, not rendered here
 
-	// TitleDraw renders the title bar. It receives the focus state and
-	// the title bar bounds. If nil, plain centered text is drawn.
-	TitleDraw func(dc mancini.DrawContext, focused bool, x, y, w, h float64)
+	// Input is the Henry-Hudson dispatch pipeline for this app.
+	// Nil until the app calls InitInput. Shepherd apps call
+	// app.Input.DispatchWM(msg) from their message loop.
+	Input *mancini.AppDispatcher
 
+	// --- Retained but unused: will move to rachel ---
+	NeuPrms      mancini.NeuParams
+	Radius       float64
+	TitleDraw    func(dc mancini.DrawContext, focused bool, x, y, w, h float64)
 	shadowMargin int64
 	tbHeight     int64
-	textFace     mancini.LatinTextFace // pre-resolved for unfocused title rendering
+	textFace     mancini.LatinTextFace
 }
 
-const (
-	appTBMargin = int64(8) // padding between NeuBox edge and content
-	appTBGap    = int64(6) // gap between title bar and content
-)
+// NewAppWindow creates an AppWindow with inside-out sizing constraints
+// clamped to [10%, 90%] of screen dimensions. screenWURI and screenHURI
+// are the kernel attribute URIs for screen width and height.
+func NewAppWindow(pal mancini.Palette, title string,
+	screenWURI, screenHURI string) *AppWindow {
 
-// NewAppWindow creates an AppWindow with inside-out sizing constraints.
-// parent is nil for root windows. tbHeight is the title bar height
-// (typically 26). maxWidth is the max content width (0 = default 740).
-func NewAppWindow(parent mancini.Interactor, pal mancini.Palette,
-	neuParams mancini.NeuParams,
-	fonts *mancini.FontConfig, title string, tbHeight int64, maxWidth int64,
-	titleDraw func(dc mancini.DrawContext, focused bool, x, y, w, h float64),
-) *AppWindow {
-	sm := mancini.NeuMaxPad(neuParams)
-
-	top := sm + appTBMargin + tbHeight + appTBGap
-	side := sm + appTBMargin
-	bottom := sm + appTBMargin
-
-	// Constraint half-margins: width uses side (symmetric), height uses
-	// (top+bottom)/2 so the constraint program's 2*vMargin = top+bottom.
-	hMargin := side
-	vMargin := (top + bottom) / 2
-
-	if maxWidth <= 0 {
-		maxWidth = 740
-	}
-	maxW := maxWidth + 2*sm
-
-	layout := mancini.NewDecoratorLayout("AppWindow", parent, hMargin, vMargin, maxW)
-
-	// Pre-resolve unfocused title face (regular, 18pt, centered).
-	var textFace mancini.LatinTextFace
-	if fonts != nil {
-		textFace = impl.NewLatinTextFace(fonts, false, 18, mancini.TextAlignmentParams{})
-		textFace.SetText(title)
-	}
+	layout := mancini.NewAppWindowLayout(screenWURI, screenHURI)
 
 	w := &AppWindow{
-		Pal:          pal,
-		NeuPrms:      neuParams,
-		Title:        title,
-		Radius:       14,
-		TitleDraw:    titleDraw,
-		shadowMargin: sm,
-		tbHeight:     tbHeight,
-		textFace:     textFace,
+		Pal:   pal,
+		Title: title,
 	}
-	w.Decorator.Initialize(w, layout, top, side, bottom, side)
+	// Zero insets on all sides — no decoration.
+	w.Decorator.Initialize(w, layout, 0, 0, 0, 0)
 	return w
 }
 
-// Depth returns the neumorphic depth based on focus state.
-func (w *AppWindow) Depth() mancini.NeuDepth {
-	if w.Focused {
-		return mancini.Raised
-	}
-	return mancini.Flush
+// InitInput creates and returns the standard Henry-Hudson dispatch
+// pipeline for this AppWindow. Call once during setup.
+func (w *AppWindow) InitInput() (*mancini.AppDispatcher, *mancini.ClickAgent) {
+	d, click := mancini.StandardPipeline(w)
+	w.Input = d
+	return d, click
 }
 
 // Focus sets the window to focused state.
@@ -115,50 +73,51 @@ func (w *AppWindow) Focus() { w.Focused = true }
 // Unfocus sets the window to unfocused state.
 func (w *AppWindow) Unfocus() { w.Focused = false }
 
-// Draw implements mancini.NewDrawer. Decorates and draws the single child
-// content area inside the decoration insets, clipping to prevent overflow
-// from escaping the window decoration.
+// Draw implements mancini.NewDrawer. Propagates DC to the child,
+// clips child rendering to window bounds, and draws the child at
+// the full window area (zero insets).
 func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
-	// 1. Decorate: NeuBox shadow + title bar (skipped if bounds unchanged).
-	td0 := nanotime()
-	w.Decorator.DecorateIfNeeded(self, x, y, ww, hh)
-	drawPerf.AppDecorateNs.Add(nanotime() - td0)
+	dc := self.DC()
+	if dc == nil {
+		return
+	}
 
-	// 2. Content area inside the decoration insets.
-	contentX := x + w.Left
-	contentY := y + w.Top
-	contentW := ww - w.Left - w.Right
-	contentH := hh - w.Top - w.Bottom
+	// Fill window background with palette surface color.
+	dc.SetColor(w.Pal.Surface())
+	dc.FillRectangle(float64(x), float64(y), float64(ww), float64(hh))
 
-	// 3. Child via GetChildren.
 	children := w.GetChildren()
 	if len(children) == 0 {
 		return
 	}
 	child := children[0]
+
+	// Propagate position and DC to child.
 	if l, ok := child.(mancini.Layouter); ok {
 		lh := l.GetLayout()
 		if lh != nil {
-			lh.X.Set(contentX)
-			lh.Y.Set(contentY)
+			lh.X.Set(x)
+			lh.Y.Set(y)
 		}
 	}
-	dc := self.DC()
 	if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
 		cs.SetDC(dc)
 	}
 
-	// 4. Clip child to content area (right edge, then bottom edge).
+	// Clip child to window bounds. Pad covers the rachel border zone
+	// (typically 10-15 pixels) so save/restore reaches the backing
+	// store edge.
+	const borderPad = 15
 	tc0 := nanotime()
-	ccR := mancini.WithClip(dc, float64(contentX), float64(contentY),
-		float64(contentW), float64(contentH), 60, mancini.ClipRight)
-	ccB := mancini.WithClip(dc, float64(contentX), float64(contentY),
-		float64(contentW), float64(contentH), 60, mancini.ClipBottom)
+	ccR := mancini.WithClip(dc, float64(x), float64(y),
+		float64(ww), float64(hh), borderPad, mancini.ClipRight)
+	ccB := mancini.WithClip(dc, float64(x), float64(y),
+		float64(ww), float64(hh), borderPad, mancini.ClipBottom)
 	drawPerf.AppClipNs.Add(nanotime() - tc0)
 
 	tc1 := nanotime()
 	if d, ok := child.(mancini.NewDrawer); ok {
-		d.Draw(child, contentX, contentY, contentW, contentH)
+		d.Draw(child, x, y, ww, hh)
 	}
 	drawPerf.AppChildNs.Add(nanotime() - tc1)
 
@@ -168,41 +127,8 @@ func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 	drawPerf.AppClipNs.Add(nanotime() - tc2)
 }
 
-// Decorate implements mancini.Decoratable — draws the NeuBox shadow and
-// the title bar inside it.
+// Decorate implements mancini.Decoratable — no-op. Window chrome is
+// rachel's responsibility.
 func (w *AppWindow) Decorate(self mancini.Interactor, x, y, ww, hh int64) {
-	dc := self.DC()
-	if dc == nil {
-		return
-	}
-
-	sm := w.shadowMargin
-
-	// Inner area (excluding shadow margin).
-	ix, iy := float64(x+sm), float64(y+sm)
-	iw, ih := float64(ww-2*sm), float64(hh-2*sm)
-
-	// NeuBox shadow.
-	NeuBoxWith(w.Pal, dc, w.Depth(), ix, iy, ix+iw, iy+ih,
-		w.Radius, w.Pal.Surface(), &w.NeuPrms)
-
-	// Title bar inside the NeuBox.
-	tbm := float64(appTBMargin)
-	tbX, tbY := ix+tbm, iy+tbm
-	tbW := iw - 2*tbm
-	tbH := float64(w.tbHeight)
-
-	if w.TitleDraw != nil {
-		w.TitleDraw(dc, w.Focused, tbX, tbY, tbW, tbH)
-	}
-
-	// Unfocused fallback: plain centered text when TitleDraw is nil
-	// or when unfocused (TitleDraw may choose to skip unfocused rendering).
-	if w.TitleDraw == nil || !w.Focused {
-		if w.textFace != nil {
-			w.textFace.SetText(w.Title)
-			dc.SetColor(w.Pal.Text())
-			w.textFace.DrawFace(dc, tbX, tbY, tbW, tbH)
-		}
-	}
+	// Intentionally empty — decoration will move to rachel.
 }

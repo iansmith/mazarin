@@ -1,6 +1,7 @@
 package std
 
 import (
+	"fmt"
 	"math"
 	"time"
 
@@ -18,9 +19,9 @@ import (
 // because it receives its [mancini.Palette] and [mancini.FontConfig]
 // explicitly rather than from a [mancini.Theme].
 //
-// If Faces has more than one entry, clicking the clock cycles styles.
-// Clock implements the mouse feedback protocol (Feedback/Complete) for
-// press-drag-release face cycling.
+// Clock implements [mancini.Clickable] to cycle through normal faces
+// (Classic, Roman, Movado, Digit) and [mancini.DoubleClickable] to
+// cycle through weird faces (Metric, Polar).
 //
 // Clock is typically wrapped in a [NeuCircle] decorator for neumorphic
 // circular shadows.
@@ -31,14 +32,16 @@ type Clock struct {
 	Fonts   *mancini.FontConfig
 	Size    int64                        // preferred side length (logical pixels)
 	Face    mancini.ClockFace            // current active face
-	Faces   []mancini.ClockFace          // ordered list for click cycling
 	UTCFunc func() (sec, nanos int64)    // returns current UTC time
 
 	FaceNameAttr *attr.Attribute[string]  // constraint attribute for current face name
 
-	faceIdx     int  // index into Faces of current face
-	prePressIdx int  // saved faceIdx before press
-	interacting bool // true during press-drag-release
+	// Two face groups: single click cycles normal, double click cycles weird.
+	NormalFaces []mancini.ClockFace
+	WeirdFaces  []mancini.ClockFace
+	normalIdx   int
+	weirdIdx    int
+	weirdMode   bool // true when showing a weird face
 
 	// Layout attributes for face name label and spacer visibility toggling.
 	// Set after construction by the caller (they're sibling interactors).
@@ -48,22 +51,25 @@ type Clock struct {
 
 // NewClock creates a Clock wired to the constraint system.
 // parent is the constraint name of the wrapping NeuCircle (or other parent).
+// normalFaces are cycled by single click; weirdFaces by double click.
 func NewClock(myName, parent string, pal mancini.Palette, fonts *mancini.FontConfig,
-	size int64, utcFunc func() (int64, int64), faces []mancini.ClockFace) *Clock {
+	size int64, utcFunc func() (int64, int64),
+	normalFaces, weirdFaces []mancini.ClockFace) *Clock {
 
 	if myName == "" {
 		myName = mancini.DefaultName("clock")
 	}
 
 	c := &Clock{
-		Pal:     pal,
-		Fonts:   fonts,
-		Size:    size,
-		UTCFunc: utcFunc,
-		Faces:   faces,
+		Pal:         pal,
+		Fonts:       fonts,
+		Size:        size,
+		UTCFunc:     utcFunc,
+		NormalFaces: normalFaces,
+		WeirdFaces:  weirdFaces,
 	}
-	if len(faces) > 0 {
-		c.Face = faces[0]
+	if len(normalFaces) > 0 {
+		c.Face = normalFaces[0]
 	}
 
 	lh := mancini.NewLayoutAttributes(myName, parent)
@@ -118,7 +124,7 @@ func (c *Clock) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 }
 
-// --- Mouse interaction ---
+// --- Mouse interaction (Henry-Hudson protocol) ---
 
 // DetailedHit returns true if (localX, localY) is inside the clock's
 // circular face.
@@ -137,49 +143,48 @@ func (c *Clock) DetailedHit(localX, localY int64) bool {
 	return dx*dx+dy*dy <= rad*rad
 }
 
-// Feedback is called during press-drag-release face cycling.
-// active=true previews the next face; active=false reverts to original.
-func (c *Clock) Feedback(active bool) {
-	if len(c.Faces) < 2 {
-		return
+// Click implements mancini.Clickable — cycles through normal faces
+// (Classic, Roman, Movado, Digit).
+func (c *Clock) Click(ev *mancini.InputEvent) bool {
+	if len(c.NormalFaces) == 0 {
+		return false
 	}
-	if active {
-		if !c.interacting {
-			c.prePressIdx = c.faceIdx
-			c.interacting = true
-		}
-		c.faceIdx = (c.prePressIdx + 1) % len(c.Faces)
-	} else {
-		c.faceIdx = c.prePressIdx
-	}
-	c.Face = c.Faces[c.faceIdx]
-
-	// Publish current face name to constraint attribute.
-	if c.FaceNameAttr != nil {
-		c.FaceNameAttr.Set(c.Face.FaceName())
-	}
-
-	// Toggle face name label / spacer visibility.
-	if c.FaceLabelLayout != nil {
-		c.FaceLabelLayout.Visible.Set(active)
-	}
-	if c.FaceSpacerLayout != nil {
-		c.FaceSpacerLayout.Visible.Set(!active)
-	}
+	c.weirdMode = false
+	c.normalIdx = (c.normalIdx + 1) % len(c.NormalFaces)
+	c.Face = c.NormalFaces[c.normalIdx]
+	fmt.Printf("[clock] Click → face %d: %s\n", c.normalIdx, c.Face.FaceName())
+	c.publishFaceName()
+	c.FullDamage()
+	return true
 }
 
-// Complete is called when the button is released.
-// success=true means released inside (commit face change).
-// success=false means released outside (face already reverted by Feedback).
-func (c *Clock) Complete(success bool) {
-	c.interacting = false
-	if !success {
-		// Cancelled: hide label, show spacer (return to steady state).
-		if c.FaceLabelLayout != nil {
-			c.FaceLabelLayout.Visible.Set(false)
-		}
-		if c.FaceSpacerLayout != nil {
-			c.FaceSpacerLayout.Visible.Set(true)
-		}
+// DoubleClick implements mancini.DoubleClickable — cycles through
+// weird faces (Metric, Polar).
+func (c *Clock) DoubleClick(ev *mancini.InputEvent) bool {
+	if len(c.WeirdFaces) == 0 {
+		return false
+	}
+	if !c.weirdMode {
+		c.weirdMode = true
+		c.weirdIdx = 0
+	} else {
+		c.weirdIdx = (c.weirdIdx + 1) % len(c.WeirdFaces)
+	}
+	c.Face = c.WeirdFaces[c.weirdIdx]
+	c.publishFaceName()
+	c.FullDamage()
+	return true
+}
+
+func (c *Clock) publishFaceName() {
+	if c.FaceNameAttr != nil && c.Face != nil {
+		c.FaceNameAttr.Set(c.Face.FaceName())
+	}
+	// Show face name label briefly.
+	if c.FaceLabelLayout != nil {
+		c.FaceLabelLayout.Visible.Set(true)
+	}
+	if c.FaceSpacerLayout != nil {
+		c.FaceSpacerLayout.Visible.Set(false)
 	}
 }

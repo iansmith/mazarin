@@ -15,7 +15,7 @@ tasks:
       - '{{.LINUX_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building linux for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.LINUX_ELF}} ./flock/cmd/linux'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.LINUX_ELF}} ./flock/cmd/linux'
       - '{{.GO}} tool go-echo "Stdio ARM64 built at {{.LINUX_ELF}}"'
 
   x86_64:
@@ -32,7 +32,7 @@ tasks:
       - '{{.LINUX_AMD64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building linux for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.LINUX_AMD64_ELF}} ./flock/cmd/linux'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.LINUX_AMD64_ELF}} ./flock/cmd/linux'
       - '{{.GO}} tool go-echo "Stdio x86_64 built at {{.LINUX_AMD64_ELF}}"'
 
   riscv64:
@@ -49,5 +49,5 @@ tasks:
       - '{{.LINUX_RISCV64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building linux for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.LINUX_RISCV64_ELF}} ./flock/cmd/linux'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.LINUX_RISCV64_ELF}} ./flock/cmd/linux'
       - '{{.GO}} tool go-echo "Stdio RISC-V 64-bit built at {{.LINUX_RISCV64_ELF}}"'

@@ -56,6 +56,7 @@ func (a *InputAcquirer) Events() <-chan hid.HIDEvent {
 // decodes each CQE into a hid.HIDEvent, and sends it on eventCh.
 // Run never returns under normal operation.
 func (a *InputAcquirer) Run() {
+	sys.UartWriteString(fmt.Sprintf("[input:acq] Run() started, ringID=%d\n", a.ringID))
 	ring := a.ringPage
 	for {
 		// Block until at least 1 CQE is available. Uses entersyscallblock

@@ -48,9 +48,10 @@ func (r *Reader) loop() {
 			uartPuts("[uring:reader] Recv error, exiting loop\n")
 			return
 		}
-		uartPuts("[uring:reader] got msg proto=")
-		uartPutsInt(int(msg.Protocol))
-		uartPuts("\n")
+		// Debug: uncomment to trace every uring message.
+		// uartPuts("[uring:reader] got msg proto=")
+		// uartPutsInt(int(msg.Protocol))
+		// uartPuts("\n")
 		r.handler(&msg)
 	}
 }

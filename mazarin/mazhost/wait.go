@@ -1,3 +1,5 @@
+//go:build mazhost
+
 package mazhost
 
 import "mazzy/mazarin/sys"

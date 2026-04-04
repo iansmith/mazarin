@@ -3250,15 +3250,6 @@ func ThreadWakeFutexWithSwitch(futexAddr uint64, maxWake int32) (int32, uintptr)
 		} else {
 			if t.FutexAddr == futexAddr && t.PID != callerSID {
 				atomic.AddUint64(&DbgFutexPIDMismatch, 1)
-				serial.RawUARTPuts("[FPM] wakeSw TID=")
-				serial.RawUARTDecimal(uint64(tid))
-				serial.RawUARTPuts(" tPID=")
-				serial.RawUARTDecimal(uint64(t.PID))
-				serial.RawUARTPuts(" callerSID=")
-				serial.RawUARTDecimal(uint64(callerSID))
-				serial.RawUARTPuts(" addr=0x")
-				serial.RawUARTHexCompact(futexAddr)
-				serial.RawUARTPuts("\r\n")
 			}
 			blockedQueue.PushNoDuplicate(tid)
 		}

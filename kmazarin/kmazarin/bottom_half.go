@@ -502,6 +502,15 @@ func NonTimerIRQTopHalf() {
 	_, inputRing := GetIOUringSlotForInputIRQ()
 	cqPushed := false
 
+	// Debug: print once on first IRQ whether input ring exists.
+	if dev.dbgIRQCount == 1 {
+		if inputRing != nil {
+			serial.RawUARTPuts("[input:IRQ1] ring=OK\n")
+		} else {
+			serial.RawUARTPuts("[input:IRQ1] ring=NIL\n")
+		}
+	}
+
 	for dev.lastUsedIdx != usedIdx {
 		ringIdx := dev.lastUsedIdx % dev.queueSize
 		entryAddr := dev.usedVA + 4 + uintptr(ringIdx)*8
@@ -596,6 +605,15 @@ func topHalfTabletHandler() {
 	// Get io_uring input ring once for the batch.
 	_, inputRing := GetIOUringSlotForInputIRQ()
 	cqPushed := false
+
+	// Debug: print once on first IRQ whether input ring exists.
+	if dev.dbgIRQCount == 1 {
+		if inputRing != nil {
+			serial.RawUARTPuts("[tablet:IRQ1] ring=OK\n")
+		} else {
+			serial.RawUARTPuts("[tablet:IRQ1] ring=NIL\n")
+		}
+	}
 
 	// Track latest absolute position for hardware cursor.
 	var lastAbsX, lastAbsY uint32

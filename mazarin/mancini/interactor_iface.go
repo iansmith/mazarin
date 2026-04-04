@@ -16,6 +16,15 @@ type Interactor interface {
 	H() int64
 	Visible() bool
 	DC() DrawContext
+
+	// ScreenCoordConvertTo converts a point in this interactor's local
+	// coordinate frame to screen-absolute coordinates. Passing (0,0)
+	// returns the screen position of this interactor's top-left corner.
+	ScreenCoordConvertTo(localX, localY int64) (int64, int64)
+
+	// ScreenCoordConvertFrom converts screen-absolute coordinates to
+	// this interactor's local coordinate frame.
+	ScreenCoordConvertFrom(screenX, screenY int64) (int64, int64)
 }
 
 // ThemedInteractor extends [Interactor] with access to the [Theme]'s
@@ -43,6 +52,20 @@ type ThemedInteractor interface {
 type Parent interface {
 	GetChildren() []Interactor
 	DrawChildren(self Interactor, x, y, w, h int64)
+}
+
+// Picker performs hit testing on an interactor and its children.
+// Pick receives coordinates in the interactor's LOCAL frame
+// (0,0 = top-left of this interactor). It returns all hit interactors
+// front-to-back (deepest children first, then ancestors).
+//
+// The default implementation on [impl.Interactor] handles both leaf
+// interactors (simple bounds check) and parents (recursive traversal
+// converting coordinates to each child's local frame). Concrete types
+// like [std.Scroller] override Pick to apply coordinate transforms
+// (e.g., adding a scroll offset before recursing into the child).
+type Picker interface {
+	Pick(localX, localY int64) []Interactor
 }
 
 // Decoratable is implemented by types that customize the visual

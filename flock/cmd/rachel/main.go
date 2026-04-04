@@ -123,6 +123,12 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 
 	switch ev.Type {
 	case EV_KEY:
+		// Debug: log button presses with pick result.
+		if ev.Code >= BTN_LEFT {
+			pw := pickWindow(int64(mouseX), int64(mouseY))
+			sys.UartWriteString(fmt.Sprintf("[rachel:btn] code=0x%x val=%d at (%d,%d) pick=%d\n",
+				ev.Code, ev.Value, mouseX, mouseY, pw))
+		}
 		// Update modifier state; consume modifier key events (not forwarded).
 		if input.IsModifierKey(ev.Code) {
 			modState.Update(ev.Code, ev.Value == 1)
@@ -488,18 +494,17 @@ func removeFromZOrder(sid int) {
 
 // pickWindow returns the SID of the topmost window whose bounds contain (x,y),
 // or -1 if no window is hit. Iterates front-to-back through zOrder.
+// Uses rachel's local position (includes borders) rather than the shepherd's
+// constraint bounds which may be at (0,0).
 func pickWindow(x, y int64) int {
 	for _, sid := range zOrder {
 		ta, ok := trackedApps[sid]
 		if !ok {
 			continue
 		}
-		v := ta.bounds.Get()
-		if v.Type() == vm.TypeTribool {
-			continue
-		}
-		x0, y0, x1, y1 := v.AsRectangle()
-		if x0 <= x && x < x1 && y0 <= y && y < y1 {
+		ox := int64(ta.x) - int64(borderLeft)
+		oy := int64(ta.y) - int64(borderTop)
+		if x >= ox && x < ox+int64(ta.bsWidth) && y >= oy && y < oy+int64(ta.bsHeight) {
 			return sid
 		}
 	}
@@ -511,6 +516,7 @@ func pickWindow(x, y int64) int {
 func grantFocus(newSID int) {
 	grantFocusNoRaise(newSID)
 	raiseToFront(newSID)
+	blitAllWindows() // re-composite with new z-order
 }
 
 // grantFocusNoRaise gives both keyboard and mouse focus to newSID without
@@ -570,6 +576,16 @@ const KEY_F1 = 59
 // blitAllWindows re-blits every tracked window back-to-front (z-order)
 // so that overlapping windows are composited correctly.
 func blitAllWindows() {
+	// Clear framebuffer to background color so stale pixels from previous
+	// z-order don't show through in uncovered areas.
+	// BGRA: B=215, G=195, R=200, A=255 (light lavender desktop)
+	for i := 0; i+3 < len(fbPix); i += 4 {
+		fbPix[i] = 215
+		fbPix[i+1] = 195
+		fbPix[i+2] = 200
+		fbPix[i+3] = 255
+	}
+
 	// Walk z-order back-to-front (last element = backmost).
 	for i := len(zOrder) - 1; i >= 0; i-- {
 		sid := zOrder[i]
@@ -577,8 +593,19 @@ func blitAllWindows() {
 		if !ok || ta.backingStore == nil {
 			continue
 		}
-		drawBorders(ta)
-		blitWindow(sid, fbPix, fbStride)
+		regions := exposedRegion(sid)
+		blitWindow(sid, regions, fbPix, fbStride)
+		drawBordersToFB(ta, regions, fbPix, fbStride)
+	}
+	// Post-composite diagnostic: check the front window's border zone.
+	if len(zOrder) > 0 {
+		frontSID := zOrder[0]
+		if ta, ok := trackedApps[frontSID]; ok && ta.backingStore != nil {
+			n := sampleBorderZone("blitAll-front", frontSID, ta, fbPix, fbStride)
+			if n > 0 {
+				sys.UartWriteString(fmt.Sprintf("[blit:diag] blitAllWindows front SID=%d has %d non-blue border pixels\n", frontSID, n))
+			}
+		}
 	}
 	// Flush the entire display once.
 	flushRect(0, 0, int(displayWidth), int(displayHeight))
@@ -649,6 +676,11 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 		select {
 		case raw := <-wmCh:
 			rachelNotifyCount++
+			// Check focus-change timer on WM messages so that single-click
+			// commits even when no further HID input arrives after the click.
+			if wmd.focusChangeAgent.CheckTimer() {
+				blitAllWindows()
+			}
 			wmMsg, ok := raw.(wm.WMNotifyMsg)
 			if !ok {
 				rachelMsgOther++
@@ -658,9 +690,11 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 			switch msg := wmMsg.Msg.(type) {
 			case wm.AppStart:
 				rachelMsgAppStart++
+				sys.UartWriteDirectString(fmt.Sprintf("[rachel:wm] AppStart sid=%d w=%d h=%d\n", senderSID, msg.Width, msg.Height))
 
 				// Track the shepherd's AppWindow Bounds in rachel's constraint space.
 				if trackAppBounds(senderSID) == nil {
+					sys.UartWriteDirectString("[rachel:wm] trackAppBounds failed\n")
 					continue
 				}
 				ta := trackedApps[senderSID]
@@ -713,6 +747,11 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 				ta.x = int32(appX)
 				ta.y = int32(appY)
 
+				sys.UartWriteDirectString(fmt.Sprintf("[rachel:wm] sid=%d pos=(%d,%d) bs=%dx%d pick-rect=(%d,%d)-(%d,%d)\n",
+					senderSID, ta.x, ta.y, ta.bsWidth, ta.bsHeight,
+					int32(appX)-int32(borderLeft), int32(appY)-int32(borderTop),
+					int32(appX)-int32(borderLeft)+ta.bsWidth, int32(appY)-int32(borderTop)+ta.bsHeight))
+
 				// Allocate backing store pages.
 				bsBytes := totalW * 4 * totalH
 				bsPages := (bsBytes + 4095) / 4096
@@ -764,8 +803,8 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 			case wm.Blit:
 				rachelMsgBlit++
 				if rachelMsgBlit%10 == 0 {
-					fmt.Printf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
-						rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents)
+					sys.UartWriteString(fmt.Sprintf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
+						rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents))
 				}
 				if rachelMsgBlit%50 == 0 && !blitRateStart.IsZero() {
 					ms := time.Since(blitRateStart).Milliseconds()
@@ -785,8 +824,30 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 				if !ok || ta.backingStore == nil {
 					continue
 				}
-				drawBorders(ta)
-				blitWindow(senderSID, fbPix, fbStride)
+				regions := exposedRegion(senderSID)
+
+				// Diagnostic: sample border zone at 3 checkpoints (every 200 blits).
+				borderDiagCount++
+				doDiag := borderDiagCount%200 == 50
+				if doDiag {
+					sampleBorderZone("pre-blit", senderSID, ta, fbPix, fbStride)
+				}
+
+				blitWindow(senderSID, regions, fbPix, fbStride)
+
+				if doDiag {
+					sampleBorderZone("post-blit", senderSID, ta, fbPix, fbStride)
+				}
+
+				drawBordersToFB(ta, regions, fbPix, fbStride)
+
+				if doDiag {
+					n := sampleBorderZone("post-border", senderSID, ta, fbPix, fbStride)
+					if n > 0 {
+						sys.UartWriteString(fmt.Sprintf("[blit:diag] SID=%d LEAK SURVIVED BORDER DRAW: %d pixels\n", senderSID, n))
+					}
+				}
+
 				ox, oy := screenOrigin(ta)
 				flushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
 

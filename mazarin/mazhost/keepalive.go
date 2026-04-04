@@ -1,3 +1,5 @@
+//go:build mazhost
+
 // keepalive.go forces the Go linker to retain runtime.MazKeepAliveSymbols
 // and transitively all runtime functions it references. Without this,
 // the linker DCEs runtime functions that the shepherd binary doesn't call

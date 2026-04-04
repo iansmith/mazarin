@@ -1,3 +1,5 @@
+//go:build mazhost
+
 // Package mazhost provides host-side support for loading .maz modules
 // into a shepherd's address space. It wraps the kernel's LoadMaz syscall,
 // moduledata registration, MazarinShepherd interface injection, and

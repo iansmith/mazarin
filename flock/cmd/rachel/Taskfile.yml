@@ -15,7 +15,7 @@ tasks:
       - '{{.RACHEL_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building rachel for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.RACHEL_ELF}} ./flock/cmd/rachel'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.RACHEL_ELF}} ./flock/cmd/rachel'
       - '{{.GO}} tool go-echo "Rachel ARM64 built at {{.RACHEL_ELF}}"'
 
   x86_64:
@@ -32,7 +32,7 @@ tasks:
       - '{{.RACHEL_AMD64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building rachel for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_AMD64_ELF}} ./flock/cmd/rachel'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_AMD64_ELF}} ./flock/cmd/rachel'
       - '{{.GO}} tool go-echo "Rachel x86_64 built at {{.RACHEL_AMD64_ELF}}"'
 
   riscv64:
@@ -49,5 +49,5 @@ tasks:
       - '{{.RACHEL_RISCV64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building rachel for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_RISCV64_ELF}} ./flock/cmd/rachel'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_RISCV64_ELF}} ./flock/cmd/rachel'
       - '{{.GO}} tool go-echo "Rachel RISC-V 64-bit built at {{.RACHEL_RISCV64_ELF}}"'

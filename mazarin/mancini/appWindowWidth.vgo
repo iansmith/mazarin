@@ -1,0 +1,10 @@
+import "children"
+
+func appWindowWidth() int64 {
+	childURI := hasOneChild("_myName_")
+	if childURI != "" {
+		seg := uriSegment(childURI, 3)
+		return childWidth(seg)
+	}
+	return int64(200)
+}

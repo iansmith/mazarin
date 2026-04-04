@@ -229,6 +229,30 @@ func PublishLayout(l *LayoutAttributes, x, y, w, h float64) {
 }
 
 
+// NewAppWindowLayout creates layout attributes for the root AppWindow interactor.
+// Width and height are inside-out from the single child, clamped to [10%, 90%]
+// of the screen dimensions published by the kernel. The constraint name is
+// always "AppWindow" so that rachel can locate it at a well-known path.
+// screenWURI and screenHURI are the kernel attribute URIs for screen dimensions
+// (typically "attr:///kernel/int64/screen/width" and ".../height").
+func NewAppWindowLayout(screenWURI, screenHURI string) *LayoutAttributes {
+	myName := "AppWindow"
+	lh := NewLayoutAttributesBase(myName, "")
+
+	widthProg := BindStringsChildren(ProgAppWindowWidth,
+		"_myName_", myName, "_screenW_", screenWURI)
+	lh.Width = attr.ConstraintI64(
+		LayoutURI(myName, DataTypeInt64, LayoutWidth), widthProg)
+
+	heightProg := BindStringsChildren(ProgAppWindowHeight,
+		"_myName_", myName, "_screenH_", screenHURI)
+	lh.Height = attr.ConstraintI64(
+		LayoutURI(myName, DataTypeInt64, LayoutHeight), heightProg)
+
+	lh.InitBounds(myName)
+	return lh
+}
+
 // NewDecoratorLayout creates layout attributes with inside-out constraint sizing
 // for decorator-style parents. The parent interactor is used to extract the
 // parent's constraint-system name. hMargin and vMargin are the half-margins

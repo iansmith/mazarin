@@ -175,13 +175,25 @@ func main() {
 	theme := mctheme.NewTheme(mctheme.NewDefaultPaletteWithColors(transparent, textColor), mctheme.NewDefaultNeumorphicParams(), mfont.DefaultMono, 18, resolver)
 	subtitleTheme := mctheme.NewTheme(mctheme.NewDefaultPaletteWithColors(transparent, subtitleColor), mctheme.NewDefaultNeumorphicParams(), mfont.DefaultMono, 18, resolver)
 
-	// Title bar: GradientTitle (animated gradient, bold, 22pt).
-	gt := std.NewGradientTitle(pal, fonts, "World Clocks", 22, 8)
-	app := std.NewAppWindow(nil, pal, *mctheme.NewDefaultNeumorphicParams().Heavy(), fonts, "World Clocks", 26, 850, gt.TitleDraw)
+	app := std.NewAppWindow(pal, "World Clocks",
+		"attr:///kernel/int64/screen/width", "attr:///kernel/int64/screen/height")
 	app.Focused = false // wait for rachel to grant focus
 
-	// Row: parent = "AppWindow" (std.AppWindow's fixed constraint name).
-	row := std.NewRow("main_row", "AppWindow", pal, 0, mancini.AxisMinimum, 1)
+	// Column: single child of AppWindow, contains row + scrollbar.
+	outerCol := std.NewColumn("outer_col", "AppWindow", pal, 0, mancini.AxisMiddle, 1, false)
+	outerCol.SetSpacing(4)
+
+	// Scroller height = row height (constraint). Build the constraint
+	// before the scroller so it's passed to the constructor.
+	rowHeightURI := mancini.LayoutURI("main_row", mancini.DataTypeInt64, mancini.LayoutHeight)
+	scrollerHeightProg := mancini.BindStrings(mancini.ProgIdentityI64,
+		"_source_", rowHeightURI)
+	scrollerHeight := attr.ConstraintI64(
+		std.ScrollerHeightURI("scroller"), scrollerHeightProg)
+	scroller := std.NewScroller("scroller", "outer_col", pal, scrollerHeight)
+
+	// Row: parent = "scroller" (child of the scroller viewport).
+	row := std.NewRow("main_row", "scroller", pal, 0, mancini.AxisMinimum, 1)
 	row.SetSpacing(25)
 
 	for i, city := range cities {
@@ -189,20 +201,20 @@ func main() {
 		circleName := city.id + "_circle"
 		loc := city.loc
 
-		// Build all face styles for this city's timezone.
-		baseFaces := []mancini.ClockFace{
+		// Normal faces: single click cycles through these.
+		normalFaces := []mancini.ClockFace{
 			&mancini.ClassicFace{HandColor: textColor, Loc: loc},
 			&mancini.RomanFace{HandColor: textColor, Loc: loc},
-			&mancini.MovadoFace{Loc: loc},
+			&mancini.MovadoFace{HandColor: textColor, Loc: loc},
 			&mancini.DigitFace{HandColor: textColor, Loc: loc},
+		}
+		// Weird faces: double click cycles through these.
+		weirdFaces := []mancini.ClockFace{
 			&mancini.MetricFace{HandColor: textColor, Loc: loc},
 			&mancini.PolarFace{HandColor: textColor, Loc: loc},
 		}
-		start := i % len(baseFaces)
-		rotated := make([]mancini.ClockFace, len(baseFaces))
-		for j := range baseFaces {
-			rotated[j] = baseFaces[(start+j)%len(baseFaces)]
-		}
+		// Rotate starting normal face per city so each shows a different style.
+		start := i % len(normalFaces)
 
 		// Column: parent = "main_row". Created first so its name is registered.
 		col := std.NewColumn(colName, "main_row", pal, 0, mancini.AxisMiddle, 1, false)
@@ -214,11 +226,16 @@ func main() {
 		circle := std.NewNeuCircleNamed(circleName, colName, pal, mancini.Raised, *mctheme.NewDefaultNeumorphicParams().Light())
 		_ = circle
 
-		clockWidget := std.NewClock(city.id+"_clock", circleName, pal, fonts, 70, utcFunc, rotated)
+		// Rotate normal faces so each city starts on a different one.
+		rotNormal := make([]mancini.ClockFace, len(normalFaces))
+		for j := range normalFaces {
+			rotNormal[j] = normalFaces[(start+j)%len(normalFaces)]
+		}
+		clockWidget := std.NewClock(city.id+"_clock", circleName, pal, fonts, 70, utcFunc, rotNormal, weirdFaces)
 
 		_ = std.NewLabelNamedColor(city.id+"_tz", colName, subtitleTheme, city.tzLabel, 18, subtitleColor)
 
-		faceNameLabel := std.NewLabelNamedColor(city.id+"_facename", colName, subtitleTheme, rotated[0].FaceName(), faceNameFontSize, subtitleColor)
+		faceNameLabel := std.NewLabelNamedColor(city.id+"_facename", colName, subtitleTheme, rotNormal[0].FaceName(), faceNameFontSize, subtitleColor)
 		faceNameLabel.TextFunc = func() string {
 			return clockWidget.FaceNameAttr.Get()
 		}
@@ -231,9 +248,18 @@ func main() {
 
 		// Steady state: face name label visible, spacer hidden.
 		spacer.GetLayout().Visible.Set(false)
-
-		_ = i
 	}
+
+	// Horizontal scrollbar below the clock row. Width = viewport (set after
+	// winW is known); ThumbFrac = viewport / content (set after both known).
+	rowLH := row.GetLayout()
+	sbLH := mancini.NewLayoutAttributesBase("hscroll", "outer_col")
+	sbLH.Width = attr.ValueI64(
+		mancini.LayoutURI("hscroll", mancini.DataTypeInt64, mancini.LayoutWidth), 0)
+	sbLH.Height = attr.ValueI64(
+		mancini.LayoutURI("hscroll", mancini.DataTypeInt64, mancini.LayoutHeight), 15)
+	sbLH.InitBounds("hscroll")
+	hscroll := std.NewScrollbar(sbLH, theme, false, 15, 0.05, 0.0, false)
 
 	sys.UartWriteString("[clocks] interactor tree built\n")
 	// 6. Read kernel screen dimensions for DrawContext sizing.
@@ -255,16 +281,41 @@ func main() {
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
 
-	// Skip sizing draw for now — use constraint-computed width
-	// (AppWindow sets 850 + margins) and a reasonable height.
-	winW := int(appLH.Width.Get())
-	winH := int(appLH.Height.Get())
-	sys.UartWriteDirectString("[clocks] constraint size w=" + strconv.Itoa(winW) + " h=" + strconv.Itoa(winH) + "\n")
+	// Scroller width = viewport showing ~2 clocks (value attr, set below).
+	scrollerLH := scroller.GetLayout()
+
+	rowContentW := rowLH.Width.Get()
+	winW := int(rowContentW * 2 / int64(len(cities)))
 	if winW < 100 {
-		winW = 850
+		winW = 300 // fallback
 	}
+	scrollerLH.Width.Set(int64(winW))
+
+	// Virtual width = full row content (no vertical scrolling).
+	scroller.SetVirtualSize(rowContentW, 0)
+
+	// winH from AppWindow constraint (outer_col sums scroller + scrollbar + spacing).
+	winH := int(appLH.Height.Get())
+	outerColLH := outerCol.GetLayout()
+	sys.UartWriteDirectString(fmt.Sprintf("[clocks] winW=%d winH=%d rowH=%d rowW=%d scrollerH=%d sbH=%d outerColH=%d spacing=%d\n",
+		winW, winH,
+		rowLH.Height.Get(), rowContentW,
+		scrollerLH.Height.Get(),
+		sbLH.Height.Get(),
+		outerColLH.Height.Get(),
+		outerColLH.SpacingAttr.Get()))
 	if winH < 50 {
 		winH = 300
+	}
+
+	// Set scrollbar width to the visible viewport and ThumbFrac to viewport/content.
+	sbLH.Width.Set(int64(winW))
+	contentW := float64(rowContentW)
+	if contentW > 0 {
+		hscroll.ThumbFrac = float64(winW) / contentW
+		if hscroll.ThumbFrac > 1 {
+			hscroll.ThumbFrac = 1
+		}
 	}
 
 	// 8. Compute screen position via rachel's visibleArea constraints.
@@ -314,6 +365,14 @@ func main() {
 		}
 	}
 
+	// Initialize input dispatch pipeline.
+	disp, clickAgent := app.InitInput()
+	disp.OriginX = int64(bsr.AppX)
+	disp.OriginY = int64(bsr.AppY)
+	mancini.SetScreenOrigin(int64(bsr.AppX), int64(bsr.AppY))
+	disp.Debug = true
+	disp.Tag = "clocks"
+
 	// Create a []byte slice over the shared backing store.
 	totalW := int(bsr.TotalWidth)
 	totalH := int(bsr.TotalHeight)
@@ -351,30 +410,81 @@ func main() {
 	eagerAttr := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
 	eagerSlot := eagerAttr.Slot()
 
-	// 13. Main loop: wake on dirty, draw to backing store, send blit to rachel.
+	// 13. Main loop: select on WM messages and dirty attributes.
+	dirtyCh := attr.OnDirty()
 	var drawCount int64
 	var lastPrint int64
-	for {
-		attr.WaitDirty()
-		sys.AttrIncrementI64(eagerSlot)
 
+	redraw := func() {
 		sec := timeSec.Get()
 		_ = timeNanos.Get()
 
-		// Print current time every 10 seconds via fmt.Printf (goes through
-		// write delegate → linux console, exercising the full IPC chain).
 		if sec-lastPrint >= 10 {
 			t := time.Unix(sec, 0).UTC()
-			fmt.Printf("current time: %v\n", t)
+			sys.UartWriteString(fmt.Sprintf("[clocks] time: %v\n", t))
 			lastPrint = sec
 		}
 
-		// Draw to backing store at local (0,0) — translate+clip handle offset.
+		// Map scrollbar position to scroller virtual offset.
+		trueW := scrollerLH.Width.Get()
+		if maxScroll := scroller.VirtualWidth - trueW; maxScroll > 0 {
+			newVX := int64(hscroll.ThumbPos * float64(maxScroll))
+			if newVX != scroller.VirtualX {
+				fmt.Printf("[clocks:scroll] ThumbPos=%.3f maxScroll=%d → VX=%d (vw=%d tw=%d)\n",
+					hscroll.ThumbPos, maxScroll, newVX, scroller.VirtualWidth, trueW)
+			}
+			scroller.ScrollTo(newVX, scroller.VirtualY)
+		}
+
 		app.Draw(app, 0, 0, int64(winW), int64(winH))
 		sendBlit()
 		drawCount++
 		if drawCount%10 == 0 {
 			sys.UartWriteDirectString(fmt.Sprintf("[clocks] draws=%d\n", drawCount))
+		}
+	}
+
+	// clickTimer fires after ClickAgent's timeout so pending clicks
+	// are committed even when no new WM messages arrive.
+	var clickTimer <-chan time.Time
+
+	for {
+		select {
+		case msg := <-wmCh:
+			switch m := msg.(type) {
+			case wm.YouHaveFocus:
+				fmt.Printf("[clocks:hh] YouHaveFocus\n")
+				app.Focus()
+			case wm.YouLostFocus:
+				fmt.Printf("[clocks:hh] YouLostFocus\n")
+				app.Unfocus()
+			case wm.MousePress:
+				fmt.Printf("[clocks:hh] MousePress btn=%d x=%d y=%d\n", m.Button, m.X, m.Y)
+				disp.DispatchWM(msg)
+			case wm.MouseRelease:
+				fmt.Printf("[clocks:hh] MouseRelease btn=%d x=%d y=%d\n", m.Button, m.X, m.Y)
+				disp.DispatchWM(msg)
+				// Arm timer to commit pending click after timeout.
+				clickTimer = time.After(clickAgent.ClickTimeout + 10*time.Millisecond)
+			default:
+				fmt.Printf("[clocks:hh] WM msg type=%T\n", msg)
+				disp.DispatchWM(msg)
+			}
+			if clickAgent.CheckTimer() {
+				redraw()
+			}
+			sys.AttrIncrementI64(eagerSlot)
+			redraw()
+		case <-clickTimer:
+			clickTimer = nil
+			if clickAgent.CheckTimer() {
+				fmt.Printf("[clocks:hh] click timer committed\n")
+				redraw()
+			}
+		case <-dirtyCh:
+			sys.AttrIncrementI64(eagerSlot)
+			scroller.MarkContentDirty()
+			redraw()
 		}
 	}
 }

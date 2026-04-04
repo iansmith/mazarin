@@ -58,7 +58,7 @@ tasks:
       - '{{.KMAZARIN_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building kmazarin kernel (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_ELF}} ./kmazarin/kmazarin'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.KMAZARIN_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_ELF}} ./kmazarin/kmazarin'
       - '{{.GO}} tool go-echo "Fixing kmazarin ELF for QEMU compatibility..."'
       - '{{.GO}} tool fix-go-elf {{.KMAZARIN_ELF}}'
       - '{{.GO}} tool go-echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."'
@@ -83,7 +83,7 @@ tasks:
       - '{{.KMAZARIN_AMD64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building kmazarin kernel for x86_64 (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_AMD64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_AMD64_ELF}} ./kmazarin/kmazarin'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.KMAZARIN_AMD64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_AMD64_ELF}} ./kmazarin/kmazarin'
       - '{{.GO}} tool go-echo "Fixing kmazarin-amd64 ELF headers..."'
       - '{{.GO}} tool fix-go-elf {{.KMAZARIN_AMD64_ELF}}'
       - '{{.GO}} tool go-echo "Kmazarin x86_64 kernel built at {{.KMAZARIN_AMD64_ELF}} (NOTE: not relocated to high memory yet)"'
@@ -104,5 +104,5 @@ tasks:
       - '{{.KMAZARIN_RISCV64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building kmazarin kernel for RISC-V 64-bit (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_RISCV64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_RISCV64_ELF}} ./kmazarin/kmazarin'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.KMAZARIN_RISCV64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_RISCV64_ELF}} ./kmazarin/kmazarin'
       - '{{.GO}} tool go-echo "Kmazarin RISC-V 64-bit kernel built at {{.KMAZARIN_RISCV64_ELF}}"'

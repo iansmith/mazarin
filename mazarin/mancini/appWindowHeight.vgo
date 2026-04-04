@@ -1,0 +1,10 @@
+import "children"
+
+func appWindowHeight() int64 {
+	childURI := hasOneChild("_myName_")
+	if childURI != "" {
+		seg := uriSegment(childURI, 3)
+		return childHeight(seg)
+	}
+	return int64(200)
+}

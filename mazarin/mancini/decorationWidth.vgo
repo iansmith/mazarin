@@ -10,7 +10,7 @@ func decorationWidth() int64 {
 		size = childWidth(seg)
 	}
 	result := size + margin + margin
-	if result > maxSize {
+	if maxSize > 0 && result > maxSize {
 		return maxSize
 	}
 	return result

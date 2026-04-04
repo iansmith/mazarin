@@ -16,10 +16,9 @@ package main
 import (
 	"fmt"
 	"mazzy/mazarin/input"
+	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
-	"mazzy/mazarin/vm"
 	"mazzy/shared/wm"
-	"os"
 	"time"
 )
 
@@ -47,32 +46,34 @@ type WindowInteractor struct {
 }
 
 func (w *WindowInteractor) PickedBy(x, y int32) bool {
-	v := w.ta.bounds.Get()
-	if v.Type() == vm.TypeTribool {
-		return false
-	}
-	x0, y0, x1, y1 := v.AsRectangle()
-	return int64(x) >= x0 && int64(x) < x1 && int64(y) >= y0 && int64(y) < y1
+	ta := w.ta
+	// Use rachel's local position (includes borders) rather than the
+	// shepherd's constraint bounds which may be at (0,0).
+	ox := ta.x - int32(borderLeft)
+	oy := ta.y - int32(borderTop)
+	return x >= ox && x < ox+ta.bsWidth && y >= oy && y < oy+ta.bsHeight
 }
 
 func (w *WindowInteractor) SID() int { return w.ta.sid }
 
 func (w *WindowInteractor) Press(ev *input.InputEvent) bool {
+	fmt.Printf("[rachel:hh] Press btn=%d x=%d y=%d → SID %d\n", ev.Code, ev.X, ev.Y, w.ta.sid)
 	msg := wm.EncodeMousePress(&wm.MousePress{
 		X: ev.X, Y: ev.Y, Button: int32(ev.Code), Mods: ev.Mods,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		fmt.Fprintf(os.Stderr, "[rachel:press] uring.Send to SID %d: %v\n", w.ta.sid, err)
+		sys.UartWriteDirectString(fmt.Sprintf("[rachel:press] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
 	return true
 }
 
 func (w *WindowInteractor) Release(ev *input.InputEvent) bool {
+	fmt.Printf("[rachel:hh] Release btn=%d x=%d y=%d → SID %d\n", ev.Code, ev.X, ev.Y, w.ta.sid)
 	msg := wm.EncodeMouseRelease(&wm.MouseRelease{
 		X: ev.X, Y: ev.Y, Button: int32(ev.Code), Mods: ev.Mods,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		fmt.Fprintf(os.Stderr, "[rachel:release] uring.Send to SID %d: %v\n", w.ta.sid, err)
+		sys.UartWriteDirectString(fmt.Sprintf("[rachel:release] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
 	return true
 }
@@ -82,7 +83,7 @@ func (w *WindowInteractor) Move(ev *input.InputEvent) bool {
 		X: ev.X, Y: ev.Y, Mods: ev.Mods,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		fmt.Fprintf(os.Stderr, "[rachel:move] uring.Send to SID %d: %v\n", w.ta.sid, err)
+		sys.UartWriteDirectString(fmt.Sprintf("[rachel:move] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
 	return true
 }
@@ -90,7 +91,7 @@ func (w *WindowInteractor) Move(ev *input.InputEvent) bool {
 func (w *WindowInteractor) KeyDown(ev *input.InputEvent) bool {
 	msg := wm.EncodeKeyPress(&wm.KeyPress{Code: ev.Code, Mods: ev.Mods})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		fmt.Fprintf(os.Stderr, "[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err)
+		sys.UartWriteDirectString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
 	return true
 }
@@ -98,7 +99,7 @@ func (w *WindowInteractor) KeyDown(ev *input.InputEvent) bool {
 func (w *WindowInteractor) KeyUp(ev *input.InputEvent) bool {
 	msg := wm.EncodeKeyRelease(&wm.KeyRelease{Code: ev.Code, Mods: ev.Mods})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		fmt.Fprintf(os.Stderr, "[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err)
+		sys.UartWriteDirectString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
 	return true
 }
@@ -353,7 +354,7 @@ func (a *FocusChangeAgent) CheckTimer() bool {
 
 func (a *FocusChangeAgent) commitSingleClick() {
 	if a.target != nil {
-		fmt.Printf("[rachel:focus] single-click → raise+focus SID %d\n", a.target.ta.sid)
+		sys.UartWriteDirectString(fmt.Sprintf("[rachel:focus] single-click → raise+focus SID %d\n", a.target.ta.sid))
 		grantFocus(a.target.ta.sid)
 		a.keyFwd.SetFocus(a.target)
 	}
@@ -362,7 +363,7 @@ func (a *FocusChangeAgent) commitSingleClick() {
 
 func (a *FocusChangeAgent) commitDoubleClick() {
 	if a.target != nil {
-		fmt.Printf("[rachel:focus] double-click → focus (no raise) SID %d\n", a.target.ta.sid)
+		sys.UartWriteDirectString(fmt.Sprintf("[rachel:focus] double-click → focus (no raise) SID %d\n", a.target.ta.sid))
 		grantFocusNoRaise(a.target.ta.sid)
 		a.keyFwd.SetFocus(a.target)
 	}
@@ -371,7 +372,7 @@ func (a *FocusChangeAgent) commitDoubleClick() {
 
 func (a *FocusChangeAgent) commitTripleClick() {
 	if a.target != nil {
-		fmt.Printf("[rachel:focus] triple-click SID %d (no action yet)\n", a.target.ta.sid)
+		sys.UartWriteDirectString(fmt.Sprintf("[rachel:focus] triple-click SID %d (no action yet)\n", a.target.ta.sid))
 	}
 	a.reset()
 }
@@ -414,8 +415,8 @@ func (a *PressAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool
 	// Establish drag focus so DragAgent handles subsequent move/release.
 	a.dragAgent.StartDrag(target, ev.Code)
 
-	fmt.Printf("[rachel:input] mouse press %s at (%d,%d)\n",
-		buttonName(ev.Code), ev.X, ev.Y)
+	sys.UartWriteDirectString(fmt.Sprintf("[rachel:input] mouse press %s at (%d,%d)\n",
+		buttonName(ev.Code), ev.X, ev.Y))
 
 	return p.Press(ev)
 }
