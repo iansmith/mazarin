@@ -414,6 +414,7 @@ func main() {
 	dirtyCh := attr.OnDirty()
 	var drawCount int64
 	var lastPrint int64
+	lastThumbPos := hscroll.ThumbPos // track scrollbar changes
 
 	redraw := func() {
 		sec := timeSec.Get()
@@ -425,15 +426,27 @@ func main() {
 			lastPrint = sec
 		}
 
-		// Map scrollbar position to scroller virtual offset.
+		// Sync scrollbar ↔ scroller. Track which one was dragged by
+		// comparing ThumbPos against its value from the previous frame.
 		trueW := scrollerLH.Width.Get()
 		if maxScroll := scroller.VirtualWidth - trueW; maxScroll > 0 {
-			newVX := int64(hscroll.ThumbPos * float64(maxScroll))
-			if newVX != scroller.VirtualX {
+			if hscroll.ThumbPos != lastThumbPos {
+				// Scrollbar thumb was dragged — scrollbar drives scroller.
+				newVX := int64(hscroll.ThumbPos * float64(maxScroll))
 				fmt.Printf("[clocks:scroll] ThumbPos=%.3f maxScroll=%d → VX=%d (vw=%d tw=%d)\n",
 					hscroll.ThumbPos, maxScroll, newVX, scroller.VirtualWidth, trueW)
+				scroller.ScrollTo(newVX, scroller.VirtualY)
+			} else {
+				// Scroller body may have been dragged — scroller drives scrollbar.
+				hscroll.ThumbPos = float64(scroller.VirtualX) / float64(maxScroll)
+				if hscroll.ThumbPos < 0 {
+					hscroll.ThumbPos = 0
+				}
+				if hscroll.ThumbPos > 1 {
+					hscroll.ThumbPos = 1
+				}
 			}
-			scroller.ScrollTo(newVX, scroller.VirtualY)
+			lastThumbPos = hscroll.ThumbPos
 		}
 
 		app.Draw(app, 0, 0, int64(winW), int64(winH))

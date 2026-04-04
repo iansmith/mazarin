@@ -47,6 +47,10 @@ type Scroller struct {
 	offDC        mancini.DrawContext
 	offW, offH   int  // current offscreen buffer dimensions (virtual size)
 	contentDirty bool // true = need to re-render children into offBuf
+
+	// ClickDraggable state: drag-to-scroll.
+	dragStartX, dragStartY int64 // mouse position at drag start
+	dragOrigVX, dragOrigVY int64 // scroll position at drag start
 }
 
 // NewScroller creates a Scroller wired to the constraint system.
@@ -262,6 +266,61 @@ func (s *Scroller) Pick(localX, localY int64) []mancini.Interactor {
 
 	result = append(result, s)
 	return result
+}
+
+// ClickDragStart implements mancini.ClickDraggable.
+// Declines the drag if a Clickable, DoubleClickable, or TripleClickable
+// child is under the cursor, letting the click reach that child instead.
+func (s *Scroller) ClickDragStart(ev *mancini.InputEvent) bool {
+	// Check if a clickable child is under the cursor.
+	lh := s.GetLayout()
+	if lh != nil {
+		localX := ev.X - lh.X.Get()
+		localY := ev.Y - lh.Y.Get()
+		children := s.GetChildren()
+		if len(children) > 0 {
+			child := children[0]
+			childLocalX := localX + s.VirtualX
+			childLocalY := localY + s.VirtualY
+			if picker, ok := child.(mancini.Picker); ok {
+				for _, hit := range picker.Pick(childLocalX, childLocalY) {
+					if _, ok := hit.(mancini.Clickable); ok {
+						return false
+					}
+					if _, ok := hit.(mancini.DoubleClickable); ok {
+						return false
+					}
+					if _, ok := hit.(mancini.TripleClickable); ok {
+						return false
+					}
+				}
+			}
+		}
+	}
+
+	s.dragStartX = ev.X
+	s.dragStartY = ev.Y
+	s.dragOrigVX = s.VirtualX
+	s.dragOrigVY = s.VirtualY
+	fmt.Printf("[scroller] ClickDragStart at (%d,%d) origScroll=(%d,%d)\n",
+		ev.X, ev.Y, s.VirtualX, s.VirtualY)
+	return true
+}
+
+// ClickDragMove implements mancini.ClickDraggable.
+func (s *Scroller) ClickDragMove(ev *mancini.InputEvent, outsideBounds bool) bool {
+	dx := ev.X - s.dragStartX
+	dy := ev.Y - s.dragStartY
+	fmt.Printf("[scroller] ClickDragMove delta=(%d,%d) → scroll=(%d,%d)\n",
+		dx, dy, s.dragOrigVX-dx, s.dragOrigVY-dy)
+	s.ScrollTo(s.dragOrigVX-dx, s.dragOrigVY-dy)
+	return true
+}
+
+// ClickDragEnd implements mancini.ClickDraggable.
+func (s *Scroller) ClickDragEnd(ev *mancini.InputEvent, outsideBounds bool) bool {
+	fmt.Printf("[scroller] ClickDragEnd scroll=(%d,%d)\n", s.VirtualX, s.VirtualY)
+	return true
 }
 
 // fillRGBA fills an RGBA image with a solid color.
