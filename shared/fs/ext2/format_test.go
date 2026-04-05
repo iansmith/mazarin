@@ -7,7 +7,7 @@ import (
 )
 
 func TestFormatAndMount(t *testing.T) {
-	// 4MB ramdisk with 512-byte sectors (ext2 reader's sectorBuf is [512]byte).
+	// 4MB ramdisk with 512-byte sectors.
 	dev := blockdev.NewMemBlockDevice("test", 512, 8192)
 	if err := Format(dev, "testfs"); err != nil {
 		t.Fatalf("Format: %v", err)

@@ -17,10 +17,8 @@ type FileSystem struct {
 	groups    []GroupDesc
 	blockSize uint32
 	numGroups uint32
-	// Scratch buffer for partial-block reads (sized to max device block size)
-	sectorBuf [4096]byte
-	// Reusable LBA buffer for readBlocks — avoids allocation on every call
-	lbaBuf []uint64
+	// (sectorBuf removed — per-call stack allocation in readBytes/writeBytes
+	// to avoid data races when multiple goroutines read concurrently.)
 	// Write support (populated by MountRW)
 	writable     bool
 	blockBitmaps [][]byte // one bitmap per group
@@ -136,15 +134,18 @@ func (fs *FileSystem) readBytes(offset int64, buf []byte) error {
 			buf = buf[devBlockSize:]
 			offset += devBlockSize
 		} else {
-			// Partial sector — read into scratch, copy out
-			if err := fs.device.ReadBlock(lba, fs.sectorBuf[:]); err != nil {
+			// Partial sector — read into local scratch, copy out.
+			// Must use a per-call buffer (not fs.sectorBuf) to avoid data
+			// races when multiple goroutines read concurrently.
+			var scratch [4096]byte
+			if err := fs.device.ReadBlock(lba, scratch[:]); err != nil {
 				return err
 			}
 			n := int(devBlockSize) - off
 			if n > len(buf) {
 				n = len(buf)
 			}
-			copy(buf[:n], fs.sectorBuf[off:off+n])
+			copy(buf[:n], scratch[off:off+n])
 			buf = buf[n:]
 			offset += int64(n)
 		}
@@ -178,13 +179,10 @@ func (fs *FileSystem) readBlocks(blockNums []uint32, dst []byte) error {
 		// Build LBA list — one device LBA per device sector.
 		// Each fs block may span multiple device sectors.
 		tLBA := time.Now()
-		// Reuse fs.lbaBuf to avoid allocation on every call.
-		// Grow only when needed — the backing array persists across calls.
+		// Allocate per-call to avoid data races when multiple goroutines
+		// read concurrently (e.g. boot sequence + IPC serve loop).
 		needed := len(blockNums) * int(sectorsPerFSBlock)
-		if cap(fs.lbaBuf) < needed {
-			fs.lbaBuf = make([]uint64, needed)
-		}
-		lbas := fs.lbaBuf[:needed]
+		lbas := make([]uint64, needed)
 		tMake := time.Since(tLBA)
 		tLoopStart := time.Now()
 		if sectorsPerFSBlock == 1 {
@@ -241,16 +239,18 @@ func (fs *FileSystem) writeBytes(offset int64, buf []byte) error {
 			buf = buf[devBlockSize:]
 			offset += devBlockSize
 		} else {
-			// Read-modify-write for partial sector
-			if err := fs.device.ReadBlock(lba, fs.sectorBuf[:]); err != nil {
+			// Read-modify-write for partial sector.
+			// Per-call buffer to avoid data races with concurrent readers.
+			var scratch [4096]byte
+			if err := fs.device.ReadBlock(lba, scratch[:]); err != nil {
 				return err
 			}
 			n := int(devBlockSize) - off
 			if n > len(buf) {
 				n = len(buf)
 			}
-			copy(fs.sectorBuf[off:off+n], buf[:n])
-			if err := fs.device.WriteBlock(lba, fs.sectorBuf[:]); err != nil {
+			copy(scratch[off:off+n], buf[:n])
+			if err := fs.device.WriteBlock(lba, scratch[:]); err != nil {
 				return err
 			}
 			buf = buf[n:]
