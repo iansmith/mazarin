@@ -75,3 +75,15 @@ func getBlockRingFull() uint32
 
 //go:linkname getBlockLastNumFree main.GetBlockLastNumFree
 func getBlockLastNumFree() uint32
+
+//go:linkname getBlockEmptyRawUsedIdx main.GetBlockEmptyRawUsedIdx
+func getBlockEmptyRawUsedIdx() uint32
+
+//go:linkname getBlockEmptyLastUsedIdx main.GetBlockEmptyLastUsedIdx
+func getBlockEmptyLastUsedIdx() uint32
+
+//go:linkname getBlockEmptyUsedPtr main.GetBlockEmptyUsedPtr
+func getBlockEmptyUsedPtr() uint64
+
+//go:linkname getBlockEmptySnapped main.GetBlockEmptySnapped
+func getBlockEmptySnapped() uint32

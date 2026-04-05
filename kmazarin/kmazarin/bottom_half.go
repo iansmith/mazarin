@@ -129,9 +129,15 @@ var dbgBlockAsyncEvents uint32    // total async completion events pushed to rin
 var dbgBlockTotalDrained uint32   // total completions drained across all IRQs
 var dbgBlockEmptyIRQ uint32       // IRQs where HasUsed() was false (drained=0)
 var dbgBlockRingFull uint32       // completion ring push failures (ring full)
+var dbgBlockEmptyRawUsedIdx uint32  // raw Used.Idx on first empty-drain IRQ
+var dbgBlockEmptyLastUsedIdx uint32 // LastUsedIdx at first empty-drain
+var dbgBlockEmptyUsedPtr uint64     // VQ.Used pointer at first empty-drain
+var dbgBlockEmptySnapped uint32     // 1 once the empty-drain snapshot is taken
 var dbgBlockLastNumFree uint32    // last snapshot of VQ.NumFree
 var dbgBlockLastUsedIdx uint32    // last snapshot of VQ.LastUsedIdx
 var dbgBlockLastAvailIdx uint32   // last snapshot of VQ.Available.Idx
+var dbgBlockCQEWritten uint32     // completions written to io_uring CQ
+var dbgBlockCQEMissed uint32      // completions routed to legacy path (ioRing was nil)
 
 // Block async completion state (Phase 4).
 // When blockAsyncMode=1, the top-half drains the Engine used ring,
@@ -212,6 +218,18 @@ func GetBlockRingFull() uint32 { return atomic.LoadUint32(&dbgBlockRingFull) }
 
 // GetBlockLastNumFree returns the last snapshot of VQ.NumFree.
 func GetBlockLastNumFree() uint32 { return atomic.LoadUint32(&dbgBlockLastNumFree) }
+
+// GetBlockEmptyRawUsedIdx returns the raw Used.Idx snapshot from the first empty-drain IRQ.
+func GetBlockEmptyRawUsedIdx() uint32 { return atomic.LoadUint32(&dbgBlockEmptyRawUsedIdx) }
+
+// GetBlockEmptyLastUsedIdx returns LastUsedIdx at the first empty-drain IRQ.
+func GetBlockEmptyLastUsedIdx() uint32 { return atomic.LoadUint32(&dbgBlockEmptyLastUsedIdx) }
+
+// GetBlockEmptyUsedPtr returns the VQ.Used VA at the first empty-drain IRQ.
+func GetBlockEmptyUsedPtr() uint64 { return atomic.LoadUint64(&dbgBlockEmptyUsedPtr) }
+
+// GetBlockEmptySnapped returns 1 if the empty-drain snapshot was taken.
+func GetBlockEmptySnapped() uint32 { return atomic.LoadUint32(&dbgBlockEmptySnapped) }
 
 // SetBlockAsyncMode atomically sets the blockAsyncMode flag and returns the previous value.
 // The sync polling path uses this to temporarily disable async mode so the top-half
@@ -420,6 +438,7 @@ func NonTimerIRQTopHalf() {
 				// Write completion: io_uring CQ if active, else legacy path.
 				_, ioRing := GetIOUringSlotForBlockIRQ()
 				if ioRing != nil {
+					atomic.AddUint32(&dbgBlockCQEWritten, 1)
 					cqTail := ioRing.CQTail
 					cqIdx := cqTail & iouring.CQMask
 					ioRing.CQEntries[cqIdx] = iouring.CQEntry{
@@ -429,6 +448,7 @@ func NonTimerIRQTopHalf() {
 					asm.Dsb()
 					atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
 				} else {
+					atomic.AddUint32(&dbgBlockCQEMissed, 1)
 					ev := hid.HIDEvent{
 						Type:  tag,
 						Code:  status,
@@ -452,6 +472,14 @@ func NonTimerIRQTopHalf() {
 			atomic.AddUint32(&dbgBlockTotalDrained, drained)
 			if drained == 0 {
 				atomic.AddUint32(&dbgBlockEmptyIRQ, 1)
+				// Snapshot raw Used.Idx on first empty-drain (one-shot)
+				if atomic.CompareAndSwapUint32(&dbgBlockEmptySnapped, 0, 1) {
+					usedVA := uintptr(unsafe.Pointer(eng.VQ.Used))
+					asm.InvalidateDCacheRange(usedVA, 4)
+					atomic.StoreUint32(&dbgBlockEmptyRawUsedIdx, uint32(asm.MmioRead16(usedVA+2)))
+					atomic.StoreUint32(&dbgBlockEmptyLastUsedIdx, uint32(eng.VQ.LastUsedIdx))
+					atomic.StoreUint64(&dbgBlockEmptyUsedPtr, uint64(usedVA))
+				}
 			}
 			// Snapshot VQ state for SVC-side logging
 			atomic.StoreUint32(&dbgBlockLastNumFree, uint32(eng.VQ.NumFree))

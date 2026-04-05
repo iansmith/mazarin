@@ -1346,6 +1346,10 @@ func printBlockIRQCounters() {
 		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockIRQAsync)))
 		serial.RawUARTPuts("/ev")
 		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockAsyncEvents)))
+		serial.RawUARTPuts("/cq")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockCQEWritten)))
+		serial.RawUARTPuts("/miss")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockCQEMissed)))
 	}
 	// WakeSlot instrumentation: calls/noSlot/noThread/woke/stale
 	wsc := atomic.LoadUint32(&dbgWakeSlotCalls)
@@ -1360,6 +1364,36 @@ func printBlockIRQCounters() {
 		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeSlotWoke)))
 		serial.RawUARTPuts("/st")
 		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeSlotStale)))
+	}
+	// WakeIOUringFromIRQ instrumentation
+	wurc := atomic.LoadUint32(&dbgWakeURCalls)
+	if wurc > 0 {
+		serial.RawUARTPuts(" UR=")
+		serial.RawUARTDecimal(uint64(wurc))
+		serial.RawUARTPuts("/nw")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeURNoWaiter)))
+		serial.RawUARTPuts("/ne")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeURNotEnough)))
+		serial.RawUARTPuts("/ok")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeURWoke)))
+	}
+	// Timeout wake instrumentation
+	tow := atomic.LoadUint32(&dbgTimeoutWakes)
+	if tow > 0 {
+		serial.RawUARTPuts(" TO=")
+		serial.RawUARTDecimal(uint64(tow))
+		serial.RawUARTPuts("/ok")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutHadEnough)))
+		serial.RawUARTPuts("/ne")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutNotEnough)))
+		serial.RawUARTPuts(" blk=")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutBlkOK)))
+		serial.RawUART('/')
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutBlkNE)))
+		serial.RawUARTPuts(" inp=")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutInpOK)))
+		serial.RawUART('/')
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutInpNE)))
 	}
 	// BlockOnSlot instrumentation: calls/blocked/noNext
 	bos := atomic.LoadUint32(&dbgBlockOnSlotCalls)

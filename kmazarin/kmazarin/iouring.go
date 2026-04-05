@@ -48,6 +48,25 @@ var IOUringBlockedRingID int32 = -1
 // Set once from SystemTimerFrequency on first IOUringSetup call.
 var IOUringTimeoutTicks uint64
 
+// WakeIOUringFromIRQ diagnostic counters (nosplit-safe atomics).
+var (
+	dbgWakeURCalls     uint32 // total WakeIOUringFromIRQ calls
+	dbgWakeURNoWaiter  uint32 // all slots had BlockedTID < 0
+	dbgWakeURNotEnough uint32 // had waiter, but completions < minComplete
+	dbgWakeURWoke      uint32 // successfully woke a thread
+)
+
+// Timeout path diagnostic counters (nosplit-safe atomics).
+var (
+	dbgTimeoutWakes     uint32 // total timeout wakes
+	dbgTimeoutHadEnough uint32 // CQ had enough completions at timeout
+	dbgTimeoutNotEnough uint32 // CQ did NOT have enough at timeout
+	dbgTimeoutBlkOK     uint32 // block device timeout had enough
+	dbgTimeoutBlkNE     uint32 // block device timeout not enough
+	dbgTimeoutInpOK     uint32 // input device timeout had enough
+	dbgTimeoutInpNE     uint32 // input device timeout not enough
+)
+
 // InitIOUringTimeout computes the timeout ticks from the system timer frequency.
 // Called from SyscallIOUringSetup.
 func InitIOUringTimeout() {
@@ -124,13 +143,17 @@ func BlockForIOUring(ringID int, minComplete uint32, syscallNum uint64) uintptr 
 //go:nosplit
 //go:noinline
 func WakeIOUringFromIRQ() {
+	atomic.AddUint32(&dbgWakeURCalls, 1)
+
 	// Quick scan: any slots with blocked waiters that have enough CQEs?
 	anyToWake := false
+	hadWaiter := false
 	for i := 0; i < MaxIORings; i++ {
 		slot := &IOUringTable[i]
 		if slot.BlockedTID < 0 || slot.KVA == 0 {
 			continue
 		}
+		hadWaiter = true
 		ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
 		if atomic.LoadUint32(&ring.CQTail)-atomic.LoadUint32(&ring.CQHead) >= slot.MinComplete {
 			anyToWake = true
@@ -138,6 +161,11 @@ func WakeIOUringFromIRQ() {
 		}
 	}
 	if !anyToWake {
+		if hadWaiter {
+			atomic.AddUint32(&dbgWakeURNotEnough, 1)
+		} else {
+			atomic.AddUint32(&dbgWakeURNoWaiter, 1)
+		}
 		return
 	}
 
@@ -158,6 +186,7 @@ func WakeIOUringFromIRQ() {
 
 		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 		if t != nil && t.State == ThreadBlockedIOUring {
+			atomic.AddUint32(&dbgWakeURWoke, 1)
 			t.State = ThreadReady
 			t.PriorityWoken = true
 			t.Context.RewindToSyscall()
@@ -202,6 +231,28 @@ func checkIOUringTimeoutFromTimer() {
 		// Timeout expired — wake thread with whatever completions are available.
 		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 		if t != nil && t.State == ThreadBlockedIOUring {
+			// Snapshot CQ state at timeout for diagnostics.
+			ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
+			tmoCQTail := atomic.LoadUint32(&ring.CQTail)
+			tmoCQHead := atomic.LoadUint32(&ring.CQHead)
+			tmoAvail := tmoCQTail - tmoCQHead
+			atomic.AddUint32(&dbgTimeoutWakes, 1)
+			if tmoAvail >= slot.MinComplete {
+				atomic.AddUint32(&dbgTimeoutHadEnough, 1)
+				if slot.DeviceType == IOUringDeviceBlock {
+					atomic.AddUint32(&dbgTimeoutBlkOK, 1)
+				} else {
+					atomic.AddUint32(&dbgTimeoutInpOK, 1)
+				}
+			} else {
+				atomic.AddUint32(&dbgTimeoutNotEnough, 1)
+				if slot.DeviceType == IOUringDeviceBlock {
+					atomic.AddUint32(&dbgTimeoutBlkNE, 1)
+				} else {
+					atomic.AddUint32(&dbgTimeoutInpNE, 1)
+				}
+			}
+
 			t.State = ThreadReady
 			t.Context.RewindToSyscall()
 			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)

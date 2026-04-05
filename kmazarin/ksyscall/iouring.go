@@ -169,8 +169,9 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 	// Phase A: Submit SQEs.
 	submitted := uint32(0)
+	sqHead := uint32(0) // hoisted for Phase B diagnostic
 	if toSubmit > 0 {
-		sqHead := atomic.LoadUint32(&ring.SQHead)
+		sqHead = atomic.LoadUint32(&ring.SQHead)
 		sqTail := atomic.LoadUint32(&ring.SQTail)
 		available := sqTail - sqHead
 		if toSubmit > available {
@@ -263,12 +264,14 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		cqTail := atomic.LoadUint32(&ring.CQTail)
 		cqHead := atomic.LoadUint32(&ring.CQHead)
 		completions := cqTail - cqHead
+
 		if completions >= minComplete {
 			return int64(completions)
 		}
 
 		// Block: find next thread, context-switch.
 		ctxPtr := blockForIOUring(ringID, minComplete, uint64(mazzy.SysIOUringEnter))
+
 		if ctxPtr == ^uintptr(0) {
 			// Sentinel: completions arrived between fast-path check and
 			// IRQ disable. Return them directly.
