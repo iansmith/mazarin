@@ -40,10 +40,11 @@ type AppWindow struct {
 	// app.Input.DispatchWM(msg) from their message loop.
 	Input *mancini.AppDispatcher
 
-	// Animation bookkeeping — maps localID ↔ Animatable.
+	// Animation bookkeeping — maps localID ↔ Animatable ↔ remoteID.
 	nextLocalID       atomic.Uint64
 	localToAnimatable sync.Map // map[uint64]mancini.Animatable
-	remoteToLocal     sync.Map // map[uint64]uint64
+	remoteToLocal     sync.Map // map[uint64]uint64 (remoteID → localID)
+	localToRemote     sync.Map // map[uint64]uint64 (localID → remoteID)
 	RachelSID         int      // set by the shepherd before calling RegisterAnimation
 
 	// --- Retained but unused: will move to rachel ---
@@ -118,12 +119,29 @@ func (w *AppWindow) RegisterAnimation(a mancini.Animatable, startNanos, endNanos
 	return localID
 }
 
+// UnregisterAnimation cancels an active animation by local ID. Sends
+// AnimationUnregister to rachel, which responds with AnimationUnregistered.
+// On receiving the response, DispatchAnimation calls AnimationFinish on
+// the interactor and cleans up all bookkeeping.
+func (w *AppWindow) UnregisterAnimation(localID uint64) {
+	remoteID, ok := w.localToRemote.Load(localID)
+	if !ok {
+		return
+	}
+	msg := wm.EncodeAnimationUnregister(&wm.AnimationUnregister{
+		AnimationID: remoteID.(uint64),
+		Nonce:       localID,
+	})
+	_ = uring.Send(w.RachelSID, &msg)
+}
+
 // DispatchAnimation routes an animation WM message to the registered
 // Animatable interactor. Returns true if the message was handled.
 func (w *AppWindow) DispatchAnimation(wmMsg any) bool {
 	switch m := wmMsg.(type) {
 	case wm.AnimationRegistered:
 		w.remoteToLocal.Store(m.AnimationID, m.Nonce)
+		w.localToRemote.Store(m.Nonce, m.AnimationID)
 		return true
 	case wm.AnimationStart:
 		localID, ok := w.remoteToLocal.Load(m.AnimationID)
@@ -146,7 +164,7 @@ func (w *AppWindow) DispatchAnimation(wmMsg any) bool {
 			return false
 		}
 		a.(mancini.Animatable).AnimationUpdate(localID.(uint64),
-			m.StartNanos, m.EndNanos, m.CoveredStart, m.CoveredEnd)
+			m.StartNanos, m.EndNanos, m.CoveredStart, m.CoveredEnd, m.NanosSinceStart)
 		return true
 	case wm.AnimationFinish:
 		localID, ok := w.remoteToLocal.Load(m.AnimationID)
@@ -159,6 +177,17 @@ func (w *AppWindow) DispatchAnimation(wmMsg any) bool {
 		}
 		w.localToAnimatable.Delete(localID)
 		w.remoteToLocal.Delete(m.AnimationID)
+		w.localToRemote.Delete(localID)
+		return true
+	case wm.AnimationUnregistered:
+		localID := m.Nonce
+		a, ok := w.localToAnimatable.Load(localID)
+		if ok {
+			a.(mancini.Animatable).AnimationFinish(localID, 0)
+		}
+		w.localToAnimatable.Delete(localID)
+		w.remoteToLocal.Delete(m.AnimationID)
+		w.localToRemote.Delete(localID)
 		return true
 	}
 	return false

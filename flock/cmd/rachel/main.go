@@ -889,6 +889,9 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 			case wm.AnimationRegister:
 				registerAnimation(senderSID, msg)
 
+			case wm.AnimationUnregister:
+				unregisterAnimation(senderSID, msg)
+
 			default:
 				rachelMsgOther++
 			}

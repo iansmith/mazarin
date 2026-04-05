@@ -31,12 +31,18 @@ const (
 	MsgTypeMouseFocusGained     uint32 = 13
 	MsgTypeMouseFocusLost     uint32 = 14
 
-	MsgTypeAnimationRegister   uint32 = 20 // shepherd → rachel
-	MsgTypeAnimationRegistered uint32 = 21 // rachel → shepherd
-	MsgTypeAnimationStart      uint32 = 22 // rachel → shepherd
-	MsgTypeAnimationUpdate     uint32 = 23 // rachel → shepherd
-	MsgTypeAnimationFinish     uint32 = 24 // rachel → shepherd
+	MsgTypeAnimationRegister     uint32 = 20 // shepherd → rachel
+	MsgTypeAnimationRegistered   uint32 = 21 // rachel → shepherd
+	MsgTypeAnimationStart        uint32 = 22 // rachel → shepherd
+	MsgTypeAnimationUpdate       uint32 = 23 // rachel → shepherd
+	MsgTypeAnimationFinish       uint32 = 24 // rachel → shepherd
+	MsgTypeAnimationUnregister   uint32 = 25 // shepherd → rachel
+	MsgTypeAnimationUnregistered uint32 = 26 // rachel → shepherd
 )
+
+// AnimationAlways is used as the EndNanos for animations that run
+// indefinitely until explicitly unregistered. Jan 1, 2045 00:00 UTC.
+const AnimationAlways int64 = 2366841600_000_000_000 // time.Date(2045,1,1,0,0,0,0,time.UTC).UnixNano()
 
 // --- Typed message structs (WM protocol) ---
 
@@ -155,19 +161,37 @@ type AnimationStart struct {
 }
 
 // AnimationUpdate is sent by rachel each interval tick while the animation
-// is active. CoveredStart and CoveredEnd are fractions in [0, 1).
+// is active. CoveredStart and CoveredEnd are fractions in [0, 1].
+// NanosSinceStart is the elapsed time since the animation began — useful
+// for AnimationAlways animations where the fractions stay near zero.
 type AnimationUpdate struct {
-	AnimationID  uint64
-	StartNanos   int64
-	EndNanos     int64
-	CoveredStart float64
-	CoveredEnd   float64
+	AnimationID    uint64
+	StartNanos     int64
+	EndNanos       int64
+	CoveredStart   float64
+	CoveredEnd     float64
+	NanosSinceStart int64
 }
 
 // AnimationFinish is sent by rachel when the animation's end time has passed.
 type AnimationFinish struct {
 	AnimationID uint64
 	EndNanos    int64
+}
+
+// AnimationUnregister is sent by a shepherd to cancel an active animation.
+// AnimationID is rachel's global ID; Nonce is the shepherd's local ID
+// (echoed back in AnimationUnregistered).
+type AnimationUnregister struct {
+	AnimationID uint64
+	Nonce       uint64
+}
+
+// AnimationUnregistered is sent by rachel to confirm cancellation.
+// AnimationID is rachel's global ID; Nonce is echoed from AnimationUnregister.
+type AnimationUnregistered struct {
+	AnimationID uint64
+	Nonce       uint64
 }
 
 // --- Encode functions (typed struct → UringIPCMsg) ---
@@ -318,6 +342,22 @@ func EncodeAnimationFinish(a *AnimationFinish) ipc.UringIPCMsg {
 	return msg
 }
 
+func EncodeAnimationUnregister(a *AnimationUnregister) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoWMNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeAnimationUnregister
+	*(*AnimationUnregister)(unsafe.Pointer(&msg.Payload[4])) = *a
+	return msg
+}
+
+func EncodeAnimationUnregistered(a *AnimationUnregistered) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoShepherdNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeAnimationUnregistered
+	*(*AnimationUnregistered)(unsafe.Pointer(&msg.Payload[4])) = *a
+	return msg
+}
+
 // --- Decode functions (UringIPCMsg → typed struct) ---
 
 // WMNotifyMsg wraps a decoded WM notification with the sender's SID
@@ -349,6 +389,11 @@ func DecodeWMNotify(msg *ipc.UringIPCMsg) any {
 		return WMNotifyMsg{
 			SenderSID: senderSID,
 			Msg:       *(*AnimationRegister)(unsafe.Pointer(&msg.Payload[4])),
+		}
+	case MsgTypeAnimationUnregister:
+		return WMNotifyMsg{
+			SenderSID: senderSID,
+			Msg:       *(*AnimationUnregister)(unsafe.Pointer(&msg.Payload[4])),
 		}
 	default:
 		panic("wm.DecodeWMNotify: unknown message type")
@@ -392,6 +437,8 @@ func DecodeShepherdNotify(msg *ipc.UringIPCMsg) any {
 		return *(*AnimationUpdate)(unsafe.Pointer(&msg.Payload[4]))
 	case MsgTypeAnimationFinish:
 		return *(*AnimationFinish)(unsafe.Pointer(&msg.Payload[4]))
+	case MsgTypeAnimationUnregistered:
+		return *(*AnimationUnregistered)(unsafe.Pointer(&msg.Payload[4]))
 	default:
 		panic("wm.DecodeShepherdNotify: unknown message type")
 	}

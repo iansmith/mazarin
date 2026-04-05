@@ -147,13 +147,16 @@ func (w *WindowInteractor) KeyDown(ev *input.InputEvent) bool {
 		action = wm.ActionByName(astr)
 	}
 	kmDiagLog(ev.Code, true, ev.Mods, ch, action, elapsed)
-	msg := wm.EncodeKeyPress(&wm.KeyPress{
+	kp := wm.KeyPress{
 		Code: ev.Code, Mods: ev.Mods,
 		Char: uint32(ch), Action: action,
-	})
+	}
+	msg := wm.EncodeKeyPress(&kp)
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
 		sys.UartWriteDirectString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
+	// Start key-repeat animation for this key.
+	startKeyRepeat(w.ta.sid, time.Now().UnixNano(), kp)
 	return true
 }
 
@@ -169,6 +172,8 @@ func (w *WindowInteractor) KeyUp(ev *input.InputEvent) bool {
 		action = wm.ActionByName(astr)
 	}
 	kmDiagLog(ev.Code, false, ev.Mods, ch, action, elapsed)
+	// Stop key-repeat animation before sending release.
+	stopKeyRepeat(ev.Code)
 	msg := wm.EncodeKeyRelease(&wm.KeyRelease{
 		Code: ev.Code, Mods: ev.Mods,
 		Char: uint32(ch), Action: action,

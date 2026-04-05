@@ -156,7 +156,7 @@ var GrooveParams = InsetParams{Off: 1, DarkBlur: 3, LightBlur: 2}
 // registered Animatable interactors using their local animation ID.
 type Animatable interface {
 	AnimationStart(localID uint64, startNanos int64)
-	AnimationUpdate(localID uint64, startNanos, endNanos int64, coveredStart, coveredEnd float64)
+	AnimationUpdate(localID uint64, startNanos, endNanos int64, coveredStart, coveredEnd float64, nanosSinceStart int64)
 	AnimationFinish(localID uint64, endNanos int64)
 }
 

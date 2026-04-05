@@ -441,7 +441,7 @@ func (t *SingleLineText) AnimationStart(localID uint64, startNanos int64) {
 // AnimationUpdate implements mancini.Animatable. Fades the alert
 // border alpha from 255 to 0 as coveredEnd progresses from 0 to 1.
 func (t *SingleLineText) AnimationUpdate(localID uint64,
-	startNanos, endNanos int64, coveredStart, coveredEnd float64) {
+	startNanos, endNanos int64, coveredStart, coveredEnd float64, nanosSinceStart int64) {
 	t.alertAlpha = uint8(255.0 * (1.0 - coveredEnd))
 	t.FullDamage()
 }
