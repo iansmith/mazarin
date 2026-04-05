@@ -1,11 +1,23 @@
 package input
 
 // Keymap translates raw evdev keycodes into characters, tracking modifier state.
+// Implements mancini.KeyMapper for use as a built-in US QWERTY fallback
+// until keymapper.maz is loaded.
 type Keymap struct {
 	shift    bool
 	ctrl     bool
 	alt      bool
 	capsLock bool
+}
+
+// Name implements mancini.KeyMapper.
+func (k *Keymap) Name() string { return "us" }
+
+// Map implements mancini.KeyMapper. It translates an evdev keycode
+// using the modifier bitmask from the InputEvent. Internal modifier
+// tracking (shift, capslock) is updated from the mods bitmask.
+func (k *Keymap) Map(code uint16, pressed bool, mods uint64) (rune, string) {
+	return k.Feed(KeyEvent{Code: code, Pressed: pressed})
 }
 
 // Feed processes a raw KeyEvent, updates modifier state, and returns:

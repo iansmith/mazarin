@@ -338,7 +338,7 @@ func main() {
 	}
 
 	// Initialize input dispatch pipeline.
-	disp, clickAgent := app.InitInput()
+	disp, clickAgent, _ := app.InitInput()
 	disp.OriginX = int64(bsr.AppX)
 	disp.OriginY = int64(bsr.AppY)
 	mancini.SetScreenOrigin(int64(bsr.AppX), int64(bsr.AppY))
@@ -385,23 +385,13 @@ func main() {
 	// 13. Main loop: select on WM messages and dirty attributes.
 	dirtyCh := attr.OnDirty()
 	var drawCount int64
-	var lastPrint int64
 	redraw := func() {
-		sec := timeSec.Get()
+		_ = timeSec.Get()
 		_ = timeNanos.Get()
-
-		if sec-lastPrint >= 10 {
-			t := time.Unix(sec, 0).UTC()
-			sys.UartWriteString(fmt.Sprintf("[clocks] time: %v\n", t))
-			lastPrint = sec
-		}
 
 		app.Draw(app, 0, 0, int64(winW), int64(winH))
 		sendBlit()
 		drawCount++
-		if drawCount%10 == 0 {
-			sys.UartWriteDirectString(fmt.Sprintf("[clocks] draws=%d\n", drawCount))
-		}
 	}
 
 	// clickTimer fires after ClickAgent's timeout so pending clicks
@@ -411,23 +401,24 @@ func main() {
 	for {
 		select {
 		case msg := <-wmCh:
-			switch m := msg.(type) {
+			switch msg.(type) {
 			case wm.YouHaveFocus:
-				fmt.Printf("[clocks:hh] YouHaveFocus\n")
 				app.Focus()
 			case wm.YouLostFocus:
-				fmt.Printf("[clocks:hh] YouLostFocus\n")
 				app.Unfocus()
+			case wm.KeyboardFocusGained:
+				app.Focus()
+			case wm.KeyboardFocusLost:
+				app.Unfocus()
+			case wm.MouseFocusGained, wm.MouseFocusLost:
+				// ignored
 			case wm.MousePress:
-				fmt.Printf("[clocks:hh] MousePress btn=%d x=%d y=%d\n", m.Button, m.X, m.Y)
 				disp.DispatchWM(msg)
 			case wm.MouseRelease:
-				fmt.Printf("[clocks:hh] MouseRelease btn=%d x=%d y=%d\n", m.Button, m.X, m.Y)
 				disp.DispatchWM(msg)
 				// Arm timer to commit pending click after timeout.
 				clickTimer = time.After(clickAgent.ClickTimeout + 10*time.Millisecond)
 			default:
-				fmt.Printf("[clocks:hh] WM msg type=%T\n", msg)
 				disp.DispatchWM(msg)
 			}
 			if clickAgent.CheckTimer() {
@@ -438,7 +429,6 @@ func main() {
 		case <-clickTimer:
 			clickTimer = nil
 			if clickAgent.CheckTimer() {
-				fmt.Printf("[clocks:hh] click timer committed\n")
 				redraw()
 			}
 		case <-dirtyCh:

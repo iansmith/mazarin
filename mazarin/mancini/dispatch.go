@@ -37,10 +37,12 @@ const (
 // to the AppWindow origin — the AppDispatcher translates from screen
 // coordinates before dispatching.
 type InputEvent struct {
-	Kind EventKind
-	Code uint16 // evdev keycode or mouse button code
-	X, Y int64  // local coordinates
-	Mods uint64 // modifier bitmask (hid.ModXxx)
+	Kind   EventKind
+	Code   uint16 // evdev keycode or mouse button code
+	X, Y   int64  // local coordinates
+	Mods   uint64 // modifier bitmask (hid.ModXxx)
+	Char   rune   // translated character (0 if non-printable); set by rachel's KeyMapper
+	Action string // action name ("backspace", "enter", etc.); set by rachel's KeyMapper
 }
 
 // BtnLeft is the evdev boundary between keyboard and mouse button codes.
@@ -226,15 +228,19 @@ func (d *AppDispatcher) convertWMEvent(wmMsg any) *InputEvent {
 		}
 	case wm.KeyPress:
 		return &InputEvent{
-			Kind: EvKeyDown,
-			Code: m.Code,
-			Mods: m.Mods,
+			Kind:   EvKeyDown,
+			Code:   m.Code,
+			Mods:   m.Mods,
+			Char:   rune(m.Char),
+			Action: wm.ActionName(m.Action),
 		}
 	case wm.KeyRelease:
 		return &InputEvent{
-			Kind: EvKeyUp,
-			Code: m.Code,
-			Mods: m.Mods,
+			Kind:   EvKeyUp,
+			Code:   m.Code,
+			Mods:   m.Mods,
+			Char:   rune(m.Char),
+			Action: wm.ActionName(m.Action),
 		}
 	}
 	return nil
@@ -332,8 +338,8 @@ func (d *AppDispatcher) dispatchPolicy(ev *InputEvent, p *AppPolicy, pickList *[
 //  3. "click" (positional) — ClickAgent recognizes single/double/triple clicks
 //  4. "keyboard" (focus) — KeyAgent forwards to keyboard focus target
 //
-// Returns the dispatcher and the ClickAgent (for CheckTimer calls).
-func StandardPipeline(root Interactor) (*AppDispatcher, *ClickAgent) {
+// Returns the dispatcher, the ClickAgent (for CheckTimer calls), and the KeyAgent.
+func StandardPipeline(root Interactor) (*AppDispatcher, *ClickAgent, *KeyAgent) {
 	d := NewAppDispatcher(root)
 	clickDrag := &ClickDragAgent{}
 
@@ -359,5 +365,5 @@ func StandardPipeline(root Interactor) (*AppDispatcher, *ClickAgent) {
 	keyPolicy.AddAgent(key)
 	d.AddPolicy(keyPolicy)
 
-	return d, click
+	return d, click, key
 }

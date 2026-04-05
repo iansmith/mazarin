@@ -16,7 +16,7 @@ import (
 //   [0]    argc = 1
 //   [8]    argv[0] → "kmazarin" string
 //   [16]   argv[1] = NULL
-//   [24]   envp[0] → "GODEBUG=gctrace=1"
+//   [24]   envp[0] → "GODEBUG=gctrace=0"
 //   [32]   envp[1] → "GOMEMLIMIT=NNMiB" (from kernel_mem_limit config)
 //   [40]   envp[2] → "GOGC=NNNNN" (from gc_percent_kernel config)
 //   [48]   envp[3] = NULL
@@ -24,7 +24,7 @@ import (
 //   ...
 //   [384]  "kmazarin\0"
 //   [400]  16 random bytes
-//   [416]  "GODEBUG=gctrace=1\0"
+//   [416]  "GODEBUG=gctrace=0\0"
 //   [464]  "GOMEMLIMIT=NNMiB\0"
 //   [496]  "GOGC=NNNNN\0"
 //
@@ -66,9 +66,9 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	randomPhys := structPhys + 400
 	getTimerBasedRandom(randomPhys)
 
-	// "GODEBUG=gctrace=1" at offset 416
+	// "GODEBUG=gctrace=0" at offset 416
 	godebug := (*[48]byte)(unsafe.Pointer(uintptr(structPhys + 416)))
-	s := "GODEBUG=gctrace=1"
+	s := "GODEBUG=gccheckmark=1"
 	for i := 0; i < len(s); i++ {
 		godebug[i] = s[i]
 	}
@@ -163,7 +163,7 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	data[1] = structStart + 384
 	// argv[1] = NULL
 	data[2] = 0
-	// envp[0] = "GODEBUG=gctrace=1" (VA)
+	// envp[0] = "GODEBUG=gctrace=0" (VA)
 	data[3] = structStart + 416
 	// envp[1] = "GOMEMLIMIT=NNMiB" (VA)
 	data[4] = structStart + 464

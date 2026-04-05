@@ -76,18 +76,9 @@ func (mt *mountTable) getFS(kind mountKind) *ext2.FileSystem {
 func main() {
 	fmt.Println("[fs] starting filesystem shepherd")
 
-	// Install ReadInto timing hook for diagnostics.
-	ext2.ReadIntoTimingHook = func(t ext2.ReadIntoTimings) {
-		sys.UartWriteString(fmt.Sprintf("[ext2] ReadInto: blocks=%d resolve=%dms sep=%dms alloc=%dms dma=%dms copy=%dms total=%dms\n",
-			t.Blocks, t.Resolve.Milliseconds(), t.Separate.Milliseconds(),
-			t.Alloc.Milliseconds(), t.DMA.Milliseconds(), t.Copy.Milliseconds(),
-			t.Total.Milliseconds()))
-	}
-
-	ext2.ReadBlocksTimingHook = func(blocks int, makeAlloc, loop, lbaBuild, readCall time.Duration) {
-		sys.UartWriteString(fmt.Sprintf("[ext2] readBlocks: blocks=%d make=%dms loop=%dms lbaBuild=%dms readCall=%dms\n",
-			blocks, makeAlloc.Milliseconds(), loop.Milliseconds(), lbaBuild.Milliseconds(), readCall.Milliseconds()))
-	}
+	// Timing hooks disabled — enable for block I/O debugging.
+	ext2.ReadIntoTimingHook = nil
+	ext2.ReadBlocksTimingHook = nil
 
 	// Experiment 3: Enable per-syscall tracing for this SID around large readBlocks.
 	// Magic marker 0xDB6 sets kernel DbgTraceSID via DebugPrint syscall.
@@ -286,15 +277,12 @@ func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 // underlying BlockDevice implements BatchBlockDevice, all data blocks
 // are read in a single batch operation.
 func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (va uintptr, numPages int, bytesRead int, err error) {
-	sys.UartWriteString("[fs] readFileIntoPages: " + path + "\n")
 	t0 := time.Now()
 	file, ferr := fsys.Open(path)
 	if ferr != nil {
 		return 0, 0, 0, ferr
 	}
 	defer file.Close()
-	tOpen := time.Since(t0)
-	sys.UartWriteString(fmt.Sprintf("[fs] readFileIntoPages: %s opened, size=%d\n", path, file.Size()))
 
 	fileSize := int(file.Size())
 	numPages = (fileSize + 4095) / 4096
@@ -304,16 +292,13 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 
 	totalSize := uintptr(numPages) * 4096
 
-	tAllocStart := time.Now()
 	if transferable {
-		sys.UartWriteString(fmt.Sprintf("[fs] readFileIntoPages: %s AllocPages(%d)...\n", path, numPages))
 		// Kernel-tracked pages so TransferAndUnmap can validate ownership.
 		ptr, allocErr := mem.AllocPages(numPages, mem.PageShared)
 		if allocErr != nil {
 			return 0, 0, 0, allocErr
 		}
 		va = uintptr(ptr)
-		sys.UartWriteString(fmt.Sprintf("[fs] readFileIntoPages: %s AllocPages done, va=0x%x\n", path, va))
 	} else {
 		// Anonymous mmap for temporary use (caller munmaps after).
 		var errno syscall.Errno
@@ -326,18 +311,13 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 			return 0, 0, 0, errno
 		}
 	}
-	tAlloc := time.Since(tAllocStart)
 
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(va)), totalSize)
 
-	sys.UartWriteString(fmt.Sprintf("[fs] readFileIntoPages: %s calling ReadInto(%d bytes)...\n", path, fileSize))
-	tReadStart := time.Now()
 	n, rerr := file.ReadInto(dst[:fileSize])
-	tRead := time.Since(tReadStart)
 
-	sys.UartWriteString(fmt.Sprintf("[fs] PERF %s: size=%d open=%dms alloc=%dms read=%dms total=%dms\n",
-		path, fileSize, tOpen.Milliseconds(), tAlloc.Milliseconds(),
-		tRead.Milliseconds(), time.Since(t0).Milliseconds()))
+	sys.UartWriteString(fmt.Sprintf("[fs] %s: %d bytes, %d pages, %dms\n",
+		path, fileSize, numPages, time.Since(t0).Milliseconds()))
 
 	if rerr != nil {
 		// Free allocated pages on read failure to avoid leaking memory.
@@ -386,7 +366,6 @@ func launchShepherd(fsys *ext2.FileSystem, name, path string) {
 		sys.UartWriteString("[fs] failed to read " + path + "\n")
 		return
 	}
-	sys.UartWriteString("[fs] read " + path + ", calling RunShepherd\n")
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead)
 	// Free temporary pages (RunShepherd copies them to the new shepherd).
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
@@ -394,7 +373,6 @@ func launchShepherd(fsys *ext2.FileSystem, name, path string) {
 		sys.UartWriteString("[fs] RunShepherd FAILED for " + name + "\n")
 		return
 	}
-	sys.UartWriteString("[fs] " + name + " launched\n")
 }
 
 // bootSequence launches the core shepherds in dependency order, then reads

@@ -66,10 +66,6 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		return int64(errInvalidFilename)
 	}
 
-	console.KWriteString("[RunShepherd] CAS ok, name=")
-	console.KWriteString(name)
-	console.KWriteString("\r\n")
-
 	ctxPtr := submitRunShepherd(RunShepherdWorkRequest{
 		Name:           name,
 		StartVA:        startVA,
@@ -79,7 +75,6 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		CallerL0PA:     shepherd.PageTableL0PA,
 	})
 	if ctxPtr != 0 {
-		console.KWriteString("[RunShepherd] submitted, switching\r\n")
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
 		console.KWriteString("[RunShepherd] ERROR: busy or no thread to switch to\r\n")
@@ -172,8 +167,8 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 			allocateUringIPCRing(&proc.ShepherdListData[i])
 			registerUringID(uringID, int16(proc.ShepherdListData[i].PID))
 
-			console.KPrintf("[RunShepherd] %s launched (TID=%d, PID=%d, UringID=%d)\n",
-				req.Name, tid, proc.ShepherdListData[i].PID, uringID)
+			console.KPrintf("Launching %s (TID=%d, PID=%d)\n",
+				req.Name, tid, proc.ShepherdListData[i].PID)
 			break
 		}
 	}

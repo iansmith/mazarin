@@ -1,0 +1,55 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build keymapper.maz (PIE + thin stubs, dynamically linked)
+    run: once
+    deps: [':check-env', ':maz-overlay']
+    sources:
+      - 'flock/cmd/keymapper/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.MAZ_OVERLAY_JSON}}'
+    generates:
+      - '{{.KEYMAPPER_MAZ}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building keymapper.maz (PIE + thin stubs)..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.KEYMAPPER_MAZ}} ./flock/cmd/keymapper'
+      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
+      - '{{.GO}} tool maz-reloc {{.KEYMAPPER_MAZ}} {{.THIN_MANIFEST}}'
+      - '{{.GO}} tool go-echo "keymapper.maz ready at {{.KEYMAPPER_MAZ}}"'
+
+  amd64:
+    desc: Build keymapper.maz for x86_64 (PIE + thin stubs, dynamically linked)
+    run: once
+    deps: [':check-env', ':maz-overlay-amd64']
+    sources:
+      - 'flock/cmd/keymapper/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.MAZ_OVERLAY_AMD64_JSON}}'
+    generates:
+      - '{{.KEYMAPPER_MAZ_AMD64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building keymapper.maz for x86_64 (PIE + thin stubs)..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.KEYMAPPER_MAZ_AMD64}} ./flock/cmd/keymapper'
+      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
+      - '{{.GO}} tool maz-reloc {{.KEYMAPPER_MAZ_AMD64}} {{.THIN_MANIFEST_AMD64}}'
+      - '{{.GO}} tool go-echo "keymapper.maz (x86_64) ready at {{.KEYMAPPER_MAZ_AMD64}}"'
+
+  riscv64:
+    desc: Build keymapper.maz for RISC-V 64-bit (fixed-address slot 4, thin stubs)
+    run: once
+    deps: [':check-env', ':maz-overlay']
+    sources:
+      - 'flock/cmd/keymapper/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.MAZ_OVERLAY_JSON}}'
+    generates:
+      - '{{.KEYMAPPER_MAZ_RISCV64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building keymapper.maz for RISC-V 64-bit (fixed-address slot 4)..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} -ldflags="-T 0x38000000" {{.GCFLAGS}} -o {{.KEYMAPPER_MAZ_RISCV64}} ./flock/cmd/keymapper'
+      - '{{.GO}} tool go-echo "Fixing negative ELF offsets from -T flag..."'
+      - '{{.GO}} tool fix-go-elf -no-bootstrap {{.KEYMAPPER_MAZ_RISCV64}}'
+      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
+      - '{{.GO}} tool maz-reloc {{.KEYMAPPER_MAZ_RISCV64}} {{.THIN_MANIFEST}}'
+      - '{{.GO}} tool go-echo "keymapper.maz (RISC-V 64-bit) ready at {{.KEYMAPPER_MAZ_RISCV64}}"'

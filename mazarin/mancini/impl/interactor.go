@@ -78,6 +78,18 @@ func (i *Interactor) FullDamage() {
 	lh.FullDamage()
 }
 
+// ClearDamage resets this interactor's damage rectangle to empty.
+// For leaves (value DamageRect), this directly clears the value.
+// For parents (constraint DamageRect), this is a no-op — the
+// constraint re-evaluates to empty when all children clear.
+func (i *Interactor) ClearDamage() {
+	lh := i.layout
+	if lh == nil {
+		return
+	}
+	lh.ClearDamage()
+}
+
 func (i *Interactor) X() int64       { return i.layout.X.Get() }
 func (i *Interactor) Y() int64       { return i.layout.Y.Get() }
 func (i *Interactor) W() int64       { return i.layout.Width.Get() }

@@ -79,8 +79,6 @@ func loadMazInternal(useKernelToLoad bool, filename string, shepherd interface{}
 
 	lf, lfErr := sys.LoadFile(filename)
 	if lfErr == nil && lf.StartVA != 0 {
-		fmt.Printf("[mazhost] LoadFile(%s): %d pages (%d bytes) — using async delegate path\n",
-			filename, lf.NumPages, lf.BytesRead)
 		result, err = sys.LoadMazFromPages(filename, uintptr(lf.StartVA), lf.BytesRead)
 		// Free the pre-loaded pages (ELF segments were copied to new pages by kernel)
 		syscall.RawSyscall6(syscall.SYS_MUNMAP, uintptr(lf.StartVA),
@@ -93,8 +91,7 @@ func loadMazInternal(useKernelToLoad bool, filename string, shepherd interface{}
 	if err != nil {
 		return nil, 0, err.Wrap(filename)
 	}
-	fmt.Printf("[mazhost] loaded %s: entry=0x%X base=0x%X size=0x%X\n",
-		filename, result.EntryPoint, result.LoadBase, result.LoadSize)
+	fmt.Printf("[mazhost] loaded %s\n", filename)
 
 	// Step 2: Register moduledata for stack trace support
 	sys.RegisterMazModule(result)

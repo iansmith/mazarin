@@ -15,6 +15,8 @@ const (
 	Bold                      // Bold weight.
 	Italic                    // Italic style.
 	BoldItalic                // Bold weight, italic style.
+	Light                     // Light weight.
+	Condensed                 // Condensed width.
 )
 
 // String returns the style name used by the font index CSV.
@@ -28,6 +30,10 @@ func (f Feature) String() string {
 		return "Italic"
 	case BoldItalic:
 		return "BoldItalic"
+	case Light:
+		return "Light"
+	case Condensed:
+		return "Condensed"
 	}
 	return "Regular"
 }

@@ -322,6 +322,13 @@ func processPackageForShepherd(pkg packageInfo, overlayReplace map[string]string
 	return noinlineCount, fileCount, nil
 }
 
+// shepherdPostCallInjections maps a call expression (as it appears in source)
+// to a line of code to insert immediately after it. This replaces fragile sed
+// post-processing in Taskfile.yml with a versioned, greppable table.
+var shepherdPostCallInjections = map[string]string{
+	"worldStarted()": "\tsyncMazWriteBarriers()",
+}
+
 // shepherdFuncInfo holds info about a function that needs //go:noinline in shepherd mode.
 type shepherdFuncInfo struct {
 	line int      // 1-based line number of the func keyword
@@ -406,6 +413,12 @@ func transformFileForShepherd(path string) (*TransformResult, int, error) {
 		}
 		out.WriteString(line)
 		if i < len(lines)-1 {
+			out.WriteString("\n")
+		}
+		// Post-call injections: insert extra line after matching call sites
+		trimmed := strings.TrimSpace(line)
+		if inject, ok := shepherdPostCallInjections[trimmed]; ok {
+			out.WriteString(inject)
 			out.WriteString("\n")
 		}
 	}

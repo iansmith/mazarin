@@ -1,0 +1,27 @@
+import "children"
+
+func rowFillLastChildWidth() int64 {
+	rowW := derefI64("_rowWidth_")
+	spacing := derefI64("_spacing_")
+	margin := derefI64("_hMargin_")
+
+	children := findVisibleChildren("_myName_")
+	n := len(children)
+	if n < 1 {
+		return rowW - 2*margin
+	}
+	if n < 2 {
+		return rowW - 2*margin
+	}
+	used := int64(0)
+	idx := 0
+	for _, uri := range children {
+		if idx >= n-1 {
+			break
+		}
+		seg := uriSegment(uri, 3)
+		used = used + childWidth(seg)
+		idx = idx + 1
+	}
+	return rowW - used - (int64(n)-1)*spacing - 2*margin
+}

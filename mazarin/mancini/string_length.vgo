@@ -1,0 +1,4 @@
+func stringLength() int64 {
+    s := derefStr("_source_")
+    return strLen(s)
+}

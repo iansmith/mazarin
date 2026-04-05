@@ -50,7 +50,7 @@ func (f *PolarFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy
 	digitRad := radius * 0.80 // radius for digit placement
 	dotRad := radius - dotR   // radius for dot placement (flush with edge)
 
-	fontID := openFont(fc, dc, true, fontSize)
+	fontID := openFont(fc, dc, Bold, fontSize)
 	for i := 0; i < 24; i++ {
 		posAngle := float64(i)*math.Pi/12 - math.Pi/2
 

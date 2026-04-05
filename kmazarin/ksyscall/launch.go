@@ -140,10 +140,6 @@ var currentProcess *Process
 // LaunchFromMemory loads and launches a shepherd from in-memory ELF data.
 // Used for the embedded fs shepherd — no disk I/O needed.
 func LaunchFromMemory(elfData []byte, name string) int64 {
-	console.KWriteString("[Launch] embedded ")
-	console.KWriteString(name)
-	console.KWriteString("\r\n")
-
 	if len(elfData) < 64 {
 		console.KPrintln("[Launch] ERROR: embedded ELF too small")
 		return -4
@@ -202,7 +198,7 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 	kmem.FinalUserspaceSync()
 
 	// Create a new thread for this process
-	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
+	CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
 
 	// Cache symbol table, highest VA, filename, and allocate IPC uring ring.
 	for i := 0; i < proc.MaxShepherds; i++ {
@@ -217,13 +213,10 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 			allocateUringIPCRing(&proc.ShepherdListData[i])
 			registerUringID(uringID, int16(proc.ShepherdListData[i].PID))
 
-			console.KPrintf("[Launch] cached %d symbols, highestVA=0x%X for shepherd %d (UringID=%d)\n",
-				len(shepherdSymTable), shepherdHighestVA, proc.ShepherdListData[i].PID, uringID)
 			break
 		}
 	}
 
-	console.KPrintf("[Launch] main thread TID=%d\n", tid)
 	return 0
 }
 
@@ -687,7 +680,7 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	}
 
 	penv := NewProcessEnv()
-	penv.SetEnv("GODEBUG", "gctrace=1")
+	penv.SetEnv("GODEBUG", "gccheckmark=1")
 	gcVal := shepherdGCPercentage
 	if gcVal <= 0 {
 		gcVal = 100 // Go standard default

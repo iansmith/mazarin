@@ -186,7 +186,23 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 		}
 	}
 
+	// For unfocused (Flush) windows, clip blit to the NeuBox face bounds —
+	// the outer shadow margin is negligible and should show desktop through.
+	// Face in BS coords: (borderLeft, shadowTop) to (bsWidth-borderRight, bsHeight-borderBottom).
+	var faceClip image.Rectangle
+	if !focused {
+		faceClip = image.Rect(
+			winX+borderLeft, winY+shadowTop,
+			winX+int(ta.bsWidth)-borderRight, winY+int(ta.bsHeight)-borderBottom)
+	}
+
 	for _, r := range regions {
+		if !focused {
+			r = r.Intersect(faceClip)
+			if r.Empty() {
+				continue
+			}
+		}
 		localX0 := r.Min.X - winX
 		w := r.Dx() * 4
 
@@ -195,17 +211,7 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 			fbOff := y*fbStride + r.Min.X*4
 			bsOff := localY*bsStride + localX0*4
 			if fbOff >= 0 && fbOff+w <= len(fb) && bsOff >= 0 && bsOff+w <= len(bs) {
-				if focused {
-					copy(fb[fbOff:fbOff+w], bs[bsOff:bsOff+w])
-				} else {
-					// Unfocused: 25% alpha dim — multiply each BGRA channel by 3/4.
-					for px := 0; px < w; px += 4 {
-						fb[fbOff+px] = bs[bsOff+px] - bs[bsOff+px]>>2
-						fb[fbOff+px+1] = bs[bsOff+px+1] - bs[bsOff+px+1]>>2
-						fb[fbOff+px+2] = bs[bsOff+px+2] - bs[bsOff+px+2]>>2
-						fb[fbOff+px+3] = bs[bsOff+px+3] - bs[bsOff+px+3]>>2
-					}
-				}
+				copy(fb[fbOff:fbOff+w], bs[bsOff:bsOff+w])
 			}
 		}
 	}
@@ -248,7 +254,12 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 	y2 := float64(th - borderBottom)
 	r := 6.0
 
-	std.NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, pal.Surface(), neuP)
+	// Use the desktop BG as the NeuBox face color so the shadows float
+	// on the desktop surface — no visible lighter band from pal.Surface().
+	// The buffer was pre-filled in BGRA byte order, but the image.RGBA
+	// drawing expects RGBA — swap R↔B so the rendered face matches.
+	faceColor := color.NRGBA{R: desktopBG.B, G: desktopBG.G, B: desktopBG.R, A: desktopBG.A}
+	std.NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, faceColor, neuP)
 
 	// Title bar drawn AFTER NeuBox so stripes are visible on top of the face.
 	if windowTitleBar != nil {

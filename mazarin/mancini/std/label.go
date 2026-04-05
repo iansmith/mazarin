@@ -21,12 +21,13 @@ import (
 type Label struct {
 	impl.ThemedInteractor
 
-	Text     string         // static text (used when TextFunc is nil)
-	TextFunc func() string  // dynamic text source (takes precedence)
-	FontSize int64
-	Color    color.NRGBA
-	Bold     bool
-	textFace mancini.LatinTextFace
+	Text        string         // static text (used when TextFunc is nil)
+	TextFunc    func() string  // dynamic text source (takes precedence)
+	FontSize    int64
+	Color       color.NRGBA
+	Bold        bool
+	Transparent bool // skip background fill (parent paints background)
+	textFace    mancini.LatinTextFace
 }
 
 // NewLabel creates a Label wired to the constraint system and theme.
@@ -137,8 +138,10 @@ func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 	tl := nanotime()
 
-	// Super — clear background to theme BgColor.
-	l.ThemedInteractor.Draw(self, x, y, w, h)
+	// Super — clear background to theme BgColor (skip if transparent).
+	if !l.Transparent {
+		l.ThemedInteractor.Draw(self, x, y, w, h)
+	}
 
 	if l.textFace == nil {
 		drawPerf.LabelNs.Add(nanotime() - tl)

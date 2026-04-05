@@ -135,6 +135,38 @@ func (lh *LayoutAttributes) SnapshotDamageContentHash(hash int64) {
 	}
 }
 
+// ClearDamage resets this interactor's damage rectangle to empty (0,0,0,0).
+// For value DamageRect attributes (leaves using FullDamage), this directly
+// sets the value. For constraint DamageRect attributes (parents using
+// InitDefaultParentDamage), this is a no-op — the constraint automatically
+// re-evaluates to empty when all children clear their damage.
+//
+// Called by [impl.ThemedInteractor.Draw] after painting.
+func (lh *LayoutAttributes) ClearDamage() {
+	if lh == nil || lh.Damage == nil || lh.Damage.DamageRect == nil {
+		return
+	}
+	if lh.Damage.DamageRect.IsConstraint() {
+		return
+	}
+	lh.Damage.DamageRect.Set(emptyRect())
+}
+
+// GetDamageRect returns the current damage rectangle as (x0, y0, x1, y1).
+// Returns (0,0,0,0) if no damage is pending.
+func (lh *LayoutAttributes) GetDamageRect() (x0, y0, x1, y1 int64) {
+	if lh == nil || lh.Damage == nil || lh.Damage.DamageRect == nil {
+		return 0, 0, 0, 0
+	}
+	return lh.Damage.DamageRect.Get().AsRectangle()
+}
+
+// HasDamage returns true if the damage rectangle is non-empty.
+func (lh *LayoutAttributes) HasDamage() bool {
+	x0, y0, x1, y1 := lh.GetDamageRect()
+	return x0 != x1 || y0 != y1
+}
+
 // FullDamage sets this interactor's damage rectangle to its full Bounds,
 // forcing a complete repaint on the next draw pass. Creates the
 // DamageAttributes and DamageRect if they don't exist yet.
@@ -188,4 +220,43 @@ func InitDefaultParentDamage(lh *LayoutAttributes) {
 	)
 	damageURI := LayoutURI(myName, DataTypeRect, LayoutDamageRect)
 	lh.Damage.DamageRect = attr.ConstraintComposite(damageURI, flat.TypeRectangle, prog)
+}
+
+// PushDamageClip reads this interactor's DamageRect and, if non-empty,
+// sets a clip rectangle on the DrawContext to restrict drawing to the
+// damaged region. Returns true if a clip was pushed (caller must call
+// PopDamageClip to restore). Returns false if no damage or no clip was
+// needed (full bounds = no restriction).
+//
+// Used by parent Draw methods to avoid redrawing the entire window when
+// only a small region changed.
+func (lh *LayoutAttributes) PushDamageClip(dc DrawContext) bool {
+	if dc == nil {
+		return false
+	}
+	x0, y0, x1, y1 := lh.GetDamageRect()
+	if x0 == 0 && y0 == 0 && x1 == 0 && y1 == 0 {
+		// No damage — nothing to draw at all. But we return false
+		// so the caller can skip drawing entirely.
+		return false
+	}
+	// Check if damage covers the full bounds — no clip needed.
+	if lh.Bounds != nil {
+		bx0, by0, bx1, by1 := lh.Bounds.Get().AsRectangle()
+		if x0 <= bx0 && y0 <= by0 && x1 >= bx1 && y1 >= by1 {
+			return false
+		}
+	}
+	dc.Push()
+	dc.DrawRectangle(float64(x0), float64(y0), float64(x1-x0), float64(y1-y0))
+	dc.Clip()
+	return true
+}
+
+// PopDamageClip restores the DrawContext state saved by PushDamageClip.
+func PopDamageClip(dc DrawContext) {
+	if dc != nil {
+		dc.ResetClip()
+		dc.Pop()
+	}
 }

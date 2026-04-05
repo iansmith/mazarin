@@ -1054,11 +1054,9 @@ func parseKernelConfig() constants.KernelConfig {
 // This eliminates the circular bootstrap dependency — fs no longer needs to
 // be loaded from the filesystem it implements.
 func launchEmbeddedFS() {
-	console.KPrintf("[boot] launching embedded fs (%d bytes)\n", len(EmbeddedFSElf))
 	result := ksyscall.LaunchFromMemory(EmbeddedFSElf, "fs")
 	if result == 0 {
 		kmem.FinalUserspaceSync()
-		console.KPrintln("[boot] embedded fs launched")
 	} else {
 		console.KPrintf("[boot] embedded fs launch FAILED (error %d)\n", result)
 	}

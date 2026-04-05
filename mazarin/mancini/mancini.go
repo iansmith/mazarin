@@ -151,6 +151,15 @@ type NeuParams struct {
 // groove separators.
 var GrooveParams = InsetParams{Off: 1, DarkBlur: 3, LightBlur: 2}
 
+// Animatable is implemented by interactors that participate in rachel's
+// animation protocol. AppWindow dispatches animation messages to
+// registered Animatable interactors using their local animation ID.
+type Animatable interface {
+	AnimationStart(localID uint64, startNanos int64)
+	AnimationUpdate(localID uint64, startNanos, endNanos int64, coveredStart, coveredEnd float64)
+	AnimationFinish(localID uint64, endNanos int64)
+}
+
 // SwapRB returns a copy of c with the red and blue channels exchanged.
 // Use this when writing directly to a BGR framebuffer with colors that
 // did not come from a palette (which pre-swaps its own colors).

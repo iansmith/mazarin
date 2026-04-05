@@ -20,6 +20,7 @@ const (
 
 // OpenFont is sent by a shepherd to fontsvc to open a font.
 // Path is the font family name (null-terminated, max 100 bytes).
+// Variant: 0=Regular, 1=Bold, 2=Italic, 3=BoldItalic, 4=Light, 5=Condensed.
 type OpenFont struct {
 	Variant int32
 	Size    int32

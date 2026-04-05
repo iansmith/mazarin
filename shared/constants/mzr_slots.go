@@ -18,7 +18,7 @@ package constants
 //	Slot 1: 0x32000000 – 0x33FFFFFF  (helloworld)
 //	Slot 2: 0x34000000 – 0x35FFFFFF  (prefs)
 //	Slot 3: 0x36000000 – 0x37FFFFFF  (fontsvc)
-//	Slot 4: 0x38000000 – 0x39FFFFFF  (reserved)
+//	Slot 4: 0x38000000 – 0x39FFFFFF  (keymapper)
 //	Slot 5: 0x3A000000 – 0x3BFFFFFF  (reserved)
 //	Slot 6: 0x3C000000 – 0x3DFFFFFF  (reserved)
 //	Slot 7: 0x3E000000 – 0x3FFFFFFF  (reserved)
@@ -40,7 +40,7 @@ const (
 	MzrSlot1 = MzrSlotBase + 1*MzrSlotSpacing // 0x32000000 — helloworld
 	MzrSlot2 = MzrSlotBase + 2*MzrSlotSpacing // 0x34000000 — prefs
 	MzrSlot3 = MzrSlotBase + 3*MzrSlotSpacing // 0x36000000 — fontsvc
-	MzrSlot4 = MzrSlotBase + 4*MzrSlotSpacing // 0x38000000 — reserved
+	MzrSlot4 = MzrSlotBase + 4*MzrSlotSpacing // 0x38000000 — keymapper
 	MzrSlot5 = MzrSlotBase + 5*MzrSlotSpacing // 0x3A000000 — reserved
 	MzrSlot6 = MzrSlotBase + 6*MzrSlotSpacing // 0x3C000000 — reserved
 	MzrSlot7 = MzrSlotBase + 7*MzrSlotSpacing // 0x3E000000 — reserved

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image/color"
 	"mazzy/mazarin/attr"
+	"mazzy/mazarin/file"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/input"
 	"mazzy/mazarin/mancini"
@@ -21,13 +22,16 @@ import (
 	"mazzy/mazarin/uring"
 	"mazzy/mazarin/vm"
 	"mazzy/mazarin/vm/flat"
+	"mazzy/shared/constants"
 	"mazzy/shared/hid"
 	"mazzy/shared/ipc"
 	"mazzy/shared/wm"
-	"os"
 	"strconv"
+	"syscall"
 	"time"
 	"unsafe"
+
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 // Linux evdev event types
@@ -76,10 +80,8 @@ const (
 // Input type tracking — when the type of input changes, we emit a newline
 // so different input types appear on separate lines in the serial console.
 const (
-	inputNone     = 0
-	inputKeyboard = 1
-	inputButton   = 2
-	inputWheel    = 3
+	inputNone  = 0
+	inputWheel = 3
 )
 
 var lastInputType int
@@ -122,7 +124,7 @@ func buttonName(code uint16) string {
 // For EV_KEY events (keyboard and mouse buttons), it creates an InputEvent
 // and dispatches through the subArctic pipeline.
 func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.ModifierState,
-	posChanged *bool, km *input.Keymap, wmd *wmDispatch) {
+	posChanged *bool, wmd *wmDispatch) {
 
 	switch ev.Type {
 	case EV_KEY:
@@ -179,25 +181,6 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 			Mods:  modState.Mods(),
 		}
 		wmd.dispatcher.Dispatch(inputEv)
-
-		// Debug: echo keyboard characters to serial console.
-		if ev.Code < BTN_LEFT && ev.Value == 1 {
-			ke := input.KeyEvent{Code: ev.Code, Pressed: true}
-			ch, action := km.Feed(ke)
-			if ch != 0 {
-				switchInput(inputKeyboard)
-				fmt.Print(string(ch))
-			} else if action == "enter" {
-				switchInput(inputKeyboard)
-				fmt.Println()
-			} else if action == "backspace" {
-				switchInput(inputKeyboard)
-				fmt.Print("\b \b")
-			} else if action == "tab" {
-				switchInput(inputKeyboard)
-				fmt.Print("\t")
-			}
-		}
 
 	case EV_REL:
 		switch ev.Code {
@@ -545,9 +528,9 @@ func grantFocusNoRaise(newSID int) {
 	keyboardFocusSID = newSID
 	mouseFocusSID = newSID
 	if ta, ok := trackedApps[newSID]; ok {
-		msg := wm.EncodeYouHaveKeyboardFocus()
+		msg := wm.EncodeKeyboardFocusGained()
 		_ = uring.Send(newSID, &msg)
-		msg = wm.EncodeYouHaveMouseFocus()
+		msg = wm.EncodeMouseFocusGained()
 		_ = uring.Send(newSID, &msg)
 		applyDecorations(ta, true)
 	}
@@ -559,14 +542,14 @@ func revokeFocus() {
 	// Swap to unfocused decoration (fast copy from cache).
 	if keyboardFocusSID >= 0 {
 		if ta, ok := trackedApps[keyboardFocusSID]; ok {
-			msg := wm.EncodeYouLostKeyboardFocus()
+			msg := wm.EncodeKeyboardFocusLost()
 			_ = uring.Send(keyboardFocusSID, &msg)
 			applyDecorations(ta, false)
 		}
 	}
 	if mouseFocusSID >= 0 {
 		if _, ok := trackedApps[mouseFocusSID]; ok {
-			msg := wm.EncodeYouLostMouseFocus()
+			msg := wm.EncodeMouseFocusLost()
 			_ = uring.Send(mouseFocusSID, &msg)
 		}
 	}
@@ -683,6 +666,21 @@ func trackAppBounds(sid int) *trackedApp {
 	return ta
 }
 
+// forceKeyMapperItab ensures the linker includes the mancini.KeyMapperInjector
+// interface itab and method wrappers for (*KeyMapperInit, KeyMapperInjector).
+// Without this, keymapper.maz's type assertion fails because the host binary
+// doesn't include the interface type in its typelinks.
+//
+//go:noinline
+func forceKeyMapperItab(v interface{}) {
+	inj, ok := v.(mancini.KeyMapperInjector)
+	if !ok {
+		return
+	}
+	inj.GetKeymapName()
+	inj.RegisterKeyMapper(nil)
+}
+
 // forceFontSvcItab ensures the linker includes the fontcache.FontSvcInjector
 // interface itab and method wrappers for (*FontSvcInit, FontSvcInjector).
 // Without this, fontsvc.maz's type assertion fails because the host binary
@@ -701,13 +699,18 @@ func forceFontSvcItab(v interface{}) {
 // wmEventLoop receives typed WM messages from the uring Dispatcher (wmCh)
 // and HID events from the InputAcquirer (inputCh). Input is dispatched
 // through the subArctic-style policy/agent pipeline built by buildDispatcher.
-func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) {
+func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
+	dirtyCh <-chan []uint16,
+	timeSeconds, timeNanos *attr.Attribute[int64],
+	intervalStart, intervalEndOpen *attr.Attribute[int64],
+	wmd *wmDispatch) {
+
 	sys.UartWriteString("[rachel:wm] event loop started\n")
-	var km input.Keymap
 	var keyHeld [256]bool
 	var modState input.ModifierState
 	var rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents int64
 	var rachelNotifyCount int64
+	var prevNanos int64
 
 	for {
 		select {
@@ -883,14 +886,26 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 				ox, oy := screenOrigin(ta)
 				flushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
 
+			case wm.AnimationRegister:
+				registerAnimation(senderSID, msg)
+
 			default:
 				rachelMsgOther++
 			}
 
+		case <-dirtyCh:
+			nowNanos := timeSeconds.Get()*1_000_000_000 + timeNanos.Get()
+			if prevNanos != 0 {
+				intervalStart.Set(prevNanos)
+				intervalEndOpen.Set(nowNanos)
+				tickAnimations(prevNanos, nowNanos)
+			}
+			prevNanos = nowNanos
+
 		case ev := <-inputCh:
 			rachelHIDEvents++
 			var posChanged bool
-			processRawEvent(ev, &keyHeld, &modState, &posChanged, &km, wmd)
+			processRawEvent(ev, &keyHeld, &modState, &posChanged, wmd)
 
 			// Drain any remaining buffered events before blocking again.
 			drained := 1
@@ -898,7 +913,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 			for {
 				select {
 				case ev2 := <-inputCh:
-					processRawEvent(ev2, &keyHeld, &modState, &posChanged, &km, wmd)
+					processRawEvent(ev2, &keyHeld, &modState, &posChanged, wmd)
 					drained++
 				default:
 					break drainLoop
@@ -928,6 +943,18 @@ func main() {
 	// Initialize constraint system early — mailbox handler creates constraints.
 	attr.Init()
 	sys.UartWriteString("[rachel] attr.Init done\n")
+
+	// Set up the built-in US QWERTY keymap as fallback.
+	// When keymapper.maz is wired, this will be replaced with the
+	// configured layout from rachel.toml.
+	wmKeyMapper = &input.Keymap{}
+	sys.UartWriteString("[rachel] keyMapper: " + wmKeyMapper.Name() + "\n")
+
+	// Publish default text font size as an attribute so shepherds can bind to it.
+	defaultFontSize := int64(24)
+	defaultTextFontSizeAttr := attr.ValueI64(
+		attr.ShepherdURI("int64", "defaultTextFontSize"), defaultFontSize)
+	_ = defaultTextFontSizeAttr
 
 	// Read kernel screen dimensions via constraints.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
@@ -980,6 +1007,53 @@ func main() {
 	// Wait for fs shepherd to be ready before loading .maz files.
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[rachel] FATAL: fs: %v", err))
+	}
+
+	// Read rachel.toml from the ext2 filesystem.
+	var rachelCfg constants.RachelConfig
+	lf, lfErr := file.LoadFile("/rachel.toml")
+	if lfErr != nil {
+		sys.UartWriteString("[rachel] rachel.toml not found, using defaults\n")
+	} else {
+		tomlData := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(lf.StartVA))), lf.BytesRead)
+		if err := toml.Unmarshal(tomlData, &rachelCfg); err != nil {
+			sys.UartWriteString("[rachel] rachel.toml parse error: " + err.Error() + "\n")
+		} else {
+			sys.UartWriteString("[rachel] rachel.toml loaded: keymap=" + rachelCfg.Keymap + "\n")
+		}
+		// Free the loaded pages.
+		syscall.RawSyscall6(syscall.SYS_MUNMAP, uintptr(lf.StartVA),
+			uintptr(lf.NumPages)*4096, 0, 0, 0, 0)
+	}
+
+	// Apply config: update default font size if specified.
+	if rachelCfg.DefaultTextFontSize > 0 {
+		defaultTextFontSizeAttr.Set(rachelCfg.DefaultTextFontSize)
+		sys.UartWriteString(fmt.Sprintf("[rachel] defaultTextFontSize=%d (from toml)\n",
+			rachelCfg.DefaultTextFontSize))
+	}
+
+	// Load keymapper.maz and set up the configured keyboard layout.
+	kmInit := &mancini.KeyMapperInit{KeymapName: rachelCfg.Keymap}
+	forceKeyMapperItab(kmInit)
+	kmPath := sys.LoadMazByName("/keymapper")
+	kmMain, kmInitAddr, kmErr := mazhost.LoadMazBootstrap(kmPath, nil)
+	if kmErr != nil {
+		sys.UartWriteString("[rachel] LoadMazBootstrap(keymapper) failed: " + kmErr.Error() + "\n")
+	} else {
+		if kmInitAddr != 0 {
+			type funcval struct{ fn uintptr }
+			fv := &funcval{fn: kmInitAddr}
+			shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+			if err := shepherdInit(kmInit); err != nil {
+				sys.UartWriteString("[rachel] keymapper MazarinShepherd failed: " + err.Error() + "\n")
+			} else if kmInit.Mapper != nil {
+				wmKeyMapper = kmInit.Mapper
+				sys.UartWriteString("[rachel] keyMapper: " + wmKeyMapper.Name() + " (from keymapper.maz)\n")
+			}
+		}
+		// keymapper.MazarinMain is a no-op, but run it for consistency.
+		_ = kmMain
 	}
 
 	// Force linker to include FontSvcInjector itab for cross-module type assertions.
@@ -1042,11 +1116,27 @@ func main() {
 	// Build the subArctic input dispatch pipeline.
 	wmd := buildDispatcher()
 
+	// Time-interval attributes for animation protocol.
+	// Bind to both kernel UTC seconds and nanos so we can construct full
+	// epoch nanos (seconds*1e9 + nanos) for animation timestamps.
+	timeSecProg := mancini.BindStrings(mancini.ProgIdentityI64,
+		"_source_", "attr:///kernel/int64/time/utc_seconds")
+	timeSeconds := attr.ConstraintI64(attr.ShepherdURI("int64", "time_sec"), timeSecProg)
+	_ = timeSeconds.Get()
+	timeNanosProg := mancini.BindStrings(mancini.ProgIdentityI64,
+		"_source_", "attr:///kernel/int64/time/utc_nanos")
+	timeNanos := attr.ConstraintI64(attr.ShepherdURI("int64", "time_nanos"), timeNanosProg)
+	timeNanos.SetEager(true)
+	_ = timeNanos.Get()
+	intervalStart := attr.ValueI64(attr.ShepherdURI("int64", "intervalStart"), 0)
+	intervalEndOpen := attr.ValueI64(attr.ShepherdURI("int64", "intervalEndOpen"), 0)
+	dirtyCh := attr.OnDirty()
+
 	sys.UartWriteString("[rachel] dispatcher built, starting wmEventLoop...\n")
 
-	// Start WM event loop — receives typed messages from uring Dispatcher
-	// and HID events from the InputAcquirer.
-	go wmEventLoop(wmCh, inputAcq.Events(), wmd)
+	// Start WM event loop — receives typed messages from uring Dispatcher,
+	// HID events from the InputAcquirer, and dirty ticks for animations.
+	go wmEventLoop(wmCh, inputAcq.Events(), dirtyCh, timeSeconds, timeNanos, intervalStart, intervalEndOpen, wmd)
 
 	// Publish ready status to constraint network using the well-known URI.
 	// This must happen BEFORE LaunchMaz("prefs") because prefs uses fmt.Printf
@@ -1058,12 +1148,6 @@ func main() {
 
 	// Record time at rachel ready for blit rate reporting.
 	blitRateStart = time.Now()
-
-	// Stderr test (linux shepherd disabled for now, but keep for diagnostics).
-	go func() {
-		time.Sleep(2 * time.Second)
-		fmt.Fprintln(os.Stderr, "[rachel] stderr test: this should be dark red")
-	}()
 
 	// Load and launch prefs.maz (after ready, since this uses FS/stdio delegation).
 	mazhost.LaunchMaz("prefs")

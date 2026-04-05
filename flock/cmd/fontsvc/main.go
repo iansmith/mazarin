@@ -1,7 +1,7 @@
 // fontsvc is a .maz module loaded by rachel that provides centralized font
 // loading and glyph rendering. It owns rachel's uring IPC loop: font
 // messages are handled directly; all other notifications are forwarded to
-// rachel via a Go channel injected through MazarinPriest.
+// rachel via a Go channel injected through MazarinShepherd.
 //
 // From the kernel's perspective, fontsvc IS rachel (same PID/SID).
 package main
@@ -179,9 +179,20 @@ func handleOpenFont(senderSID int, msg *wm.OpenFont) {
 	}
 
 	// Resolve family name + variant to filesystem path.
-	style := "Regular"
-	if msg.Variant == 1 {
+	var style string
+	switch msg.Variant {
+	case 1:
 		style = "Bold"
+	case 2:
+		style = "Italic"
+	case 3:
+		style = "BoldItalic"
+	case 4:
+		style = "Light"
+	case 5:
+		style = "Condensed"
+	default:
+		style = "Regular"
 	}
 	path := fontIdx.Resolve(family, style)
 	if path == "" {

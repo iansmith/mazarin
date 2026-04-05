@@ -48,7 +48,7 @@ func (f *MetricFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, c
 
 	// Digit markers: 0-9 evenly spaced, 36 degrees apart, 0 at top.
 	fontSize := int64(math.Max(6, radius*0.20))
-	fontID := openFont(fc, dc, true, fontSize)
+	fontID := openFont(fc, dc, Bold, fontSize)
 	dc.SetColor(col)
 	markerRad := radius * 0.80
 	for i := 0; i < 10; i++ {

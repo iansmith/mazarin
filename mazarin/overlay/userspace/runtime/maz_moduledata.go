@@ -50,7 +50,6 @@ func RegisterMazModuledata(mdPtr uintptr) {
 	println("[runtime] RegisterMazModuledata: text=", hex(md.text), "-", hex(md.etext),
 		"nfunc=", md.pcHeader.nfunc,
 		"typelinks=", len(md.typelinks), "itablinks=", len(md.itablinks))
-
 	// Append to the moduledata linked list.
 	lastmoduledatap.next = md
 	lastmoduledatap = md
@@ -182,6 +181,70 @@ func buildCompleteTypemap(md *moduledata) {
 
 	if added > 0 {
 		println("[runtime] buildCompleteTypemap: added", added, "method type mappings")
+	}
+}
+
+// === .maz writeBarrier sync ===
+//
+// .maz PIE modules include their own runtime.writeBarrier BSS variable.
+// The host GC toggles writeBarrier.enabled via setGCPhase during STW, but
+// the .maz's copy is never updated. Compiler-generated code in .maz checks
+// its own copy, so the write barrier is permanently disabled for .maz code.
+// This causes the GC to miss pointer stores to .maz globals, leading to
+// "checkmark found unmarked object" crashes.
+//
+// Solution: RegisterMazWriteBarrier records each .maz's writeBarrier address.
+// syncMazWriteBarriers (called from startTheWorldWithSema during STW exit)
+// copies the host's writeBarrier.enabled to all registered .maz copies.
+
+// mazWriteBarriers holds the addresses of .maz writeBarrier variables.
+var mazWriteBarriers [16]uintptr
+var mazWriteBarrierCount int32
+
+// RegisterMazWriteBarrier registers a .maz module's runtime.writeBarrier
+// address for GC phase sync. Also performs an initial sync so the .maz
+// sees the correct state if loaded during an active GC cycle.
+//
+//go:linkname RegisterMazWriteBarrier RegisterMazWriteBarrier
+func RegisterMazWriteBarrier(addr uintptr) {
+	if addr == 0 {
+		return
+	}
+	n := mazWriteBarrierCount
+	if n >= int32(len(mazWriteBarriers)) {
+		println("[runtime] RegisterMazWriteBarrier: too many .maz modules (max", len(mazWriteBarriers), ")")
+		return
+	}
+	mazWriteBarriers[n] = addr
+	mazWriteBarrierCount = n + 1
+
+	// Initial sync: copy current host writeBarrier state to the .maz.
+	// The host may already be in a GC mark phase.
+	mazWB := (*struct {
+		enabled bool
+		pad     [3]byte
+		alignme uint64
+	})(unsafe.Pointer(addr))
+	mazWB.enabled = writeBarrier.enabled
+
+	println("[runtime] RegisterMazWriteBarrier: registered .maz writeBarrier at", hex(addr),
+		"enabled=", writeBarrier.enabled)
+}
+
+// syncMazWriteBarriers copies the host's writeBarrier.enabled to all
+// registered .maz writeBarrier addresses. Called from startTheWorldWithSema
+// after setGCPhase has toggled the host's writeBarrier.enabled but before
+// goroutines resume.
+//
+//go:nosplit
+func syncMazWriteBarriers() {
+	n := mazWriteBarrierCount
+	if n == 0 {
+		return
+	}
+	val := writeBarrier.enabled
+	for i := int32(0); i < n; i++ {
+		*(*bool)(unsafe.Pointer(mazWriteBarriers[i])) = val
 	}
 }
 

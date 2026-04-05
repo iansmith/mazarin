@@ -12,11 +12,12 @@ import (
 // MazLoadResult is filled in by the kernel when loading a .maz binary.
 // Layout must match kmazarin/ksyscall/loadmaz.go exactly.
 type MazLoadResult struct {
-	EntryPoint     uint64 // Address of main.MazarinMain in loaded .maz
-	LoadBase       uint64 // Base VA where .maz was loaded
-	LoadSize       uint64 // Total VA size of loaded segments
-	ModuledataAddr uint64 // Address of runtime.firstmoduledata in loaded .maz (0 if not found)
+	EntryPoint       uint64 // Address of main.MazarinMain in loaded .maz
+	LoadBase         uint64 // Base VA where .maz was loaded
+	LoadSize         uint64 // Total VA size of loaded segments
+	ModuledataAddr   uint64 // Address of runtime.firstmoduledata in loaded .maz (0 if not found)
 	ShepherdInitAddr uint64 // Address of main.MazarinShepherd in loaded .maz (0 if not found)
+	WriteBarrierAddr uint64 // Address of runtime.writeBarrier in loaded .maz (0 if not found)
 }
 
 // LoadMaz loads a .maz PIE ELF into the calling shepherd's address space.
@@ -95,7 +96,18 @@ func RegisterMazModule(result *MazLoadResult) {
 	}
 	fmt.Printf("[sys] RegisterMazModule: registering moduledata at 0x%X\n", result.ModuledataAddr)
 	registerMazModuledata(uintptr(result.ModuledataAddr))
+
+	// Register the .maz's writeBarrier address so the runtime can sync it
+	// during GC phase transitions (STW). Without this, the .maz's write
+	// barrier is permanently disabled and GC misses pointer stores.
+	if result.WriteBarrierAddr != 0 {
+		fmt.Printf("[sys] RegisterMazModule: writeBarrier at 0x%X\n", result.WriteBarrierAddr)
+		registerMazWriteBarrier(uintptr(result.WriteBarrierAddr))
+	}
 }
 
 //go:linkname registerMazModuledata RegisterMazModuledata
 func registerMazModuledata(mdPtr uintptr)
+
+//go:linkname registerMazWriteBarrier RegisterMazWriteBarrier
+func registerMazWriteBarrier(addr uintptr)

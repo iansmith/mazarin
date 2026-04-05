@@ -9,11 +9,21 @@ import (
 	"golang.org/x/image/font"
 )
 
+// Font variant constants for the OpenFont wire protocol.
+const (
+	VariantRegular    int32 = 0
+	VariantBold       int32 = 1
+	VariantItalic     int32 = 2
+	VariantBoldItalic int32 = 3
+	VariantLight      int32 = 4
+	VariantCondensed  int32 = 5
+)
+
 // faceKey identifies a unique font face configuration.
 type faceKey struct {
-	family string
-	bold   bool
-	size   int64
+	family  string
+	variant int32
+	size    int64
 }
 
 // FontCache is the client-side handle for communicating with fontsvc.maz.
@@ -44,20 +54,20 @@ func New(rachelSID int) *FontCache {
 	}
 }
 
-// OpenFace returns a font.Face for the given family/bold/size. Cached faces
+// OpenFace returns a font.Face for the given family/variant/size. Cached faces
 // are returned immediately without IPC. On first call for a given combination,
 // sends an OpenFont request to fontsvc and blocks until the glyph cache
 // is built and shared.
-func (fc *FontCache) OpenFace(family string, bold bool, size int64) font.Face {
+func (fc *FontCache) OpenFace(family string, variant int32, size int64) font.Face {
 	// Check client-side cache first.
-	key := faceKey{family: family, bold: bold, size: size}
+	key := faceKey{family: family, variant: variant, size: size}
 	for i := 0; i < fc.cachedCount; i++ {
 		if fc.cachedFaces[i].key == key {
 			return fc.cachedFaces[i].face
 		}
 	}
 
-	reply, err := fc.SendOpenFont(family, bold, size)
+	reply, err := fc.SendOpenFont(family, variant, size)
 	if err != nil || reply.FontID < 0 {
 		sys.UartWriteString("[fontcache] OpenFont failed\n")
 		// Cache the nil result to prevent repeated blocking requests.
@@ -85,13 +95,32 @@ func (fc *FontCache) OpenFace(family string, bold bool, size int64) font.Face {
 	return face
 }
 
+// StyleToVariant maps a style name (from the font index CSV or
+// mancini.Feature.String()) to a wire variant code.
+func StyleToVariant(style string) int32 {
+	switch style {
+	case "Bold":
+		return VariantBold
+	case "Italic":
+		return VariantItalic
+	case "BoldItalic":
+		return VariantBoldItalic
+	case "Light":
+		return VariantLight
+	case "Condensed":
+		return VariantCondensed
+	default:
+		return VariantRegular
+	}
+}
+
 // OpenFaceByName sends a (family, style, size) request to fontsvc which
 // resolves the family name to a filesystem path server-side. Clients never
 // read font files or the font index from disk.
 func (fc *FontCache) OpenFaceByName(family, style string, size int64) font.Face {
 	sys.UartWriteString("[fontcache] OpenFaceByName " + family + "/" + style + " size=" + itoa(size) + "...\n")
 	t0 := nanotime()
-	face := fc.OpenFace(family, IsBoldStyle(style), size)
+	face := fc.OpenFace(family, StyleToVariant(style), size)
 	dt := (nanotime() - t0) / 1e6
 	if face == nil {
 		sys.UartWriteString("[fontcache] OpenFace RETURNED NIL after " + itoa(dt) + "ms\n")
@@ -104,11 +133,9 @@ func (fc *FontCache) OpenFaceByName(family, style string, size int64) font.Face 
 // SendOpenFont sends an OpenFont request to fontsvc and blocks until the reply
 // arrives. family is the font family name (e.g. "AtkinsonHyperlegibleMono");
 // fontsvc resolves it to a filesystem path server-side.
-func (fc *FontCache) SendOpenFont(family string, bold bool, size int64) (*wm.OpenFontReply, error) {
+func (fc *FontCache) SendOpenFont(family string, variant int32, size int64) (*wm.OpenFontReply, error) {
 	var of wm.OpenFont
-	if bold {
-		of.Variant = 1
-	}
+	of.Variant = variant
 	of.Size = int32(size)
 	copy(of.Path[:], family)
 

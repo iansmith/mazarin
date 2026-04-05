@@ -15,9 +15,7 @@ package main
 
 import (
 	"mazzy/kmazarin/asm"
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/ksyscall"
-	"mazzy/kmazarin/ktimer"
 	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
@@ -151,17 +149,7 @@ func (kw *KernelSVCWorker[R]) run(req *R, tid int32) {
 	kw.setup()
 	defer kw.tearDown()
 
-	startTick := ktimer.ReadCounter()
-
 	result := kw.worker.Do(req)
-
-	elapsed := ktimer.ReadCounter() - startTick
-	freq := uint64(ktimer.Frequency())
-	if freq > 0 {
-		// Convert ticks to microseconds: (elapsed * 1_000_000) / freq
-		usec := elapsed * 1000000 / freq
-		console.KPrintf("[KW:%s] %d us\n", kw.name, usec)
-	}
 
 	wakeBlockedThread(tid, result)
 }

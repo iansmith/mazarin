@@ -32,6 +32,18 @@ func RegisterInteractor(name string, i Interactor) {
 	registrySeq++
 }
 
+// SwapSequence swaps the registration sequence numbers of two named
+// interactors, changing their order in [FindChildren] results.
+func SwapSequence(a, b string) {
+	ea, okA := registry[a]
+	eb, okB := registry[b]
+	if okA && okB {
+		ea.seq, eb.seq = eb.seq, ea.seq
+		registry[a] = ea
+		registry[b] = eb
+	}
+}
+
 // LookupInteractor returns the interactor registered under the given
 // constraint-system name, or nil if not found.
 func LookupInteractor(name string) Interactor {

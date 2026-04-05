@@ -80,9 +80,11 @@ func (t *ThemedInteractor) DefaultSize() int64               { return t.theme.De
 func (t *ThemedInteractor) Draw(self mancini.Interactor, x, y, w, h int64) {
 	bg := t.theme.Palette().Surface()
 	if bg.A == 0 {
+		t.ClearDamage()
 		return
 	}
 	dc := self.DC()
 	dc.SetColor(bg)
 	dc.FillRectangle(float64(x), float64(y), float64(w), float64(h))
+	t.ClearDamage()
 }

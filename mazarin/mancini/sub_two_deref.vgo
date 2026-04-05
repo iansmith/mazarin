@@ -1,0 +1,6 @@
+func subTwoDeref() int64 {
+	a := derefI64("_a_")
+	b := derefI64("_b_")
+	c := derefI64("_c_")
+	return a - b - c
+}

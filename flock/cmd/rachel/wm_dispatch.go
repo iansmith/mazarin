@@ -16,11 +16,60 @@ package main
 import (
 	"fmt"
 	"mazzy/mazarin/input"
+	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
 	"mazzy/shared/wm"
 	"time"
 )
+
+// wmKeyMapper is the global KeyMapper used by rachel to translate
+// keycodes before forwarding to shepherds. Set during main() init.
+var wmKeyMapper mancini.KeyMapper
+
+// --- Keymapper diagnostics ---
+// Tracks translation results and timing for every key event sent to
+// the keymapper. Periodically dumps a summary to the serial console.
+
+var kmDiagMapCalls int64      // total Map() invocations
+var kmDiagMapNanos int64      // cumulative nanoseconds in Map()
+var kmDiagUntranslated int64  // press events where ch==0 && action==""
+var kmDiagChars int64         // press events that produced a character
+var kmDiagActions int64       // press events that produced an action
+var kmDiagLastDumpAt int64    // kmDiagMapCalls value at last summary dump
+
+const kmDiagInterval = 50 // dump summary every N Map() calls
+
+// kmDiagLog logs every key-down translation result and periodic summaries.
+func kmDiagLog(code uint16, pressed bool, mods uint64, ch rune, action wm.Action, elapsed time.Duration) {
+	kmDiagMapCalls++
+	kmDiagMapNanos += elapsed.Nanoseconds()
+
+	if pressed {
+		if ch == 0 && action == wm.ActionNone {
+			kmDiagUntranslated++
+			// Always log untranslated presses — these are the ones we need to fix.
+			sys.UartWriteDirectString(fmt.Sprintf("[keymap:MISS] code=%d (%s) mods=0x%x elapsed=%v\n",
+				code, keyName(code), mods, elapsed))
+		} else if ch != 0 {
+			kmDiagChars++
+		} else {
+			kmDiagActions++
+		}
+	}
+
+	// Periodic summary.
+	if kmDiagMapCalls-kmDiagLastDumpAt >= kmDiagInterval {
+		kmDiagLastDumpAt = kmDiagMapCalls
+		avgUs := int64(0)
+		if kmDiagMapCalls > 0 {
+			avgUs = kmDiagMapNanos / kmDiagMapCalls / 1000
+		}
+		sys.UartWriteDirectString(fmt.Sprintf(
+			"[keymap:stat] calls=%d chars=%d actions=%d MISS=%d avg=%dµs\n",
+			kmDiagMapCalls, kmDiagChars, kmDiagActions, kmDiagUntranslated, avgUs))
+	}
+}
 
 // --- Interactors ---
 
@@ -57,7 +106,6 @@ func (w *WindowInteractor) PickedBy(x, y int32) bool {
 func (w *WindowInteractor) SID() int { return w.ta.sid }
 
 func (w *WindowInteractor) Press(ev *input.InputEvent) bool {
-	fmt.Printf("[rachel:hh] Press btn=%d x=%d y=%d → SID %d\n", ev.Code, ev.X, ev.Y, w.ta.sid)
 	msg := wm.EncodeMousePress(&wm.MousePress{
 		X: ev.X, Y: ev.Y, Button: int32(ev.Code), Mods: ev.Mods,
 	})
@@ -68,7 +116,6 @@ func (w *WindowInteractor) Press(ev *input.InputEvent) bool {
 }
 
 func (w *WindowInteractor) Release(ev *input.InputEvent) bool {
-	fmt.Printf("[rachel:hh] Release btn=%d x=%d y=%d → SID %d\n", ev.Code, ev.X, ev.Y, w.ta.sid)
 	msg := wm.EncodeMouseRelease(&wm.MouseRelease{
 		X: ev.X, Y: ev.Y, Button: int32(ev.Code), Mods: ev.Mods,
 	})
@@ -89,7 +136,21 @@ func (w *WindowInteractor) Move(ev *input.InputEvent) bool {
 }
 
 func (w *WindowInteractor) KeyDown(ev *input.InputEvent) bool {
-	msg := wm.EncodeKeyPress(&wm.KeyPress{Code: ev.Code, Mods: ev.Mods})
+	var ch rune
+	var action wm.Action
+	var elapsed time.Duration
+	if wmKeyMapper != nil {
+		t0 := time.Now()
+		r, astr := wmKeyMapper.Map(ev.Code, true, ev.Mods)
+		elapsed = time.Since(t0)
+		ch = r
+		action = wm.ActionByName(astr)
+	}
+	kmDiagLog(ev.Code, true, ev.Mods, ch, action, elapsed)
+	msg := wm.EncodeKeyPress(&wm.KeyPress{
+		Code: ev.Code, Mods: ev.Mods,
+		Char: uint32(ch), Action: action,
+	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
 		sys.UartWriteDirectString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
@@ -97,7 +158,21 @@ func (w *WindowInteractor) KeyDown(ev *input.InputEvent) bool {
 }
 
 func (w *WindowInteractor) KeyUp(ev *input.InputEvent) bool {
-	msg := wm.EncodeKeyRelease(&wm.KeyRelease{Code: ev.Code, Mods: ev.Mods})
+	var ch rune
+	var action wm.Action
+	var elapsed time.Duration
+	if wmKeyMapper != nil {
+		t0 := time.Now()
+		r, astr := wmKeyMapper.Map(ev.Code, false, ev.Mods)
+		elapsed = time.Since(t0)
+		ch = r
+		action = wm.ActionByName(astr)
+	}
+	kmDiagLog(ev.Code, false, ev.Mods, ch, action, elapsed)
+	msg := wm.EncodeKeyRelease(&wm.KeyRelease{
+		Code: ev.Code, Mods: ev.Mods,
+		Char: uint32(ch), Action: action,
+	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
 		sys.UartWriteDirectString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}

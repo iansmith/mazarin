@@ -1811,6 +1811,12 @@ func startTheWorldWithSema(now int64, w worldStop) int64 {
 
 	worldStarted()
 
+	// Sync .maz writeBarrier copies. setGCPhase (called by mgc.go before
+	// startTheWorldWithSema) toggled the host's writeBarrier.enabled, but
+	// .maz modules have their own copies that must match. Do this before
+	// releasing Ps so .maz goroutines see the correct barrier state.
+	syncMazWriteBarriers()
+
 	for p1 != nil {
 		p := p1
 		p1 = p1.link.ptr()

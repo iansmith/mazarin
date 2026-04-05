@@ -31,15 +31,14 @@ import (
 )
 
 const (
-	fontSize     int64 = 16
-	consoleCols  = 120
+	consoleCols  = 80
 	consoleRows  = 12
 )
 
 // suppressSerialCopy is set via SUPPRESS_SERIAL_STDIO_COPY env var.
 var suppressSerialCopy bool
 
-// wmCh receives typed WM messages (wm.BackingStoreReady, wm.YouHaveFocus, etc.)
+// wmCh receives typed WM messages (wm.BackingStoreReady, wm.KeyboardFocusGained, etc.)
 // from the uring Dispatcher.
 var wmCh = make(chan any, 4)
 
@@ -215,13 +214,81 @@ func main() {
 		"_source_", screenHURI)
 	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 
-	// 4. Build UI tree: AppWindow → NeuBox (depressed) → Console.
-	neuLight := *mctheme.NewDefaultNeumorphicParams().Light()
-	_, console := std.NewConsoleWithBox("console", "AppWindow", pal, neuLight,
-		fonts, fontSize, consoleCols, consoleRows)
+	// Bind TextSize to rachel's published defaultTextFontSize attribute.
+	rachelFontSizeURI := fmt.Sprintf("attr:///shepherd/%d/int64/defaultTextFontSize", rachelSID)
+	textSizeProg := mancini.BindStrings(mancini.ProgIdentityI64,
+		"_source_", rachelFontSizeURI)
+	textSizeAttr := attr.ConstraintI64(
+		attr.ShepherdURI("int64", "TextSize"), textSizeProg)
+	fontSize := textSizeAttr.Get()
+	if fontSize <= 0 {
+		fontSize = 24
+	}
+	sys.UartWriteString(fmt.Sprintf("[linux] TextSize=%d (from rachel)\n", fontSize))
+
+	// 4. Build UI tree: AppWindow → Column → [SingleLineText, Console].
+	// Create a theme for SingleLineText (needs Theme, not just Palette).
+	resolver := func(family string, feature mancini.Feature, size int64) font.Face {
+		return fc.OpenFaceByName(family, feature.String(), size)
+	}
+	theme := mctheme.NewTheme(pal, mctheme.NewDefaultNeumorphicParams(),
+		mfont.DefaultMono, fontSize, resolver)
+
+	col := std.NewColumn("column", "AppWindow", pal, 0, mancini.AxisMinimum, 2, false)
+	_ = col
+
+	// Console first so its width attribute exists for the input constraint.
+	console := std.NewConsole("console", "column", pal, fonts, fontSize,
+		consoleCols, consoleRows)
+
+	// Input row: label + text field side by side, width matches console.
+	const inputRowSpacing = int64(4)
+	const inputRowHMargin = int64(1)
+	inputRow := std.NewRow("inputRow", "column", pal, 0, mancini.AxisMiddle, inputRowHMargin)
+	inputRow.SetSpacing(float64(inputRowSpacing))
+
+	// Label to the left of the input field (transparent so AppWindow
+	// SurfaceTint background shows through).
+	inputLabel := std.NewLabelNamed("inputLabel", "inputRow", theme,
+		"Stdio Input", fontSize)
+	inputLabel.Transparent = true
+
+	// Input field — width = consoleWidth - labelWidth - (spacing + 2*hMargin).
+	consoleWidthURI := mancini.LayoutURI("console", mancini.DataTypeInt64, mancini.LayoutWidth)
+	labelWidthURI := mancini.LayoutURI("inputLabel", mancini.DataTypeInt64, mancini.LayoutWidth)
+	fixedOffsetURI := attr.ShepherdURI("int64", "inputFixedOffset")
+	attr.ValueI64(fixedOffsetURI, inputRowSpacing+2*inputRowHMargin)
+
+	inputLH := mancini.NewLayoutAttributesBase("input", "inputRow")
+	inputLH.Width = attr.ConstraintI64(
+		mancini.LayoutURI("input", mancini.DataTypeInt64, mancini.LayoutWidth),
+		mancini.BindStrings(mancini.ProgSubTwoDeref,
+			"_a_", consoleWidthURI,
+			"_b_", labelWidthURI,
+			"_c_", fixedOffsetURI))
+	inputLH.Height = attr.ValueI64(
+		mancini.LayoutURI("input", mancini.DataTypeInt64, mancini.LayoutHeight),
+		fontSize+16)
+	inputLH.InitBounds("input")
+	input := std.NewSingleLineText(inputLH, theme, "", fontSize)
+	input.Hint = "linux stdin text goes here..."
+	_ = input
+	_ = inputLabel
+
+	// Swap sequence so inputRow appears above console in the Column.
+	mancini.SwapSequence("inputRow", "console")
 
 	app := std.NewAppWindow(pal, "Serial Console", screenWURI, screenHURI)
 	app.Focused = false // wait for rachel to grant focus
+	app.RachelSID = rachelSID
+	input.AppWindow = app
+
+	// Initialize input dispatch pipeline and set keyboard focus to input field.
+	// KeyAgent reads pre-translated Char/Action from the wire message —
+	// rachel handles keymap translation globally.
+	_, _, keyAgent := app.InitInput()
+	keyAgent.SetFocus(input)
+	input.Focused = true
 	screenW := int(screenWAttr.Get())
 	screenH := int(screenHAttr.Get())
 
@@ -290,6 +357,7 @@ func main() {
 	app.SetDC(dc)
 	dc.SetColor(pal.Surface())
 	dc.FillRectangle(0, 0, float64(winW), float64(winH))
+
 	app.Draw(app, 0, 0, int64(winW), int64(winH))
 	sendBlit()
 
@@ -408,8 +476,33 @@ func main() {
 				redraw()
 			}
 
-		case <-wmCh:
-			// Drain focus/WM messages so the uring dispatcher doesn't block.
+		case wmMsg := <-wmCh:
+			// Handle focus changes to toggle app and input cursor state.
+			switch wmMsg.(type) {
+			case wm.KeyboardFocusGained:
+				app.Focus()
+				input.Focused = true
+				redraw()
+			case wm.KeyboardFocusLost:
+				app.Unfocus()
+				input.Focused = false
+				redraw()
+			}
+			// Dispatch animation messages to AppWindow.
+			if app.DispatchAnimation(wmMsg) {
+				if appLH.HasDamage() {
+					redraw()
+				}
+			}
+			// Dispatch WM messages (keyboard, mouse, focus) through the
+			// Henry-Hudson pipeline. Keyboard events go to the focused
+			// SingleLineText input via KeyAgent.
+			if app.Input != nil {
+				app.Input.DispatchWM(wmMsg)
+				if appLH.HasDamage() {
+					redraw()
+				}
+			}
 
 		case <-dirtyCh:
 			linuxDirtyTicks++

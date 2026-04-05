@@ -97,8 +97,8 @@ func main() {
 	// stub them and they don't match the thin stub pattern. But .maz's copies
 	// reference uninitialized runtime globals and hang when called. We patch
 	// the function body to jump directly to the host shepherd's version.
-	morestackImports := findMorestackSymbols(f)
-	imports = append(imports, morestackImports...)
+	runtimeAsmImports := findRuntimeAsmSymbols(f)
+	imports = append(imports, runtimeAsmImports...)
 
 	// Find stubs that had NO call-site or data-pointer imports and emit
 	// body-trampoline imports for them. These stubs may only be reached
@@ -108,8 +108,8 @@ func main() {
 	unreachedImports := findUnreachedStubs(f, stubAddrs, imports)
 	imports = append(imports, unreachedImports...)
 
-	fmt.Printf("maz-reloc: found %d call sites + %d data pointers + %d morestack + %d unreached stubs = %d total imports\n",
-		len(textImports), len(dataImports), len(morestackImports), len(unreachedImports), len(imports))
+	fmt.Printf("maz-reloc: found %d call sites + %d data pointers + %d runtime asm + %d unreached stubs = %d total imports\n",
+		len(textImports), len(dataImports), len(runtimeAsmImports), len(unreachedImports), len(imports))
 
 	if len(imports) == 0 {
 		fmt.Printf("maz-reloc: no imports found, binary unchanged\n")
@@ -430,19 +430,28 @@ func isThinStubRISCV64(textData []byte, offset, funcAddr uint64, panicHelperAddr
 	return false
 }
 
-// morestackSymbols lists the assembly-implemented runtime functions whose
+// runtimeAsmSymbols lists assembly-implemented runtime functions whose
 // bodies must be patched to trampoline to the host shepherd's versions.
 // These can't be stubbed by gen-ast-stubs (they're assembly, not Go source).
-// The ELF symbols have the .abi0 suffix because morestack is implemented in
-// assembly (ABI0 calling convention).
-var morestackSymbols = []string{
+// The ELF symbols have the .abi0 suffix (ABI0 calling convention).
+//
+// morestack/morestack_noctxt: .maz's copy references uninitialized runtime
+// globals, causing goroutine hangs when stack growth triggers in .maz code.
+//
+// wbBufFlush: .maz's gcWriteBarrier calls wbBufFlush.abi0 when the write
+// barrier buffer overflows. The .maz's Go implementation accesses the .maz's
+// own (uninitialized) runtime.work globals. Trampolining to the host's version
+// ensures the write barrier buffer is correctly flushed to the host GC's work queue.
+var runtimeAsmSymbols = []string{
 	"runtime.morestack.abi0",
 	"runtime.morestack_noctxt.abi0",
+	"runtime.wbBufFlush.abi0",
 }
 
-// findMorestackSymbols locates runtime.morestack and runtime.morestack_noctxt
-// in the .maz ELF and returns body-trampoline import entries for them.
-func findMorestackSymbols(f *elf.File) []importRef {
+// findRuntimeAsmSymbols locates assembly-implemented runtime functions
+// (morestack, wbBufFlush, etc.) in the .maz ELF and returns body-trampoline
+// import entries for them.
+func findRuntimeAsmSymbols(f *elf.File) []importRef {
 	syms, err := f.Symbols()
 	if err != nil {
 		return nil
@@ -462,7 +471,7 @@ func findMorestackSymbols(f *elf.File) []importRef {
 	}
 
 	want := make(map[string]bool)
-	for _, name := range morestackSymbols {
+	for _, name := range runtimeAsmSymbols {
 		want[name] = true
 	}
 
@@ -474,7 +483,7 @@ func findMorestackSymbols(f *elf.File) []importRef {
 		if !want[sym.Name] {
 			continue
 		}
-		fmt.Printf("maz-reloc: morestack trampoline: %s at 0x%X\n", sym.Name, sym.Value)
+		fmt.Printf("maz-reloc: runtime asm trampoline: %s at 0x%X\n", sym.Name, sym.Value)
 		imports = append(imports, importRef{
 			segOffset: uint32(sym.Value),
 			name:      sym.Name,

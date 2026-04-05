@@ -19,11 +19,12 @@ import (
 // MazLoadResult is the struct written back to the shepherd upon successful load.
 // Layout must match mazarin/sys/loadmaz.go exactly.
 type MazLoadResult struct {
-	EntryPoint     uint64 // Address of entry point (main.MazarinMain or main) in loaded .maz
-	LoadBase       uint64 // Base VA where .maz was loaded
-	LoadSize       uint64 // Total VA size of loaded segments
-	ModuledataAddr uint64 // Address of runtime.firstmoduledata in loaded .maz (0 if not found)
+	EntryPoint       uint64 // Address of entry point (main.MazarinMain or main) in loaded .maz
+	LoadBase         uint64 // Base VA where .maz was loaded
+	LoadSize         uint64 // Total VA size of loaded segments
+	ModuledataAddr   uint64 // Address of runtime.firstmoduledata in loaded .maz (0 if not found)
 	ShepherdInitAddr uint64 // Address of main.MazarinShepherd in loaded .maz (0 if not found)
+	WriteBarrierAddr uint64 // Address of runtime.writeBarrier in loaded .maz (0 if not found)
 }
 
 // LoadMazWorkRequest contains the parameters for a .maz load operation.
@@ -61,10 +62,6 @@ func SyscallLoadMaz(filenamePtr, resultPtr, dataVA, dataLen, _, _ uint64) int64 
 	if filename == "" {
 		return int64(errInvalidFilename)
 	}
-
-	console.KWriteString("[LoadMaz] ")
-	console.KWriteString(filename)
-	console.KWriteString("\r\n")
 
 	// Find the calling shepherd
 	shepherd := proc.CurrentShepherd()
@@ -248,6 +245,17 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		shepherdInitVA = shepherdInitSymAddr + loadOffset
 	}
 
+	// === Find runtime.writeBarrier for GC write barrier sync ===
+	// .maz modules include their own runtime.writeBarrier BSS variable.
+	// The host GC toggles writeBarrier.enabled during STW but never touches
+	// the .maz's copy. We return this address so the runtime overlay can
+	// sync it during GC phase transitions.
+	writeBarrierSymAddr := findSymbolAddress(elfData, &hdr, "runtime.writeBarrier")
+	var writeBarrierVA uint64
+	if writeBarrierSymAddr != 0 {
+		writeBarrierVA = writeBarrierSymAddr + loadOffset
+	}
+
 	// === Update shepherd's highest VA ===
 	newHighest := loadBase + (mazHighest - mazLowest)
 	newHighest = (newHighest + 4095) &^ 4095
@@ -267,6 +275,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	writeU64ToUser(uintptr(req.ResultPtr+16), loadSize, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+24), moduledataVA, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+32), shepherdInitVA, l0PA)
+	writeU64ToUser(uintptr(req.ResultPtr+40), writeBarrierVA, l0PA)
 
 	return 0
 }

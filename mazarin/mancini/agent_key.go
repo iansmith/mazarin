@@ -1,26 +1,46 @@
 package mancini
 
+// KeyPressable receives matched key-press events (down+up pair).
+// The KeyAgent handles keymap translation via a KeyMapper and matches
+// EvKeyDown with EvKeyUp to produce KeyPress callbacks.
+type KeyPressable interface {
+	KeyPress(ch rune, action string, ev *InputEvent) bool
+}
+
 // KeyAgent forwards keyboard events to a designated focus target
-// that implements KeyReceivable.
+// that implements KeyPressable. Char and Action are pre-translated
+// by rachel's KeyMapper and carried in the InputEvent.
 type KeyAgent struct {
 	target Interactor
 }
 
-func (a *KeyAgent) Name() string             { return "keyboard" }
+func (a *KeyAgent) Name() string            { return "keyboard" }
 func (a *KeyAgent) FocusTarget() Interactor  { return a.target }
 func (a *KeyAgent) SetFocus(t Interactor)    { a.target = t }
 
-// Deliver forwards keyboard events to the focus target.
+// Deliver translates keyboard events via the KeyMapper and fires
+// KeyPress on the focus target.
 func (a *KeyAgent) Deliver(ev *InputEvent, target Interactor) bool {
-	kr, ok := target.(KeyReceivable)
+	if !ev.IsKeyboard() {
+		return false
+	}
+	kp, ok := target.(KeyPressable)
 	if !ok {
 		return false
 	}
-	switch ev.Kind {
-	case EvKeyDown:
-		return kr.KeyDown(ev)
-	case EvKeyUp:
-		return kr.KeyUp(ev)
+
+	// Only fire KeyPress on key-down for responsiveness.
+	if ev.Kind != EvKeyDown {
+		return false
 	}
-	return false
+
+	// Char and Action are pre-translated by rachel's KeyMapper
+	// and carried in the wire message.
+	ch := ev.Char
+	action := ev.Action
+
+	if ch == 0 && action == "" {
+		return false
+	}
+	return kp.KeyPress(ch, action, ev)
 }
