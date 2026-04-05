@@ -3,6 +3,7 @@ version: '3'
 tasks:
   arm64:
     desc: Build clocktest (kernel time constraint demo, ARM64)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/clocktest/**/*.go'
@@ -18,6 +19,7 @@ tasks:
 
   x86_64:
     desc: Build clocktest (x86_64)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/clocktest/**/*.go'
@@ -33,6 +35,7 @@ tasks:
 
   riscv64:
     desc: Build clocktest (RISC-V 64-bit)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/clocktest/**/*.go'

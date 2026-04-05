@@ -3,6 +3,7 @@ version: '3'
 tasks:
   arm64:
     desc: Build handletest (Handle[T] API integration test shepherd, ARM64)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/handletest/**/*.go'
@@ -18,6 +19,7 @@ tasks:
 
   x86_64:
     desc: Build handletest (x86_64)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/handletest/**/*.go'
@@ -33,6 +35,7 @@ tasks:
 
   riscv64:
     desc: Build handletest (RISC-V 64-bit)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/handletest/**/*.go'

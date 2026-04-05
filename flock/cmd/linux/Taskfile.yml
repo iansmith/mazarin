@@ -3,6 +3,7 @@ version: '3'
 tasks:
   arm64:
     desc: Build linux shepherd (ARM64)
+    run: once
     deps: [':check-env', ':merged-shepherd-overlay']
     sources:
       - 'flock/**/*.go'
@@ -20,6 +21,7 @@ tasks:
 
   x86_64:
     desc: Build linux shepherd (x86_64)
+    run: once
     deps: [':check-env', ':merged-shepherd-overlay-amd64']
     sources:
       - 'flock/**/*.go'
@@ -37,6 +39,7 @@ tasks:
 
   riscv64:
     desc: Build linux shepherd (RISC-V 64-bit)
+    run: once
     deps: [':check-env', ':merged-shepherd-overlay-riscv64']
     sources:
       - 'flock/**/*.go'

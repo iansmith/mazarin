@@ -3,6 +3,7 @@ version: '3'
 tasks:
   arm64:
     desc: Build sievetest (simple prime sieve for multi-shepherd testing)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/sievetest/**/*.go'
@@ -18,6 +19,7 @@ tasks:
 
   x86_64:
     desc: Build sievetest (x86_64)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/sievetest/**/*.go'
@@ -33,6 +35,7 @@ tasks:
 
   riscv64:
     desc: Build sievetest (RISC-V 64-bit)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/sievetest/**/*.go'

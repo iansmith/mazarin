@@ -3,6 +3,7 @@ version: '3'
 tasks:
   arm64:
     desc: Build clocks (interactor framework demo, ARM64)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
     sources:
       - 'flock/cmd/clocks/**/*'
@@ -18,6 +19,7 @@ tasks:
 
   x86_64:
     desc: Build clocks (x86_64)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
     sources:
       - 'flock/cmd/clocks/**/*'
@@ -33,6 +35,7 @@ tasks:
 
   riscv64:
     desc: Build clocks (RISC-V 64-bit)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
     sources:
       - 'flock/cmd/clocks/**/*'

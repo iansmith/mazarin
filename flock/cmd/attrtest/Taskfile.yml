@@ -3,6 +3,7 @@ version: '3'
 tasks:
   arm64:
     desc: Build attrtest (Eval/Vite attribute library test shepherd, ARM64)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/attrtest/**/*.go'
@@ -18,6 +19,7 @@ tasks:
 
   x86_64:
     desc: Build attrtest (x86_64)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/attrtest/**/*.go'
@@ -33,6 +35,7 @@ tasks:
 
   riscv64:
     desc: Build attrtest (RISC-V 64-bit)
+    run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
       - 'flock/cmd/attrtest/**/*.go'

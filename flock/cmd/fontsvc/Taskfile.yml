@@ -3,6 +3,7 @@ version: '3'
 tasks:
   arm64:
     desc: Build fontsvc.maz (PIE + thin stubs, dynamically linked)
+    run: once
     deps: [':check-env', ':maz-overlay']
     sources:
       - 'flock/cmd/fontsvc/**/*.go'
@@ -19,6 +20,7 @@ tasks:
 
   amd64:
     desc: Build fontsvc.maz for x86_64 (PIE + thin stubs, dynamically linked)
+    run: once
     deps: [':check-env', ':maz-overlay-amd64']
     sources:
       - 'flock/cmd/fontsvc/**/*.go'
@@ -35,6 +37,7 @@ tasks:
 
   riscv64:
     desc: Build fontsvc.maz for RISC-V 64-bit (fixed-address slot 3, thin stubs)
+    run: once
     deps: [':check-env', ':maz-overlay']
     sources:
       - 'flock/cmd/fontsvc/**/*.go'
