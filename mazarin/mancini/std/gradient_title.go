@@ -13,18 +13,19 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// GradientTitle renders an animated horizontal gradient title bar into
-// an off-screen buffer, for use as [AppWindow]'s TitleDraw callback.
-// A background goroutine recomputes the buffer at ~15 fps and notifies
-// the attribute system so the event loop redraws.
+// GradientTitleBar renders an animated horizontal gradient title bar into
+// an off-screen buffer. A background goroutine recomputes the buffer at
+// ~15 fps and notifies the attribute system so the event loop redraws.
 //
 // The gradient has a symmetric peak ([mancini.Palette.SurfaceTint]) that
 // oscillates horizontally at 0.05 Hz — one full left→right→left sweep
 // in 20 seconds. On each side of the peak the color fades linearly to
 // [mancini.Palette.Surface] at the edge.
 //
-// See also [StripedTitle] for a static Mac OS-style pinstripe title bar.
-type GradientTitle struct {
+// When inactive, plain centered text is drawn (no gradient animation).
+//
+// See also [StripedTitleBar] for a static Mac OS-style pinstripe title bar.
+type GradientTitleBar struct {
 	pal      mancini.Palette
 	title    string
 	textFace mancini.LatinTextFace
@@ -36,18 +37,20 @@ type GradientTitle struct {
 
 	// Writing frameAttr triggers attr.OnDirty() in the event loop.
 	frameAttr *attr.Attribute[int64]
-	frame       int64
+	frame     int64
 
 	started bool
 }
 
-// NewGradientTitle creates a GradientTitle. The font face is resolved once
-// at creation time. Call Start or pass to NewAppWindow — the animation
-// goroutine launches on the first Draw when the title bar dimensions are known.
-func NewGradientTitle(pal mancini.Palette, fonts *mancini.FontConfig, title string, fontSize int64, radius float64) *GradientTitle {
+var _ mancini.TitleBar = (*GradientTitleBar)(nil)
+
+// NewGradientTitleBar creates a GradientTitleBar. The font face is resolved once
+// at creation time. The animation goroutine launches on the first active Draw
+// when the title bar dimensions are known.
+func NewGradientTitleBar(pal mancini.Palette, fonts *mancini.FontConfig, title string, fontSize int64, radius float64) *GradientTitleBar {
 	textFace := impl.NewLatinTextFace(fonts, true, fontSize, mancini.TextAlignmentParams{})
 	textFace.SetText(title)
-	return &GradientTitle{
+	return &GradientTitleBar{
 		pal:      pal,
 		title:    title,
 		textFace: textFace,
@@ -57,7 +60,7 @@ func NewGradientTitle(pal mancini.Palette, fonts *mancini.FontConfig, title stri
 
 // Start launches the animation goroutine for a title bar of size w×h.
 // Safe to call multiple times — only the first call starts the goroutine.
-func (g *GradientTitle) Start(w, h int) {
+func (g *GradientTitleBar) Start(w, h int) {
 	if g.started {
 		return
 	}
@@ -79,7 +82,7 @@ const (
 )
 
 // run is the animation goroutine. It renders frames and notifies damage.
-func (g *GradientTitle) run() {
+func (g *GradientTitleBar) run() {
 	start := time.Now()
 	frameInterval := time.Second / gradientFPS
 
@@ -101,7 +104,7 @@ func (g *GradientTitle) run() {
 
 // renderFrame computes one gradient frame at the given elapsed time and
 // stores it as the front buffer.
-func (g *GradientTitle) renderFrame(elapsed float64) {
+func (g *GradientTitleBar) renderFrame(elapsed float64) {
 	w, h := g.w, g.h
 	if w <= 0 || h <= 0 {
 		return
@@ -130,18 +133,18 @@ func (g *GradientTitle) renderFrame(elapsed float64) {
 	g.mu.Unlock()
 }
 
-// TitleDraw is the callback for std.AppWindow's TitleDraw field.
-// It blits the current off-screen frame onto the main canvas.
-// On the first call it starts the animation goroutine using the provided
-// title bar dimensions.
-func (g *GradientTitle) TitleDraw(dc mancini.DrawContext, focused bool, x, y, w, h float64) {
-	if !focused {
-		// Unfocused windows get no gradient — the AppWindow draws
-		// plain centered text via its own unfocused fallback.
+// DrawTitleBar implements mancini.TitleBar.
+func (g *GradientTitleBar) DrawTitleBar(dc mancini.DrawContext, title string, state mancini.WindowState, _ mancini.WindowType, x, y, w, h float64) {
+	g.textFace.SetText(title)
+
+	if state == mancini.Inactive {
+		// Inactive: plain centered text only.
+		dc.SetColor(g.pal.Text())
+		g.textFace.DrawFace(dc, x, y, w, h)
 		return
 	}
 
-	// Lazy start: first focused draw tells us the title bar size.
+	// Lazy start: first active draw tells us the title bar size.
 	if !g.started {
 		g.Start(int(w), int(h))
 	}

@@ -1,0 +1,3 @@
+func identityStr() string {
+	return derefStr("_source_")
+}

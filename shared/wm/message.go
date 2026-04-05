@@ -169,3 +169,14 @@ func ReadyURI(sid string) string {
 func AppWindowBoundsURI(sid string) string {
 	return "attr:///shepherd/" + sid + "/rect/AppWindow/layout/Bounds"
 }
+
+// AppWindowTitleURI returns the URI for a shepherd's AppWindow title string.
+func AppWindowTitleURI(sid string) string {
+	return "attr:///shepherd/" + sid + "/string/AppWindow/Title"
+}
+
+// PaletteColorURI returns the URI for a shepherd's palette color attribute.
+// name is a palette color name (e.g., "Surface", "Text", "DarkShadow").
+func PaletteColorURI(sid, name string) string {
+	return "attr:///shepherd/" + sid + "/int64/Palette/" + name
+}

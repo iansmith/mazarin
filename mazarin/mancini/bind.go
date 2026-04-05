@@ -105,3 +105,15 @@ func isPlaceholder(s string) bool {
 	}
 	return true
 }
+
+// EqualI64 returns a constraint program that mirrors an int64 source attribute.
+// The returned program reads sourceURI and returns its value unchanged.
+func EqualI64(sourceURI string) *vm.Program {
+	return BindStrings(ProgIdentityI64, "_source_", sourceURI)
+}
+
+// EqualStr returns a constraint program that mirrors a string source attribute.
+// The returned program reads sourceURI and returns its value unchanged.
+func EqualStr(sourceURI string) *vm.Program {
+	return BindStrings(ProgIdentityStr, "_source_", sourceURI)
+}

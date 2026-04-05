@@ -1,0 +1,18 @@
+// equality.vgo — simple equality constraint functions.
+//
+// These functions return the value of a single source attribute, implementing
+// an "equal to" constraint. Bind _source_ to the URI of the attribute whose
+// value should be mirrored.
+//
+// Required placeholders (bound at constraint-creation time via BindStrings):
+//   _source_ — URI of the attribute to mirror
+
+// equalInt64 returns the int64 value of _source_.
+func equalInt64() int64 {
+	return derefI64("_source_")
+}
+
+// equalString returns the string value of _source_.
+func equalString() string {
+	return derefStr("_source_")
+}

@@ -1,6 +1,8 @@
 package std
 
 import (
+	"image/color"
+	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -54,6 +56,23 @@ func NewAppWindow(pal mancini.Palette, title string,
 		Pal:   pal,
 		Title: title,
 	}
+	// Publish title so rachel can read it.
+	attr.ValueStr(attr.ShepherdURI("string", "AppWindow/Title"), title)
+
+	// Publish palette colors as packed NRGBA (R<<24 | G<<16 | B<<8 | A).
+	publishColor := func(name string, c color.NRGBA) {
+		attr.ValueI64(attr.ShepherdURI("int64", "Palette/"+name),
+			int64(c.R)<<24|int64(c.G)<<16|int64(c.B)<<8|int64(c.A))
+	}
+	publishColor("Surface", pal.Surface())
+	publishColor("SurfaceTint", pal.SurfaceTint())
+	publishColor("DarkShadow", pal.DarkShadow())
+	publishColor("LightShadow", pal.LightShadow())
+	publishColor("Text", pal.Text())
+	publishColor("Icon", pal.Icon())
+	publishColor("Highlight", pal.Highlight())
+	publishColor("HighlightText", pal.HighlightText())
+
 	// Zero insets on all sides — no decoration.
 	w.Decorator.Initialize(w, layout, 0, 0, 0, 0)
 	return w
@@ -105,9 +124,8 @@ func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 	}
 
 	// Clip child to window bounds. Pad covers the rachel border zone
-	// (typically 10-15 pixels) so save/restore reaches the backing
-	// store edge.
-	const borderPad = 15
+	// so save/restore reaches the backing store edge.
+	const borderPad = 60
 	tc0 := nanotime()
 	ccR := mancini.WithClip(dc, float64(x), float64(y),
 		float64(ww), float64(hh), borderPad, mancini.ClipRight)
