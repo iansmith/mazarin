@@ -8,10 +8,13 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/input"
 	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mancini/std"
+	mctheme "mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
@@ -433,18 +436,34 @@ func postBatchInputUpdate(posChanged *bool, modState *input.ModifierState, wmd *
 }
 
 // Border sizes around each client's drawing area (in pixels).
+// Must be large enough for Heavy Raised neumorphic shadows + title bar.
+// Heavy params: DarkOff=14, DarkBlur=14 → dark shadow extends ~56px bottom-right;
+//               LightOff=4,  LightBlur=8  → light shadow extends ~28px top-left.
+// borderTop includes shadow margin + title bar (20) + gap (2).
 const (
-	borderTop    = 20
-	borderRight  = 10
-	borderBottom = 1
-	borderLeft   = 10
+	borderTop    = 52
+	borderRight  = 60
+	borderBottom = 60
+	borderLeft   = 30
+
+	titleBarHeight = 20 // height of the title bar in pixels
+	shadowTop      = 30 // shadow margin above the NeuBox face
 )
+
+// desktopBG is the desktop background color in NRGBA (R,G,B order).
+// The framebuffer uses BGRA byte order; this is the logical color.
+var desktopBG = color.NRGBA{R: 200, G: 195, B: 215, A: 255}
 
 // trackedApp holds rachel's state for a managed shepherd window.
 type trackedApp struct {
 	sid          int
+	title        string                     // window title from AppWindow.Title attribute
 	bounds       *attr.Attribute[vm.Value] // tracks shepherd's AppWindow/layout/Bounds
+	titleAttr    *attr.Attribute[string]    // constrained to track shepherd's AppWindow/Title
+	bgColorAttr  *attr.Attribute[int64]     // constrained to track shepherd's Palette/Surface
 	backingStore []byte                     // full buffer including borders (RGBA)
+	decorFocused []byte                     // pre-rendered border pixels (Raised)
+	decorUnfocused []byte                   // pre-rendered border pixels (Flush)
 	x, y         int32                      // screen position of app area
 	bsWidth      int32                      // total buffer width (app + borders)
 	bsHeight     int32                      // total buffer height (app + borders)
@@ -525,21 +544,24 @@ func grantFocusNoRaise(newSID int) {
 	revokeFocus()
 	keyboardFocusSID = newSID
 	mouseFocusSID = newSID
-	if _, ok := trackedApps[newSID]; ok {
+	if ta, ok := trackedApps[newSID]; ok {
 		msg := wm.EncodeYouHaveKeyboardFocus()
 		_ = uring.Send(newSID, &msg)
 		msg = wm.EncodeYouHaveMouseFocus()
 		_ = uring.Send(newSID, &msg)
+		applyDecorations(ta, true)
 	}
 }
 
 // revokeFocus clears both keyboard and mouse focus, notifying the current
 // focused shepherd(s). Does nothing if no shepherd has focus.
 func revokeFocus() {
+	// Swap to unfocused decoration (fast copy from cache).
 	if keyboardFocusSID >= 0 {
-		if _, ok := trackedApps[keyboardFocusSID]; ok {
+		if ta, ok := trackedApps[keyboardFocusSID]; ok {
 			msg := wm.EncodeYouLostKeyboardFocus()
 			_ = uring.Send(keyboardFocusSID, &msg)
+			applyDecorations(ta, false)
 		}
 	}
 	if mouseFocusSID >= 0 {
@@ -576,17 +598,17 @@ const KEY_F1 = 59
 // blitAllWindows re-blits every tracked window back-to-front (z-order)
 // so that overlapping windows are composited correctly.
 func blitAllWindows() {
-	// Clear framebuffer to background color so stale pixels from previous
-	// z-order don't show through in uncovered areas.
-	// BGRA: B=215, G=195, R=200, A=255 (light lavender desktop)
+	// Clear framebuffer to desktop background color.
 	for i := 0; i+3 < len(fbPix); i += 4 {
-		fbPix[i] = 215
-		fbPix[i+1] = 195
-		fbPix[i+2] = 200
-		fbPix[i+3] = 255
+		fbPix[i] = desktopBG.B
+		fbPix[i+1] = desktopBG.G
+		fbPix[i+2] = desktopBG.R
+		fbPix[i+3] = desktopBG.A
 	}
 
 	// Walk z-order back-to-front (last element = backmost).
+	// Decorations are already rendered into each backing store's
+	// border area, so blitWindow handles everything.
 	for i := len(zOrder) - 1; i >= 0; i-- {
 		sid := zOrder[i]
 		ta, ok := trackedApps[sid]
@@ -594,8 +616,7 @@ func blitAllWindows() {
 			continue
 		}
 		regions := exposedRegion(sid)
-		blitWindow(sid, regions, fbPix, fbStride)
-		drawBordersToFB(ta, regions, fbPix, fbStride)
+		blitWindow(sid, regions, fbPix, fbStride, sid == mouseFocusSID)
 	}
 	// Post-composite diagnostic: check the front window's border zone.
 	if len(zOrder) > 0 {
@@ -641,7 +662,23 @@ func trackAppBounds(sid int) *trackedApp {
 		return nil
 	}
 
-	ta := &trackedApp{sid: sid, bounds: bounds}
+	// Create a constraint tracking the shepherd's AppWindow title.
+	var title string
+	remoteTitleURI := wm.AppWindowTitleURI(sidStr)
+	if t, ok := attr.DerefStr(remoteTitleURI); ok {
+		title = t
+	}
+	localTitleURI := attr.ShepherdURI("string", "tracked/"+sidStr+"/Title")
+	titleAttr := attr.ConstraintStr(localTitleURI, mancini.EqualStr(remoteTitleURI))
+	titleAttr.SetEager(true)
+
+	// Create a constraint tracking the shepherd's Palette/Surface color.
+	remoteBgURI := wm.PaletteColorURI(sidStr, "Surface")
+	localBgURI := attr.ShepherdURI("int64", "tracked/"+sidStr+"/BgColor")
+	bgColorAttr := attr.ConstraintI64(localBgURI, mancini.EqualI64(remoteBgURI))
+	bgColorAttr.SetEager(true)
+
+	ta := &trackedApp{sid: sid, title: title, bounds: bounds, titleAttr: titleAttr, bgColorAttr: bgColorAttr}
 	trackedApps[sid] = ta
 	return ta
 }
@@ -762,6 +799,10 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 				}
 				ta.backingStore = bsSlice
 
+				// Pre-render both focused and unfocused decorations.
+				// Apply focused state since new windows get focus immediately.
+				preRenderDecorations(ta, desktopBG)
+
 				// Share pages with the client shepherd.
 				bsVA := uintptr(unsafe.Pointer(&bsSlice[0]))
 				clientVA, shareErr := sys.SharePagesWithTarget(senderSID, bsVA, bsPages)
@@ -833,19 +874,10 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent, wmd *wmDispatch) 
 					sampleBorderZone("pre-blit", senderSID, ta, fbPix, fbStride)
 				}
 
-				blitWindow(senderSID, regions, fbPix, fbStride)
+				blitWindow(senderSID, regions, fbPix, fbStride, senderSID == mouseFocusSID)
 
 				if doDiag {
 					sampleBorderZone("post-blit", senderSID, ta, fbPix, fbStride)
-				}
-
-				drawBordersToFB(ta, regions, fbPix, fbStride)
-
-				if doDiag {
-					n := sampleBorderZone("post-border", senderSID, ta, fbPix, fbStride)
-					if n > 0 {
-						sys.UartWriteString(fmt.Sprintf("[blit:diag] SID=%d LEAK SURVIVED BORDER DRAW: %d pixels\n", senderSID, n))
-					}
 				}
 
 				ox, oy := screenOrigin(ta)
@@ -999,6 +1031,13 @@ func main() {
 
 	disp.Start()
 	sys.UartWriteString("[rachel] disp.Start() returned, building dispatcher...\n")
+
+	// Create the window title bar used for all managed windows.
+	// Font opening is deferred to first DrawTitleBar call; stripes render
+	// even without fonts, so this is safe to set up before fonts are loaded.
+	pal := mctheme.NewDefaultPaletteSwapRB()
+	windowTitleBar = std.NewStripedTitleBar(pal, &mancini.FontConfig{}, 14, true)
+	sys.UartWriteString("[rachel] StripedTitleBar created\n")
 
 	// Build the subArctic input dispatch pipeline.
 	wmd := buildDispatcher()

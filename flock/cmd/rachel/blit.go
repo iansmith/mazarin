@@ -9,8 +9,17 @@ package main
 import (
 	"fmt"
 	"image"
+	"image/color"
+	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mancini/std"
+	mctheme "mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/sys"
 )
+
+// windowTitleBar is the TitleBar implementation used for all managed windows.
+// Set during rachel's main() after fonts are available. If nil, title bars
+// are not drawn (NeuBox decoration only).
+var windowTitleBar mancini.TitleBar
 
 // rectSubtract returns the parts of a that are not covered by b.
 // Returns 0-4 rectangles (the top, bottom, left, and right strips
@@ -150,7 +159,7 @@ var borderDiagCount int
 // fb is the framebuffer pixel slice, fbStride is bytes per framebuffer row.
 var blitDbgCount int
 
-func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int) {
+func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, focused bool) {
 	ta, ok := trackedApps[sid]
 	if !ok || ta.backingStore == nil {
 		return
@@ -159,28 +168,7 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int) {
 	bsStride := int(ta.bsStride)
 	winX, winY := screenOrigin(ta) // top-left of full buffer on screen
 
-	// Scan border zone of backing store for non-zero pixels (every 200 blits).
 	blitDbgCount++
-	if blitDbgCount%200 == 100 {
-		contentRight := borderLeft + int(ta.appWidth)
-		nonZero := 0
-		for y := borderTop; y < int(ta.bsHeight)-borderBottom; y++ {
-			for x := contentRight; x < int(ta.bsWidth); x++ {
-				off := y*bsStride + x*4
-				if off+3 < len(bs) && (bs[off] != 0 || bs[off+1] != 0 || bs[off+2] != 0 || bs[off+3] != 0) {
-					nonZero++
-					if nonZero <= 5 {
-						sys.UartWriteString(fmt.Sprintf("[blit:leak] SID=%d bs(%d,%d) BGRA=%d,%d,%d,%d\n",
-							sid, x, y, bs[off], bs[off+1], bs[off+2], bs[off+3]))
-					}
-				}
-			}
-		}
-		if nonZero > 0 {
-			sys.UartWriteString(fmt.Sprintf("[blit:leak] SID=%d total=%d nonzero pixels in right border zone\n", sid, nonZero))
-		}
-	}
-
 	// Log first 3 blits per SID for debugging.
 	if blitDbgCount <= 3 {
 		nonZero := 0
@@ -189,8 +177,8 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int) {
 				nonZero++
 			}
 		}
-		sys.UartWriteString(fmt.Sprintf("[rachel:blit] SID=%d win=(%d,%d) bs=%dx%d stride=%d regions=%d bsLen=%d bsNonZero=%d/4rows\n",
-			sid, winX, winY, ta.bsWidth, ta.bsHeight, bsStride, len(regions), len(bs), nonZero))
+		sys.UartWriteString(fmt.Sprintf("[rachel:blit] SID=%d win=(%d,%d) bs=%dx%d stride=%d regions=%d bsLen=%d bsNonZero=%d/4rows focused=%v\n",
+			sid, winX, winY, ta.bsWidth, ta.bsHeight, bsStride, len(regions), len(bs), nonZero, focused))
 		for i, r := range regions {
 			if i < 4 {
 				sys.UartWriteString(fmt.Sprintf("[rachel:blit]   region[%d]: (%d,%d)-(%d,%d)\n", i, r.Min.X, r.Min.Y, r.Max.X, r.Max.Y))
@@ -207,76 +195,123 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int) {
 			fbOff := y*fbStride + r.Min.X*4
 			bsOff := localY*bsStride + localX0*4
 			if fbOff >= 0 && fbOff+w <= len(fb) && bsOff >= 0 && bsOff+w <= len(bs) {
-				copy(fb[fbOff:fbOff+w], bs[bsOff:bsOff+w])
+				if focused {
+					copy(fb[fbOff:fbOff+w], bs[bsOff:bsOff+w])
+				} else {
+					// Unfocused: 25% alpha dim — multiply each BGRA channel by 3/4.
+					for px := 0; px < w; px += 4 {
+						fb[fbOff+px] = bs[bsOff+px] - bs[bsOff+px]>>2
+						fb[fbOff+px+1] = bs[bsOff+px+1] - bs[bsOff+px+1]>>2
+						fb[fbOff+px+2] = bs[bsOff+px+2] - bs[bsOff+px+2]>>2
+						fb[fbOff+px+3] = bs[bsOff+px+3] - bs[bsOff+px+3]>>2
+					}
+				}
 			}
 		}
 	}
 }
 
-// drawBordersToFB draws the border regions of ta directly onto the framebuffer,
-// clipped to the given exposed rectangles so that borders of a background window
-// never overwrite content of a foreground window.
-var borderDbgPerSID = map[int]int{}
-
-func drawBordersToFB(ta *trackedApp, regions []image.Rectangle, fb []byte, fbStride int) {
+// renderDecorOnce renders a NeuBox + title bar into a temporary buffer
+// for the given depth/state and returns the border pixels only.
+// The returned slice has the same layout as the backing store but only
+// the border zone pixels are meaningful.
+func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.WindowState, desktopBG color.NRGBA) []byte {
 	tw := int(ta.bsWidth)
 	th := int(ta.bsHeight)
-	ox, oy := screenOrigin(ta) // screen position of backing store top-left
+	stride := int(ta.bsStride)
+	buf := make([]byte, len(ta.backingStore))
 
-	fbW := fbStride / 4        // framebuffer width in pixels
-
-	// setPixel writes one border pixel if it falls within any exposed region.
-	setPixel := func(sx, sy int) {
-		if sx < 0 || sx >= fbW || sy < 0 {
-			return
-		}
-		// Check that (sx,sy) is inside at least one exposed rect.
-		pt := image.Pt(sx, sy)
-		visible := false
-		for _, r := range regions {
-			if pt.In(r) {
-				visible = true
-				break
-			}
-		}
-		if !visible {
-			return
-		}
-		off := sy*fbStride + sx*4
-		if off+3 < len(fb) {
-			fb[off] = 200   // B
-			fb[off+1] = 80  // G
-			fb[off+2] = 40  // R
-			fb[off+3] = 255 // A
-		}
+	// Fill entire buffer with desktop background (swapped R↔B for BGRA FB).
+	bg := desktopBG
+	for i := 0; i+3 < len(buf); i += 4 {
+		buf[i] = bg.B
+		buf[i+1] = bg.G
+		buf[i+2] = bg.R
+		buf[i+3] = bg.A
 	}
 
-	// Top strip
-	for y := 0; y < borderTop && y < th; y++ {
-		for x := 0; x < tw; x++ {
-			setPixel(ox+x, oy+y)
-		}
+	tmpImg := &image.RGBA{
+		Pix:    buf,
+		Stride: stride,
+		Rect:   image.Rect(0, 0, tw, th),
 	}
-	// Bottom strip
-	for y := th - borderBottom; y < th; y++ {
-		if y >= 0 {
-			for x := 0; x < tw; x++ {
-				setPixel(ox+x, oy+y)
-			}
-		}
+	dc := mancini.NewDrawContextForImage(tmpImg, nil)
+	pal := mctheme.NewDefaultPaletteSwapRB()
+	neuP := mctheme.NewDefaultNeumorphicParams().Heavy()
+	// Reduce light shadow intensity for window decorations — full white
+	// (α=255) creates a visible white margin in the border zone.
+	neuP.Raised.LightAlpha = 160
+
+	x1 := float64(borderLeft)
+	y1 := float64(shadowTop)
+	x2 := float64(tw - borderRight)
+	y2 := float64(th - borderBottom)
+	r := 6.0
+
+	std.NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, pal.Surface(), neuP)
+
+	// Title bar drawn AFTER NeuBox so stripes are visible on top of the face.
+	if windowTitleBar != nil {
+		tbX := float64(borderLeft) + 4
+		tbY := float64(shadowTop) + 2
+		tbW := float64(tw-borderRight) - tbX - 4
+		tbH := float64(titleBarHeight)
+		windowTitleBar.DrawTitleBar(dc, ta.title, state, mancini.AppWindowType, tbX, tbY, tbW, tbH)
 	}
-	// Left strip (between top and bottom)
+
+	return buf
+}
+
+// preRenderDecorations pre-renders both focused (Raised) and unfocused
+// (Flush) decorations into cached buffers and applies the focused state
+// to the backing store. Called once at allocation time.
+func preRenderDecorations(ta *trackedApp, desktopBG color.NRGBA) {
+	ta.decorFocused = renderDecorOnce(ta, mancini.Raised, mancini.Active, desktopBG)
+	ta.decorUnfocused = renderDecorOnce(ta, mancini.Flush, mancini.Inactive, desktopBG)
+	applyDecorations(ta, true)
+	sys.UartWriteString(fmt.Sprintf("[rachel:decor] pre-rendered %dx%d title=%q\n",
+		ta.bsWidth, ta.bsHeight, ta.title))
+}
+
+// applyDecorations copies pre-rendered border pixels into the backing store.
+// Only the border zone is overwritten — app content is untouched.
+func applyDecorations(ta *trackedApp, focused bool) {
+	src := ta.decorUnfocused
+	if focused {
+		src = ta.decorFocused
+	}
+	if src == nil {
+		return
+	}
+
+	tw := int(ta.bsWidth)
+	th := int(ta.bsHeight)
+	stride := int(ta.bsStride)
+	bs := ta.backingStore
+
+	// Top border (including title bar area).
+	topBytes := borderTop * stride
+	if topBytes <= len(bs) && topBytes <= len(src) {
+		copy(bs[:topBytes], src[:topBytes])
+	}
+	// Bottom border.
+	botStart := (th - borderBottom) * stride
+	if botStart >= 0 && botStart < len(bs) {
+		copy(bs[botStart:], src[botStart:])
+	}
+	// Left and right strips (between top and bottom).
 	for y := borderTop; y < th-borderBottom; y++ {
-		for x := 0; x < borderLeft && x < tw; x++ {
-			setPixel(ox+x, oy+y)
+		rowOff := y * stride
+		// Left strip.
+		leftEnd := rowOff + borderLeft*4
+		if leftEnd <= len(bs) {
+			copy(bs[rowOff:leftEnd], src[rowOff:leftEnd])
 		}
-	}
-	// Right strip (between top and bottom)
-	for y := borderTop; y < th-borderBottom; y++ {
-		for x := tw - borderRight; x < tw; x++ {
-			if x >= 0 {
-				setPixel(ox+x, oy+y)
-			}
+		// Right strip.
+		rightStart := rowOff + (tw-borderRight)*4
+		rightEnd := rowOff + tw*4
+		if rightEnd <= len(bs) {
+			copy(bs[rightStart:rightEnd], src[rightStart:rightEnd])
 		}
 	}
 }
