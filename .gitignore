@@ -85,6 +85,7 @@ helloworld
 # Stray shepherd/tool binaries
 /fs
 /stdio
+/keymapper
 
 # Old directories (should be removed)
 src/
