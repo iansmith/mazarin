@@ -14,12 +14,12 @@ gc_percentage = 10000
 gc_percent_kernel = 10000
 
 # Scheduling
-# Timer tick rate in Hz (250 = 4ms ticks). Controls deadline processing
+# Timer tick rate in Hz (330 = ~3ms ticks). Controls deadline processing
 # and signal delivery granularity.
-kernel_tick_rate = 250
-# Thread preemption quantum in ticks (25 x 4ms = 100ms). Also determines
-# the time attribute update frequency (10Hz at these settings).
-preempt_after_ticks = 25
+kernel_tick_rate = 330
+# Thread preemption quantum in ticks (33 x 3ms = ~100ms). Also determines
+# the time attribute update frequency (~10Hz at these settings).
+preempt_after_ticks = 33
 
 # Serial output
 # When true, userspace stdout/stderr is routed only through the linux shepherd

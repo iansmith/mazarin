@@ -12,8 +12,8 @@ gc_percentage = 10000
 gc_percent_kernel = 10000
 
 # Scheduling
-kernel_tick_rate = 250
-preempt_after_ticks = 25
+kernel_tick_rate = 330
+preempt_after_ticks = 33
 
 # Serial output
 suppress_serial_stdio_copy = false

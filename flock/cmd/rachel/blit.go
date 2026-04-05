@@ -14,6 +14,8 @@ import (
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/sys"
+	"strconv"
+	"time"
 )
 
 // windowTitleBar is the TitleBar implementation used for all managed windows.
@@ -325,4 +327,150 @@ func applyDecorations(ta *trackedApp, focused bool) {
 			copy(bs[rightStart:rightEnd], src[rightStart:rightEnd])
 		}
 	}
+}
+
+// --- Blit timing instrumentation ---
+//
+// Measures the three phases of each single-window blit:
+//   occlusion  = exposedRegion() computation
+//   copy       = blitWindow() pixel copy to framebuffer
+//   flush      = flushRect() → VirtIO GPU transfer+flush syscall
+//
+// Also measures blitAllWindows() as a whole.
+
+// tickBudgetUs is the tick interval in microseconds, set from kernel config.
+// Updated by setTickBudgetHz at startup.
+var tickBudgetUs int64 = 3030 // ~330 Hz (1_000_000 / 330)
+
+func setTickBudgetHz(hz int) {
+	if hz > 0 {
+		tickBudgetUs = 1_000_000 / int64(hz)
+	}
+}
+
+// Per-phase accumulators (microseconds).
+var (
+	btSamples   int64
+	btOcclusUs  int64
+	btCopyUs    int64
+	btFlushUs   int64
+	btTotalUs   int64 // occlusion+copy+flush
+	btMaxUs     int64
+	btMaxOccUs  int64
+	btMaxCopyUs int64
+	btMaxFlshUs int64
+
+	// blitAllWindows timing
+	btAllCount   int64
+	btAllTotalUs int64
+	btAllMaxUs   int64
+)
+
+// blitTimingRecord records one blit's phase durations.
+func blitTimingRecord(occUs, copyUs, flushUs int64) {
+	btSamples++
+	btOcclusUs += occUs
+	btCopyUs += copyUs
+	btFlushUs += flushUs
+	total := occUs + copyUs + flushUs
+	btTotalUs += total
+	if total > btMaxUs {
+		btMaxUs = total
+	}
+	if occUs > btMaxOccUs {
+		btMaxOccUs = occUs
+	}
+	if copyUs > btMaxCopyUs {
+		btMaxCopyUs = copyUs
+	}
+	if flushUs > btMaxFlshUs {
+		btMaxFlshUs = flushUs
+	}
+}
+
+// blitAllTimingRecord records one blitAllWindows duration.
+func blitAllTimingRecord(totalUs int64) {
+	btAllCount++
+	btAllTotalUs += totalUs
+	if totalUs > btAllMaxUs {
+		btAllMaxUs = totalUs
+	}
+}
+
+// blitTimingReport prints accumulated stats and resets counters.
+func blitTimingReport() {
+	if btSamples == 0 {
+		return
+	}
+	avgTotal := btTotalUs / btSamples
+	avgOcc := btOcclusUs / btSamples
+	avgCopy := btCopyUs / btSamples
+	avgFlush := btFlushUs / btSamples
+
+	pctAvg := avgTotal * 100 / tickBudgetUs
+	pctMax := btMaxUs * 100 / tickBudgetUs
+
+	sys.UartWriteString("[blit:timing] n=" + strconv.FormatInt(btSamples, 10) +
+		" avg=" + strconv.FormatInt(avgTotal, 10) + "us" +
+		" (occ=" + strconv.FormatInt(avgOcc, 10) +
+		" copy=" + strconv.FormatInt(avgCopy, 10) +
+		" flush=" + strconv.FormatInt(avgFlush, 10) + ")" +
+		" max=" + strconv.FormatInt(btMaxUs, 10) + "us" +
+		" (occ=" + strconv.FormatInt(btMaxOccUs, 10) +
+		" copy=" + strconv.FormatInt(btMaxCopyUs, 10) +
+		" flush=" + strconv.FormatInt(btMaxFlshUs, 10) + ")" +
+		" tick=" + strconv.FormatInt(tickBudgetUs, 10) + "us" +
+		" avg%=" + strconv.FormatInt(pctAvg, 10) +
+		" max%=" + strconv.FormatInt(pctMax, 10) + "\n")
+
+	if btAllCount > 0 {
+		avgAll := btAllTotalUs / btAllCount
+		pctAll := btAllMaxUs * 100 / tickBudgetUs
+		sys.UartWriteString("[blit:timing] blitAll n=" + strconv.FormatInt(btAllCount, 10) +
+			" avg=" + strconv.FormatInt(avgAll, 10) + "us" +
+			" max=" + strconv.FormatInt(btAllMaxUs, 10) + "us" +
+			" max%=" + strconv.FormatInt(pctAll, 10) + "\n")
+	}
+
+	// Reset.
+	btSamples = 0
+	btOcclusUs = 0
+	btCopyUs = 0
+	btFlushUs = 0
+	btTotalUs = 0
+	btMaxUs = 0
+	btMaxOccUs = 0
+	btMaxCopyUs = 0
+	btMaxFlshUs = 0
+	btAllCount = 0
+	btAllTotalUs = 0
+	btAllMaxUs = 0
+}
+
+// timedExposedRegion wraps exposedRegion with timing.
+func timedExposedRegion(sid int) ([]image.Rectangle, time.Duration) {
+	t0 := time.Now()
+	r := exposedRegion(sid)
+	return r, time.Since(t0)
+}
+
+// timedBlitWindow wraps blitWindow with timing.
+func timedBlitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, focused bool) time.Duration {
+	t0 := time.Now()
+	blitWindow(sid, regions, fb, fbStride, focused)
+	return time.Since(t0)
+}
+
+// timedFlushRect wraps flushRect with timing.
+func timedFlushRect(x, y, w, h int) time.Duration {
+	t0 := time.Now()
+	flushRect(x, y, w, h)
+	return time.Since(t0)
+}
+
+// timedBlitAllWindows wraps blitAllWindows with timing.
+func timedBlitAllWindows() {
+	t0 := time.Now()
+	blitAllWindows()
+	blitAllTimingRecord(time.Since(t0).Microseconds())
 }

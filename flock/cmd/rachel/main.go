@@ -518,7 +518,7 @@ func pickWindow(x, y int64) int {
 func grantFocus(newSID int) {
 	grantFocusNoRaise(newSID)
 	raiseToFront(newSID)
-	blitAllWindows() // re-composite with new z-order
+	timedBlitAllWindows() // re-composite with new z-order
 }
 
 // grantFocusNoRaise gives both keyboard and mouse focus to newSID without
@@ -719,7 +719,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 			// Check focus-change timer on WM messages so that single-click
 			// commits even when no further HID input arrives after the click.
 			if wmd.focusChangeAgent.CheckTimer() {
-				blitAllWindows()
+				timedBlitAllWindows()
 			}
 			wmMsg, ok := raw.(wm.WMNotifyMsg)
 			if !ok {
@@ -842,13 +842,16 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				wmd.keyFwd.SetFocus(ta.interactor)
 
 				// Initial blit (all windows, z-ordered).
-				blitAllWindows()
+				timedBlitAllWindows()
 
 			case wm.Blit:
 				rachelMsgBlit++
 				if rachelMsgBlit%10 == 0 {
 					sys.UartWriteString(fmt.Sprintf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
 						rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents))
+				}
+				if rachelMsgBlit%20 == 0 {
+					blitTimingReport()
 				}
 				if rachelMsgBlit%50 == 0 && !blitRateStart.IsZero() {
 					ms := time.Since(blitRateStart).Milliseconds()
@@ -868,7 +871,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				if !ok || ta.backingStore == nil {
 					continue
 				}
-				regions := exposedRegion(senderSID)
+				regions, occDur := timedExposedRegion(senderSID)
 
 				// Diagnostic: sample border zone at 3 checkpoints (every 200 blits).
 				borderDiagCount++
@@ -877,14 +880,15 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 					sampleBorderZone("pre-blit", senderSID, ta, fbPix, fbStride)
 				}
 
-				blitWindow(senderSID, regions, fbPix, fbStride, senderSID == mouseFocusSID)
+				copyDur := timedBlitWindow(senderSID, regions, fbPix, fbStride, senderSID == mouseFocusSID)
 
 				if doDiag {
 					sampleBorderZone("post-blit", senderSID, ta, fbPix, fbStride)
 				}
 
 				ox, oy := screenOrigin(ta)
-				flushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
+				flushDur := timedFlushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
+				blitTimingRecord(occDur.Microseconds(), copyDur.Microseconds(), flushDur.Microseconds())
 
 			case wm.AnimationRegister:
 				registerAnimation(senderSID, msg)
