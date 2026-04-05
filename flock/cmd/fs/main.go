@@ -21,6 +21,7 @@ import (
 	"mazzy/shared/sysid"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -293,6 +294,7 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 	}
 	defer file.Close()
 	tOpen := time.Since(t0)
+	sys.UartWriteString(fmt.Sprintf("[fs] readFileIntoPages: %s opened, size=%d\n", path, file.Size()))
 
 	fileSize := int(file.Size())
 	numPages = (fileSize + 4095) / 4096
@@ -304,12 +306,14 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 
 	tAllocStart := time.Now()
 	if transferable {
+		sys.UartWriteString(fmt.Sprintf("[fs] readFileIntoPages: %s AllocPages(%d)...\n", path, numPages))
 		// Kernel-tracked pages so TransferAndUnmap can validate ownership.
 		ptr, allocErr := mem.AllocPages(numPages, mem.PageShared)
 		if allocErr != nil {
 			return 0, 0, 0, allocErr
 		}
 		va = uintptr(ptr)
+		sys.UartWriteString(fmt.Sprintf("[fs] readFileIntoPages: %s AllocPages done, va=0x%x\n", path, va))
 	} else {
 		// Anonymous mmap for temporary use (caller munmaps after).
 		var errno syscall.Errno
@@ -326,6 +330,7 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(va)), totalSize)
 
+	sys.UartWriteString(fmt.Sprintf("[fs] readFileIntoPages: %s calling ReadInto(%d bytes)...\n", path, fileSize))
 	tReadStart := time.Now()
 	n, rerr := file.ReadInto(dst[:fileSize])
 	tRead := time.Since(tReadStart)
@@ -431,29 +436,15 @@ func bootSequence(fsys *ext2.FileSystem) {
 	sys.UartWriteString("[fs] boot sequence complete\n")
 }
 
-// dmaReq is a request sent to the dedicated DMA worker goroutine.
-type dmaReq struct {
-	// Single-block read (lba != 0, blocks == nil).
-	lba uint64
-	buf []byte
-	// Batch read (blocks != nil).
-	blocks []uint32
-	dst    []byte
-	// Response channel — worker sends exactly one result.
-	result chan<- error
-}
-
 // asyncBlockDev implements blockdev.BlockDevice backed by io_uring.
-// A dedicated worker goroutine owns all ring access and calls
-// IOUringEnterBlocking exclusively. This mirrors the uring.Reader
-// pattern (dedicated goroutine blocking on a syscall) which is
-// proven reliable. Callers send requests via channel and wait
-// for results.
+// All ring access is serialized by a mutex. Uses IOUringEnter (P-holding,
+// RawSyscall) so the Go scheduler cannot steal the P during short I/O waits.
+// This avoids P contention with the boot sequence goroutine's polling loop.
 type asyncBlockDev struct {
+	mu        sync.Mutex
 	scratchVA uintptr         // base of MAZARIN_CONTIGUOUS scratch pages
 	ioRing    *iouring.IORing // shared io_uring ring page
 	ringID    int             // io_uring instance ID from IOUringSetup
-	reqCh     chan dmaReq     // requests to the worker goroutine
 }
 
 const (
@@ -461,34 +452,12 @@ const (
 	sectorsPerBlock = asyncBlockSize / 512
 )
 
-// newAsyncBlockDev creates the block device and starts the dedicated
-// DMA worker goroutine. The worker owns all ring access.
+// newAsyncBlockDev creates the block device.
 func newAsyncBlockDev(scratchVA uintptr, ring *iouring.IORing, ringID int) *asyncBlockDev {
-	d := &asyncBlockDev{
+	return &asyncBlockDev{
 		scratchVA: scratchVA,
 		ioRing:    ring,
 		ringID:    ringID,
-		reqCh:     make(chan dmaReq),
-	}
-	go d.worker()
-	return d
-}
-
-// worker is the dedicated goroutine that processes all DMA requests.
-// It loops on reqCh, executing I/O directly. This mirrors the
-// uring.Reader.loop() pattern — a dedicated goroutine that blocks
-// on syscalls, ensuring the Go runtime handles M/P transitions
-// correctly.
-func (d *asyncBlockDev) worker() {
-	sys.UartWriteString("[dma:worker] started\n")
-	for req := range d.reqCh {
-		var err error
-		if req.blocks != nil {
-			err = d.doReadBatch(req.blocks, req.dst)
-		} else {
-			err = d.doReadBlock(req.lba, req.buf)
-		}
-		req.result <- err
 	}
 }
 
@@ -524,13 +493,8 @@ func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 	}
 	atomic.StoreUint32(&d.ioRing.SQTail, sqTail+1)
 
-	// Submit 1 SQE (non-blocking, P held).
-	_, err := sys.IOUringEnter(d.ringID, 1, 0, 0)
-	if err != nil {
-		return err
-	}
-	// Wait for 1 CQE (blocking, P released) — same pattern as rachel's InputAcquirer.
-	_, err = sys.IOUringEnterBlocking(d.ringID, 0, 1, 0)
+	// Submit 1 SQE and wait for 1 CQE (P held throughout).
+	_, err := sys.IOUringEnter(d.ringID, 1, 1, 0)
 	if err != nil {
 		return err
 	}
@@ -601,15 +565,10 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 
 		tWait := time.Now()
 		if submitted > 0 {
-			// Submit SQEs (non-blocking, P held).
-			_, serr := sys.IOUringEnter(d.ringID, submitted, 0, 0)
+			// Submit SQEs and wait for all completions (P held throughout).
+			nret, serr := sys.IOUringEnter(d.ringID, submitted, submitted, 0)
 			if serr != nil {
 				return serr
-			}
-			// Wait for all completions (blocking, P released) — same pattern as rachel's InputAcquirer.
-			nret, werr := sys.IOUringEnterBlocking(d.ringID, 0, submitted, 0)
-			if werr != nil {
-				return werr
 			}
 
 			// Verify completions actually arrived.
@@ -668,26 +627,26 @@ func (d *asyncBlockDev) WriteBlock(lba uint64, buf []byte) error {
 	return fmt.Errorf("write not supported")
 }
 
-// ReadBlock sends a single-block read request to the DMA worker and waits
-// for the result. Safe to call from any goroutine.
+// ReadBlock reads a single 4KB block. Thread-safe via mutex.
 func (d *asyncBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	if len(buf) < asyncBlockSize {
 		return fmt.Errorf("buffer too small")
 	}
-	ch := make(chan error, 1)
-	d.reqCh <- dmaReq{lba: lba, buf: buf, result: ch}
-	return <-ch
+	d.mu.Lock()
+	err := d.doReadBlock(lba, buf)
+	d.mu.Unlock()
+	return err
 }
 
-// ReadBlocks implements blockdev.BatchBlockDevice. Sends a batch read
-// request to the DMA worker and waits for the result. Safe to call
-// from any goroutine.
+// ReadBlocks reads multiple 4KB blocks in batches. Thread-safe via mutex.
 func (d *asyncBlockDev) ReadBlocks(lbas []uint64, dst []byte) error {
 	blocks := make([]uint32, len(lbas))
 	for i, lba := range lbas {
 		blocks[i] = uint32(lba)
 	}
-	ch := make(chan error, 1)
-	d.reqCh <- dmaReq{blocks: blocks, dst: dst, result: ch}
-	return <-ch
+	d.mu.Lock()
+	err := d.doReadBatch(blocks, dst)
+	d.mu.Unlock()
+	return err
 }
+
