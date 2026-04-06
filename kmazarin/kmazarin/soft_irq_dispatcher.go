@@ -3,7 +3,7 @@
 package main
 
 import (
-	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/klog"
 	"sync"
 	"unsafe"
 )
@@ -63,14 +63,12 @@ func SubscribeSoftIRQ(irqNum uint32, ch chan SoftIRQBundle) func() {
 //
 // This goroutine must be started during kernel initialization.
 func SoftIRQDispatcher() {
-	console.KPrintln("[SoftIRQ] Dispatcher starting")
-
 	var bundle SoftIRQBundle
 
 	// Register as the soft IRQ dispatcher
 	result := RegisterSoftIRQDispatcher()
 	if result < 0 {
-		console.KPrintf("[SoftIRQ] Failed to register dispatcher: %d\n", result)
+		klog.Errf("[SoftIRQ] Failed to register dispatcher: %d\n", result)
 		return
 	}
 
@@ -105,7 +103,7 @@ func dispatchBundle(bundle SoftIRQBundle) {
 			// Delivered
 		default:
 			// Subscriber channel full - drop
-			console.KPrintf("[SoftIRQ] Dropped IRQ %d (subscriber busy)\n", bundle.IRQNum)
+			klog.Errf("[SoftIRQ] Dropped IRQ %d (subscriber busy)\n", bundle.IRQNum)
 		}
 	}
 	// IRQ with no subscriber is silently dropped

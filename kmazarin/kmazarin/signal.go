@@ -1,8 +1,8 @@
 package main
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
 )
@@ -80,11 +80,7 @@ func InitSignals() {
 	// U-mode can't execute kernel pages on RISC-V (PTE.U=0).
 	initSigreturnVDSO()
 
-	serial.RawUARTPuts("[Signal] tramp: kernel=0x")
-	serial.RawUARTHex64(uint64(kernelTramp))
-	serial.RawUARTPuts(" final=0x")
-	serial.RawUARTHex64(uint64(sigreturnTrampolinePC))
-	serial.RawUARTPuts("\r\n")
+	_ = kernelTramp
 }
 
 // GetSignalAction returns the signal action for the given signal number.
@@ -243,37 +239,12 @@ func DeliverPendingSignal(thread *Thread) {
 	thread.InSignalHandler = 1
 }
 
-// SignalSelfTest prints a diagnostic summary of the signal infrastructure state.
-// Called after each userspace program launch to verify signal readiness.
-// Reads from the current shepherd's table for userspace threads, global for kernel.
+// SignalSelfTest is a no-op retained for call-site compatibility.
 func SignalSelfTest(label string) {
-	action := GetSignalAction(_SIGURG)
-	serial.RawUARTPuts("[SigTest] ")
-	serial.RawUARTPuts(label)
-	if action.Handler != 0 {
-		serial.RawUARTPuts(": ok\r\n")
-	} else {
-		serial.RawUARTPuts(": no SIGURG handler\r\n")
-	}
 }
 
-// SignalDeliveryStats prints a summary of signal delivery activity.
-// Safe to call from non-nosplit context (uses serial output).
+// SignalDeliveryStats is a no-op retained for call-site compatibility.
 func SignalDeliveryStats() {
-	count := atomic.LoadUint64(&signalDeliverCount)
-	if count == 0 {
-		serial.RawUARTPuts("[SD] no signals delivered\n")
-		return
-	}
-	serial.RawUARTPuts("[SD] delivered=")
-	serial.RawUARTDecimal(count)
-	serial.RawUARTPuts(" last: sig=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&signalDeliverLastSig))
-	serial.RawUARTPuts(" tid=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&signalDeliverLastTID))
-	serial.RawUARTPuts(" handler=0x")
-	serial.RawUARTHex64(atomic.LoadUint64(&signalDeliverLastHandler))
-	serial.PollWrite('\n')
 }
 
 // HandleUnhandledException handles a userspace exception that was not resolved
@@ -327,13 +298,7 @@ func HandleUnhandledException(excInfo, faultAddr, faultPC uint64) uintptr {
 		// function, so ThreadContext already has the correct SP, LR, PC, and
 		// all registers from the exception frame. No manual SetPC needed.
 
-		serial.RawUARTPuts("[SIG] delivering sig=")
-		serial.RawUARTDecimal(uint64(signum))
-		serial.RawUARTPuts(" PC=0x")
-		serial.RawUARTHex64(faultPC)
-		serial.RawUARTPuts(" addr=0x")
-		serial.RawUARTHex64(faultAddr)
-		serial.RawUARTPuts("\r\n")
+		klog.Errf("[SIG] delivering sig=%d PC=0x%x addr=0x%x\n", signum, faultPC, faultAddr)
 
 		// Map hardware exception info to Linux si_code (e.g., SEGV_MAPERR)
 		t.SignalFaultAddr = faultAddr
@@ -374,23 +339,20 @@ func PrintProcessDeathDiag(pid ShepherdId, signum int, faultAddr, faultPC uint64
 	dualPuts("\r\n")
 }
 
-// dualPuts writes a string to both the serial UART and the soft IRQ console ring.
+// dualPuts writes a string to the soft IRQ console ring for display by
+// the linux shepherd. Output goes through the ring only — no direct UART.
 //
 //go:nosplit
 func dualPuts(s string) {
-	serial.RawUARTPuts(s)
 	for i := 0; i < len(s); i++ {
 		PushByteToUartRing(2, s[i]) // fd=2 (stderr) for red text in linux shepherd
 	}
 }
 
-// dualDecimal writes a decimal number to both UART and console ring.
+// dualDecimal writes a decimal number to the console ring.
 //
 //go:nosplit
 func dualDecimal(v uint64) {
-	// Write to UART
-	serial.RawUARTDecimal(v)
-	// Write to ring using stack buffer (nosplit-safe)
 	if v == 0 {
 		PushByteToUartRing(2, '0')
 		return
@@ -408,11 +370,10 @@ func dualDecimal(v uint64) {
 	}
 }
 
-// dualHex64 writes a 64-bit hex value to both UART and console ring.
+// dualHex64 writes a 64-bit hex value to the console ring.
 //
 //go:nosplit
 func dualHex64(v uint64) {
-	serial.RawUARTHex64(v)
 	for i := 60; i >= 0; i -= 4 {
 		nibble := (v >> uint(i)) & 0xF
 		if nibble < 10 {

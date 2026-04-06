@@ -35,6 +35,7 @@ type RadialNOfMChooser struct {
 	StartDeg, EndDeg float64                  // angular range in degrees (0=right, 90=down)
 	Faces            []mancini.LatinTextFace  // text content for each segment (nil entries OK)
 	Selected         []bool                   // which segments are selected
+	Disabled         bool                     // when true, renders dimmed and ignores input
 }
 
 // NewRadialNOfMChooser creates a RadialNOfMChooser wired to the constraint
@@ -187,6 +188,9 @@ func (c *RadialNOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64) {
 		segEnd := segStart + segAngle
 		radialDrawContent(dc, canvas, pal, cx, cy, rOuter, rInner, segStart, segEnd, c.Faces[i])
 	}
+	if c.Disabled {
+		ApplyDisabledCircleOverlay(pal, dc, cx, cy, rOuter)
+	}
 }
 
 // ── Arc path tracing ────────────────────────────────────────────────────────
@@ -338,7 +342,8 @@ func radialApplySelection(canvas *image.RGBA, pal mancini.Palette,
 	// Purple tint fill, masked to segment.
 	tintBuf := image.NewRGBA(image.Rect(0, 0, w, h))
 	tctx := gg.NewContextForRGBA(tintBuf)
-	tctx.SetColor(color.NRGBA{200, 100, 255, 60})
+	hi := pal.Highlight()
+	tctx.SetColor(color.NRGBA{hi.R, hi.G, hi.B, 60})
 	traceArcPath(tctx, cx, cy, rOuter, rInner, startAngle, endAngle)
 	tctx.Fill()
 	draw.DrawMask(canvas, bounds, tintBuf, image.Point{}, mask, image.Point{}, draw.Over)

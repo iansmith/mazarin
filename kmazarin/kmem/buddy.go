@@ -11,7 +11,7 @@
 package kmem
 
 import (
-	"mazzy/kmazarin/serial"
+	"mazzy/kmazarin/klog"
 	"sync/atomic"
 	"unsafe"
 )
@@ -270,12 +270,10 @@ func BuddyAllocTyped(order int, pageType PageType, owner int16) uintptr {
 	return pa
 }
 
-// buddyWarnOOM prints an OOM warning via raw UART.
+// buddyWarnOOM prints an OOM warning.
 // NOT nosplit — breaks the nosplit chain from exception handlers.
 func buddyWarnOOM(order int) {
-	serial.RawUARTPuts("[kmem] Buddy OOM for order ")
-	serial.RawUARTHex64(uint64(order))
-	serial.RawUARTPuts("\r\n")
+	klog.Errf("[kmem] Buddy OOM for order %d\n", order)
 }
 
 // BuddyFree returns a block of 2^order pages starting at pa to the allocator.
@@ -407,17 +405,9 @@ func buddyRemoveSpecific(pa uintptr, order int) bool {
 // entry and halts. NOT nosplit — breaks the nosplit chain from exception
 // handlers so we can print full diagnostic output.
 func buddyCorruptionHalt(prev, pa uintptr, order int) {
-	serial.RawUARTPuts("\r\n[BUDDY] CORRUPT free list! order=")
-	serial.RawUARTHex64(uint64(order))
-	serial.RawUARTPuts(" bad-next=")
-	serial.RawUARTHex64(uint64(prev))
-	serial.RawUARTPuts(" looking-for=")
-	serial.RawUARTHex64(uint64(pa))
-	serial.RawUARTPuts(" pool=[")
-	serial.RawUARTHex64(uint64(buddyAlloc.poolStart))
-	serial.RawUARTPuts(",")
-	serial.RawUARTHex64(uint64(buddyAlloc.poolEnd))
-	serial.RawUARTPuts(")\r\n")
+	klog.Criticalf("B!C!",
+		"[BUDDY] CORRUPT free list! order=%d bad-next=0x%x looking-for=0x%x pool=[0x%x,0x%x)\n",
+		order, prev, pa, buddyAlloc.poolStart, buddyAlloc.poolEnd)
 	for {
 	}
 }
@@ -479,60 +469,6 @@ func KernelPageFaultCount() uint64 {
 	return pfSuccessCount
 }
 
-// PrintBuddyStats prints buddy allocator statistics.
-//
-//go:nosplit
-func PrintBuddyStats() {
-	stats := GetBuddyStats()
-	serial.RawUARTPuts("[kmem] Buddy stats: ")
-	serial.RawUARTHex64(stats.FreePages)
-	serial.RawUARTPuts(" free / ")
-	serial.RawUARTHex64(stats.TotalPages)
-	serial.RawUARTPuts(" total pages\r\n")
-	for i := 0; i < MaxOrder; i++ {
-		if stats.FreeByOrder[i] == 0 {
-			continue
-		}
-		serial.RawUARTPuts("  order ")
-		serial.RawUARTHex64(uint64(i))
-		serial.RawUARTPuts(": ")
-		serial.RawUARTHex64(stats.FreeByOrder[i])
-		serial.RawUARTPuts(" blocks (")
-		serial.RawUARTHex64(uint64(PageSize) << uint(i) / 1024)
-		serial.RawUARTPuts(" KB each)\r\n")
-	}
-}
-
-// PrintKernelMemSummary prints a one-line kernel memory summary to UART.
-// TEMPORARY: for diagnosing kernel memory growth.
-// Format: [M] k=<kern> h=<heap> p=<pt> u=<user> a=<alloc>
-// All values in pages (x4KB).
-//
-//go:nosplit
-func PrintKernelMemSummary() {
-	buddyAlloc.lock.Lock()
-	kh := buddyAlloc.kernelHeapPages
-	kp := buddyAlloc.kernelPTPages
-	boot := buddyAlloc.bootstrapPages
-	up := buddyAlloc.userPages
-	alloc := buddyAlloc.bootstrapPages + buddyAlloc.allocatedPages
-	buddyAlloc.lock.Unlock()
-
-	serial.RawUARTPuts("\r\n[M] k=")
-	serial.RawUARTHex64(boot + kh + kp)
-	serial.RawUARTPuts(" h=")
-	serial.RawUARTHex64(kh)
-	serial.RawUARTPuts(" p=")
-	serial.RawUARTHex64(kp)
-	serial.RawUARTPuts(" b=")
-	serial.RawUARTHex64(boot)
-	serial.RawUARTPuts(" u=")
-	serial.RawUARTHex64(up)
-	serial.RawUARTPuts(" a=")
-	serial.RawUARTHex64(alloc)
-	serial.RawUARTPuts("\r\n")
-}
-
 // OrderForSize returns the smallest buddy order that can hold size bytes.
 // Returns -1 if size exceeds the maximum order.
 func OrderForSize(size uint64) int {
@@ -562,9 +498,7 @@ type BuddyBuffer struct {
 func AllocBuffer(size uint64) *BuddyBuffer {
 	order := OrderForSize(size)
 	if order < 0 {
-		serial.RawUARTPuts("[kmem] AllocBuffer: size too large (")
-		serial.RawUARTHex64(size)
-		serial.RawUARTPuts(")\r\n")
+		klog.Errf("[kmem] AllocBuffer: size too large (0x%x)\n", size)
 		return nil
 	}
 

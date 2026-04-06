@@ -49,7 +49,7 @@ func kmDiagLog(code uint16, pressed bool, mods uint64, ch rune, action wm.Action
 		if ch == 0 && action == wm.ActionNone {
 			kmDiagUntranslated++
 			// Always log untranslated presses — these are the ones we need to fix.
-			sys.UartWriteDirectString(fmt.Sprintf("[keymap:MISS] code=%d (%s) mods=0x%x elapsed=%v\n",
+			sys.UartWriteString(fmt.Sprintf("[keymap:MISS] code=%d (%s) mods=0x%x elapsed=%v\n",
 				code, keyName(code), mods, elapsed))
 		} else if ch != 0 {
 			kmDiagChars++
@@ -65,7 +65,7 @@ func kmDiagLog(code uint16, pressed bool, mods uint64, ch rune, action wm.Action
 		if kmDiagMapCalls > 0 {
 			avgUs = kmDiagMapNanos / kmDiagMapCalls / 1000
 		}
-		sys.UartWriteDirectString(fmt.Sprintf(
+		sys.UartWriteString(fmt.Sprintf(
 			"[keymap:stat] calls=%d chars=%d actions=%d MISS=%d avg=%dµs\n",
 			kmDiagMapCalls, kmDiagChars, kmDiagActions, kmDiagUntranslated, avgUs))
 	}
@@ -127,7 +127,7 @@ func (w *WindowInteractor) Press(ev *input.InputEvent) bool {
 		X: ev.X, Y: ev.Y, Button: int32(ev.Code), Mods: ev.Mods,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		sys.UartWriteDirectString(fmt.Sprintf("[rachel:press] uring.Send to SID %d: %v\n", w.ta.sid, err))
+		sys.UartWriteString(fmt.Sprintf("[rachel:press] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
 	return true
 }
@@ -137,7 +137,7 @@ func (w *WindowInteractor) Release(ev *input.InputEvent) bool {
 		X: ev.X, Y: ev.Y, Button: int32(ev.Code), Mods: ev.Mods,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		sys.UartWriteDirectString(fmt.Sprintf("[rachel:release] uring.Send to SID %d: %v\n", w.ta.sid, err))
+		sys.UartWriteString(fmt.Sprintf("[rachel:release] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
 	return true
 }
@@ -147,7 +147,7 @@ func (w *WindowInteractor) Move(ev *input.InputEvent) bool {
 		X: ev.X, Y: ev.Y, Mods: ev.Mods,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		sys.UartWriteDirectString(fmt.Sprintf("[rachel:move] uring.Send to SID %d: %v\n", w.ta.sid, err))
+		sys.UartWriteString(fmt.Sprintf("[rachel:move] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
 	return true
 }
@@ -170,7 +170,7 @@ func (w *WindowInteractor) KeyDown(ev *input.InputEvent) bool {
 	}
 	msg := wm.EncodeKeyPress(&kp)
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		sys.UartWriteDirectString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
+		sys.UartWriteString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
 	// Start key-repeat animation for this key.
 	startKeyRepeat(w.ta.sid, time.Now().UnixNano(), kp)
@@ -196,7 +196,7 @@ func (w *WindowInteractor) KeyUp(ev *input.InputEvent) bool {
 		Char: uint32(ch), Action: action,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		sys.UartWriteDirectString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
+		sys.UartWriteString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
 	}
 	return true
 }
@@ -274,7 +274,7 @@ func (a *DragAgent) StartDrag(target input.Interactor, buttonCode uint16, pressX
 		a.titlebarDrag = true
 		a.dragOffsetX = pressX - wi.ta.x
 		a.dragOffsetY = pressY - wi.ta.y
-		sys.UartWriteDirectString(fmt.Sprintf("[rachel:drag] titlebar drag SID=%d offset=(%d,%d)\n",
+		sys.UartWriteString(fmt.Sprintf("[rachel:drag] titlebar drag SID=%d offset=(%d,%d)\n",
 			wi.ta.sid, a.dragOffsetX, a.dragOffsetY))
 		startDragComposite(wi.ta.sid)
 	}
@@ -477,7 +477,7 @@ func (a *FocusChangeAgent) CheckTimer() bool {
 
 func (a *FocusChangeAgent) commitSingleClick() {
 	if a.target != nil {
-		sys.UartWriteDirectString(fmt.Sprintf("[rachel:focus] single-click → raise+focus SID %d\n", a.target.ta.sid))
+		sys.UartWriteString(fmt.Sprintf("[rachel:focus] single-click → raise+focus SID %d\n", a.target.ta.sid))
 		grantFocus(a.target.ta.sid)
 		a.keyFwd.SetFocus(a.target)
 	}
@@ -486,7 +486,7 @@ func (a *FocusChangeAgent) commitSingleClick() {
 
 func (a *FocusChangeAgent) commitDoubleClick() {
 	if a.target != nil {
-		sys.UartWriteDirectString(fmt.Sprintf("[rachel:focus] double-click → focus (no raise) SID %d\n", a.target.ta.sid))
+		sys.UartWriteString(fmt.Sprintf("[rachel:focus] double-click → focus (no raise) SID %d\n", a.target.ta.sid))
 		grantFocusNoRaise(a.target.ta.sid)
 		a.keyFwd.SetFocus(a.target)
 	}
@@ -495,7 +495,7 @@ func (a *FocusChangeAgent) commitDoubleClick() {
 
 func (a *FocusChangeAgent) commitTripleClick() {
 	if a.target != nil {
-		sys.UartWriteDirectString(fmt.Sprintf("[rachel:focus] triple-click SID %d (no action yet)\n", a.target.ta.sid))
+		sys.UartWriteString(fmt.Sprintf("[rachel:focus] triple-click SID %d (no action yet)\n", a.target.ta.sid))
 	}
 	a.reset()
 }
@@ -545,7 +545,7 @@ func (a *PressAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool
 		return true
 	}
 
-	sys.UartWriteDirectString(fmt.Sprintf("[rachel:input] mouse press %s at (%d,%d)\n",
+	sys.UartWriteString(fmt.Sprintf("[rachel:input] mouse press %s at (%d,%d)\n",
 		buttonName(ev.Code), ev.X, ev.Y))
 
 	return p.Press(ev)

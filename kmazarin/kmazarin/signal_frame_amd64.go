@@ -3,8 +3,8 @@
 package main
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/serial"
 )
 
 // x86_64 signal frame layout constants.
@@ -66,9 +66,7 @@ const (
 func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 	signalSP := thread.SignalSP
 	if signalSP == 0 {
-		serial.RawUARTPuts("[signal] ERROR: no signal stack for TID=")
-		serial.RawUARTHex64(uint64(thread.TID))
-		serial.RawUARTPuts("\r\n")
+		klog.Errf("[signal] ERROR: no signal stack for TID=%d\n", thread.TID)
 		return
 	}
 

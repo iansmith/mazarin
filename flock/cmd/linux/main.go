@@ -1,72 +1,46 @@
 // linux is a userspace shepherd that handles Linux file syscalls (open, read,
-// write, close, seek, etc.) via delegation, and owns the serial port soft IRQ
-// to render kernel console output inside a mancini AppWindow with a gradient
-// purple title bar. Lines are displayed as ConsoleLabel interactors inside a
-// ColumnOutsideIn container.
+// write, close, seek, etc.) via delegation, and owns the serial port soft IRQ.
+// Console output lines are forwarded to linux-ui.maz for display.
 package main
 
 import (
 	"fmt"
-	"image"
 	"os"
-	"runtime"
+	"time"
 	"unsafe"
 
-	"golang.org/x/image/font"
-
-	"mazzy/mazarin/attr"
-	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/fsclient"
+	"mazzy/mazarin/linuxio"
 	"mazzy/mazarin/mazhost"
-	mfont "mazzy/shared/font"
-	"mazzy/mazarin/mancini"
-	"mazzy/mazarin/mancini/std"
-	mctheme "mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/serial"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
 	"mazzy/shared/ipc"
+	"mazzy/shared/queue"
 	"mazzy/shared/sysid"
-	"mazzy/shared/wm"
-)
-
-const (
-	consoleCols  = 80
-	consoleRows  = 12
 )
 
 // suppressSerialCopy is set via SUPPRESS_SERIAL_STDIO_COPY env var.
 var suppressSerialCopy bool
 
-// wmCh receives typed WM messages (wm.BackingStoreReady, wm.KeyboardFocusGained, etc.)
-// from the uring Dispatcher.
-var wmCh = make(chan any, 4)
-
-// sendBlit tells rachel to copy our backing store to the framebuffer.
-func sendBlit() {
-	if linuxRachelSID < 0 {
-		return
-	}
-	msg := wm.EncodeBlit(&wm.Blit{SID: int32(os.Getpid())})
-	_ = uring.Send(linuxRachelSID, &msg)
-}
-
-// linuxRachelSID is rachel's SID, set during main().
-var linuxRachelSID int
-
-// delegateMsg carries processed delegate data to the main goroutine.
-// The delegate goroutine replies immediately (unblocking callers) and
-// forwards text data here for console state update + redraw.
+// delegateMsg carries processed delegate data to the line accumulator.
 type delegateMsg struct {
 	fd   byte
 	data []byte
 }
 
+// readDataResponse is a pending read(0) request waiting for stdin input.
+type readDataResponse struct {
+	req sys.SyscallRequest
+}
+
+// reqQueue holds outstanding read(0) delegate requests.
+// The delegate handler enqueues; the drainer (main goroutine) dequeues.
+var reqQueue = queue.New[*readDataResponse]()
+
 // startUringDelegateHandler runs a goroutine that processes delegated syscalls
-// received via uring Dispatcher (ProtoFSDelegateReq → sys.SyscallRequest).
-// Write to fd 1/2 (stdout/stderr) is handled as console output: echo to UART,
-// reply immediately, and forward text to the main goroutine for display.
-// All other syscalls (including Write to fd 3+) are routed to the syscallHandler.
+// received via uring Dispatcher. Write to fd 1/2 is echoed to UART and
+// forwarded to the line accumulator. All other syscalls go to syscallHandler.
 func startUringDelegateHandler(delegateCh <-chan any, handler *syscallHandler, suppressSerialCopy bool) <-chan delegateMsg {
 	dataCh := make(chan delegateMsg, 32)
 	go func() {
@@ -75,7 +49,6 @@ func startUringDelegateHandler(delegateCh <-chan any, handler *syscallHandler, s
 			if !ok {
 				continue
 			}
-			// Write to stdout/stderr → console display path.
 			if req.SysID == sysid.Write {
 				fd := byte(req.Arg0())
 				if fd <= 2 {
@@ -84,15 +57,12 @@ func startUringDelegateHandler(delegateCh <-chan any, handler *syscallHandler, s
 						req.Reply(0)
 						continue
 					}
-					// Copy before Reply — kernel reclaims the data page on Reply.
 					dataCopy := make([]byte, len(data))
 					copy(dataCopy, data)
-					// Echo to UART ring buffer (non-blocking).
 					if fd == 2 || !suppressSerialCopy {
 						sys.UartWrite(addCRBeforeLF(data))
 					}
 					req.Reply(int64(len(data)))
-					// Forward to main goroutine for console state + redraw.
 					select {
 					case dataCh <- delegateMsg{fd: fd, data: dataCopy}:
 					default:
@@ -100,7 +70,6 @@ func startUringDelegateHandler(delegateCh <-chan any, handler *syscallHandler, s
 					continue
 				}
 			}
-			// Everything else → syscallHandler.
 			handler.handle(req)
 		}
 	}()
@@ -131,12 +100,14 @@ func addCRBeforeLF(data []byte) []byte {
 	return out
 }
 
-// startUringDispatcher sets up the uring Dispatcher for WM, font, delegated
-// syscall, and fs IPC response messages.
-func startUringDispatcher(fc *fontcache.FontCache, fsClient *fsclient.Client, delegateCh chan any) {
+// startUringDispatcher sets up the uring Dispatcher.
+// WM messages go to wmCh, font responses go to fontReplyCh (both forwarded
+// to linux-ui via LinuxIO channels). The shepherd does not interpret these
+// messages — it only routes them.
+func startUringDispatcher(fsClient *fsclient.Client, delegateCh chan any, wmCh chan any, fontReplyCh chan any) {
 	d := uring.NewDispatcher()
-	d.On(ipc.ProtoShepherdNotify, wm.DecodeShepherdNotify, wmCh)
-	d.On(ipc.ProtoFontResponse, wm.DecodeFontResponse, fc.ReplyCh)
+	d.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
+	d.On(ipc.ProtoFontResponse, decodeRawPayload, fontReplyCh)
 	d.On(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, delegateCh)
 	d.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
 	d.OnDeath(func(deadSID int16) {
@@ -145,235 +116,170 @@ func startUringDispatcher(fc *fontcache.FontCache, fsClient *fsclient.Client, de
 	d.Start()
 }
 
-// announceToWM sends AppStart to rachel with window dimensions via uring.
-func announceToWM(x, y, w, h int32) {
-	if linuxRachelSID < 0 {
+// decodeRawPayload copies the raw UringIPCMsg payload without interpreting it.
+// The .maz decodes the font response in its own address space so concrete
+// type assertions (wm.OpenFontReply, etc.) match its own type descriptors.
+func decodeRawPayload(msg *ipc.UringIPCMsg) any {
+	raw := make([]byte, len(msg.Payload))
+	copy(raw, msg.Payload[:])
+	return raw
+}
+
+// forceLinuxIOItab ensures the linker includes the LinuxIO interface type
+// descriptor and all method wrappers for *LinuxIOInit.
+//
+//go:noinline
+func forceLinuxIOItab(v interface{}) {
+	io, ok := v.(linuxio.LinuxIO)
+	if !ok {
 		return
 	}
-	msg := wm.EncodeAppStart(&wm.AppStart{
-		SID:    int32(os.Getpid()),
-		X:      x,
-		Y:      y,
-		Width:  w,
-		Height: h,
-	})
-	if err := uring.Send(linuxRachelSID, &msg); err != nil {
-		sys.UartWriteString("[linux] uring.Send AppStart failed: " + err.Error() + "\n")
-		return
+	_ = io.ReadChannel()
+	_ = io.WriteChannel()
+	_ = io.WMChannel()
+	_ = io.FontReplyChannel()
+	io.SetChannels(nil, nil, nil, nil) //nolint:staticcheck
+	_ = io.GetRachelSID()
+}
+
+// lineAccumulator reads serial bytes and delegate messages, accumulates
+// characters, and flushes complete lines (on \n) to the WriteCh.
+func lineAccumulator(serialCh <-chan serial.SerialByte, delegateCh <-chan delegateMsg, writeCh chan<- linuxio.LineLine) {
+	var stdoutBuf, stderrBuf []byte
+
+	flush := func(fd byte) {
+		buf := &stdoutBuf
+		if fd == 2 {
+			buf = &stderrBuf
+		}
+		if len(*buf) == 0 {
+			return
+		}
+		line := make([]byte, len(*buf))
+		copy(line, *buf)
+		select {
+		case writeCh <- linuxio.LineLine{Fd: fd, Data: line}:
+		default:
+			// WriteCh full — drop oldest line if channel is backed up.
+		}
+		*buf = nil
 	}
-	sys.UartWriteString(fmt.Sprintf("[linux] sent AppStart to rachel: %dx%d at (%d,%d)\n", w, h, x, y))
+
+	accum := func(b byte, fd byte) {
+		buf := &stdoutBuf
+		if fd == 2 {
+			buf = &stderrBuf
+		}
+		*buf = append(*buf, b)
+		if b == '\n' {
+			flush(fd)
+		}
+	}
+
+	for {
+		select {
+		case sb := <-serialCh:
+			accum(sb.B, sb.Fd)
+
+		case msg := <-delegateCh:
+			for _, b := range msg.data {
+				accum(b, msg.fd)
+			}
+		}
+	}
 }
 
 func main() {
 	sys.UartWriteString("[linux] main() entered\n")
 
-	// 1. Initialize constraint system.
-	attr.Init()
-	
-	mancini.Init()
-
-	// Publish Ready=false until setup is complete.
-	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), false)
-
-	// 2. Wait for fs first (file operations), then rachel (window manager + fontsvc).
-	// fs is ready earlier since rachel depends on fs for loading .maz files.
+	// 1. Wait for fs (needed by syscallHandler for file operations).
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[linux] FATAL: fs: %v", err))
 	}
+	// 2. Wait for rachel (needed by linux-ui for window management).
 	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
 		panic(fmt.Sprintf("[linux] FATAL: rachel: %v", err))
 	}
 	rachelSID := sys.MustGetShepherdByName("rachel")
 	fsSID := sys.MustGetShepherdByName("fs")
-	fc := fontcache.New(rachelSID)
 	fsClient := fsclient.New(fsSID)
+
+	// 3. Prepare LinuxIO injection struct — shepherd only provides rachelSID.
+	// All font/glyph infrastructure lives in the .maz.
+	ioInit := &linuxio.LinuxIOInit{
+		RachelSIDVal: rachelSID,
+	}
+
+	// Force itab so cross-.maz type assertion works.
+	forceLinuxIOItab(ioInit)
+
+	sys.UartWriteString("[linux] LinuxIO config prepared\n")
+
+	// 4. Set up uring dispatcher BEFORE loading .maz.
+	// WM and font response messages go to temp channels that will be
+	// forwarded to the .maz's channels after injection.
+	tempWMCh := make(chan any, 8)
+	tempFontReplyCh := make(chan any, 8)
 	delegateCh := make(chan any, 8)
-	startUringDispatcher(fc, fsClient, delegateCh)
+	startUringDispatcher(fsClient, delegateCh, tempWMCh, tempFontReplyCh)
 	if err := fsClient.Connect(); err != nil {
 		panic(fmt.Sprintf("[linux] FATAL: fsclient.Connect: %v", err))
 	}
 	sys.UartWriteString("[linux] fs IPC connected via uring\n")
-	fonts := &mancini.FontConfig{
-		LoadFace: func(bold bool, size int64) font.Face {
-			return fc.OpenFaceByName(mfont.DefaultMono, mfont.Regular, size)
-		},
-		FontRegular: mfont.DefaultMono,
-		FontBold:    mfont.DefaultMono,
-	}
-	pal := mctheme.NewDefaultPaletteSwapRB()
 
-	suppressSerialCopy = os.Getenv("SUPPRESS_SERIAL_STDIO_COPY") == "1"
-
-	// 3. Screen size attributes — must exist before AppWindow constraints.
-	screenWURI := "attr:///kernel/int64/screen/width"
-	screenHURI := "attr:///kernel/int64/screen/height"
-	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"_source_", screenWURI)
-	screenWAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
-	screenHProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"_source_", screenHURI)
-	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
-
-	// Bind TextSize to rachel's published defaultTextFontSize attribute.
-	rachelFontSizeURI := fmt.Sprintf("attr:///shepherd/%d/int64/defaultTextFontSize", rachelSID)
-	textSizeProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"_source_", rachelFontSizeURI)
-	textSizeAttr := attr.ConstraintI64(
-		attr.ShepherdURI("int64", "TextSize"), textSizeProg)
-	fontSize := textSizeAttr.Get()
-	if fontSize <= 0 {
-		fontSize = 24
-	}
-	sys.UartWriteString(fmt.Sprintf("[linux] TextSize=%d (from rachel)\n", fontSize))
-
-	// 4. Build UI tree: AppWindow → Column → [SingleLineText, Console].
-	// Create a theme for SingleLineText (needs Theme, not just Palette).
-	resolver := func(family string, feature mancini.Feature, size int64) font.Face {
-		return fc.OpenFaceByName(family, feature.String(), size)
-	}
-	theme := mctheme.NewTheme(pal, mctheme.NewDefaultNeumorphicParams(),
-		mfont.DefaultMono, fontSize, resolver)
-
-	col := std.NewColumn("column", "AppWindow", pal, 0, mancini.AxisMinimum, 2, false)
-	_ = col
-
-	// Console first so its width attribute exists for the input constraint.
-	console := std.NewConsole("console", "column", pal, fonts, fontSize,
-		consoleCols, consoleRows)
-
-	// Input row: label + text field side by side, width matches console.
-	const inputRowSpacing = int64(4)
-	const inputRowHMargin = int64(1)
-	inputRow := std.NewRow("inputRow", "column", pal, 0, mancini.AxisMiddle, inputRowHMargin)
-	inputRow.SetSpacing(float64(inputRowSpacing))
-
-	// Label to the left of the input field (transparent so AppWindow
-	// SurfaceTint background shows through).
-	inputLabel := std.NewLabelNamed("inputLabel", "inputRow", theme,
-		"Stdio Input", fontSize)
-	inputLabel.Transparent = true
-
-	// Input field — width = consoleWidth - labelWidth - (spacing + 2*hMargin).
-	consoleWidthURI := mancini.LayoutURI("console", mancini.DataTypeInt64, mancini.LayoutWidth)
-	labelWidthURI := mancini.LayoutURI("inputLabel", mancini.DataTypeInt64, mancini.LayoutWidth)
-	fixedOffsetURI := attr.ShepherdURI("int64", "inputFixedOffset")
-	attr.ValueI64(fixedOffsetURI, inputRowSpacing+2*inputRowHMargin)
-
-	inputLH := mancini.NewLayoutAttributesBase("input", "inputRow")
-	inputLH.Width = attr.ConstraintI64(
-		mancini.LayoutURI("input", mancini.DataTypeInt64, mancini.LayoutWidth),
-		mancini.BindStrings(mancini.ProgSubTwoDeref,
-			"_a_", consoleWidthURI,
-			"_b_", labelWidthURI,
-			"_c_", fixedOffsetURI))
-	inputLH.Height = attr.ValueI64(
-		mancini.LayoutURI("input", mancini.DataTypeInt64, mancini.LayoutHeight),
-		fontSize+16)
-	inputLH.InitBounds("input")
-	input := std.NewSingleLineText(inputLH, theme, "", fontSize)
-	input.Hint = "linux stdin text goes here..."
-	_ = input
-	_ = inputLabel
-
-	// Swap sequence so inputRow appears above console in the Column.
-	mancini.SwapSequence("inputRow", "console")
-
-	app := std.NewAppWindow(pal, "Serial Console", screenWURI, screenHURI)
-	app.Focused = false // wait for rachel to grant focus
-	app.RachelSID = rachelSID
-	input.AppWindow = app
-
-	// Initialize input dispatch pipeline and set keyboard focus to input field.
-	// KeyAgent reads pre-translated Char/Action from the wire message —
-	// rachel handles keymap translation globally.
-	_, _, keyAgent := app.InitInput()
-	keyAgent.SetFocus(input)
-	input.Focused = true
-	screenW := int(screenWAttr.Get())
-	screenH := int(screenHAttr.Get())
-
-	provider := fontcache.NewFontSvcGlyphProvider(fc)
-
-	appLH := app.GetLayout()
-	appLH.X.Set(0)
-	appLH.Y.Set(0)
-
-	// Use constraint-computed dimensions.
-	winW := int(appLH.Width.Get())
-	winH := int(appLH.Height.Get())
-	if winW < 100 {
-		winW = 800
-	}
-	if winH < 50 {
-		winH = 400
+	// 5. Load linux-ui.maz and inject LinuxIO.
+	uiPath := sys.LoadMazByName("/linux-ui")
+	sys.UartWriteString(fmt.Sprintf("[linux] loading linux-ui from %s...\n", uiPath))
+	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(uiPath, nil)
+	if uiErr != nil {
+		panic(fmt.Sprintf("[linux] LoadMazBootstrap(linux-ui) failed: %v", uiErr))
 	}
 
-	// Force Bounds evaluation for rachel.
-	_ = appLH.Bounds.Get()
-
-	// 7. Announce to rachel with our desired position and size.
-	linuxRachelSID = rachelSID
-	initX := screenW/2 - winW/2
-	initY := screenH/2 - winH/2
-	announceToWM(int32(initX), int32(initY), int32(winW), int32(winH))
-
-	// 8. Wait for rachel to allocate backing store and share it with us.
-	sys.UartWriteString("[linux] waiting for BackingStoreReady...\n")
-	var bsr wm.BackingStoreReady
-	for {
-		raw := <-wmCh
-		if b, ok := raw.(wm.BackingStoreReady); ok {
-			bsr = b
-			break
+	if uiInitAddr != 0 {
+		type funcval struct{ fn uintptr }
+		fv := &funcval{fn: uiInitAddr}
+		shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+		if err := shepherdInit(ioInit); err != nil {
+			sys.UartWriteString("[linux] linux-ui MazarinShepherd failed: " + err.Error() + "\n")
 		}
-		// Drain other messages until we get BackingStoreReady.
 	}
 
-	totalW := int(bsr.TotalWidth)
-	totalH := int(bsr.TotalHeight)
-	totalStride := int(bsr.TotalStride)
-	bsSlice := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(bsr.BackingStoreAddr))), totalStride*totalH)
+	// Read channels back from the .maz-filled struct.
+	writeCh := ioInit.WriteCh
+	readCh := ioInit.ReadCh
+	wmCh := ioInit.WMCh
+	fontReplyCh := ioInit.FontReplyCh
 
-	// Create image.RGBA over the full buffer (including border areas).
-	bsImg := &image.RGBA{
-		Pix:    bsSlice,
-		Stride: totalStride,
-		Rect:   image.Rect(0, 0, totalW, totalH),
-	}
-	dc := mancini.NewDrawContextForImage(bsImg, provider)
-
-	// Translate origin so (0,0) is the app area, and clip to app bounds.
-	leftInset := float64(bsr.LeftInset)
-	topInset := float64(bsr.TopInset)
-	dc.Push()
-	dc.Translate(leftInset, topInset)
-	dc.DrawRectangle(0, 0, float64(winW), float64(winH))
-	dc.Clip()
-
-	sys.UartWriteString(fmt.Sprintf("[linux] backing store ready: total=%dx%d inset=(%d,%d) app=%dx%d\n",
-		totalW, totalH, bsr.LeftInset, bsr.TopInset, winW, winH))
-
-	// Initial draw at (0,0) — screen position is rachel's concern.
-	app.SetDC(dc)
-	dc.SetColor(pal.Surface())
-	dc.FillRectangle(0, 0, float64(winW), float64(winH))
-
-	app.Draw(app, 0, 0, int64(winW), int64(winH))
-	sendBlit()
-
-	// 9. Serial channel and delegated syscalls.
-	// Set up delegate handling BEFORE signalling Ready, so that other shepherds
-	// waiting on our Ready don't send us delegates before we're draining them.
-	serialCh, err := serial.Chars()
-	if err != nil {
-		sys.UartWriteString(fmt.Sprintf("[linux] serial.Chars failed: %v\n", err))
-		return
+	if writeCh == nil || readCh == nil || wmCh == nil || fontReplyCh == nil {
+		panic("[linux] FATAL: linux-ui did not create channels")
 	}
 
+	// Forward WM and font messages from uring dispatcher to linux-ui's
+	// typed []byte channels. The dispatcher produces any-wrapped []byte;
+	// we extract the []byte here so the .maz doesn't need a cross-module
+	// type assertion ([]byte type descriptors differ across .maz boundaries).
+	go func() {
+		for msg := range tempWMCh {
+			if payload, ok := msg.([]byte); ok {
+				wmCh <- payload
+			}
+		}
+	}()
+	go func() {
+		for msg := range tempFontReplyCh {
+			if payload, ok := msg.([]byte); ok {
+				fontReplyCh <- payload
+			}
+		}
+	}()
+
+	// Launch linux-ui.maz goroutine.
+	go mazhost.RunMaz(uiMain)
+	sys.UartWriteString("[linux] linux-ui.maz launched\n")
+
+	// 6. Register syscall delegates.
+	suppressSerialCopy = os.Getenv("SUPPRESS_SERIAL_STDIO_COPY") == "1"
 	handler := newSyscallHandler(fsClient)
-
-	// Register as delegate handler — requests now arrive via uring Dispatcher
-	// on delegateCh (ProtoFSDelegateReq) instead of the old delegateRecvLoop.
 	delegateErr := sys.RegisterSyscallHandlers(
 		sysid.Write, sysid.Read, sysid.Openat, sysid.Close,
 		sysid.Lseek, sysid.Fstat, sysid.Fstatat,
@@ -388,135 +294,73 @@ func main() {
 		sys.UartWriteString(fmt.Sprintf("[linux] RegisterSyscallHandlers failed: %v\n", delegateErr))
 	}
 
-	// Delegate handler goroutine — replies immediately to unblock callers,
-	// forwards text data to delegateDataCh for the main goroutine.
 	var delegateDataCh <-chan delegateMsg
 	if delegateErr == nil {
 		delegateDataCh = startUringDelegateHandler(delegateCh, handler, suppressSerialCopy)
 	}
 
-	// 10. Event loop — main goroutine owns console state + redraw.
-	// Signal readiness AFTER delegate handler is running, so other shepherds
-	// that wait on our Ready can immediately send us delegates.
-	dirtyCh := attr.OnDirty()
+	// 7. Serial port soft IRQ.
+	serialCh, err := serial.Chars()
+	if err != nil {
+		sys.UartWriteString(fmt.Sprintf("[linux] serial.Chars failed: %v\n", err))
+		return
+	}
 
-	readyAttr.Set(true)
+	// 8. Signal readiness.
 	sys.SetReady(true)
 	sys.UartWriteString("[linux] Ready=true\n")
 
-	// Launch helloworld.maz — tests .maz loading and Write syscall delegation.
+	// 9. Launch helloworld.maz.
 	mazhost.LaunchMaz("helloworld")
 
-	sys.UartWriteString("[linux] Entering event loop\n")
+	// 10. Line accumulator goroutine — serial + delegates -> WriteCh.
+	go lineAccumulator(serialCh, delegateDataCh, writeCh)
 
-	// textDirty tracks whether console state changed since last redraw.
-	// Serial bytes and delegate writes set this flag; the constraint dirty
-	// tick (~10Hz) triggers the actual redraw, batching many updates into
-	// one draw+blit cycle to avoid flashing.
-	textDirty := false
-	var linuxDraws, linuxDirtyTicks, linuxSerialEvts, linuxDelegateEvts int64
-
-	redraw := func() {
-		app.Draw(app, 0, 0, int64(winW), int64(winH))
-		sendBlit()
-		linuxDraws++
-	}
-
-	// drainSerial consumes all buffered serial bytes without redrawing.
-	drainSerial := func() {
-		for {
-			select {
-			case sb := <-serialCh:
-				console.HandleByte(sb.B, sb.Fd)
-				textDirty = true
-			default:
-				return
-			}
+	// 11. ReadChannel watcher — moves input lines from channel to queue.
+	lineQueue := queue.New[[]byte]()
+	go func() {
+		for line := range readCh {
+			lineQueue.Enqueue(line)
 		}
-	}
+	}()
 
-	// drainDelegates consumes all buffered delegate messages without redrawing.
-	drainDelegates := func() {
-		for {
-			select {
-			case msg := <-delegateDataCh:
-				for _, b := range msg.data {
-					console.HandleByte(b, msg.fd)
-				}
-				textDirty = true
-			default:
-				return
-			}
-		}
-	}
-
+	// 12. Main goroutine becomes the stdin drainer.
+	// Pairs input lines with outstanding read(0) requests.
+	sys.UartWriteString("[linux] entering stdin drainer loop\n")
 	for {
-		runtime.Gosched()
-
 		select {
-		case sb := <-serialCh:
-			console.HandleByte(sb.B, sb.Fd)
-			textDirty = true
-			linuxSerialEvts++
-			drainSerial()
-			if textDirty {
-				textDirty = false
-				redraw()
+		case <-lineQueue.Wake():
+			// Input line arrived — check for pending read(0) request.
+			for lineQueue.Len() > 0 && reqQueue.Len() > 0 {
+				line, _ := lineQueue.Dequeue()
+				rdr, _ := reqQueue.Dequeue()
+				fulfillRead(rdr, line)
 			}
-
-		case msg := <-delegateDataCh:
-			for _, b := range msg.data {
-				console.HandleByte(b, msg.fd)
+		case <-reqQueue.Wake():
+			// Read(0) request arrived — check for pending input line.
+			for lineQueue.Len() > 0 && reqQueue.Len() > 0 {
+				line, _ := lineQueue.Dequeue()
+				rdr, _ := reqQueue.Dequeue()
+				fulfillRead(rdr, line)
 			}
-			textDirty = true
-			linuxDelegateEvts++
-			drainDelegates()
-			if textDirty {
-				textDirty = false
-				redraw()
-			}
-
-		case wmMsg := <-wmCh:
-			// Handle focus changes to toggle app and input cursor state.
-			switch wmMsg.(type) {
-			case wm.KeyboardFocusGained:
-				app.Focus()
-				input.Focused = true
-				redraw()
-			case wm.KeyboardFocusLost:
-				app.Unfocus()
-				input.Focused = false
-				redraw()
-			}
-			// Dispatch animation messages to AppWindow.
-			if app.DispatchAnimation(wmMsg) {
-				if appLH.HasDamage() {
-					redraw()
-				}
-			}
-			// Dispatch WM messages (keyboard, mouse, focus) through the
-			// Henry-Hudson pipeline. Keyboard events go to the focused
-			// SingleLineText input via KeyAgent.
-			if app.Input != nil {
-				app.Input.DispatchWM(wmMsg)
-				if appLH.HasDamage() {
-					redraw()
-				}
-			}
-
-		case <-dirtyCh:
-			linuxDirtyTicks++
-			// Drain any pending text before redrawing.
-			drainSerial()
-			drainDelegates()
-			if textDirty {
-				textDirty = false
-				redraw()
-			}
-			if linuxDirtyTicks%10 == 0 {
-				sys.UartWriteDirectString(fmt.Sprintf("[linux] dirtyTicks=%d draws=%d serial=%d delegate=%d\n",
-					linuxDirtyTicks, linuxDraws, linuxSerialEvts, linuxDelegateEvts))
+		case <-time.After(500 * time.Millisecond):
+			// Periodic check — pair any accumulated items.
+			for lineQueue.Len() > 0 && reqQueue.Len() > 0 {
+				line, _ := lineQueue.Dequeue()
+				rdr, _ := reqQueue.Dequeue()
+				fulfillRead(rdr, line)
 			}
 		}
 	}
+}
+
+// fulfillRead responds to a pending read(0) delegate request with the given line.
+func fulfillRead(rdr *readDataResponse, line []byte) {
+	buf := rdr.req.DataBuf()
+	if buf == nil {
+		rdr.req.Reply(0)
+		return
+	}
+	n := copy(buf, line)
+	rdr.req.Reply(int64(n))
 }

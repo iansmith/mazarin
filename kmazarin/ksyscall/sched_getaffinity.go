@@ -2,7 +2,7 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 
 	_ "unsafe" // for go:linkname
@@ -25,7 +25,7 @@ func SyscallSchedGetaffinity(pid, cpusetsize, mask, _, _, _ uint64) int64 {
 
 	// Validate user buffer address - reject NULL and kernel addresses
 	if !isValidUserAddr(mask) {
-		console.KWriteString("[sched_getaffinity] EFAULT: invalid mask addr\r\n")
+		klog.Errf("[sched_getaffinity] EFAULT: invalid mask addr\n")
 		return -14 // EFAULT
 	}
 
@@ -48,7 +48,7 @@ func SyscallSchedGetaffinity(pid, cpusetsize, mask, _, _, _ uint64) int64 {
 	}
 
 	if !kmem.WriteUserUint64(uintptr(mask), affinityMask) {
-		console.KWriteString("[sched_getaffinity] EFAULT: write failed\r\n")
+		klog.Errf("[sched_getaffinity] EFAULT: write failed\n")
 		return -14 // EFAULT
 	}
 

@@ -15,16 +15,45 @@ const MaxFonts = 32
 // handlers with typed structs. The handlers run in rachel's runtime context
 // (not .maz's broken runtime), receiving plain struct values (not interfaces
 // requiring cross-module type assertions).
+//
+// RegisterInternalOpenFont / RegisterInternalGlyphByGID allow fontsvc to
+// pass back direct function callbacks that rachel can call in-process,
+// bypassing uring IPC and SharePages. This is necessary because fontsvc
+// runs inside rachel (same SID) and SharePages to yourself is rejected
+// by the kernel.
+//
+// The callbacks use plain scalar/slice types (no interfaces) to avoid
+// cross-.maz type assertion failures (linker bug / unreachable method).
 type FontSvcInjector interface {
 	RegisterOpenFontHandler(handler func(senderSID int, variant, size int32, path [100]byte))
 	RegisterRequestGlyphHandler(handler func(senderSID int, fontID, gid, codepoint int32))
+	RegisterInternalOpenFont(handler func(family string, variant, size int32) (InternalOpenFontResult, bool))
+	RegisterInternalGlyphByGID(handler func(fontID int32, gid uint32) (InternalGlyphResult, bool))
+}
+
+// InternalOpenFontResult is the result of an in-process OpenFont call.
+type InternalOpenFontResult struct {
+	FontID   int32
+	Height   int32  // fixed.Int26_6
+	Ascent   int32  // fixed.Int26_6
+	Descent  int32  // fixed.Int26_6
+	Cache    []byte // V2 glyph cache (direct slice, same address space)
+	FontData []byte // raw font file bytes (direct slice)
+}
+
+// InternalGlyphResult is the result of an in-process GlyphByGID call.
+type InternalGlyphResult struct {
+	Info  GlyphEntry
+	Alpha []byte // alpha bitmap (copy owned by caller)
 }
 
 // FontSvcInit implements FontSvcInjector. The host (rachel) creates this
 // and passes it to fontsvc.maz's MazarinShepherd.
 type FontSvcInit struct {
-	HandleOpenFont     func(senderSID int, variant, size int32, path [100]byte)
-	HandleRequestGlyph func(senderSID int, fontID, gid, codepoint int32)
+	HandleOpenFont         func(senderSID int, variant, size int32, path [100]byte)
+	HandleRequestGlyph     func(senderSID int, fontID, gid, codepoint int32)
+	InternalOpenFont       func(family string, variant, size int32) (InternalOpenFontResult, bool)
+	InternalGlyphByGID     func(fontID int32, gid uint32) (InternalGlyphResult, bool)
 }
 
 // RegisterOpenFontHandler implements FontSvcInjector.
@@ -35,6 +64,16 @@ func (f *FontSvcInit) RegisterOpenFontHandler(handler func(senderSID int, varian
 // RegisterRequestGlyphHandler implements FontSvcInjector.
 func (f *FontSvcInit) RegisterRequestGlyphHandler(handler func(senderSID int, fontID, gid, codepoint int32)) {
 	f.HandleRequestGlyph = handler
+}
+
+// RegisterInternalOpenFont implements FontSvcInjector.
+func (f *FontSvcInit) RegisterInternalOpenFont(handler func(family string, variant, size int32) (InternalOpenFontResult, bool)) {
+	f.InternalOpenFont = handler
+}
+
+// RegisterInternalGlyphByGID implements FontSvcInjector.
+func (f *FontSvcInit) RegisterInternalGlyphByGID(handler func(fontID int32, gid uint32) (InternalGlyphResult, bool)) {
+	f.InternalGlyphByGID = handler
 }
 
 // GlyphEntry is the per-glyph header stored in the cache data region,

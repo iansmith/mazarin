@@ -25,6 +25,8 @@ type LightScrollbar struct {
 	ThumbPos   float64 // thumb position 0..1 along available travel
 	ThumbAngle float64 // thumb rotation in radians (0 = vertical for horiz sb)
 
+	Disabled bool // when true, renders dimmed and ignores input
+
 	// Drag state — active during ClickDraggable interaction.
 	dragOrigPos float64 // ThumbPos at drag start
 }
@@ -165,6 +167,10 @@ func (s *LightScrollbar) Draw(self mancini.Interactor, x, y, w, h int64) {
 	ey1 := cy + halfLen*cos
 
 	filledLine(dc, pal.Text(), ex0, ey0, ex1, ey1, 1.0)
+
+	if s.Disabled {
+		ApplyDisabledOverlay(pal, dc, tx1, ty1, tx2, ty2, tR)
+	}
 }
 
 // ── ClickDraggable protocol ──────────────────────────────────────────
@@ -190,6 +196,9 @@ func (s *LightScrollbar) trackGeometry(x, y, w, h int64) (trackStart, length, ma
 
 // ClickDragStart implements mancini.ClickDraggable.
 func (s *LightScrollbar) ClickDragStart(ev *mancini.InputEvent) bool {
+	if s.Disabled {
+		return false
+	}
 	sx, sy := s.X(), s.Y()
 	sw, sh := s.W(), s.H()
 	trackStart, _, margin, travel := s.trackGeometry(sx, sy, sw, sh)

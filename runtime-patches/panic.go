@@ -1083,11 +1083,6 @@ func cgroup_throw(s string) {
 //go:linkname throw
 //go:nosplit
 func throw(s string) {
-	// KMAZARIN: Unsuppress serial so throw message reaches UART on all architectures.
-	// The normal print path goes through write1 which is suppressed after
-	// SoftIRQConsole activation. Force output to serial for fatal errors.
-	suppressSerial = 0
-
 	// Everything throw does should be recursively nosplit so it
 	// can be called even when it's unsafe to grow the stack.
 	systemstack(func() {

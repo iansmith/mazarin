@@ -3,7 +3,6 @@ package gic
 
 import (
 	"mazzy/kmazarin/asm"
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/deviceapi"
 	"mazzy/kmazarin/dtb"
 	"mazzy/kmazarin/kirq"
@@ -179,10 +178,12 @@ func (g *GICv2) DumpIRQState(irq uint32) {
 	ispendr := g.readDistReg(0x200 + reg*4)
 	pending := (ispendr >> bit) & 1
 
-	// Also read target byte directly
-	tgtByte := asm.MmioRead8(g.distBase + 0x800 + uintptr(irq))
-	console.KPrintf("[GIC] IRQ %d: en=%d grp=%d tgt=0x%x(byte=0x%x) pri=0x%x cfg=%d pend=%d\n",
-		irq, enabled, group, target, uint32(tgtByte), priority, cfg, pending)
+	_ = enabled
+	_ = group
+	_ = target
+	_ = priority
+	_ = cfg
+	_ = pending
 }
 
 // Hardware initialization

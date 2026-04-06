@@ -1,9 +1,9 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 )
 
 // SyscallSharePages maps a page from the caller's address space into
@@ -45,7 +45,7 @@ func SyscallSharePages(arg0, arg1, _, _, _, _ uint64) int64 {
 	if pa == 0 {
 		pa = kmem.DemandMapUserPage(callerPageVA, callerShepherd.PageTableL0PA)
 		if pa == 0 {
-			serial.RawUARTPuts("[SharePages] page not mapped in caller\r\n")
+			klog.Errf("[SharePages] page not mapped in caller\n")
 			return -14 // EFAULT
 		}
 	}
@@ -54,7 +54,7 @@ func SyscallSharePages(arg0, arg1, _, _, _, _ uint64) int64 {
 	// Verify ownership
 	desc := kmem.GetPageDescriptor(pa)
 	if desc == nil || desc.Owner != callerSID {
-		serial.RawUARTPuts("[SharePages] page not owned by caller\r\n")
+		klog.Errf("[SharePages] page not owned by caller\n")
 		return -1 // EPERM
 	}
 

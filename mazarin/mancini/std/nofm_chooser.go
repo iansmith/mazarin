@@ -33,9 +33,11 @@ type NOfMChooser struct {
 	Faces    []mancini.LatinTextFace  // text content for each strip (nil entries OK)
 	Selected []bool                   // which strips are selected
 	CornerR  float64                  // corner radius for rounded bottom (default 8.0)
+	Disabled bool                     // when true, renders dimmed and ignores input
 }
 
-// selectedBg is the tint color for selected strips.
+// selectedBg is the legacy tint color for selected strips.
+// New code should use pal.Highlight() instead.
 var selectedBg = color.NRGBA{200, 100, 255, 255}
 
 // NewNOfMChooser creates an NOfMChooser wired to the constraint system
@@ -137,6 +139,9 @@ func (c *NOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64) {
 		}
 		sx := startX + float64(i)*c.StripW
 		c.Faces[i].DrawFace(dc, sx, fy, c.StripW, stripH)
+	}
+	if c.Disabled {
+		ApplyDisabledOverlay(pal, dc, startX, fy, startX+totalW, fy+stripH, r)
 	}
 }
 
@@ -285,7 +290,8 @@ func applyStripSelection(canvas *image.RGBA, pal mancini.Palette,
 
 	overlay := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	odc := gg.NewContextForRGBA(overlay)
-	odc.SetColor(color.NRGBA{selectedBg.R, selectedBg.G, selectedBg.B, 60})
+	hi := pal.Highlight()
+	odc.SetColor(color.NRGBA{hi.R, hi.G, hi.B, 60})
 	stripColumnPath(odc, lsx, lsy, sw, sh, leftR, rightR)
 	odc.Fill()
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)

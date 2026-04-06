@@ -19,6 +19,7 @@ type FreeFloatingWindow struct {
 
 	Pal     mancini.Palette
 	NeuPrms mancini.NeuParams
+	Style   mancini.SurfaceStyle
 	Title   string
 	Radius  float64
 	Visible bool
@@ -65,6 +66,7 @@ func NewFreeFloatingWindow(name string, parent mancini.Interactor,
 	w := &FreeFloatingWindow{
 		Pal:      pal,
 		NeuPrms:  neuParams,
+		Style:    NewNeumorphicStyle(&neuParams, &neuParams),
 		Title:    title,
 		Radius:   radius,
 		Visible:  false,
@@ -119,9 +121,9 @@ func (w *FreeFloatingWindow) Decorate(self mancini.Interactor, x, y, ww, hh int6
 	fx, fy := float64(x), float64(y)
 	fww, fhh := float64(ww), float64(hh)
 
-	// NeuBox at Flush depth.
-	NeuBoxWith(w.Pal, dc, mancini.Flush, fx, fy, fx+fww, fy+fhh,
-		w.Radius, w.Pal.Surface(), &w.NeuPrms)
+	// Box at Flush depth.
+	w.Style.DrawBox(w.Pal, dc, mancini.Flush, mancini.HeavyWeight,
+		fx, fy, fx+fww, fy+fhh, w.Radius, w.Pal.Surface())
 
 	// Title text centered horizontally.
 	if w.textFace != nil {
@@ -131,5 +133,5 @@ func (w *FreeFloatingWindow) Decorate(self mancini.Interactor, x, y, ww, hh int6
 	}
 
 	// Groove separator.
-	NeuGroove(w.Pal, dc, fx+ffwGrooveInset, fy+ffwGrooveY, fx+fww-ffwGrooveInset)
+	w.Style.Groove(w.Pal, dc, fx+ffwGrooveInset, fy+ffwGrooveY, fx+fww-ffwGrooveInset)
 }

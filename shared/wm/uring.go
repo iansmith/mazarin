@@ -403,10 +403,21 @@ func DecodeWMNotify(msg *ipc.UringIPCMsg) any {
 // DecodeShepherdNotify decodes a ProtoShepherdNotify message (rachel→shepherd).
 // Panics on unknown message type.
 func DecodeShepherdNotify(msg *ipc.UringIPCMsg) any {
-	msgType := *(*uint32)(unsafe.Pointer(&msg.Payload[0]))
+	return DecodeShepherdNotifyFromPayload(msg.Payload[:])
+}
+
+// DecodeShepherdNotifyFromPayload decodes a shepherd notification from raw
+// payload bytes. Used by .maz modules that receive raw payloads from the
+// shepherd's uring dispatcher and need to decode in their own type namespace.
+// Returns nil on unknown message type.
+func DecodeShepherdNotifyFromPayload(payload []byte) any {
+	if len(payload) < 4 {
+		return nil
+	}
+	msgType := *(*uint32)(unsafe.Pointer(&payload[0]))
 	switch msgType {
 	case MsgTypeBackingStoreReady:
-		return *(*BackingStoreReady)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*BackingStoreReady)(unsafe.Pointer(&payload[4]))
 	case MsgTypeYouHaveFocus:
 		return YouHaveFocus{}
 	case MsgTypeYouLostFocus:
@@ -420,26 +431,26 @@ func DecodeShepherdNotify(msg *ipc.UringIPCMsg) any {
 	case MsgTypeMouseFocusLost:
 		return MouseFocusLost{}
 	case MsgTypeMousePress:
-		return *(*MousePress)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*MousePress)(unsafe.Pointer(&payload[4]))
 	case MsgTypeMouseRelease:
-		return *(*MouseRelease)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*MouseRelease)(unsafe.Pointer(&payload[4]))
 	case MsgTypeMouseMove:
-		return *(*MouseMove)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*MouseMove)(unsafe.Pointer(&payload[4]))
 	case MsgTypeKeyPress:
-		return *(*KeyPress)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*KeyPress)(unsafe.Pointer(&payload[4]))
 	case MsgTypeKeyRelease:
-		return *(*KeyRelease)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*KeyRelease)(unsafe.Pointer(&payload[4]))
 	case MsgTypeAnimationRegistered:
-		return *(*AnimationRegistered)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*AnimationRegistered)(unsafe.Pointer(&payload[4]))
 	case MsgTypeAnimationStart:
-		return *(*AnimationStart)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*AnimationStart)(unsafe.Pointer(&payload[4]))
 	case MsgTypeAnimationUpdate:
-		return *(*AnimationUpdate)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*AnimationUpdate)(unsafe.Pointer(&payload[4]))
 	case MsgTypeAnimationFinish:
-		return *(*AnimationFinish)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*AnimationFinish)(unsafe.Pointer(&payload[4]))
 	case MsgTypeAnimationUnregistered:
-		return *(*AnimationUnregistered)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*AnimationUnregistered)(unsafe.Pointer(&payload[4]))
 	default:
-		panic("wm.DecodeShepherdNotify: unknown message type")
+		return nil
 	}
 }

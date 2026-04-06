@@ -6,8 +6,8 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/input"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
 	"unsafe"
@@ -137,12 +137,6 @@ func RegisterBlockCompletionRing(ringVA uintptr, shepherdID int16) int64 {
 	blockCompletionRingOwnerSID = shepherdID
 	blockDeviceOwnerPID = shepherdID // allow BlockSubmit from this shepherd
 
-	serial.RawUARTPuts("[CompletionRing] registered for shepherd ")
-	serial.RawUARTDecimal(uint64(shepherdID))
-	serial.RawUARTPuts(" KVA=0x")
-	serial.RawUARTHexCompact(uint64(kva))
-	serial.RawUARTPuts("\r\n")
-
 	return 0
 }
 
@@ -232,12 +226,6 @@ func RegisterInputCompletionRing(ringVA uintptr, shepherdID int16) int64 {
 	wmInputRingKVA = kva
 	wmInputRingPA = pa
 	wmInputRingOwnerSID = shepherdID
-
-	serial.RawUARTPuts("[InputRing] registered for shepherd ")
-	serial.RawUARTDecimal(uint64(shepherdID))
-	serial.RawUARTPuts(" KVA=0x")
-	serial.RawUARTHexCompact(uint64(kva))
-	serial.RawUARTPuts("\r\n")
 
 	return 0
 }
@@ -348,7 +336,7 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, shepherdID int16)
 			devIdx = 0               // dummy
 			blockDeviceOwnerPID = shepherdID
 		} else {
-			console.KPrintf("[SoftIRQSlot] No device found for IRQ %d\n", irqNum)
+			klog.Errf("[SoftIRQSlot] No device found for IRQ %d\n", irqNum)
 			return -19 // ENODEV
 		}
 	} else {
@@ -671,11 +659,6 @@ func CleanupSoftIRQSlotsForShepherd(shepherdID int16) {
 		slot.ring = nil
 		softIRQSlotInUse[i] = false
 
-		serial.RawUARTPuts("[SoftIRQ] cleaned slot ")
-		serial.RawUARTDecimal(uint64(i))
-		serial.RawUARTPuts(" for shepherd ")
-		serial.RawUARTDecimal(uint64(shepherdID))
-		serial.RawUARTPuts("\r\n")
 	}
 
 	schedulerLock.Unlock()

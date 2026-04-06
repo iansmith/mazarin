@@ -9,7 +9,7 @@
 
 package kmem
 
-import "mazzy/kmazarin/serial"
+import "mazzy/kmazarin/klog"
 
 // PageAllocType identifies the purpose of a page allocation.
 type PageAllocType uint8
@@ -51,9 +51,7 @@ func TrackPage(info PageAllocInfo) {
 		trackerCount++
 	} else {
 		trackerLock.Unlock()
-		serial.RawUARTPuts("[kmem] WARN: page tracker full (")
-		serial.RawUARTHex64(uint64(MaxTrackedPages))
-		serial.RawUARTPuts(" entries)\r\n")
+		klog.Errf("[kmem] WARN: page tracker full (%d entries)\n", MaxTrackedPages)
 		return
 	}
 	trackerLock.Unlock()
@@ -125,42 +123,3 @@ func GetMemoryStats() MemoryStats {
 	return stats
 }
 
-// PrintMemoryStats prints a summary of tracked page allocations to serial.
-func PrintMemoryStats() {
-	stats := GetMemoryStats()
-	serial.RawUARTPuts("[kmem] Page tracker: ")
-	serial.RawUARTHex64(stats.TotalTracked)
-	serial.RawUARTPuts(" entries\r\n")
-	serial.RawUARTPuts("  Kernel heap: ")
-	serial.RawUARTHex64(stats.KernelHeapPages)
-	serial.RawUARTPuts(" pages\r\n")
-	serial.RawUARTPuts("  Kernel PT:   ")
-	serial.RawUARTHex64(stats.KernelPTPages)
-	serial.RawUARTPuts(" pages\r\n")
-	serial.RawUARTPuts("  User:        ")
-	serial.RawUARTHex64(stats.UserPages)
-	serial.RawUARTPuts(" pages\r\n")
-	serial.RawUARTPuts("  User PT:     ")
-	serial.RawUARTHex64(stats.UserPTPages)
-	serial.RawUARTPuts(" pages\r\n")
-	serial.RawUARTPuts("  File buffer: ")
-	serial.RawUARTHex64(stats.FileBufferPages)
-	serial.RawUARTPuts(" pages\r\n")
-	// Per-shepherd breakdown
-	serial.RawUARTPuts("  By shepherd:\r\n")
-	// Index 0 = kernel (PID 0)
-	if stats.ByShepherd[0] > 0 {
-		serial.RawUARTPuts("    kernel(0): ")
-		serial.RawUARTHex64(stats.ByShepherd[0])
-		serial.RawUARTPuts(" pages\r\n")
-	}
-	for i := 1; i < MaxShepherds; i++ {
-		if stats.ByShepherd[i] > 0 {
-			serial.RawUARTPuts("    shepherd ")
-			serial.RawUARTHex64(uint64(i))
-			serial.RawUARTPuts(": ")
-			serial.RawUARTHex64(stats.ByShepherd[i])
-			serial.RawUARTPuts(" pages\r\n")
-		}
-	}
-}

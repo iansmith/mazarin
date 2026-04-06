@@ -3,8 +3,8 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/gpu"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/proc"
@@ -141,7 +141,7 @@ var currentProcess *Process
 // Used for the embedded fs shepherd — no disk I/O needed.
 func LaunchFromMemory(elfData []byte, name string) int64 {
 	if len(elfData) < 64 {
-		console.KPrintln("[Launch] ERROR: embedded ELF too small")
+		klog.Errf("[Launch] ERROR: embedded ELF too small\n")
 		return -4
 	}
 
@@ -181,7 +181,7 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 	filename := "/" + name + ".elf"
 	loadedProc, err := loadELF(elfData, filename, processL0PA, 0)
 	if err != nil {
-		console.KPrintf("[Launch] loadELF FAILED: %v\n", err)
+		klog.Errf("[Launch] loadELF FAILED: %v\n", err)
 		return -5
 	}
 

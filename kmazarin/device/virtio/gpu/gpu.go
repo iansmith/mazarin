@@ -3,11 +3,10 @@ package gpu
 
 import (
 	"mazzy/kmazarin/asm"
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"unsafe"
 )
@@ -200,7 +199,7 @@ func findVirtIOGPU() bool {
 
 				if vendorID == pci.VIRTIO_VENDOR_ID && deviceID == pci.VIRTIO_GPU_DEVICE_ID {
 					if !virtioGPUDevice.FindAndMapBARs(bus, slot, funcNum, gpuMMIOBase) {
-						console.KPrintln("[VirtIO GPU] ERROR: Failed to find/map BARs")
+						klog.Errf("[VirtIO GPU] ERROR: Failed to find/map BARs\n")
 						return false
 					}
 					return true
@@ -222,21 +221,21 @@ func virtioGPUInit() bool {
 
 	// Feature negotiation: accept VIRTIO_F_VERSION_1 only
 	if !dev.Handshake(0, virtio.FeatureVersion1) {
-		console.KPrintln("[VirtIO GPU] ERROR: Device rejected features")
+		klog.Errf("[VirtIO GPU] ERROR: Device rejected features\n")
 		return false
 	}
 
 	// Initialize control queue (heap-allocated, uses VirtqueueInit)
 	queueSize := uint16(64)
 	if !virtio.VirtqueueInit(&dev.ControlQueue, queueSize) {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to init control queue")
+		klog.Errf("[VirtIO GPU] ERROR: Failed to init control queue\n")
 		return false
 	}
 
 	// Enable control queue on the device (EnableQueue handles heap PAs)
 	notifyOff, ok := dev.EnableQueue(0, &dev.ControlQueue, virtio.MSIXNoVector)
 	if !ok {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to setup control queue")
+		klog.Errf("[VirtIO GPU] ERROR: Failed to setup control queue\n")
 		return false
 	}
 	dev.ControlQueueNotifyOff = notifyOff
@@ -246,12 +245,12 @@ func virtioGPUInit() bool {
 	cursorQueueSize := uint16(16)
 	cursorDmaPA, cursorDmaVA := kmem.AllocDMAPageMapped()
 	if cursorDmaPA == 0 {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to alloc cursor queue DMA page")
+		klog.Errf("[VirtIO GPU] ERROR: Failed to alloc cursor queue DMA page\n")
 		return false
 	}
 	notifyOff, ok = dev.SetupQueue(1, &dev.CursorQueue, cursorQueueSize, cursorDmaPA, cursorDmaVA, 0, virtio.MSIXNoVector)
 	if !ok {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to setup cursor queue")
+		klog.Errf("[VirtIO GPU] ERROR: Failed to setup cursor queue\n")
 		return false
 	}
 	dev.CursorQueueNotifyOff = notifyOff
@@ -260,7 +259,7 @@ func virtioGPUInit() bool {
 	dev.SetDriverOK()
 
 	if dev.CheckFailed() {
-		console.KPrintln("[VirtIO GPU] ERROR: Device failed")
+		klog.Errf("[VirtIO GPU] ERROR: Device failed\n")
 		return false
 	}
 
@@ -325,7 +324,6 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	}
 
 	if waited >= maxWait {
-		serial.PollWrite('!')
 		return 0xFFFF
 	}
 
@@ -335,7 +333,7 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	// Get response
 	usedDescIdx, _ := virtio.VirtqueueGetUsed(vq)
 	if usedDescIdx == 0xFFFF {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to get used descriptor")
+		klog.Errf("[VirtIO GPU] ERROR: Failed to get used descriptor\n")
 		return 0xFFFF
 	}
 
@@ -384,7 +382,7 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 	fbSize := displayWidth * resourceHeight * 4 // 4 bytes per pixel (BGRA8888)
 
 	if fbSize > virtioGPUFramebufferSize {
-		console.KPrintln("[VirtIO GPU] ERROR: Framebuffer size too large")
+		klog.Errf("[VirtIO GPU] ERROR: Framebuffer size too large\n")
 		return false
 	}
 
@@ -393,7 +391,7 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 	fbPages := (uintptr(fbSize) + kmem.PageSize - 1) / kmem.PageSize
 	virtioGPUFramebufferAddr = kmem.AllocContiguousPages(fbPages, kmem.PageFramebuffer, 0)
 	if virtioGPUFramebufferAddr == 0 {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to allocate framebuffer pages")
+		klog.Errf("[VirtIO GPU] ERROR: Failed to allocate framebuffer pages\n")
 		return false
 	}
 	// Framebuffer allocated
@@ -422,7 +420,7 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 
 	respType := virtioGPUSendCommand(unsafe.Pointer(&createCmd), uint32(unsafe.Sizeof(createCmd)), unsafe.Pointer(&createResp), uint32(unsafe.Sizeof(createResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KPrintf("[VirtIO GPU] ERROR: CREATE_2D failed (0x%04x)\n", respType)
+		klog.Errf("[VirtIO GPU] ERROR: CREATE_2D failed (0x%04x)\n", respType)
 		return false
 	}
 
@@ -444,7 +442,7 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 	var attachResp VirtIOGPUCtrlHdr
 	respType = virtioGPUSendCommand(attachCmdBuf, attachCmdSize, unsafe.Pointer(&attachResp), uint32(unsafe.Sizeof(attachResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KPrintf("[VirtIO GPU] ERROR: ATTACH_BACKING failed (0x%04x)\n", respType)
+		klog.Errf("[VirtIO GPU] ERROR: ATTACH_BACKING failed (0x%04x)\n", respType)
 		return false
 	}
 
@@ -459,12 +457,9 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 	var scanoutResp VirtIOGPUCtrlHdr
 	respType = virtioGPUSendCommand(unsafe.Pointer(&scanoutCmd), uint32(unsafe.Sizeof(scanoutCmd)), unsafe.Pointer(&scanoutResp), uint32(unsafe.Sizeof(scanoutResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KPrintf("[VirtIO GPU] ERROR: SET_SCANOUT failed (0x%04x)\n", respType)
+		klog.Errf("[VirtIO GPU] ERROR: SET_SCANOUT failed (0x%04x)\n", respType)
 		return false
 	}
-
-	console.KPrintf("[VirtIO GPU] %dx%d FB at PA 0x%X\n",
-		displayWidth, displayHeight, virtioGPUFramebufferAddr)
 
 	return true
 }
@@ -663,7 +658,7 @@ func virtioGPUTransferAndFlush(x, y, width, height uint32) {
 		}
 	}
 	if waited >= maxWait {
-		serial.PollWrite('!')
+		// timeout — silently drop
 	}
 
 	// Invalidate response buffers and check results

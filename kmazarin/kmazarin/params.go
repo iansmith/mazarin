@@ -10,7 +10,6 @@
 package main
 
 import (
-	"fmt"
 	"mazzy/shared/param"
 	"unsafe"
 )
@@ -61,15 +60,6 @@ func GetParamUint64(key string) (uint64, bool) {
 // PrintParams prints all parameters to the UART for debugging.
 // This is useful during boot to verify Cardinal passed the correct values.
 func PrintParams() {
-	if paramBuffer == nil {
-		initParams()
-	}
-
-	fmt.Println("\r\n=== Cardinal Parameters ===")
-	for key, value := range paramBuffer {
-		fmt.Printf("%s = %s\r\n", key, value)
-	}
-	fmt.Println("=== End Parameters ===")
 }
 
 // readAuxv walks the auxiliary vector on the stack to find our custom entries.

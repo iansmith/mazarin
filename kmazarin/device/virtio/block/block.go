@@ -1,9 +1,9 @@
 package block
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
 	"mazzy/shared/constants"
@@ -82,25 +82,25 @@ func Init() bool {
 
 		// VirtIO handshake (MSI-X vector assigned if platform supports it)
 		if !virtioBlockInit() {
-			console.KPrintln("[VirtIO Block] PCI device initialization failed")
+			klog.Errf("[VirtIO Block] PCI device initialization failed\n")
 			return false
 		}
 		if !virtioBlockReadConfig() {
-			console.KPrintln("[VirtIO Block] PCI failed to read config")
+			klog.Errf("[VirtIO Block] PCI failed to read config\n")
 			return false
 		}
 	} else {
 		// PCI not found — try MMIO (RISC-V)
 		if !findVirtIOBlockMMIO() {
-			console.KPrintln("[VirtIO Block] No block device found (PCI or MMIO)")
+			klog.Errf("[VirtIO Block] No block device found (PCI or MMIO)\n")
 			return false
 		}
 		if !virtioBlockInitMMIO() {
-			console.KPrintln("[VirtIO Block] MMIO device initialization failed")
+			klog.Errf("[VirtIO Block] MMIO device initialization failed\n")
 			return false
 		}
 		if !virtioBlockReadConfigMMIO() {
-			console.KPrintln("[VirtIO Block] MMIO failed to read config")
+			klog.Errf("[VirtIO Block] MMIO failed to read config\n")
 			return false
 		}
 	}
@@ -109,19 +109,11 @@ func Init() bool {
 	// This avoids demand paging issues — the page has a known PA via the linear map.
 	dmaPA := kmem.AllocKernelFrame()
 	if dmaPA == 0 {
-		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate DMA page")
+		klog.Errf("[VirtIO Block] ERROR: Failed to allocate DMA page\n")
 		return false
 	}
 	virtioBlockDevice.DmaPagePA = dmaPA
 	virtioBlockDevice.DmaPageVA = dmaPA + constants.KernelMMIOOffset
-
-	if virtioBlockDevice.IRQNum != 0 {
-		console.KPrintf("[VirtIO Block] Initialized: %d MB (%d sectors) IRQ=%d\n",
-			virtioBlockDevice.Capacity/2048, virtioBlockDevice.Capacity, virtioBlockDevice.IRQNum)
-	} else {
-		console.KPrintf("[VirtIO Block] Initialized: %d MB (%d sectors) polling\n",
-			virtioBlockDevice.Capacity/2048, virtioBlockDevice.Capacity)
-	}
 
 	// Register with device manager
 	device.RegisterBlockDevice(&virtioBlockDevice)
@@ -168,7 +160,7 @@ func findVirtIOBlock() bool {
 					(deviceID == VIRTIO_BLK_DEVICE_ID_LEGACY || deviceID == VIRTIO_BLK_DEVICE_ID_MODERN) {
 
 					if !virtioBlockDevice.FindAndMapBARs(bus, slot, funcNum, blockMMIOBase) {
-						console.KPrintln("[VirtIO Block] ERROR: Failed to find/map BARs")
+						klog.Errf("[VirtIO Block] ERROR: Failed to find/map BARs\n")
 						return false
 					}
 					return true
@@ -193,7 +185,7 @@ func virtioBlockInit() bool {
 
 	// Feature negotiation: accept VIRTIO_F_VERSION_1 only
 	if !dev.Handshake(0, virtio.FeatureVersion1) {
-		console.KPrintln("[VirtIO Block] ERROR: Device rejected features")
+		klog.Errf("[VirtIO Block] ERROR: Device rejected features\n")
 		return false
 	}
 
@@ -205,7 +197,7 @@ func virtioBlockInit() bool {
 	// Allocate DMA page for virtqueue structures
 	queuePagePA := kmem.AllocKernelFrame()
 	if queuePagePA == 0 {
-		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate queue DMA page")
+		klog.Errf("[VirtIO Block] ERROR: Failed to allocate queue DMA page\n")
 		return false
 	}
 	queuePageVA := queuePagePA + constants.KernelMMIOOffset
@@ -213,14 +205,14 @@ func virtioBlockInit() bool {
 	// Initialize Engine: sets up VQ on DMA page, enables queue on device.
 	// Queue 0, 128 entries: desc(2048)+avail(262)+used(1030) = 3340 bytes < 4096
 	if !dev.Eng.Init(&dev.PCIDevice, 0, 128, queuePagePA, queuePageVA, 0, msixVec) {
-		console.KPrintln("[VirtIO Block] ERROR: Failed to init engine")
+		klog.Errf("[VirtIO Block] ERROR: Failed to init engine\n")
 		return false
 	}
 
 	// Initialize sidecar pool for protocol headers (Device-nGnRnE page).
 	// Each 32-byte slot holds: VirtIOBlockReq (16B) + status (1B) + padding.
 	if !dev.Sidecars.Init(sidecarSlotSize) {
-		console.KPrintln("[VirtIO Block] ERROR: Failed to init sidecar pool")
+		klog.Errf("[VirtIO Block] ERROR: Failed to init sidecar pool\n")
 		return false
 	}
 
@@ -228,7 +220,7 @@ func virtioBlockInit() bool {
 	dev.SetDriverOK()
 
 	if dev.CheckFailed() {
-		console.KPrintln("[VirtIO Block] ERROR: Device failed")
+		klog.Errf("[VirtIO Block] ERROR: Device failed\n")
 		return false
 	}
 
@@ -242,7 +234,7 @@ func virtioBlockInit() bool {
 func virtioBlockReadConfig() bool {
 	dev := &virtioBlockDevice
 	if dev.DeviceConfigBase == 0 {
-		console.KPrintln("[VirtIO Block] ERROR: No device config BAR mapped")
+		klog.Errf("[VirtIO Block] ERROR: No device config BAR mapped\n")
 		return false
 	}
 

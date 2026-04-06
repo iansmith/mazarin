@@ -32,9 +32,6 @@ var (
 	SVCCountBySID      [32]uint64 // Per-SID SVC counter for diagnostics
 	// SID0 per-syscall-number counters for diagnosing kernel thread load.
 	SID0SyscallCounts [256]uint64 // indexed by syscall number (clamped to 255)
-	// DbgTraceSID, when >= 0, causes DispatchSyscall to log syscall numbers
-	// for the matching SID. Set from ext2 timing hooks to trace fs during stall.
-	DbgTraceSID int32 = -1
 )
 
 // PrintFutexStats prints futex statistics for debugging

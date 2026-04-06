@@ -113,12 +113,10 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 				pushByteToUartRing(fdByte, c)
 			}
-			// Echo to serial for diagnostic output.
-			// Both stdout and stderr use the interrupt-driven TX ring
-			// (QueueByte) so write() doesn't stall the calling shepherd.
-			// The linux shepherd's own writes (useDirect path below)
-			// still use PollWrite for stderr to guarantee panic delivery.
-			if fd == 2 || echoToSerial {
+			// Echo to serial only when suppressSerial is off (early boot / debug).
+			// No special-case for fd=2: all output routing goes through the
+			// linux shepherd's ring, keeping serial output clean.
+			if echoToSerial {
 				for i := uint64(0); i < n; i++ {
 					c := chunk[i]
 					if c == '\n' {
@@ -128,25 +126,14 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 			}
 		} else if useDirect {
-			// linux shepherd's own writes: fd-based routing.
-			// stderr: always PollWrite (guaranteed delivery).
-			// stdout: QueueByte (interrupt-driven).
-			if fd == 2 {
-				for i := uint64(0); i < n; i++ {
-					c := chunk[i]
-					if c == '\n' {
-						serial.PollWrite('\r')
-					}
-					serial.PollWrite(c)
+			// linux shepherd's own writes — both stdout and stderr use
+			// interrupt-driven QueueByte so write() doesn't stall.
+			for i := uint64(0); i < n; i++ {
+				c := chunk[i]
+				if c == '\n' {
+					serial.QueueByte('\r')
 				}
-			} else {
-				for i := uint64(0); i < n; i++ {
-					c := chunk[i]
-					if c == '\n' {
-						serial.QueueByte('\r')
-					}
-					serial.QueueByte(c)
-				}
+				serial.QueueByte(c)
 			}
 		}
 		offset += n

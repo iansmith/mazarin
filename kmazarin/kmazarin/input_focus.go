@@ -3,7 +3,6 @@
 package main
 
 import (
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"mazzy/shared/ipc"
 	"sync/atomic"
@@ -84,10 +83,6 @@ func wakeWMViaUringImpl() {
 func CleanupInputFocusForShepherd(shepherdID int16) {
 	sid := int32(shepherdID)
 	atomic.CompareAndSwapInt32(&windowManagerSID, sid, -1)
-
-	serial.RawUARTPuts("[InputFocus] cleaned for shepherd ")
-	serial.RawUARTDecimal(uint64(shepherdID))
-	serial.RawUARTPuts("\r\n")
 }
 
 // GetWindowManagerSID returns the window manager shepherd ID (-1 if none).

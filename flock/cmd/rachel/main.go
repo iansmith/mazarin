@@ -24,9 +24,11 @@ import (
 	"mazzy/mazarin/vm"
 	"mazzy/mazarin/vm/flat"
 	"mazzy/shared/constants"
+	mfont "mazzy/shared/font"
 	"mazzy/shared/hid"
 	"mazzy/shared/ipc"
 	"mazzy/shared/wm"
+	"os"
 	"strconv"
 	"syscall"
 	"time"
@@ -439,11 +441,9 @@ func postBatchInputUpdate(posChanged *bool, modState *input.ModifierState, wmd *
 }
 
 // Border sizes around each client's drawing area (in pixels).
-// Must be large enough for Heavy Raised neumorphic shadows + title bar.
-// Heavy params: DarkOff=14, DarkBlur=14 → dark shadow extends ~56px bottom-right;
-//               LightOff=4,  LightBlur=8  → light shadow extends ~28px top-left.
-// borderTop includes shadow margin + title bar (20) + gap (2).
-const (
+// Initialized from wmTheme in main(). Must be large enough for the active
+// SurfaceStyle's shadows + title bar.
+var (
 	borderTop    = 52
 	borderRight  = 60
 	borderBottom = 60
@@ -453,9 +453,17 @@ const (
 	shadowTop      = 30 // shadow margin above the NeuBox face
 )
 
+// wmTheme provides decoration parameters for rachel. Initialized in main().
+var wmTheme *mctheme.DefaultWMTheme
+
+// pal is the shared palette for rachel's decoration rendering and compositing.
+// Initialized in main() before any windows are tracked.
+var pal *mctheme.DefaultPalette
+
 // desktopBG is the desktop background color in NRGBA (R,G,B order).
 // The framebuffer uses BGRA byte order; this is the logical color.
-var desktopBG = color.NRGBA{R: 200, G: 195, B: 215, A: 255}
+// Set from pal.DesktopBG() during initialization.
+var desktopBG color.NRGBA
 
 // trackedApp holds rachel's state for a managed shepherd window.
 type trackedApp struct {
@@ -563,7 +571,7 @@ func moveWindowTo(ta *trackedApp, newX, newY int32) {
 		oldRect := dragPrevRect
 		ta.x = newX
 		ta.y = newY
-		newRect := windowScreenRect(ta)
+		newRect := windowVisibleRect(ta, true) // focused = face + light shadow pad
 
 		// 1. Restore newly-exposed area from drag background.
 		exposed := rectSubtract(oldRect, newRect)
@@ -571,10 +579,19 @@ func moveWindowTo(ta *trackedApp, newX, newY int32) {
 			copyRectFromBuffer(fbPix, fbStride, dragBG, dragBGStride, r)
 		}
 
-		// 2. Blit the dragged window at its new position (with alpha).
+		// 2. Restore shadow zone background from dragBG for correct alpha.
+		face := faceScreenRect(ta)
+		shadowRect := newRect // newRect = face expanded by lightShadowPad
+		// The shadow zone is the difference between the visible rect and the face.
+		shadowStrips := rectSubtract(shadowRect, face)
+		for _, s := range shadowStrips {
+			copyRectFromBuffer(fbPix, fbStride, dragBG, dragBGStride, s)
+		}
+
+		// 3. Blit the dragged window at its new position (with alpha).
 		blitWindow(ta.sid, []image.Rectangle{newRect}, fbPix, fbStride, true)
 
-		// 3. Flush only the union of old and new rects.
+		// 4. Flush only the union of old and new rects.
 		union := oldRect.Union(newRect)
 		flushRect(union.Min.X, union.Min.Y, union.Dx(), union.Dy())
 
@@ -664,16 +681,29 @@ func blitAllWindows() {
 	}
 
 	// Walk z-order back-to-front (last element = backmost).
-	// Decorations are already rendered into each backing store's
-	// border area, so blitWindow handles everything.
+	// Unfocused windows blit only their face area (titlebar + content).
+	// The focused window blits the full buffer including neumorphic shadows.
 	for i := len(zOrder) - 1; i >= 0; i-- {
 		sid := zOrder[i]
 		ta, ok := trackedApps[sid]
 		if !ok || ta.backingStore == nil {
 			continue
 		}
+		focused := sid == mouseFocusSID
 		regions := exposedRegion(sid)
-		blitWindow(sid, regions, fbPix, fbStride, sid == mouseFocusSID)
+		if !focused {
+			// Clip exposed regions to face area — no shadow borders.
+			face := faceScreenRect(ta)
+			var clipped []image.Rectangle
+			for _, r := range regions {
+				isect := r.Intersect(face)
+				if !isect.Empty() {
+					clipped = append(clipped, isect)
+				}
+			}
+			regions = clipped
+		}
+		blitWindow(sid, regions, fbPix, fbStride, focused)
 	}
 	// Flush the entire display once.
 	flushRect(0, 0, int(displayWidth), int(displayHeight))
@@ -758,6 +788,8 @@ func forceFontSvcItab(v interface{}) {
 	}
 	inj.RegisterOpenFontHandler(nil)
 	inj.RegisterRequestGlyphHandler(nil)
+	inj.RegisterInternalOpenFont(nil)
+	inj.RegisterInternalGlyphByGID(nil)
 }
 
 // wmEventLoop receives typed WM messages from the uring Dispatcher (wmCh)
@@ -794,11 +826,11 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 			switch msg := wmMsg.Msg.(type) {
 			case wm.AppStart:
 				rachelMsgAppStart++
-				sys.UartWriteDirectString(fmt.Sprintf("[rachel:wm] AppStart sid=%d w=%d h=%d\n", senderSID, msg.Width, msg.Height))
+				sys.UartWriteString(fmt.Sprintf("[rachel:wm] AppStart sid=%d w=%d h=%d\n", senderSID, msg.Width, msg.Height))
 
 				// Track the shepherd's AppWindow Bounds in rachel's constraint space.
 				if trackAppBounds(senderSID) == nil {
-					sys.UartWriteDirectString("[rachel:wm] trackAppBounds failed\n")
+					sys.UartWriteString("[rachel:wm] trackAppBounds failed\n")
 					continue
 				}
 				ta := trackedApps[senderSID]
@@ -851,7 +883,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				ta.x = int32(appX)
 				ta.y = int32(appY)
 
-				sys.UartWriteDirectString(fmt.Sprintf("[rachel:wm] sid=%d pos=(%d,%d) bs=%dx%d pick-rect=(%d,%d)-(%d,%d)\n",
+				sys.UartWriteString(fmt.Sprintf("[rachel:wm] sid=%d pos=(%d,%d) bs=%dx%d pick-rect=(%d,%d)-(%d,%d)\n",
 					senderSID, ta.x, ta.y, ta.bsWidth, ta.bsHeight,
 					int32(appX)-int32(borderLeft), int32(appY)-int32(borderTop),
 					int32(appX)-int32(borderLeft)+ta.bsWidth, int32(appY)-int32(borderTop)+ta.bsHeight))
@@ -861,20 +893,20 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				bsPages := (bsBytes + 4095) / 4096
 				bsSlice, allocErr := mem.AllocPagesSlice(bsPages, mem.PageShared)
 				if allocErr != nil {
-					sys.UartWriteDirectString("[rachel:wm] backing store alloc failed\n")
+					sys.UartWriteString("[rachel:wm] backing store alloc failed\n")
 					continue
 				}
 				ta.backingStore = bsSlice
 
 				// Pre-render both focused and unfocused decorations.
 				// Apply focused state since new windows get focus immediately.
-				preRenderDecorations(ta, desktopBG)
+				preRenderDecorations(ta)
 
 				// Share pages with the client shepherd.
 				bsVA := uintptr(unsafe.Pointer(&bsSlice[0]))
 				clientVA, shareErr := sys.SharePagesWithTarget(senderSID, bsVA, bsPages)
 				if shareErr != nil {
-					sys.UartWriteDirectString("[rachel:wm] share pages failed\n")
+					sys.UartWriteString("[rachel:wm] share pages failed\n")
 					continue
 				}
 
@@ -887,15 +919,15 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 					TotalWidth:       int32(totalW),
 					TotalHeight:      int32(totalH),
 					TotalStride:      int32(totalW * 4),
-					LeftInset:        borderLeft,
-					TopInset:         borderTop,
+					LeftInset:        int32(borderLeft),
+					TopInset:         int32(borderTop),
 					AppWidth:         msg.Width,
 					AppHeight:        msg.Height,
 					AppX:             ta.x,
 					AppY:             ta.y,
 				})
 				if err := uring.Send(senderSID, &bsr); err != nil {
-					sys.UartWriteDirectString("[rachel:wm] uring.Send BackingStoreReady failed\n")
+					sys.UartWriteString("[rachel:wm] uring.Send BackingStoreReady failed\n")
 				}
 				sys.UartWriteString(fmt.Sprintf("[rachel:wm] SID %d: backing store %dx%d at (%d,%d)\n",
 					senderSID, totalW, totalH, ta.x, ta.y))
@@ -937,7 +969,24 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				}
 				regions, occDur := timedExposedRegion(senderSID)
 
-				copyDur := timedBlitWindow(senderSID, regions, fbPix, fbStride, senderSID == mouseFocusSID)
+				focused := senderSID == mouseFocusSID
+				if focused {
+					// Restore correct background under border zones so shadows
+					// composite over lower windows, not stale FB content.
+					restoreBorderBackground(senderSID, regions, fbPix, fbStride)
+				} else {
+					// Unfocused: clip to face area — no shadow borders.
+					face := faceScreenRect(ta)
+					var clipped []image.Rectangle
+					for _, r := range regions {
+						isect := r.Intersect(face)
+						if !isect.Empty() {
+							clipped = append(clipped, isect)
+						}
+					}
+					regions = clipped
+				}
+				copyDur := timedBlitWindow(senderSID, regions, fbPix, fbStride, focused)
 
 				ox, oy := screenOrigin(ta)
 				flushDur := timedFlushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
@@ -992,6 +1041,24 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 
 func main() {
 	sys.UartWriteString("[rachel] Starting window manager\n")
+
+	// Initialize palette and desktop background early — everything that
+	// fills or composites the framebuffer reads desktopBG.
+	pal = mctheme.NewDefaultPaletteSwapRB()
+	pal.SetDesktopBG(color.NRGBA{R: 224, G: 224, B: 224, A: 255})
+	desktopBG = pal.DesktopBG() // BGRA byte order (RB-swapped)
+
+	// Initialize WMTheme from palette — border vars derive from it.
+	wmTheme = mctheme.NewDefaultWMTheme(pal)
+	wmTheme.SetStyle(std.NewNeumorphicStyle(
+		mctheme.NewDefaultNeumorphicParams().Heavy(),
+		mctheme.NewDefaultNeumorphicParams().Light()))
+	borderTop = wmTheme.BorderTop()
+	borderRight = wmTheme.BorderRight()
+	borderBottom = wmTheme.BorderBottom()
+	borderLeft = wmTheme.BorderLeft()
+	titleBarHeight = wmTheme.TitleBarHeight()
+	shadowTop = wmTheme.ShadowTop()
 
 	// Claim window manager role — rachel gets ALL input events automatically
 	sys.UartWriteString("[rachel] requesting WM role...\n")
@@ -1142,6 +1209,13 @@ func main() {
 	wmCh := make(chan any, 32)
 	disp := uring.NewDispatcher()
 	disp.On(ipc.ProtoWMNotify, wm.DecodeWMNotify, wmCh)
+
+	// Rachel's own FontCache for rendering title bar text. Font requests
+	// go via uring to ourselves; the dispatcher goroutine processes them
+	// through the fontsvc callbacks and sends replies back.
+	rachelFC := fontcache.New(os.Getpid())
+	disp.On(ipc.ProtoFontResponse, wm.DecodeFontResponse, rachelFC.ReplyCh)
+
 	if initData.HandleOpenFont != nil {
 		openFontCb := initData.HandleOpenFont
 		glyphCb := initData.HandleRequestGlyph
@@ -1167,10 +1241,21 @@ func main() {
 	sys.UartWriteString("[rachel] disp.Start() returned, building dispatcher...\n")
 
 	// Create the window title bar used for all managed windows.
-	// Font opening is deferred to first DrawTitleBar call; stripes render
-	// even without fonts, so this is safe to set up before fonts are loaded.
-	pal := mctheme.NewDefaultPaletteSwapRB()
-	windowTitleBar = std.NewStripedTitleBar(pal, &mancini.FontConfig{}, 14, true)
+	// Use the internal provider (direct in-process calls to fontsvc)
+	// instead of the uring-based provider. SharePages to yourself
+	// is rejected by the kernel, so the IPC path cannot work for
+	// rachel's own font rendering.
+	if initData.InternalOpenFont != nil {
+		titleGlyphProvider = fontcache.NewInternalGlyphProvider(initData.InternalOpenFont, initData.InternalGlyphByGID)
+		sys.UartWriteString("[rachel] using internal font provider (no IPC)\n")
+	} else {
+		titleGlyphProvider = fontcache.NewFontSvcGlyphProvider(rachelFC)
+		sys.UartWriteString("[rachel] WARNING: internal font provider not available, falling back to IPC\n")
+	}
+	windowTitleBar = std.NewStripedTitleBar(pal, &mancini.FontConfig{
+		FontRegular: mfont.DefaultSans,
+		FontBold:    mfont.DefaultSans,
+	}, 22, true)
 	sys.UartWriteString("[rachel] StripedTitleBar created\n")
 
 	// Build the subArctic input dispatch pipeline.

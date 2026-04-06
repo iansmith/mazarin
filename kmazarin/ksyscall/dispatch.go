@@ -3,8 +3,8 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kirq"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"mazzy/shared/mazzy"
 	"sync/atomic"
@@ -88,10 +88,6 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 		}
 		atomic.AddUint64(&SID0SyscallCounts[idx], 1)
 	}
-	// Trace syscall numbers for a specific SID (set via DbgTraceSID)
-	if traceSID := atomic.LoadInt32(&DbgTraceSID); traceSID >= 0 && int16(traceSID) == sid {
-		dbgTraceSyscall(sid, syscallNum)
-	}
 
 	// Record entry time for kernel time accounting
 	entryTick := kirq.ReadCounterValue()
@@ -105,9 +101,7 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 		// Translate native Linux syscall number to platform-independent SysID
 		sysID := translateSyscallNum(syscallNum)
 		if sysID == SysIDInvalid || sysID >= NumSyscallIDs {
-			serial.RawUARTPuts("[UNK:")
-			serial.RawUARTHexCompact(syscallNum)
-			serial.RawUARTPuts("]")
+			klog.Errf("[UNK:%x]\n", syscallNum)
 			result = -38 // ENOSYS
 		} else {
 			// Check if this syscall is delegated to a userspace shepherd.
@@ -119,9 +113,7 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 			} else {
 				handler := syscallTable[sysID]
 				if handler == nil {
-					serial.RawUARTPuts("[NIL:")
-					serial.RawUARTHexCompact(syscallNum)
-					serial.RawUARTPuts("]")
+					klog.Errf("[NIL:%x]\n", syscallNum)
 					result = -38 // ENOSYS
 				} else {
 					// Call the handler
@@ -143,36 +135,7 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 
 // printKernelTimeStats prints kernel time accounting stats
 func printKernelTimeStats() {
-	timerTicks, syscallTicks, ctxSwitchTicks, totalKernelTicks := kirq.GetKernelTimeStats()
-	elapsedTicks := kirq.GetElapsedTicks()
-	syscallCount := atomic.LoadUint64(&kirq.SyscallCount)
-	timerIRQs := atomic.LoadUint64(&kirq.TimerIRQCount)
-	freq := kirq.SystemTimerFrequency
-	if freq == 0 {
-		freq = 62500000 // default
-	}
-
-	// Convert ticks to microseconds: ticks * 1000000 / freq
-	syscallUs := syscallTicks * 1000000 / freq
-	totalUs := totalKernelTicks * 1000000 / freq
-	elapsedUs := elapsedTicks * 1000000 / freq
-	elapsedMs := elapsedUs / 1000
-
-	// Calculate percentages using floating point to avoid integer division truncation
-	kernelPct := 0.0
-	userPct := 0.0
-	if elapsedUs > 0 {
-		kernelPct = float64(totalUs) * 100.0 / float64(elapsedUs)
-		userPct = 100.0 - kernelPct
-	}
-
-	console.KPrintf("\n[KernelTime] syscalls=%d irqs=%d elapsed=%dms\n",
-		syscallCount, timerIRQs, elapsedMs)
-	console.KPrintf("[KernelTime] syscall=%dus kernel=%dus (%.2f%% kernel, %.2f%% user)\n",
-		syscallUs, totalUs, kernelPct, userPct)
 	printThreadStateSummary()
-	_ = timerTicks     // suppress unused warning
-	_ = ctxSwitchTicks // suppress unused warning
 }
 
 //go:linkname printThreadStateSummary main.PrintThreadStateSummary
@@ -283,17 +246,6 @@ func earlyMmap(addr, length, prot, flags uint64) int64 {
 }
 
 
-// dbgTraceSyscall logs a syscall number for a traced SID.
-// Separate function to avoid nosplit stack overflow in DispatchSyscall.
-//
-//go:noinline
-func dbgTraceSyscall(sid int16, syscallNum uint64) {
-	serial.RawUARTPuts("[T")
-	serial.RawUARTDecimal(uint64(sid))
-	serial.RawUART(':')
-	serial.RawUARTDecimal(syscallNum)
-	serial.RawUART(']')
-}
 
 // syscallPanic handles syscall-specific panics with the syscall number
 // Uses console abstraction which provides spinlock protection

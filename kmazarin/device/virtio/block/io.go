@@ -5,8 +5,8 @@ import (
 	"unsafe"
 
 	"mazzy/kmazarin/asm"
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/klog"
 )
 
 // ReadBlock reads a single block at the given LBA
@@ -15,7 +15,7 @@ import (
 //go:nosplit
 func (d *VirtIOBlockDevice) ReadBlock(lba uint64, buf []byte) error {
 	if uint64(len(buf)) < d.BlockSize() {
-		console.KPrintln("[VirtIO Block] ERROR: Buffer too small for read")
+		klog.Errf("[VirtIO Block] ERROR: Buffer too small for read\n")
 		return ErrBufferTooSmall
 	}
 
@@ -28,7 +28,7 @@ func (d *VirtIOBlockDevice) ReadBlock(lba uint64, buf []byte) error {
 //go:nosplit
 func (d *VirtIOBlockDevice) WriteBlock(lba uint64, buf []byte) error {
 	if uint64(len(buf)) != d.BlockSize() {
-		console.KPrintln("[VirtIO Block] ERROR: Buffer size must equal block size for write")
+		klog.Errf("[VirtIO Block] ERROR: Buffer size must equal block size for write\n")
 		return ErrInvalidSize
 	}
 
@@ -93,7 +93,7 @@ func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf 
 	// Allocate sidecar slot for protocol header + status
 	slot, ok := d.Sidecars.Alloc()
 	if !ok {
-		console.KPrintln("[VirtIO Block] ERROR: No sidecar slots available")
+		klog.Errf("[VirtIO Block] ERROR: No sidecar slots available\n")
 		return 0xFFFF, ErrNoDescriptors
 	}
 	d.inFlightSidecars[slotIdx] = slot
@@ -143,7 +143,7 @@ func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf 
 
 	tag := d.Eng.Submit(&chain)
 	if tag == virtio.InvalidIOTag {
-		console.KPrintln("[VirtIO Block] ERROR: Engine submit failed (no free descriptors)")
+		klog.Errf("[VirtIO Block] ERROR: Engine submit failed (no free descriptors)\n")
 		d.Sidecars.Release(slot)
 		return 0xFFFF, ErrNoDescriptors
 	}
@@ -173,7 +173,7 @@ func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uin
 		// Diagnostic: show queue state to help debug HVF memory ordering issues
 		usedVA := virtio.PointerToUintptr(unsafe.Pointer(d.Eng.VQ.Used))
 		rawUsedIdx := asm.MmioRead16(usedVA + 2)
-		console.KPrintf("[VirtIO Block] ERROR: Unexpected descriptor index (got %d, expected %d) Used.Idx=%d LastUsedIdx=%d avail=%d\n",
+		klog.Errf("[VirtIO Block] ERROR: Unexpected descriptor index (got %d, expected %d) Used.Idx=%d LastUsedIdx=%d avail=%d\n",
 			uint16(info.Tag), reqDescIdx, rawUsedIdx, d.Eng.VQ.LastUsedIdx, d.Eng.VQ.Available.Idx)
 		d.Sidecars.Release(d.inFlightSidecars[slotIdx])
 		return ErrDeviceError
@@ -184,7 +184,7 @@ func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uin
 	statusPtr := (*VirtIOBlockStatus)(unsafe.Pointer(slot.VA + sidecarStatusOffset))
 	status := *statusPtr
 	if status != VIRTIO_BLK_S_OK {
-		console.KPrintf("[VirtIO Block] ERROR: Bad status=%d type=%d\n", status, requestType)
+		klog.Errf("[VirtIO Block] ERROR: Bad status=%d type=%d\n", status, requestType)
 		d.Sidecars.Release(slot)
 		if status == VIRTIO_BLK_S_IOERR {
 			return ErrIOError
@@ -311,7 +311,7 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 			if d.SetAsyncMode != nil {
 				d.SetAsyncMode(prevAsync)
 			}
-			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
+			klog.Errf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
 				vq.Available.Idx, vq.Used.Idx, lba)
 			return ErrTimeout
 		}
@@ -333,7 +333,7 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 			if d.SetAsyncMode != nil {
 				d.SetAsyncMode(prevAsync)
 			}
-			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (LBA=%d)\n", lba)
+			klog.Errf("[VirtIO Block] ERROR: I/O timeout (LBA=%d)\n", lba)
 			return ErrTimeout
 		}
 	}
@@ -381,7 +381,7 @@ func (d *VirtIOBlockDevice) submitLegacy(requestType uint32, lba uint64, buf []b
 	// Allocate three descriptors (unlinked)
 	reqDescIdx := virtio.VirtqueueAddDesc(vq, reqPhys, 16, 0, 0xFFFF)
 	if reqDescIdx == 0xFFFF {
-		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate request descriptor")
+		klog.Errf("[VirtIO Block] ERROR: Failed to allocate request descriptor\n")
 		return 0xFFFF, ErrNoDescriptors
 	}
 
@@ -391,14 +391,14 @@ func (d *VirtIOBlockDevice) submitLegacy(requestType uint32, lba uint64, buf []b
 	}
 	bufDescIdx := virtio.VirtqueueAddDesc(vq, bufPhys, d.BlockSizeBytes, bufFlags, 0xFFFF)
 	if bufDescIdx == 0xFFFF {
-		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate buffer descriptor")
+		klog.Errf("[VirtIO Block] ERROR: Failed to allocate buffer descriptor\n")
 		virtio.VirtqueueFreeDescChain(vq, reqDescIdx)
 		return 0xFFFF, ErrNoDescriptors
 	}
 
 	statusDescIdx := virtio.VirtqueueAddDesc(vq, statusPhys, 1, virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
 	if statusDescIdx == 0xFFFF {
-		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate status descriptor")
+		klog.Errf("[VirtIO Block] ERROR: Failed to allocate status descriptor\n")
 		virtio.VirtqueueFreeDescChain(vq, reqDescIdx)
 		virtio.VirtqueueFreeDescChain(vq, bufDescIdx)
 		return 0xFFFF, ErrNoDescriptors
@@ -441,7 +441,7 @@ func (d *VirtIOBlockDevice) completeLegacy(requestType uint32, reqDescIdx uint16
 		// Diagnostic: show queue state to help debug HVF memory ordering issues
 		usedVA := virtio.PointerToUintptr(unsafe.Pointer(vq.Used))
 		rawUsedIdx := asm.MmioRead16(usedVA + 2)
-		console.KPrintf("[VirtIO Block] ERROR: Unexpected descriptor index (got %d, expected %d) Used.Idx=%d LastUsedIdx=%d avail=%d\n",
+		klog.Errf("[VirtIO Block] ERROR: Unexpected descriptor index (got %d, expected %d) Used.Idx=%d LastUsedIdx=%d avail=%d\n",
 			usedDescIdx, reqDescIdx, rawUsedIdx, vq.LastUsedIdx, vq.Available.Idx)
 		return ErrDeviceError
 	}
@@ -453,7 +453,7 @@ func (d *VirtIOBlockDevice) completeLegacy(requestType uint32, reqDescIdx uint16
 	statusPtr := (*VirtIOBlockStatus)(unsafe.Pointer(d.DmaPageVA + dmaStatusOffset))
 	status := *statusPtr
 	if status != VIRTIO_BLK_S_OK {
-		console.KPrintf("[VirtIO Block] ERROR: Bad status=%d type=%d\n", status, requestType)
+		klog.Errf("[VirtIO Block] ERROR: Bad status=%d type=%d\n", status, requestType)
 		if status == VIRTIO_BLK_S_IOERR {
 			return ErrIOError
 		} else if status == VIRTIO_BLK_S_UNSUPP {

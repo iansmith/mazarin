@@ -6,8 +6,8 @@ import (
 	"unsafe"
 
 	"mazzy/kmazarin/asm"
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/shared/constants"
 )
@@ -58,7 +58,6 @@ const (
 // findVirtIOBlockMMIO scans VirtIO MMIO slots on RISC-V QEMU virt for a block device.
 // Returns true if found, sets virtioBlockDevice.MMIOBase to the VA.
 func findVirtIOBlockMMIO() bool {
-	console.KPrintln("[VirtIO Block] Scanning MMIO slots...")
 
 	for i := uintptr(0); i < mmioMaxSlots; i++ {
 		pa := uintptr(mmioBasePA) + i*mmioStride
@@ -77,8 +76,6 @@ func findVirtIOBlockMMIO() bool {
 
 		deviceID := *(*uint32)(unsafe.Pointer(va + mmioDeviceID))
 		if deviceID == mmioDeviceTypeBlock {
-			console.KPrintf("[VirtIO Block] Found MMIO block device at PA 0x%X (VA 0x%X)\n",
-				pa, va)
 			virtioBlockDevice.MMIOBase = va
 			return true
 		}
@@ -94,7 +91,6 @@ func virtioBlockInitMMIO() bool {
 		return false
 	}
 
-	console.KPrintln("[VirtIO Block] MMIO handshake...")
 
 	// Step 1: Reset device
 	*(*uint32)(unsafe.Pointer(base + mmioStatus)) = 0
@@ -133,14 +129,14 @@ func virtioBlockInitMMIO() bool {
 
 	status := *(*uint32)(unsafe.Pointer(base + mmioStatus))
 	if (status & mmioStatusFeaturesOK) == 0 {
-		console.KPrintln("[VirtIO Block] MMIO: device rejected features")
+		klog.Errf("[VirtIO Block] MMIO: device rejected features\n")
 		return false
 	}
 
 	// Step 6: Allocate DMA page for virtqueue
 	queuePagePA := kmem.AllocKernelFrame()
 	if queuePagePA == 0 {
-		console.KPrintln("[VirtIO Block] MMIO: failed to allocate queue DMA page")
+		klog.Errf("[VirtIO Block] MMIO: failed to allocate queue DMA page\n")
 		return false
 	}
 	queuePageVA := queuePagePA + constants.KernelMMIOOffset
@@ -155,7 +151,7 @@ func virtioBlockInitMMIO() bool {
 	// Check max queue size
 	maxSize := *(*uint32)(unsafe.Pointer(base + mmioQueueNumMax))
 	if maxSize == 0 {
-		console.KPrintln("[VirtIO Block] MMIO: queue 0 not available")
+		klog.Errf("[VirtIO Block] MMIO: queue 0 not available\n")
 		return false
 	}
 	if uint32(queueSize) > maxSize {
@@ -165,7 +161,7 @@ func virtioBlockInitMMIO() bool {
 	// Initialize virtqueue on DMA page
 	endOff := virtio.VirtqueueInitOnDMAPage(&virtioBlockDevice.Queue, queueSize, queuePagePA, queuePageVA, 0)
 	if endOff == 0 {
-		console.KPrintln("[VirtIO Block] MMIO: failed to init queue on DMA page")
+		klog.Errf("[VirtIO Block] MMIO: failed to init queue on DMA page\n")
 		return false
 	}
 
@@ -197,7 +193,7 @@ func virtioBlockInitMMIO() bool {
 	// Verify queue activation
 	ready := *(*uint32)(unsafe.Pointer(base + mmioQueueReady))
 	if ready == 0 {
-		console.KPrintln("[VirtIO Block] MMIO: queue ready failed")
+		klog.Errf("[VirtIO Block] MMIO: queue ready failed\n")
 		return false
 	}
 
@@ -208,11 +204,10 @@ func virtioBlockInitMMIO() bool {
 	// Check for FAILED bit
 	finalStatus := *(*uint32)(unsafe.Pointer(base + mmioStatus))
 	if (finalStatus & mmioStatusFailed) != 0 {
-		console.KPrintln("[VirtIO Block] MMIO: device set FAILED bit")
+		klog.Errf("[VirtIO Block] MMIO: device set FAILED bit\n")
 		return false
 	}
 
-	console.KPrintln("[VirtIO Block] MMIO handshake complete")
 	return true
 }
 
@@ -237,9 +232,6 @@ func virtioBlockReadConfigMMIO() bool {
 		blkSize = 512
 	}
 	virtioBlockDevice.BlockSizeBytes = blkSize
-
-	console.KPrintf("[VirtIO Block] MMIO config: capacity=%d sectors, block_size=%d\n",
-		virtioBlockDevice.Capacity, blkSize)
 
 	return true
 }

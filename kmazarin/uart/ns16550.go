@@ -58,7 +58,6 @@ func (d *NS16550Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 
 	// Map MMIO region
 	if err := kmem.MapDeviceMMIO(reg.Address, reg.Size); err != nil {
-		fmt.Printf("[NS16550] MapDeviceMMIO failed: %s\r\n", err.Error())
 		return nil, err
 	}
 

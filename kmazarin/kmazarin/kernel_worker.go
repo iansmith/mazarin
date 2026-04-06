@@ -15,8 +15,8 @@ package main
 
 import (
 	"mazzy/kmazarin/asm"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/ksyscall"
-	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
 )
@@ -203,15 +203,11 @@ func wakeBlockedThread(tid int32, result int64) {
 		enqueueReadySchedLockHeld(t)
 		asm.Dsb()
 	} else {
-		serial.RawUARTPuts("[KW:wake FAIL tid=")
-		serial.RawUARTHex64(uint64(tid))
 		if t == nil {
-			serial.RawUARTPuts(" t=nil")
+			klog.Errf("[KW:wake FAIL tid=0x%x t=nil]\n", tid)
 		} else {
-			serial.RawUARTPuts(" state=")
-			serial.RawUARTHex64(uint64(t.State))
+			klog.Errf("[KW:wake FAIL tid=0x%x state=0x%x]\n", tid, t.State)
 		}
-		serial.RawUARTPuts("]\r\n")
 	}
 
 	schedulerLock.Unlock()

@@ -15,6 +15,10 @@ import (
 	"unsafe"
 )
 
+// buddyFreeHook calls kmem.BuddyFreeTyped via an indirect function pointer
+// to break the nosplit chain in NonTimerIRQTopHalf. Initialized by InitTopHalfGCWake.
+var buddyFreeHook func(pa uintptr, order int, pageType kmem.PageType)
+
 // ============================================================================
 // Bottom Half Processing - Safe Go Context for Deferred IRQ Work
 // ============================================================================
@@ -429,7 +433,11 @@ func NonTimerIRQTopHalf() {
 					clump := (*proc.DMAClump)(unsafe.Pointer(meta.clumpAddr))
 					remaining := atomic.AddInt32(&clump.InFlight, -1)
 					if remaining == 0 && (clump.ShepherdDead || clump.PendingRelease) {
-						kmem.BuddyFreeTyped(clump.StartPA, clump.BuddyOrder, kmem.PageUserDMA)
+						// Called via indirect pointer to break the nosplit chain.
+						// BuddyFreeTyped has large stack frames (buddyRemoveSpecific →
+						// buddyRemoveFree → duffzero) that exceed the 792-byte limit
+						// when called from the ExceptionVectorTable chain.
+						buddyFreeHook(clump.StartPA, clump.BuddyOrder, kmem.PageUserDMA)
 					}
 				}
 
@@ -755,6 +763,7 @@ var (
 	uartRxEventChan       = make(chan struct{}, 1) // Buffered to avoid blocking poller
 	deadlineEventChan     = make(chan struct{}, 1)
 	pageTrackingEventChan = make(chan struct{}, 1)
+	epochStatusChan       = make(chan struct{}, 1) // Epoch status request from timer top-half
 )
 
 // ============================================================================
@@ -837,54 +846,32 @@ func pageTrackingBottomHalf() {
 	}
 }
 
-// ============================================================================
-// Breadcrumb Debug Output (Safe from ANY context, including IRQ handlers)
-// ============================================================================
 
-// Breadcrumb writes a single byte directly to UART hardware.
-// This bypasses all abstractions and is safe to call from:
-//   - IRQ handlers (exception stack)
-//   - Any context where Print() might deadlock
-//   - Early boot before console is initialized
-//
-// Use sparingly for critical debug output only.
-//
-//go:nosplit
-func Breadcrumb(b byte) {
-	serial.PollWrite(b)
-}
-
-// BreadcrumbString writes a string as breadcrumbs.
-// Safe from any context, but blocks - use for debug only.
-//
-//go:nosplit
-func BreadcrumbString(s string) {
-	serial.RawUARTPuts(s)
-}
-
-// BreadcrumbHex writes a 64-bit hex value directly to UART.
-// TEMPORARY: for kernel memory diagnostics.
-//
-//go:nosplit
-func BreadcrumbHex(val uint64) {
-	serial.RawUARTHexCompact(val)
-}
-
-// printInputIRQCounters prints the IRQ invocation counts for keyboard, mouse,
-// and tablet devices, plus the used ring indices to diagnose event delivery.
-func printInputIRQCounters() {
-	serial.RawUARTPuts(" IN=")
-	serial.RawUARTDecimal(uint64(topHalfKbd.dbgIRQCount))
-	serial.RawUARTPuts("/")
-	serial.RawUARTDecimal(uint64(topHalfMouse.dbgIRQCount))
-	serial.RawUARTPuts("/")
-	serial.RawUARTDecimal(uint64(topHalfTablet.dbgIRQCount))
-}
 
 // SetupUartSoftIRQ records the UART IRQ number so NonTimerIRQTopHalf
 // can recognize it and drain the PL011 FIFO directly.
 func SetupUartSoftIRQ(irqNum uint32) {
 	uartIRQNum = irqNum
+}
+
+// ============================================================================
+// Epoch Status Bottom Half
+// ============================================================================
+
+// epochStatusBottomHalf runs printEpochStatus in safe Go context.
+// Bridged from ProcessDeadlinesTopHalf via epochStatusChan every ~10s.
+// Deduplicates by comparing epochStatusCounter against a local copy,
+// so multiple channel wakeups between prints produce only one output.
+func epochStatusBottomHalf() {
+	var lastSeen uint64
+	for range epochStatusChan {
+		cur := atomic.LoadUint64(&epochStatusCounter)
+		if cur == lastSeen {
+			continue
+		}
+		lastSeen = cur
+		printEpochStatus()
+	}
 }
 
 // ============================================================================
@@ -898,4 +885,5 @@ func StartBottomHalfProcessors() {
 	go uartRxBottomHalf()
 	go deadlineBottomHalf()
 	go pageTrackingBottomHalf()
+	go epochStatusBottomHalf()
 }

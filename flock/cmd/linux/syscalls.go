@@ -443,7 +443,9 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 		return
 	}
 	if e.kind == fdKindStdin {
-		req.Reply(ENOSYS)
+		// Queue the request for the stdin drainer (main goroutine).
+		// Don't reply — the drainer will reply when input arrives.
+		reqQueue.Enqueue(&readDataResponse{req: req})
 		return
 	}
 	if e.kind == fdKindStdout || e.kind == fdKindStderr {

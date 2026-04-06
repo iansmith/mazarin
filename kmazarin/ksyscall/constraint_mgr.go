@@ -8,8 +8,8 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/serial"
 	"mazzy/mazarin/vm/flat"
 	"unsafe"
 )
@@ -88,7 +88,7 @@ func InitKernelAttrManager() bool {
 
 	va := kmem.GetConstraintPageKernelVA()
 	if va == 0 {
-		serial.RawUARTPuts("[attr] InitKernelAttrManager: constraint pages not initialized\r\n")
+		klog.Errf("[attr] InitKernelAttrManager: constraint pages not initialized\n")
 		return false
 	}
 
@@ -97,7 +97,7 @@ func InitKernelAttrManager() bool {
 	// Read the header to discover region offsets.
 	hdr := (*kmem.SharedPageHeader)(unsafe.Pointer(va))
 	if hdr.Magic != kmem.ConstraintPageMagic || hdr.Version != kmem.ConstraintPageVersion {
-		serial.RawUARTPuts("[attr] InitKernelAttrManager: bad header magic/version\r\n")
+		klog.Errf("[attr] InitKernelAttrManager: bad header magic/version\n")
 		return false
 	}
 
@@ -122,12 +122,6 @@ func InitKernelAttrManager() bool {
 	initNotifyQueues()
 
 	attrMgr.initialized = true
-
-	serial.RawUARTPuts("[attr] KernelAttrManager initialized (nodes=")
-	serial.RawUARTHexCompact(uint64(attrMgr.nodeCapacity))
-	serial.RawUARTPuts(" trie=")
-	serial.RawUARTHexCompact(uint64(attrMgr.trieCapacity))
-	serial.RawUARTPuts(")\r\n")
 
 	return true
 }

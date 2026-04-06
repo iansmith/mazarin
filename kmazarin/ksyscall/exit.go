@@ -1,7 +1,7 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/proc"
 )
 
@@ -38,7 +38,7 @@ func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
 	if pid == 0 {
 		// Kernel exit_group — this is a fatal error (runtime.throw).
 		// Halt instead of tearing down kernel threads.
-		console.KWriteString("KERNEL EXIT GROUP — halting\r\n")
+		klog.Criticalf("KERNEL EXIT GROUP", "KERNEL EXIT GROUP — halting\n")
 		haltForever()
 	}
 
@@ -65,7 +65,7 @@ func SyscallMazzyExit(status, _, _, _, _, _ uint64) int64 {
 		pid = p.PID
 	}
 	if pid == 0 {
-		console.KWriteString("KERNEL SysExit — halting\r\n")
+		klog.Criticalf("KERNEL SysExit", "KERNEL SysExit — halting\n")
 		haltForever()
 	}
 
@@ -77,28 +77,3 @@ func SyscallMazzyExit(status, _, _, _, _, _ uint64) int64 {
 	return 0
 }
 
-// printDecimalNonRecursive prints a uint64 as decimal to console
-// Uses a fixed-size buffer to avoid recursion (for nosplit compatibility)
-func printDecimalNonRecursive(n uint64) {
-	// Max uint64 is 18446744073709551615 (20 digits)
-	var buf [20]byte
-	i := len(buf) - 1
-
-	// Handle zero specially
-	if n == 0 {
-		console.KWriteByte('0')
-		return
-	}
-
-	// Build digits from right to left
-	for n > 0 {
-		buf[i] = byte('0' + n%10)
-		n /= 10
-		i--
-	}
-
-	// Print digits from left to right
-	for j := i + 1; j < len(buf); j++ {
-		console.KWriteByte(buf[j])
-	}
-}

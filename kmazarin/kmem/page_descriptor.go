@@ -86,16 +86,8 @@ func InitPageDescriptors(poolStart, poolEnd uintptr) {
 	// Round up to page boundary
 	arrayPages := (arraySize + PageSize - 1) / PageSize
 
-	serial.RawUARTPuts("[kmem] PageDescriptor array: ")
-	serial.RawUARTHex64(totalPages)
-	serial.RawUARTPuts(" entries (")
-	serial.RawUARTHex64(uint64(arrayPages))
-	serial.RawUARTPuts(" pages)\r\n")
-
-	serial.RawUART('a') // breadcrumb: before lock
 	// Bump-allocate from the pool
 	globalPool.lock.Lock()
-	serial.RawUART('b') // breadcrumb: after lock
 	allocSize := arrayPages * PageSize
 	if globalPool.next+allocSize > globalPool.end {
 		globalPool.lock.Unlock()
@@ -107,21 +99,17 @@ func InitPageDescriptors(poolStart, poolEnd uintptr) {
 	arrayPA := globalPool.next
 	globalPool.next += allocSize
 	globalPool.lock.Unlock()
-	serial.RawUART('c') // breadcrumb: after unlock
 
 	// Map to kernel VA and zero
 	arrayVA := paToVA(arrayPA)
-	serial.RawUART('d') // breadcrumb: before bzero
 	for i := uintptr(0); i < arrayPages; i++ {
 		Bzero4K(arrayVA + i*PageSize)
 	}
-	serial.RawUART('e') // breadcrumb: after bzero
 
 	// Store raw base pointer — NO Go slice, NO unsafe.Slice
 	pdBase = arrayVA
 
 	atomic.StoreUint32(&pdInitialized, 1)
-	serial.RawUART('f') // breadcrumb: pd init done
 }
 
 // SetPageDescriptor sets the descriptor for a page at the given PA.
@@ -201,73 +189,3 @@ func TransferPageOwnership(pa uintptr, fromPID, toPID int16) bool {
 	return true
 }
 
-// PrintPageStats walks the PageDescriptor array and prints per-type and
-// per-shepherd page counts. This is a diagnostic function — the linear scan
-// over the array costs microseconds and should only be called on demand.
-func PrintPageStats() {
-	if atomic.LoadUint32(&pdInitialized) == 0 {
-		serial.RawUARTPuts("[kmem] PageDescriptors not initialized\r\n")
-		return
-	}
-
-	// Count by type
-	var typeCounts [PageTypeCount]uint64
-	var shepherdCounts [32]uint64 // ShepherdId 0-31
-	var totalAllocated uint64
-
-	for i := uint64(0); i < pdCapacity; i++ {
-		desc := pdAt(uintptr(i))
-		if desc.RefCount <= 0 {
-			continue // Free or untracked
-		}
-		totalAllocated++
-		if desc.Type < PageTypeCount {
-			typeCounts[desc.Type]++
-		}
-		pidIdx := desc.Owner
-		if pidIdx < 0 {
-			pidIdx = 0
-		}
-		if pidIdx < 32 {
-			shepherdCounts[pidIdx]++
-		}
-	}
-
-	serial.RawUARTPuts("[kmem] Page Stats (")
-	serial.RawUARTHex64(totalAllocated)
-	serial.RawUARTPuts(" allocated / ")
-	serial.RawUARTHex64(pdCapacity)
-	serial.RawUARTPuts(" total):\r\n")
-
-	// Print per-type
-	for t := PageType(0); t < PageTypeCount; t++ {
-		if typeCounts[t] == 0 {
-			continue
-		}
-		serial.RawUARTPuts("  ")
-		name := t.String()
-		for j := 0; j < len(name); j++ {
-			serial.PollWrite(name[j])
-		}
-		serial.RawUARTPuts(": ")
-		serial.RawUARTHex64(typeCounts[t])
-		serial.RawUARTPuts(" pages\r\n")
-	}
-
-	// Print per-shepherd
-	serial.RawUARTPuts("  By shepherd:\r\n")
-	if shepherdCounts[0] > 0 {
-		serial.RawUARTPuts("    kernel(0): ")
-		serial.RawUARTHex64(shepherdCounts[0])
-		serial.RawUARTPuts("\r\n")
-	}
-	for i := 1; i < 32; i++ {
-		if shepherdCounts[i] > 0 {
-			serial.RawUARTPuts("    shepherd ")
-			serial.RawUARTHex64(uint64(i))
-			serial.RawUARTPuts(": ")
-			serial.RawUARTHex64(shepherdCounts[i])
-			serial.RawUARTPuts("\r\n")
-		}
-	}
-}

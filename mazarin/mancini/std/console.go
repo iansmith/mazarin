@@ -206,12 +206,9 @@ func NewConsoleWithBox(myName, parent string, pal mancini.Palette,
 	return box, console
 }
 
-// StderrColor returns a muted red suitable for stderr text on the
-// neumorphic light surface. Pre-swapped for BGR framebuffer if the
-// palette uses SwapRB.
+// StderrColor returns the ANSI red color from the palette for stderr text.
 func (c *Console) StderrColor() color.NRGBA {
-	// Muted dark red that reads well on the light neumorphic surface.
-	return mancini.SwapRB(color.NRGBA{R: 180, G: 50, B: 50, A: 255})
+	return c.pal.AnsiColor(1)
 }
 
 // Draw implements mancini.NewDrawer. Fills the console background and

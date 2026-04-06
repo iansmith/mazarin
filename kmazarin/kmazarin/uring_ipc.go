@@ -4,9 +4,9 @@ package main
 
 import (
 	"mazzy/kmazarin/asm"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/ipc"
 	"sync/atomic"
 	"unsafe"
@@ -89,9 +89,7 @@ func AllocUringIPCRing(shepherd *proc.Shepherd) bool {
 	for i := 0; i < ipc.UringIPCPagesNeeded; i++ {
 		pa := kmem.AllocPage(kmem.PageIPCBuffer, sid)
 		if pa == 0 {
-			serial.RawUARTPuts("[UringIPC] page alloc failed for SID ")
-			serial.RawUARTDecimal(uint64(sid))
-			serial.RawUARTPuts("\r\n")
+			klog.Errf("[UringIPC] page alloc failed for SID %d\n", sid)
 			// Free previously allocated pages
 			for j := 0; j < i; j++ {
 				kmem.ReleasePageByPA(slot.PA[j])
@@ -103,7 +101,7 @@ func AllocUringIPCRing(shepherd *proc.Shepherd) bool {
 		// Zero the page
 		kva := kmem.MapPAToKernelScratch(pa)
 		if kva == 0 {
-			serial.RawUARTPuts("[UringIPC] kernel scratch map failed\r\n")
+			klog.Errf("[UringIPC] kernel scratch map failed\n")
 			for j := 0; j <= i; j++ {
 				kmem.ReleasePageByPA(slot.PA[j])
 			}
@@ -135,12 +133,6 @@ func AllocUringIPCRing(shepherd *proc.Shepherd) bool {
 	// Store PA of first page in shepherd struct for reference
 	shepherd.UringRingPA = slot.PA[0]
 
-	serial.RawUARTPuts("[UringIPC] ring allocated for SID ")
-	serial.RawUARTDecimal(uint64(sid))
-	serial.RawUARTPuts(" uringID=")
-	serial.RawUARTDecimal(shepherd.UringID)
-	serial.RawUARTPuts("\r\n")
-
 	return true
 }
 
@@ -152,7 +144,7 @@ func RegisterUringID(id uint64, sid int16) {
 			return
 		}
 	}
-	serial.RawUARTPuts("[UringIPC] ID map full!\r\n")
+	klog.Errf("[UringIPC] ID map full!\n")
 }
 
 // lookupUringID resolves a uring ID to a SID. Returns (sid, true) or (-1, false).
@@ -191,9 +183,6 @@ type UringConnectWorkRequest struct {
 func DoUringConnectWork(req *UringConnectWorkRequest) int64 {
 	targetSID, ok := lookupUringID(req.TargetUringID)
 	if !ok {
-		serial.RawUARTPuts("[UringIPC] Connect: unknown uringID ")
-		serial.RawUARTDecimal(req.TargetUringID)
-		serial.RawUARTPuts("\r\n")
 		return -3 // ESRCH
 	}
 
@@ -216,11 +205,6 @@ func DoUringConnectWork(req *UringConnectWorkRequest) int64 {
 			uringConnections[i].CallerSID == req.CallerSID &&
 			uringConnections[i].TargetSID == targetSID {
 			uringConnections[i].RefCount++
-			serial.RawUARTPuts("[UringIPC] Connect: reuse handle=")
-			serial.RawUARTDecimal(uint64(i))
-			serial.RawUARTPuts(" ref=")
-			serial.RawUARTDecimal(uint64(uringConnections[i].RefCount))
-			serial.RawUARTPuts("\r\n")
 			return int64(i)
 		}
 	}
@@ -236,15 +220,6 @@ func DoUringConnectWork(req *UringConnectWorkRequest) int64 {
 				TargetRingKVA: slot.KVA[0],
 			}
 			slot.RingRefCount++
-			serial.RawUARTPuts("[UringIPC] Connect: new handle=")
-			serial.RawUARTDecimal(uint64(i))
-			serial.RawUARTPuts(" caller=")
-			serial.RawUARTDecimal(uint64(req.CallerSID))
-			serial.RawUARTPuts(" target=")
-			serial.RawUARTDecimal(uint64(targetSID))
-			serial.RawUARTPuts(" ringRef=")
-			serial.RawUARTDecimal(uint64(slot.RingRefCount))
-			serial.RawUARTPuts("\r\n")
 			return int64(i)
 		}
 	}
@@ -682,12 +657,4 @@ func CleanupUringIPCForShepherd(sid int16) {
 		}
 	}
 
-	serial.RawUARTPuts("[UringIPC] cleaned for shepherd ")
-	serial.RawUARTDecimal(uint64(sid))
-	if slot.Dead {
-		serial.RawUARTPuts(" (deferred, ringRef=")
-		serial.RawUARTDecimal(uint64(slot.RingRefCount))
-		serial.RawUARTPuts(")")
-	}
-	serial.RawUARTPuts("\r\n")
 }

@@ -16,7 +16,6 @@ package virtio
 
 import (
 	"mazzy/kmazarin/asm"
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
 	"mazzy/shared/constants"
@@ -339,10 +338,7 @@ func (d *PCIDevice) ReadISRStatus() uint8 {
 	return asm.MmioRead8(d.ISRBase)
 }
 
-// LogDevice prints a diagnostic line identifying this PCIDevice.
+// LogDevice is a no-op retained for API compatibility.
 func (d *PCIDevice) LogDevice(tag string) {
-	console.KPrintf("[VirtIO %s] PCI %d:%d.%d commonCfg=0x%x notify=0x%x isr=0x%x devCfg=0x%x\n",
-		tag, d.Bus, d.Slot, d.Func,
-		d.CommonConfigBase, d.NotifyBase, d.ISRBase, d.DeviceConfigBase)
 }
 

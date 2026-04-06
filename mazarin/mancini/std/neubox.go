@@ -23,14 +23,22 @@ type NeuBox struct {
 
 	Pal    mancini.Palette
 	Depth  mancini.NeuDepth
-	Params mancini.NeuParams
+	Weight mancini.Weight
+	Style  mancini.SurfaceStyle
 	Face   color.NRGBA
 	Radius float64
+
+	// Params is retained for backward compatibility with callers that
+	// construct a NeuBox with explicit NeuParams (via NewNeuBox).
+	// NewNeuBoxStyled does not use it.
+	Params mancini.NeuParams
 }
 
 // NewNeuBox creates a NeuBox wired to the constraint system.
 // The layout should be created with mancini.NewDecoratorLayout.
 // Margin is computed from NeuParams (max shadow padding).
+//
+// Deprecated: prefer [NewNeuBoxStyled] which takes a Theme.
 func NewNeuBox(layout *mancini.LayoutAttributes, pal mancini.Palette,
 	depth mancini.NeuDepth, params mancini.NeuParams, radius float64) *NeuBox {
 
@@ -38,6 +46,8 @@ func NewNeuBox(layout *mancini.LayoutAttributes, pal mancini.Palette,
 	n := &NeuBox{
 		Pal:    pal,
 		Depth:  depth,
+		Weight: mancini.LightWeight,
+		Style:  NewNeumorphicStyle(&params, &params),
 		Params: params,
 		Radius: radius,
 	}
@@ -45,8 +55,24 @@ func NewNeuBox(layout *mancini.LayoutAttributes, pal mancini.Palette,
 	return n
 }
 
-// Decorate implements mancini.Decoratable — draws neumorphic box shadows
-// at the given bounds.
+// NewNeuBoxStyled creates a NeuBox that delegates rendering to the Theme's
+// [mancini.SurfaceStyle]. Margin is derived from style.Pad(weight).
+func NewNeuBoxStyled(layout *mancini.LayoutAttributes, theme mancini.Theme,
+	depth mancini.NeuDepth, weight mancini.Weight, radius float64) *NeuBox {
+
+	margin := int64(theme.Style().Pad(weight))
+	n := &NeuBox{
+		Pal:    theme.Palette(),
+		Depth:  depth,
+		Weight: weight,
+		Style:  theme.Style(),
+		Radius: radius,
+	}
+	n.Decorator.Initialize(n, layout, margin, margin, margin, margin)
+	return n
+}
+
+// Decorate implements mancini.Decoratable — draws the box at the given bounds.
 func (n *NeuBox) Decorate(self mancini.Interactor, x, y, w, h int64) {
 	dc := self.DC()
 	if dc == nil {
@@ -59,5 +85,10 @@ func (n *NeuBox) Decorate(self mancini.Interactor, x, y, w, h int64) {
 	if face == (color.NRGBA{}) {
 		face = n.Pal.Surface()
 	}
-	NeuBoxWith(n.Pal, dc, n.Depth, fx, fy, fx+fw, fy+fh, n.Radius, face, &n.Params)
+	if n.Style != nil {
+		n.Style.DrawBox(n.Pal, dc, n.Depth, n.Weight,
+			fx, fy, fx+fw, fy+fh, n.Radius, face)
+	} else {
+		NeuBoxWith(n.Pal, dc, n.Depth, fx, fy, fx+fw, fy+fh, n.Radius, face, &n.Params)
+	}
 }

@@ -34,7 +34,7 @@ const (
 	SysDelegatedRecv          = MazzySyscallBase + 24 // 0x1018 - Receive a delegated syscall request
 	SysSyscallReply           = MazzySyscallBase + 25 // 0x1019 - Reply to a delegated syscall
 	SysUartWrite              = MazzySyscallBase + 26 // 0x101A - Write to UART (non-blocking)
-	SysUartWriteDirect        = MazzySyscallBase + 27 // 0x101B - Write to UART via PollWrite (synchronous)
+	// slot 27 freed (was SysUartWriteDirect)
 	SysShepherdInfo           = MazzySyscallBase + 28 // 0x101C - Get info about running shepherds
 	SysSetReady               = MazzySyscallBase + 29 // 0x101D - Signal shepherd is ready
 	SysLoadFile               = MazzySyscallBase + 30 // 0x101E - Load file via fs delegate

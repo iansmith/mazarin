@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/block"
@@ -9,6 +8,7 @@ import (
 	"mazzy/kmazarin/device/virtio/input"
 	"mazzy/kmazarin/device/virtio/rng"
 	"mazzy/kmazarin/dtb"
+	"mazzy/kmazarin/klog"
 	"mazzy/shared/constants"
 	"mazzy/shared/hid"
 	toml "github.com/pelletier/go-toml/v2"
@@ -169,27 +169,6 @@ func init() {
 
 }
 
-// uartPutc writes a single character to UART.
-// This function can be called from normal Go code (preemptible goroutines).
-// It's NOT marked nosplit because it calls into the console package.
-//
-// NOTE: Do not call from IRQ handlers or nosplit contexts - use serial.PollWrite() instead.
-//
-func uartPutc(c byte) {
-	console.KWriteByte(c)
-}
-
-// uartPuts writes a string to UART.
-// Safe for normal Go code (preemptible).
-func uartPuts(s string) {
-	for i := 0; i < len(s); i++ {
-		uartPutc(s[i])
-	}
-}
-
-// Runtime readiness flag - set to true once we verify runtime is fully initialized
-var runtimeReady = false
-
 // safeDTBVirtAddr holds the VA of a safe copy of the FDT.
 // On RISC-V, the FDT at PA 0xFFE00000 is within the buddy allocator's range
 // and gets overwritten by the framebuffer allocation (PA 0xFF000000, ~16MB).
@@ -210,19 +189,19 @@ func copyFDTToSafeLocation() {
 	hdr := (*[8]byte)(unsafe.Pointer(dtbVA))
 	magic := uint32(hdr[0])<<24 | uint32(hdr[1])<<16 | uint32(hdr[2])<<8 | uint32(hdr[3])
 	if magic != 0xd00dfeed {
-		console.KPrintf("[DTB] Bad magic at VA 0x%X: 0x%X\n", dtbVA, magic)
+		klog.Fatalf("DTB BAD MAGIC\n", "[DTB] Bad magic at VA 0x%X: 0x%X\n", dtbVA, magic)
 		return
 	}
 
 	totalSize := uint32(hdr[4])<<24 | uint32(hdr[5])<<16 | uint32(hdr[6])<<8 | uint32(hdr[7])
 	if totalSize == 0 || totalSize > 1<<20 {
-		console.KPrintf("[DTB] Invalid size: %d\n", totalSize)
+		klog.Fatalf("DTB BAD SIZE\n", "[DTB] Invalid size: %d\n", totalSize)
 		return
 	}
 
 	buf := kmem.AllocBuffer(uint64(totalSize))
 	if buf == nil {
-		console.KPrintf("[DTB] Failed to alloc %d bytes\n", totalSize)
+		klog.Fatalf("DTB ALLOC FAIL\n", "[DTB] Failed to alloc %d bytes\n", totalSize)
 		return
 	}
 
@@ -231,79 +210,12 @@ func copyFDTToSafeLocation() {
 	copy(buf.Bytes(), src)
 
 	safeDTBVirtAddr = buf.VA
-	console.KPrintf("[DTB] Preserved %d bytes (PA 0x%X → VA 0x%X)\n", totalSize, dtbPhysAddr, safeDTBVirtAddr)
 }
 
 // DebugTimerCount is a debug counter for tracking timer IRQs.
 // Placed in main package to test if the kirq.TimerIRQCount location has mapping issues.
 // This variable is written from timer IRQ handler assembly.
 var DebugTimerCount uint64
-
-// Print uses direct UART before runtime is ready, fmt.Println after
-func Print(s string) {
-	if !runtimeReady {
-		uartPuts(s)
-		uartPuts("\r\n")
-	} else {
-		fmt.Println(s)
-	}
-}
-
-// Printf uses direct UART with hex before runtime is ready, fmt.Printf after
-func Printf(format string, args ...interface{}) {
-	if !runtimeReady {
-		// Simple implementation for early boot
-		// Just print format string and args with direct UART
-		uartPuts(format)
-		uartPuts(" ")
-		for _, arg := range args {
-			// Print hex representation
-			switch v := arg.(type) {
-			case uint64:
-				printHex(v)
-			case uintptr:
-				printHex(uint64(v))
-			case int:
-				printHex(uint64(v))
-			default:
-				uartPuts("[?]")
-			}
-			uartPuts(" ")
-		}
-		uartPuts("\r\n")
-	} else {
-		fmt.Printf(format, args...)
-	}
-}
-
-// readDAIF reads the DAIF register to check interrupt mask state
-//go:nosplit
-func readDAIF() uint64 {
-	var daif uint64
-	// MRS DAIF, X0 = 0xD53B4200
-	// We'll use inline assembly via pointer tricks
-	// For now, just read via a syscall to mazboot (we pass 9999 as a special debug syscall)
-	// Actually, let's just use raw assembly in a .s file
-	// For now, print a placeholder and check if timer fires at all
-	return daif
-}
-
-// printHex prints a hex value directly to UART
-//go:nosplit
-func printHex(val uint64) {
-	hexChars := "0123456789ABCDEF"
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-}
-
-// PrintHex64 prints a hex value with 0x prefix and newline
-func PrintHex64(val uint64) {
-	uartPuts("0x")
-	printHex(val)
-	uartPuts("\r\n")
-}
 
 // testRuntimeReadiness runs a comprehensive test suite to verify Go runtime is ready
 // Returns true if all tests pass, false otherwise
@@ -390,8 +302,6 @@ func DisableTimerIRQ() {
 	disableTimerAtController()
 }
 
-// printTimerDebug is defined in debug_arm64.go (ARM64-specific).
-
 // EnableTimerIRQ enables the timer IRQ.
 // On RISC-V, the timer is controlled directly via SIE CSR (STIE bit),
 // so it works without an interrupt controller. On ARM64, the timer
@@ -412,7 +322,6 @@ func EnableTimerIRQ() {
 // testDeviceDiscovery tests the DTB-based device discovery system
 // This is a temporary test function to verify DTB parsing and device matching
 func testDeviceDiscovery() {
-	console.KPrintln("")
 	// NOTE: Drivers are already registered in EarlyInit()
 
 	// Use safe FDT copy if available (protects against framebuffer overwrite),
@@ -423,7 +332,6 @@ func testDeviceDiscovery() {
 	} else {
 		dtbPhysAddr := GetDtbPhysAddr()
 		if dtbPhysAddr == 0 {
-			console.KPrintln("[DeviceTest] No DTB available (UEFI ACPI mode?) - skipping device discovery")
 			return
 		}
 		dtbAddr = dtbVirtAddr(dtbPhysAddr)
@@ -434,8 +342,7 @@ func testDeviceDiscovery() {
 	// Parse DTB and discover devices
 	err := device.InitFromDTB(dtbAddr)
 	if err != nil {
-		console.KWriteString("[DeviceTest] ERROR: ")
-		console.KPrintln(err.Error())
+		klog.Fatalf("DTB PARSE FAIL\n", "[DeviceTest] DTB parse error: %v\n", err)
 		return
 	}
 
@@ -443,18 +350,9 @@ func testDeviceDiscovery() {
 	// On platforms without an RTC (e.g. AMD64), falls back to uptime mode (base=0).
 	ktime.Init()
 
-	// Calibrate: compare ARM64 generic timer counter against PL031 RTC.
-	// The PL031 returns wall-clock seconds from the host. By measuring how
-	// many counter ticks elapse per RTC second, we discover the actual
-	// counter frequency regardless of what CNTFRQ_EL0 claims.
-	if clock, ok := device.GetClock(); ok {
-		calibrateCounterVsRTC(clock)
-	}
-
 	// Wire up interrupts now that interrupt controller is discovered
 	if err := device.WireInterrupts(); err != nil {
-		console.KWriteString("[DeviceTest] ERROR wiring interrupts: ")
-		console.KPrintln(err.Error())
+		klog.Fatalf("WIRE IRQ FAIL\n", "[DeviceTest] ERROR wiring interrupts: %v\n", err)
 	} else {
 		// Set up UART soft IRQ hook for userspace serial RX, and
 		// register the interrupt-driven TX path (QueueByte → txBuf → top-half drain).
@@ -530,89 +428,8 @@ func initTimerFrequency() {
 	// These may be reconfigured later by TOML boot config (InitPreemptConfig).
 	kirq.InitPreemptConfig(0, 0)
 
-	console.KPrintf("[Timer] freq=%d Hz, nsPerTickX256=%d, tick=%d ticks (%dms), quantum=%d ticks (%dms)\n",
-		kirq.SystemTimerFrequency, nsPerTickX256, kirq.TimerRearmTicks, kirq.TickIntervalMs,
-		kirq.ThreadPreemptTicks, kirq.PreemptIntervalMs)
 }
 
-// calibrateCounterVsRTC measures the actual counter tick rate by comparing
-// the ARM64 generic timer (CNTVCT_EL0) against the PL031 RTC wall-clock.
-// PL031 has 1-second resolution, so we wait for two second boundaries
-// and count how many counter ticks elapsed in between.
-//
-// This tells us whether CNTFRQ_EL0 matches reality. On Apple Silicon HVF,
-// the counter should be 24MHz. Under TCG, virtual time may differ.
-func calibrateCounterVsRTC(clock device.Clock) {
-	console.KPrintf("[Calibrate] comparing counter vs RTC (waiting for second boundary)...\n")
-
-	// Read initial RTC second.
-	startSec, _ := clock.Now()
-
-	// Busy-wait for the next second boundary.
-	for {
-		sec, _ := clock.Now()
-		if sec != startSec {
-			startSec = sec
-			break
-		}
-	}
-	// Snapshot counter at the first second boundary.
-	counterAtStart := ktimer.ReadCounter()
-
-	// Now sample both clocks 1000 times while waiting for the next second.
-	// This shows us how the counter progresses within a single RTC second.
-	type sample struct {
-		counter uint64
-		rtcSec  uint64
-	}
-	var samples [10]sample // record 10 evenly-spaced snapshots
-	sampleIdx := 0
-	nextSampleAt := 100 // sample at iteration 100, 200, ..., 1000
-	for i := 1; i <= 1000; i++ {
-		c := ktimer.ReadCounter()
-		s, _ := clock.Now()
-		if i == nextSampleAt && sampleIdx < len(samples) {
-			samples[sampleIdx] = sample{counter: c, rtcSec: s}
-			sampleIdx++
-			nextSampleAt += 100
-		}
-		// If RTC already ticked to next second, record and break
-		if s != startSec {
-			break
-		}
-	}
-
-	// Wait for the RTC to tick to the next second (if the loop above
-	// finished all 1000 iterations before the second boundary).
-	for {
-		sec, _ := clock.Now()
-		if sec != startSec {
-			break
-		}
-	}
-	counterAtEnd := ktimer.ReadCounter()
-
-	// Compute actual ticks per second.
-	ticksPerSec := counterAtEnd - counterAtStart
-	reportedFreq := uint64(ktimer.Frequency())
-
-	console.KPrintf("[Calibrate] RTC elapsed: 1 second\n")
-	console.KPrintf("[Calibrate] counter ticks: %d (reported CNTFRQ: %d)\n", ticksPerSec, reportedFreq)
-
-	if reportedFreq > 0 {
-		// Show ratio: actual/reported. 1.0 means perfect match.
-		// Multiply by 1000 to show 3 decimal places as integer math.
-		ratioX1000 := (ticksPerSec * 1000) / reportedFreq
-		console.KPrintf("[Calibrate] ratio (actual/reported × 1000): %d  (1000 = match)\n", ratioX1000)
-	}
-
-	// Print the 10 intermediate samples (counter delta from start, RTC second).
-	console.KPrintf("[Calibrate] samples (iter, counter_delta, rtc_sec):\n")
-	for i := 0; i < sampleIdx; i++ {
-		delta := samples[i].counter - counterAtStart
-		console.KPrintf("  [%d] +%d ticks, rtc=%d\n", (i+1)*100, delta, samples[i].rtcSec)
-	}
-}
 
 // dtbTimerFreqCallback is the DTB walk callback for timer frequency discovery.
 // Looks for the /cpus node and reads its timebase-frequency property.
@@ -695,83 +512,6 @@ func initVirtIOInputDevices() {
 }
 
 
-// busyLoop4s prints '4' in a tight loop to test kernel goroutine scheduling.
-// This runs as a separate goroutine in kmazarin alongside the main goroutine.
-func busyLoop4s() {
-	counter := uint64(0)
-	printCount := uint64(0)
-
-	for {
-		counter++
-		// Every 100000 iterations, print our marker
-		if counter%100000 == 0 {
-			printCount++
-			if printCount%72 == 0 {
-				fmt.Println("")
-			} else {
-				// Use fmt.Print instead of console.KWriteString to go through
-				// Go's runtime mutexes - this makes scheduling fair with shepherds
-				// who also use fmt.Print and block on the same mutexes.
-				fmt.Print("4")
-			}
-		}
-	}
-}
-
-
-// simpleMain is the entry point for our simple goroutine/channel test
-// This will be run by the scheduler as the main goroutine
-// verifyCodeIntegrityKmazarin scans near the end of the text segment for zero corruption.
-// Checks BOTH the code VA (through Sv48 mapping) and the physical memory (through linear map)
-// to distinguish page table bugs from actual physical corruption.
-// RISC-V only — addresses are hardcoded for RISC-V's Sv48 page table layout.
-//
-//go:nosplit
-func verifyCodeIntegrityKmazarin(label string) {
-	if runtime.GOARCH != "riscv64" {
-		return
-	}
-	// Use uartPuts directly for reliability
-	uartPuts("[VERIFY_K] ")
-	uartPuts(label)
-	uartPuts(": ")
-
-	// Check via code VA mapping (0x438b5000-0x438b6000)
-	codeVAStart := uintptr(0x438b5000)
-	count := uintptr(0x1000 / 4)
-	codeZeros := 0
-	for i := uintptr(0); i < count; i++ {
-		val := *(*uint32)(unsafe.Pointer(codeVAStart + i*4))
-		if val == 0 {
-			codeZeros++
-		}
-	}
-
-	// Check via linear map (PA = VA - 0x43800000 + 0x90000000 + KernelVAOffset)
-	// PA of 0x438b5000 = 0x90000000 + (0x438b5000 - 0x43800000) = 0x900b5000
-	// Linear map VA = PA + 0xFFFFFFFF00000000 = 0xFFFFFFFF900b5000
-	linVAStart := uintptr(0xFFFFFFFF900b5000)
-	linZeros := 0
-	for i := uintptr(0); i < count; i++ {
-		val := *(*uint32)(unsafe.Pointer(linVAStart + i*4))
-		if val == 0 {
-			linZeros++
-		}
-	}
-
-	uartPuts("code_zeros=")
-	printHex(uint64(codeZeros))
-	uartPuts(" lin_zeros=")
-	printHex(uint64(linZeros))
-	if codeZeros > 64 && linZeros < 64 {
-		uartPuts(" PAGE_TABLE_BUG!")
-	} else if codeZeros > 64 && linZeros > 64 {
-		uartPuts(" PHYS_CORRUPTION!")
-	} else {
-		uartPuts(" OK")
-	}
-	uartPuts("\r\n")
-}
 
 // kernelBootTick is the hardware counter value when kmazarin's main() starts.
 // Used to compute true kernel uptime (excluding UEFI boot).
@@ -779,12 +519,9 @@ var kernelBootTick uint64
 
 func simpleMain() {
 	kernelBootTick = kirq.ReadCounterValue()
-	Print("[Main] Kmazarin kernel starting...")
 
 	// Test runtime readiness FIRST (before unmapping Cardinal)
 	if testRuntimeReadiness() {
-		Print("[Main] Runtime ready")
-
 		// NOTE: GOGC is NOT set here — kernel uses Go default (100%).
 		// Userspace programs also get GOGC=100 via their envp in launch.go.
 		// GOMEMLIMIT is set via diplomat envp (64MiB).
@@ -792,12 +529,8 @@ func simpleMain() {
 		InitDeadlineQueue()
 		InitSoftIRQDispatcher()
 	} else {
-		Print("[Main] Runtime not ready - continuing with direct UART")
+		klog.Fatalf("RT NOT READY\n", "[Main] Runtime not ready\n")
 	}
-
-	// Log RAM layout and kernel budget (Stage 3: verify AT_RAM_BASE/AT_RAM_SIZE received)
-	console.KPrintf("[Main] RAM: base=0x%X size=%dMB kernel_budget=%dMB\n",
-		GetRAMBaseAddr(), GetTotalRAMSize()>>20, GetKernelBudgetMB())
 
 	// Copy FDT to a safe location BEFORE GPU init. On RISC-V, the FDT at
 	// PA 0xFFE00000 is within the buddy allocator's range and gets overwritten
@@ -846,56 +579,17 @@ func simpleMain() {
 	// Initialize VirtIO block device. For PCI transport, Init() determines
 	// the INTx GIC IRQ from the PCI interrupt pin routing (no MSI-X).
 	if !block.Init() {
-		console.KPrintln("[Main] VirtIO Block init failed (no device found?)")
+		klog.Errf("[Main] VirtIO Block init failed (no device found?)\n")
 	}
 
 	// Initialize VirtIO RNG device (entropy source).
 	// Uses polling (no IRQ) — RNG requests are infrequent.
-	console.KPrintln("[RNG] discovering...")
 	if !rng.Init() {
-		console.KPrintln("[Main] VirtIO RNG init failed (no device found?)")
-	} else {
-		// Quick sanity check: read 32 bytes and verify they're not all zero
-		console.KPrintln("[RNG] init OK, getting 32 bytes...")
-		var rngBuf [32]byte
-		n := rng.Get(rngBuf[:])
-		allZero := true
-		for i := 0; i < n; i++ {
-			if rngBuf[i] != 0 {
-				allZero = false
-				break
-			}
-		}
-		console.KPrintf("[Main] RNG test: got %d bytes, allZero=%v\n", n, allZero)
-		console.KPrintf("[Main] RNG data: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
-			rngBuf[0], rngBuf[1], rngBuf[2], rngBuf[3],
-			rngBuf[4], rngBuf[5], rngBuf[6], rngBuf[7],
-			rngBuf[8], rngBuf[9], rngBuf[10], rngBuf[11],
-			rngBuf[12], rngBuf[13], rngBuf[14], rngBuf[15])
-		// Read a second time to verify values differ
-		console.KPrintln("[RNG] getting 32 more bytes...")
-		var rngBuf2 [32]byte
-		n2 := rng.Get(rngBuf2[:])
-		same := n == n2
-		if same {
-			for i := 0; i < n; i++ {
-				if rngBuf[i] != rngBuf2[i] {
-					same = false
-					break
-				}
-			}
-		}
-		console.KPrintf("[Main] RNG test2: got %d bytes, sameAsPrev=%v\n", n2, same)
-		console.KPrintf("[Main] RNG data2: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
-			rngBuf2[0], rngBuf2[1], rngBuf2[2], rngBuf2[3],
-			rngBuf2[4], rngBuf2[5], rngBuf2[6], rngBuf2[7],
-			rngBuf2[8], rngBuf2[9], rngBuf2[10], rngBuf2[11],
-			rngBuf2[12], rngBuf2[13], rngBuf2[14], rngBuf2[15])
+		klog.Errf("[Main] VirtIO RNG init failed (no device found?)\n")
 	}
 
 	// Wire up block device IRQ: register with top-half dispatcher and
 	// enable at the interrupt controller so interrupts reach the CPU.
-	console.KPrintln("[Main] wiring block IRQ...")
 	if irq := block.GetIRQNum(); irq != 0 {
 		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr(), block.GetEnginePtr(), block.GetSidecarFreeBitsPtr())
 		enableBlockDeviceIRQ(irq)
@@ -903,26 +597,19 @@ func simpleMain() {
 		// can temporarily disable async mode during its polling loop.
 		block.GetDevice().SetAsyncMode = SetBlockAsyncMode
 	}
-	console.KPrintln("[Main] block IRQ wired")
 
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)
-	console.KPrintln("[Main] EnableIRQs...")
 	EnableIRQs()
-	console.KPrintln("[Main] IRQs enabled")
 	// Fix clone threads created during Go runtime init — they have IF=0 in
 	// their saved RFLAGS because they were cloned before EnableIRQs(). Without
 	// this, those threads run without timer interrupts when scheduled, causing
 	// the system to freeze if they pick up a non-blocking goroutine.
 	FixCloneThreadIFFlags()
-	console.KPrintln("[Main] EnableTimerIRQ...")
 	EnableTimerIRQ()
-	console.KPrintln("[Main] timer enabled, unmapping cardinal...")
 
 	unmapCardinal()
-	console.KPrintln("[Main] DisableTimerIRQ...")
 	DisableTimerIRQ()
-	console.KPrintln("[Main] timer disabled, reading boot config...")
 
 	// =========================================================================
 	// USERSPACE TEST: Launch 6 sieve workers as separate threads
@@ -967,8 +654,6 @@ func simpleMain() {
 	// Must happen before EnableTimerIRQ so the first tick uses correct values.
 	if kernelCfg.KernelTickRate > 0 || kernelCfg.PreemptAfterTicks > 0 {
 		kirq.InitPreemptConfig(kernelCfg.KernelTickRate, kernelCfg.PreemptAfterTicks)
-		console.KPrintf("[Timer] reconfigured: tickRate=%dHz (%dms), preempt=%d ticks (%dms)\n",
-			kirq.KernelTickRate, kirq.TickIntervalMs, kirq.PreemptAfterTicks, kirq.PreemptIntervalMs)
 	}
 
 	// Re-enable IRQs and timer for ongoing scheduling
@@ -1027,9 +712,7 @@ func simpleMain() {
 	KernelIdleLoop()
 
 	// Should never reach here
-	Print("[Main] ERROR: KernelIdleLoop returned!\r\n")
-	for {
-	}
+	klog.Fatalf("IDLE RETURNED\n", "[Main] ERROR: KernelIdleLoop returned!\n")
 }
 
 func main() {
@@ -1042,11 +725,9 @@ func parseKernelConfig() constants.KernelConfig {
 	var cfg constants.KernelConfig
 	err := toml.Unmarshal(EmbeddedKernelConfig, &cfg)
 	if err != nil {
-		console.KPrintf("[boot] kernel.toml parse error: %v\n", err)
+		klog.Errf("[boot] kernel.toml parse error: %v\n", err)
 		return cfg
 	}
-	console.KPrintf("[boot] kernel config: tz=%s budget=%dMB tick=%dHz preempt=%d\n",
-		cfg.Timezone, cfg.KernelBudgetMB, cfg.KernelTickRate, cfg.PreemptAfterTicks)
 	return cfg
 }
 
@@ -1058,6 +739,6 @@ func launchEmbeddedFS() {
 	if result == 0 {
 		kmem.FinalUserspaceSync()
 	} else {
-		console.KPrintf("[boot] embedded fs launch FAILED (error %d)\n", result)
+		klog.Fatalf("FS LAUNCH FAIL\n", "[boot] embedded fs launch FAILED (error %d)\n", result)
 	}
 }

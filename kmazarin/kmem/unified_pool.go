@@ -8,7 +8,6 @@
 package kmem
 
 import (
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
 )
@@ -181,7 +180,6 @@ func InitUnifiedPool() {
 
 	// Count how many pages the bump allocator used (PageDescriptor array)
 	bootstrapPages := GetBumpAllocatedPages()
-	serial.RawUART('g') // breadcrumb: before buddy init
 
 	// Initialize buddy allocator with remaining pool
 	InitBuddyAllocator(
@@ -190,8 +188,6 @@ func InitUnifiedPool() {
 		constants.KernelMMIOOffset,
 		bootstrapPages,
 	)
-	serial.RawUART('h') // breadcrumb: after buddy init
-	serial.RawUARTPuts("\r\n[kmem] InitUnifiedPool done\r\n")
 }
 
 // AllocPage allocates a single page via the buddy allocator.
@@ -272,35 +268,6 @@ func GetPoolStats() PoolStats {
 		UserPTPages:     buddyAlloc.userPTPages,
 		KernelSoftLimit: globalPool.kernelSoftLimit,
 	}
-}
-
-// PrintPoolStats prints the current pool statistics to the console.
-//
-//go:nosplit
-func PrintPoolStats() {
-	stats := GetPoolStats()
-	serial.RawUARTPuts("[kmem] Pool stats:\r\n")
-	serial.RawUARTPuts("  Total:       ")
-	serial.RawUARTHex64(stats.TotalPages)
-	serial.RawUARTPuts(" pages\r\n")
-	serial.RawUARTPuts("  Allocated:   ")
-	serial.RawUARTHex64(stats.AllocatedPages)
-	serial.RawUARTPuts(" pages\r\n")
-	serial.RawUARTPuts("  Remaining:   ")
-	serial.RawUARTHex64(stats.RemainingPages)
-	serial.RawUARTPuts(" pages\r\n")
-	serial.RawUARTPuts("  Kernel heap: ")
-	serial.RawUARTHex64(stats.KernelHeapPages)
-	serial.RawUARTPuts(" pages\r\n")
-	serial.RawUARTPuts("  Kernel PT:   ")
-	serial.RawUARTHex64(stats.KernelPTPages)
-	serial.RawUARTPuts(" pages\r\n")
-	serial.RawUARTPuts("  User:        ")
-	serial.RawUARTHex64(stats.UserPages)
-	serial.RawUARTPuts(" pages\r\n")
-	serial.RawUARTPuts("  User PT:     ")
-	serial.RawUARTHex64(stats.UserPTPages)
-	serial.RawUARTPuts(" pages\r\n")
 }
 
 // SetKernelSoftLimit sets the soft limit for kernel allocations (in pages).

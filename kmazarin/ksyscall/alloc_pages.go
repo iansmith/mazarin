@@ -1,9 +1,9 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 )
 
@@ -33,12 +33,14 @@ func SyscallAllocPages(arg0, arg1, _, _, _, _ uint64) int64 {
 
 	// Validate count.
 	if numPages < 1 || numPages > MaxAllocPages {
+		klog.Errf("[AllocPages] EINVAL: count=%d (must be 1..%d)\n", numPages, MaxAllocPages)
 		return -22 // EINVAL
 	}
 
 	// Map userspace type code to internal PageType.
 	pageType := mapUserPageType(userType)
 	if pageType == kmem.PageTypeCount {
+		klog.Errf("[AllocPages] EINVAL: unknown userType=%d\n", userType)
 		return -22 // EINVAL — unknown type
 	}
 
@@ -53,6 +55,7 @@ func SyscallAllocPages(arg0, arg1, _, _, _, _ uint64) int64 {
 	totalSize := uint64(numPages) * uint64(kmem.PageSize)
 	baseVA := bumpAllocForShepherd(callerShepherd, totalSize)
 	if baseVA == 0 {
+		klog.Errf("[AllocPages] ENOMEM: VA space exhausted for SID=%d, wanted %d bytes\n", callerSID, totalSize)
 		return -12 // ENOMEM — VA space exhausted
 	}
 
@@ -63,11 +66,7 @@ func SyscallAllocPages(arg0, arg1, _, _, _, _ uint64) int64 {
 	for i := 0; i < numPages; i++ {
 		pa := kmem.AllocPage(pageType, callerSID)
 		if pa == 0 {
-			serial.RawUARTPuts("[AllocPages] OOM at page ")
-			serial.RawUARTHexCompact(uint64(i))
-			serial.RawUARTPuts("/")
-			serial.RawUARTHexCompact(uint64(numPages))
-			serial.RawUARTPuts("\r\n")
+			klog.Errf("[AllocPages] OOM at page %x/%x\n", uint64(i), uint64(numPages))
 			return -12 // ENOMEM
 		}
 
@@ -75,7 +74,7 @@ func SyscallAllocPages(arg0, arg1, _, _, _, _ uint64) int64 {
 
 		// Map into caller's address space.
 		if !kmem.MapPageInProcess(callerSID, va, pa, 0) {
-			serial.RawUARTPuts("[AllocPages] MapPageInProcess failed\r\n")
+			klog.Errf("[AllocPages] MapPageInProcess failed\n")
 			return -12 // ENOMEM
 		}
 

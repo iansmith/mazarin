@@ -36,6 +36,8 @@ type Scrollbar struct {
 	ThumbPos   float64 // thumb position 0..1 along available travel
 	ShowArrows bool    // draw arrow triangles at each end
 
+	Disabled bool // when true, renders dimmed and ignores input
+
 	// Drag state — active during ClickDraggable interaction.
 	dragOffset  float64 // offset within thumb where press occurred
 	dragOrigPos float64 // ThumbPos at drag start, for revert on outside release
@@ -95,6 +97,8 @@ func (s *Scrollbar) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 
 	pal := s.Theme().Palette()
+	style := s.Theme().Style()
+	// Raw params still needed for arrow shadow rendering.
 	var params *mancini.NeuParams
 	if neu := s.Theme().Neumorphic(); neu != nil {
 		params = neu.Light()
@@ -133,13 +137,8 @@ func (s *Scrollbar) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 
 	// 1. Track.
-	if params != nil {
-		neuInset(pal, dc, tx1, ty1, tx2, ty2, tR, pal.Surface(), params.Inset)
-	} else {
-		dc.SetColor(pal.SurfaceTint())
-		dc.DrawRoundedRectangle(tx1, ty1, tx2-tx1, ty2-ty1, tR)
-		dc.Fill()
-	}
+	style.DrawBox(pal, dc, mancini.Inset, mancini.LightWeight,
+		tx1, ty1, tx2, ty2, tR, pal.Surface())
 
 	// 2. Arrows.
 	if s.ShowArrows {
@@ -191,23 +190,17 @@ func (s *Scrollbar) Draw(self mancini.Interactor, x, y, w, h int64) {
 		thx2 = thx1 + thumbLen
 		thy2 = thy1 + thumbThick
 	}
-	if params != nil {
-		neuRaised(pal, dc, thx1, thy1, thx2, thy2, tThumbR, pal.Surface(), params.Raised)
-	} else {
-		dc.SetColor(pal.Surface())
-		dc.DrawRoundedRectangle(thx1, thy1, thx2-thx1, thy2-thy1, tThumbR)
-		dc.Fill()
-	}
+	style.DrawBox(pal, dc, mancini.Raised, mancini.LightWeight,
+		thx1, thy1, thx2, thy2, tThumbR, pal.Surface())
 
 	// 4. Grip dot at thumb center.
 	dotCX := (thx1 + thx2) / 2
 	dotCY := (thy1 + thy2) / 2
-	if params != nil {
-		neuCircleRaised(pal, dc, dotCX, dotCY, tDotRad, pal.Surface(), params.Raised)
-	} else {
-		dc.SetColor(pal.Surface())
-		dc.DrawCircle(dotCX, dotCY, tDotRad)
-		dc.Fill()
+	style.DrawCircle(pal, dc, mancini.Raised, mancini.LightWeight,
+		dotCX, dotCY, tDotRad, pal.Surface())
+
+	if s.Disabled {
+		ApplyDisabledOverlay(pal, dc, tx1, ty1, tx2, ty2, tR)
 	}
 }
 
@@ -248,6 +241,9 @@ func (s *Scrollbar) trackGeometry(x, y, w, h int64) (trackStart, length, thumbLe
 
 // ClickDragStart implements mancini.ClickDraggable.
 func (s *Scrollbar) ClickDragStart(ev *mancini.InputEvent) bool {
+	if s.Disabled {
+		return false
+	}
 	sx, sy := s.X(), s.Y()
 	sw, sh := s.W(), s.H()
 	trackStart, _, thumbLen, travel := s.trackGeometry(sx, sy, sw, sh)

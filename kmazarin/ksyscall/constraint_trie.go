@@ -8,7 +8,7 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/serial"
+	"mazzy/kmazarin/klog"
 	"mazzy/shared/constants"
 	"unsafe"
 )
@@ -74,7 +74,7 @@ func initTrie() {
 	// Allocate root (always slot 0).
 	root := attrMgr.allocTrieNode()
 	if root != 0 {
-		serial.RawUARTPuts("[attr] trie root not slot 0!\r\n")
+		klog.Errf("[attr] trie root not slot 0!\n")
 		return
 	}
 	rootNode := attrMgr.trieNode(0)
@@ -83,7 +83,7 @@ func initTrie() {
 	// Allocate "shepherd" child.
 	shepherdIdx := attrMgr.allocTrieNode()
 	if shepherdIdx == trieNone {
-		serial.RawUARTPuts("[attr] trie: cannot alloc shepherd node\r\n")
+		klog.Errf("[attr] trie: cannot alloc shepherd node\n")
 		return
 	}
 	pn := attrMgr.trieNode(shepherdIdx)
@@ -93,7 +93,7 @@ func initTrie() {
 	// Allocate "kernel" child as sibling of "shepherd".
 	kernelIdx := attrMgr.allocTrieNode()
 	if kernelIdx == trieNone {
-		serial.RawUARTPuts("[attr] trie: cannot alloc kernel node\r\n")
+		klog.Errf("[attr] trie: cannot alloc kernel node\n")
 		return
 	}
 	kn := attrMgr.trieNode(kernelIdx)

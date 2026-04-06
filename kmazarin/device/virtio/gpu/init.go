@@ -2,8 +2,8 @@
 package gpu
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/ds"
+	"mazzy/kmazarin/klog"
 	"unsafe"
 )
 
@@ -57,7 +57,7 @@ func Init() bool {
 
 	// Initialize hardware cursor
 	if !InitCursor() {
-		console.KPrintln("[VirtIO GPU] WARNING: Hardware cursor init failed, continuing without cursor")
+		klog.Errf("[VirtIO GPU] WARNING: Hardware cursor init failed, continuing without cursor\n")
 	} else {
 		InitCursorTopHalf()
 	}

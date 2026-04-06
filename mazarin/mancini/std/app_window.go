@@ -76,6 +76,7 @@ func NewAppWindow(pal mancini.Palette, title string,
 		attr.ValueI64(attr.ShepherdURI("int64", "Palette/"+name),
 			int64(c.R)<<24|int64(c.G)<<16|int64(c.B)<<8|int64(c.A))
 	}
+	// Original 8 core colors.
 	publishColor("Surface", pal.Surface())
 	publishColor("SurfaceTint", pal.SurfaceTint())
 	publishColor("DarkShadow", pal.DarkShadow())
@@ -84,6 +85,36 @@ func NewAppWindow(pal mancini.Palette, title string,
 	publishColor("Icon", pal.Icon())
 	publishColor("Highlight", pal.Highlight())
 	publishColor("HighlightText", pal.HighlightText())
+
+	// Extended Qt-inspired color roles.
+	publishColor("Base", pal.Base())
+	publishColor("BaseText", pal.BaseText())
+	publishColor("Midlight", pal.Midlight())
+	publishColor("Mid", pal.Mid())
+	publishColor("Shadow", pal.Shadow())
+	publishColor("BrightText", pal.BrightText())
+	publishColor("AlternateBase", pal.AlternateBase())
+	publishColor("ToolTipBase", pal.ToolTipBase())
+	publishColor("ToolTipText", pal.ToolTipText())
+	publishColor("Link", pal.Link())
+	publishColor("PlaceholderText", pal.PlaceholderText())
+	publishColor("Accent", pal.Accent())
+	publishColor("WindowText", pal.WindowText())
+	publishColor("DesktopBG", pal.DesktopBG())
+
+	// Cursor colors.
+	publishColor("CursorColor", pal.CursorColor())
+	publishColor("CursorTextColor", pal.CursorTextColor())
+
+	// ANSI terminal colors (16 entries).
+	for i := 0; i < 16; i++ {
+		name := "Ansi/" + ansiIndexName(i)
+		publishColor(name, pal.AnsiColor(i))
+	}
+
+	// DisabledAlpha as a fixed-point int64 (value * 1000).
+	attr.ValueI64(attr.ShepherdURI("int64", "Palette/DisabledAlpha"),
+		int64(pal.DisabledAlpha()*1000))
 
 	// Zero insets on all sides — no decoration.
 	w.Decorator.Initialize(w, layout, 0, 0, 0, 0)
@@ -262,6 +293,47 @@ func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 	if clipped {
 		mancini.PopDamageClip(dc)
 	}
+}
+
+// PublishThemeAttributes publishes theme geometry and font configuration
+// as constraint attributes under the "Theme/" namespace. Call once during
+// setup after creating the AppWindow.
+func (w *AppWindow) PublishThemeAttributes(theme mancini.Theme) {
+	publishI64 := func(name string, v int64) {
+		attr.ValueI64(attr.ShepherdURI("int64", "Theme/"+name), v)
+	}
+	publishF64 := func(name string, v float64) {
+		// Store float64 as fixed-point int64 (value * 1000).
+		attr.ValueI64(attr.ShepherdURI("int64", "Theme/"+name), int64(v*1000))
+	}
+
+	attr.ValueStr(attr.ShepherdURI("string", "Theme/Name"), theme.Name())
+	attr.ValueStr(attr.ShepherdURI("string", "Theme/FontFamily"), theme.FontFamily())
+	attr.ValueStr(attr.ShepherdURI("string", "Theme/FontFamilyMono"), theme.FontFamilyMono())
+
+	publishF64("ControlRadius", theme.ControlRadius())
+	publishF64("FieldRadius", theme.FieldRadius())
+	publishF64("FieldBorderWidth", theme.FieldBorderWidth())
+	publishF64("FieldPadding", theme.FieldPadding())
+	publishF64("ScrollbarThickness", theme.ScrollbarThickness())
+	publishF64("ScrollbarMinThumb", theme.ScrollbarMinThumb())
+
+	publishI64("TitleFontSize", theme.TitleFontSize())
+	publishI64("ControlFontSize", theme.ControlFontSize())
+	publishI64("BodyFontSize", theme.BodyFontSize())
+	publishI64("SmallFontSize", theme.SmallFontSize())
+}
+
+// ansiIndexName returns a short name for ANSI color indices 0-15.
+func ansiIndexName(i int) string {
+	names := [16]string{
+		"0", "1", "2", "3", "4", "5", "6", "7",
+		"8", "9", "10", "11", "12", "13", "14", "15",
+	}
+	if i >= 0 && i < 16 {
+		return names[i]
+	}
+	return "0"
 }
 
 // Decorate implements mancini.Decoratable — no-op. Window chrome is

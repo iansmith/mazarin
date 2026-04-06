@@ -2,9 +2,9 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kirq"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"sync/atomic"
 )
 
@@ -132,14 +132,14 @@ func DoEpollCtlWork(req *EpollWorkRequest) int64 {
 	evDataAddr := evtPtr + 4 // offset of Data field in struct epoll_event
 	pa := kmem.DemandMapUserPage(evDataAddr, req.L0PA)
 	if pa == 0 {
-		serial.RawUARTPuts("[epoll_ctl] DemandMapUserPage failed for ev.Data\r\n")
+		klog.Errf("[epoll_ctl] DemandMapUserPage failed for ev.Data\n")
 		return -14 // EFAULT
 	}
 
 	// Read ev.Data through the explicit page table.
 	evData, ok := kmem.ReadUserUint64WithL0(evDataAddr, req.L0PA)
 	if !ok {
-		serial.RawUARTPuts("[epoll_ctl] ReadUserUint64WithL0 failed after demand map\r\n")
+		klog.Errf("[epoll_ctl] ReadUserUint64WithL0 failed after demand map\n")
 		return -14 // EFAULT
 	}
 

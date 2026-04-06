@@ -12,8 +12,8 @@ package input
 
 import (
 	"mazzy/kmazarin/asm"
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
 	"mazzy/shared/constants"
@@ -352,7 +352,7 @@ func computeIRQ(slot uint8, pin uint8) uint32 {
 func initDevice(dev *VirtIOInputDevice) bool {
 	// VirtIO handshake: Reset → ACK → DRIVER → features → FEATURES_OK
 	if !dev.Handshake(0, virtio.FeatureVersion1) {
-		console.KPrintln("[VirtIO Input] ERROR: Device rejected features")
+		klog.Errf("[VirtIO Input] ERROR: Device rejected features\n")
 		return false
 	}
 
@@ -366,14 +366,14 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	queueSize := uint16(32) // Match NumEventBuffers
 	dmaPA, dmaVA := kmem.AllocDMAPageMapped()
 	if dmaPA == 0 {
-		console.KPrintln("[VirtIO Input] ERROR: Failed to alloc DMA page")
+		klog.Errf("[VirtIO Input] ERROR: Failed to alloc DMA page\n")
 		return false
 	}
 
 	// Place virtqueue structures on the DMA page starting at offset 0
 	endOff := virtio.VirtqueueInitOnDMAPage(&dev.EventQueue, queueSize, dmaPA, dmaVA, 0)
 	if endOff == 0 {
-		console.KPrintln("[VirtIO Input] ERROR: Failed to init event queue on DMA page")
+		klog.Errf("[VirtIO Input] ERROR: Failed to init event queue on DMA page\n")
 		return false
 	}
 
@@ -381,7 +381,7 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	eventBufOff := (endOff + 7) &^ 7 // 8-byte align for VirtIOInputEvent
 	eventBufSize := uintptr(NumEventBuffers) * unsafe.Sizeof(VirtIOInputEvent{})
 	if eventBufOff+eventBufSize > 4096 {
-		console.KPrintln("[VirtIO Input] ERROR: DMA page too small for event buffers")
+		klog.Errf("[VirtIO Input] ERROR: DMA page too small for event buffers\n")
 		return false
 	}
 	dev.EventBuffers = (*[NumEventBuffers]VirtIOInputEvent)(unsafe.Pointer(dmaVA + eventBufOff))
@@ -390,7 +390,7 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	// Enable queue (writes addresses, reads notifyOff, assigns MSI-X vector, enables)
 	notifyOff, ok := dev.EnableQueue(0, &dev.EventQueue, msixVec)
 	if !ok {
-		console.KPrintln("[VirtIO Input] ERROR: Failed to enable event queue")
+		klog.Errf("[VirtIO Input] ERROR: Failed to enable event queue\n")
 		return false
 	}
 	dev.EventQueueNotifyOff = notifyOff
@@ -399,7 +399,7 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	dev.SetDriverOK()
 	finalStatus := dev.GetDeviceStatus()
 	if finalStatus != 0x0F {
-		console.KPrintf("[VirtIO Input] WARNING: unexpected status=0x%x (expect 0x0F)\n", finalStatus)
+		klog.Errf("[VirtIO Input] WARNING: unexpected status=0x%x (expect 0x0F)\n", finalStatus)
 	}
 
 	// Classify device type
@@ -423,14 +423,13 @@ func initGICv2mSPIBase() {
 	}
 	gicv2mInitDone = true
 	if err := kmem.MapDeviceMMIO(GICV2M_PHYS, GICV2M_SIZE); err != nil {
-		console.KPrintf("[VirtIO Input] ERROR: Failed to map GICv2m: %v\n", err)
+		klog.Errf("[VirtIO Input] ERROR: Failed to map GICv2m: %v\n", err)
 		return
 	}
 	gicv2mBase = 0xFFFFFFFF00000000 + GICV2M_PHYS
 	typer := asm.MmioRead32(gicv2mBase + GICV2M_TYPER)
 	spiBase := (typer >> 16) & 0x3FF
-	spiCount := typer & 0x3FF
-	console.KPrintf("[GICv2m] TYPER=0x%x spiBase=%d spiCount=%d\n", typer, spiBase, spiCount)
+	_ = typer & 0x3FF // spiCount — used only for validation
 	nextMSIXSPI = spiBase
 }
 
@@ -470,7 +469,7 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 		capPtr = pci.ConfigRead8(bus, slot, funcNum, capPtr+1)
 	}
 	if msixCapPtr == 0 {
-		console.KPrintln("[VirtIO Input] ERROR: No MSI-X capability found")
+		klog.Errf("[VirtIO Input] ERROR: No MSI-X capability found\n")
 		return 0
 	}
 
@@ -532,7 +531,7 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 	readData := asm.MmioRead32(tableBase + MSIX_ENTRY_DATA)
 	readCtrl := asm.MmioRead32(tableBase + MSIX_ENTRY_CONTROL)
 	if readData != gicIRQ || readCtrl != 0 {
-		console.KPrintf("[VirtIO Input] MSI-X entry[0] mismatch: data=%d (expect %d) ctrl=0x%x\n",
+		klog.Errf("[VirtIO Input] MSI-X entry[0] mismatch: data=%d (expect %d) ctrl=0x%x\n",
 			readData, gicIRQ, readCtrl)
 	}
 
@@ -547,10 +546,10 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 	funcMasked := (finalCtrl & (1 << 14)) != 0
 	readAddr := asm.MmioRead32(tableBase + MSIX_ENTRY_ADDR_LO)
 	readDataFinal := asm.MmioRead32(tableBase + MSIX_ENTRY_DATA)
-	console.KPrintf("[MSI-X] dev=%d:%d.%d spi=%d gicIRQ=%d doorbell=0x%x barPA=0x%x tableOff=0x%x\n",
-		bus, slot, funcNum, spi, gicIRQ, doorbellAddr, barBasePA, tableOffset)
-	console.KPrintf("[MSI-X] enabled=%v funcMask=%v entry[0]: addr=0x%x data=%d\n",
-		msixEnabled, funcMasked, readAddr, readDataFinal)
+	_ = msixEnabled
+	_ = funcMasked
+	_ = readAddr
+	_ = readDataFinal
 	return gicIRQ
 }
 
@@ -593,24 +592,14 @@ func InitVirtIOInput() {
 				// Use per-device MMIO base to avoid BAR collisions with GPU/block
 				mmioBase := pci.PCI_MMIO_BASE + 0x400000 + uintptr(len(allDevices))*0x10000
 				if !dev.FindAndMapBARs(bus, slot, funcNum, mmioBase) {
-					console.KPrintln("[VirtIO Input] ERROR: Failed to find/map BARs")
+					klog.Errf("[VirtIO Input] ERROR: Failed to find/map BARs\n")
 					continue
 				}
 
 				if !initDevice(dev) {
-					console.KPrintln("[VirtIO Input] ERROR: Failed to initialize device")
+					klog.Errf("[VirtIO Input] ERROR: Failed to initialize device\n")
 					continue
 				}
-
-				name := dev.readDeviceName()
-				typeName := "keyboard"
-				if dev.DevType == hid.DeviceTypeMouse {
-					typeName = "mouse"
-				} else if dev.DevType == hid.DeviceTypeTablet {
-					typeName = "tablet"
-				}
-				console.KPrintf("[VirtIO Input] %s '%s' at %d:%d.%d IRQ=%d ISR=0x%x\n",
-					typeName, name, bus, slot, funcNum, irq, dev.ISRBase)
 
 				// Assign to global slots
 				if dev.DevType == hid.DeviceTypeKeyboard && KeyboardDevice == nil {

@@ -9,7 +9,6 @@ package main
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"unsafe"
 )
 
@@ -66,25 +65,6 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 	schedulerLock.Lock()
 
 	t := threadLookupByTID(tid)
-	if t == nil {
-		serial.RawUARTPuts("[WDCT] tid=")
-		serial.RawUARTDecimal(uint64(tid))
-		serial.RawUARTPuts(" NOT FOUND\r\n")
-	} else if t.PID != proc.ShepherdId(pid) {
-		serial.RawUARTPuts("[WDCT] tid=")
-		serial.RawUARTDecimal(uint64(tid))
-		serial.RawUARTPuts(" PID mismatch: want=")
-		serial.RawUARTDecimal(uint64(pid))
-		serial.RawUARTPuts(" got=")
-		serial.RawUARTDecimal(uint64(t.PID))
-		serial.RawUARTPuts("\r\n")
-	} else if t.State != ThreadBlockedDelegate {
-		serial.RawUARTPuts("[WDCT] tid=")
-		serial.RawUARTDecimal(uint64(tid))
-		serial.RawUARTPuts(" BAD STATE=")
-		serial.RawUARTDecimal(uint64(t.State))
-		serial.RawUARTPuts("\r\n")
-	}
 	if t != nil && t.PID == proc.ShepherdId(pid) && t.State == ThreadBlockedDelegate {
 		t.Context.SetReturnValue(uint64(returnVal))
 		t.PreemptElapsed = 0

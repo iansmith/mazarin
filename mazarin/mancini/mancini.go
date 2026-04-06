@@ -57,6 +57,17 @@ func (d NeuDepth) String() string {
 	return "?"
 }
 
+// Weight selects between control-weight and window-weight rendering
+// parameters. Interactors pass their weight to [SurfaceStyle.DrawBox]
+// and [SurfaceStyle.Pad] so the style can apply appropriate shadow
+// sizes and padding.
+type Weight int
+
+const (
+	LightWeight Weight = iota // Controls (buttons, checkboxes, scrollbars)
+	HeavyWeight               // Window decorations (title bars, window frames)
+)
+
 // MouseDown returns the depth a button transitions to when pressed.
 //
 //	Raised → Inset  (pushes below surface)
@@ -74,11 +85,16 @@ func (d NeuDepth) MouseDown() NeuDepth {
 	return d
 }
 
-// Palette provides the color vocabulary for neumorphic rendering.
-// The default implementation is [theme.DefaultPalette]. All shadow
-// rendering in [mazzy/mazarin/mancini/std] reads colors from the
-// Palette returned by [Theme.Palette].
+// Palette provides the color vocabulary for interactor rendering.
+// The default implementation is [theme.DefaultPalette]. Color roles
+// follow the Qt QPalette model with additions for terminal and cursor
+// colors.
+//
+// The original 10 roles (Surface through DesktopBG) are retained for
+// backward compatibility. New roles added in the theming overhaul are
+// listed after DesktopBG.
 type Palette interface {
+	// ── Original roles ───────────────────────────────────────────
 	Surface() color.NRGBA
 	SurfaceTint() color.NRGBA
 	DarkShadow() color.NRGBA
@@ -88,6 +104,49 @@ type Palette interface {
 	Highlight() color.NRGBA
 	HighlightText() color.NRGBA
 	DisabledAlpha() float64
+	DesktopBG() color.NRGBA
+
+	// ── Extended color roles (Qt QPalette inspired) ──────────────
+
+	// Base is the background for text input fields and list views.
+	Base() color.NRGBA
+	// BaseText is the foreground for text on Base backgrounds.
+	BaseText() color.NRGBA
+	// Midlight is the midpoint between Surface and LightShadow.
+	Midlight() color.NRGBA
+	// Mid is the midpoint between DarkShadow and Surface.
+	Mid() color.NRGBA
+	// Shadow is a near-black color for hard drop shadows.
+	Shadow() color.NRGBA
+	// BrightText is high-contrast text for use on dark backgrounds.
+	BrightText() color.NRGBA
+	// AlternateBase is an alternating row color for lists and tables.
+	AlternateBase() color.NRGBA
+	// ToolTipBase is the background for tooltip popups.
+	ToolTipBase() color.NRGBA
+	// ToolTipText is the foreground for tooltip text.
+	ToolTipText() color.NRGBA
+	// Link is the color for hyperlink text.
+	Link() color.NRGBA
+	// PlaceholderText is the color for placeholder/hint text in fields.
+	PlaceholderText() color.NRGBA
+	// Accent is the primary accent color (selection, focus rings).
+	Accent() color.NRGBA
+	// WindowText is the default text color for window content areas.
+	WindowText() color.NRGBA
+
+	// ── Terminal colors ──────────────────────────────────────────
+
+	// AnsiColor returns one of the 16 standard ANSI terminal colors
+	// (0-7 normal, 8-15 bright). Index is clamped to [0,15].
+	AnsiColor(index int) color.NRGBA
+
+	// ── Cursor colors ────────────────────────────────────────────
+
+	// CursorColor is the text cursor fill/outline color.
+	CursorColor() color.NRGBA
+	// CursorTextColor is the text color when drawn over the cursor.
+	CursorTextColor() color.NRGBA
 }
 
 // NeumorphicParams provides two weight classes of shadow parameters,

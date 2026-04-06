@@ -15,6 +15,7 @@ import (
 	mctheme "mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
+	"mazarin/textshape"
 	"strconv"
 	"time"
 )
@@ -23,6 +24,11 @@ import (
 // Set during rachel's main() after fonts are available. If nil, title bars
 // are not drawn (NeuBox decoration only).
 var windowTitleBar mancini.TitleBar
+
+// titleGlyphProvider renders glyphs for decoration title text.
+// Uses the internal (in-process) provider when fontsvc runs inside rachel,
+// or the IPC-based provider for external fontsvc.
+var titleGlyphProvider textshape.GlyphProvider
 
 // rectSubtract returns the parts of a that are not covered by b.
 // Returns 0-4 rectangles (the top, bottom, left, and right strips
@@ -61,16 +67,51 @@ func screenOrigin(ta *trackedApp) (int, int) {
 	return int(ta.x) - borderLeft, int(ta.y) - borderTop
 }
 
+// faceScreenRect returns the face area (titlebar + content, excluding shadow
+// borders) in screen coordinates. For unfocused windows, only this region is
+// blitted — no neumorphic shadows.
+func faceScreenRect(ta *trackedApp) image.Rectangle {
+	ox, oy := screenOrigin(ta)
+	return image.Rect(
+		ox+borderLeft,
+		oy+shadowTop,
+		ox+int(ta.bsWidth)-borderRight,
+		oy+int(ta.bsHeight)-borderBottom,
+	)
+}
+
+// lightShadowPad is the shadow extent for light neumorphic params.
+// NeuMaxPad for light = ceil(max(4+12+2, 1.5+9+2, 3.5)) = 18.
+var lightShadowPad = 18
+
+// windowVisibleRect returns the screen rectangle a window actually occupies.
+// Focused windows use the face rect expanded by the light shadow padding.
+// Unfocused windows use only the face rect (titlebar + content).
+func windowVisibleRect(ta *trackedApp, focused bool) image.Rectangle {
+	face := faceScreenRect(ta)
+	if focused {
+		return image.Rect(
+			face.Min.X-lightShadowPad,
+			face.Min.Y-lightShadowPad,
+			face.Max.X+lightShadowPad,
+			face.Max.Y+lightShadowPad,
+		)
+	}
+	return face
+}
+
 // exposedRegion returns the set of non-overlapping rectangles that
 // represent the visible portion of the window identified by sid.
 // It subtracts the bounds of every window above sid in z-order.
+// Unfocused windows use only their face rect (no shadow borders) for
+// both their own bounds and for occluding windows below.
 func exposedRegion(sid int) []image.Rectangle {
 	ta, ok := trackedApps[sid]
 	if !ok {
 		return nil
 	}
-	ox, oy := screenOrigin(ta)
-	winRect := image.Rect(ox, oy, ox+int(ta.bsWidth), oy+int(ta.bsHeight))
+	focused := sid == mouseFocusSID
+	winRect := windowVisibleRect(ta, focused)
 
 	// Clip to screen bounds — windows may extend off-screen during drag.
 	screenRect := image.Rect(0, 0, int(displayWidth), int(displayHeight))
@@ -91,8 +132,8 @@ func exposedRegion(sid int) []image.Rectangle {
 		if !ok {
 			continue
 		}
-		aox, aoy := screenOrigin(above)
-		aboveRect := image.Rect(aox, aoy, aox+int(above.bsWidth), aoy+int(above.bsHeight))
+		aboveFocused := aboveSID == mouseFocusSID
+		aboveRect := windowVisibleRect(above, aboveFocused)
 
 		// Subtract aboveRect from every rect in the current list.
 		var next []image.Rectangle
@@ -102,6 +143,83 @@ func exposedRegion(sid int) []image.Rectangle {
 		rects = next
 	}
 	return rects
+}
+
+// borderZoneRects returns the four border strips (top, bottom, left, right)
+// for a tracked window in screen coordinates.
+func borderZoneRects(ta *trackedApp) [4]image.Rectangle {
+	ox, oy := screenOrigin(ta)
+	bsW, bsH := int(ta.bsWidth), int(ta.bsHeight)
+	return [4]image.Rectangle{
+		image.Rect(ox, oy, ox+bsW, oy+borderTop),                           // top
+		image.Rect(ox, oy+bsH-borderBottom, ox+bsW, oy+bsH),               // bottom
+		image.Rect(ox, oy+borderTop, ox+borderLeft, oy+bsH-borderBottom),   // left
+		image.Rect(ox+bsW-borderRight, oy+borderTop, ox+bsW, oy+bsH-borderBottom), // right
+	}
+}
+
+// restoreBorderBackground prepares the framebuffer under a window's border
+// zones for correct alpha compositing. It fills the border regions with the
+// desktop background, then re-blits all windows behind sid (back-to-front)
+// that overlap the border zones. After this call, the FB contains the correct
+// background for the target window's semi-transparent shadows to composite over.
+func restoreBorderBackground(sid int, exposed []image.Rectangle, fb []byte, fbStride int) {
+	ta, ok := trackedApps[sid]
+	if !ok {
+		return
+	}
+
+	// Intersect border zone rects with exposed regions.
+	borders := borderZoneRects(ta)
+	var borderExposed []image.Rectangle
+	for _, b := range borders {
+		for _, e := range exposed {
+			isect := b.Intersect(e)
+			if !isect.Empty() {
+				borderExposed = append(borderExposed, isect)
+			}
+		}
+	}
+	if len(borderExposed) == 0 {
+		return
+	}
+
+	// Fill border-exposed rects with desktop BG.
+	for _, r := range borderExposed {
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			off := y*fbStride + r.Min.X*4
+			w := r.Dx() * 4
+			if off >= 0 && off+w <= len(fb) {
+				fillDesktopBG(fb[off : off+w])
+			}
+		}
+	}
+
+	// Re-blit windows behind sid that overlap the border zones, back-to-front.
+	for i := len(zOrder) - 1; i >= 0; i-- {
+		belowSID := zOrder[i]
+		if belowSID == sid {
+			break
+		}
+		belowTA, ok := trackedApps[belowSID]
+		if !ok || belowTA.backingStore == nil {
+			continue
+		}
+		belowOX, belowOY := screenOrigin(belowTA)
+		belowRect := image.Rect(belowOX, belowOY,
+			belowOX+int(belowTA.bsWidth), belowOY+int(belowTA.bsHeight))
+
+		var clipped []image.Rectangle
+		for _, r := range borderExposed {
+			isect := r.Intersect(belowRect)
+			if !isect.Empty() {
+				clipped = append(clipped, isect)
+			}
+		}
+		if len(clipped) > 0 {
+			blitWindow(belowSID, clipped, fb, fbStride, belowSID == mouseFocusSID)
+		}
+	}
 }
 
 // blitScanlineAlpha alpha-blends BGRA pixels from src over dst.
@@ -198,8 +316,9 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 			inBorderRow := localY < borderTop || localY >= bsH-borderBottom
 
 			if inBorderRow {
-				// Entire row is border zone — restore desktop BG then alpha blend.
-				fillDesktopBG(fb[fbRowOff : fbRowOff+w])
+				// Entire row is border zone — alpha blend over existing FB.
+				// Caller must ensure the FB already has the correct background
+				// (desktop BG + lower windows) via restoreBorderBackground.
 				blitScanlineAlpha(fb[fbRowOff:fbRowOff+w], bs[bsRowOff:bsRowOff+w])
 			} else {
 				// Content row — split into left-border | content | right-border.
@@ -209,7 +328,6 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 					if lEnd > r.Dx() {
 						lEnd = r.Dx()
 					}
-					fillDesktopBG(fb[fbRowOff : fbRowOff+lEnd*4])
 					blitScanlineAlpha(fb[fbRowOff:fbRowOff+lEnd*4], bs[bsRowOff:bsRowOff+lEnd*4])
 				}
 				// Content segment (opaque fast copy).
@@ -237,7 +355,6 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 					rFbOff := fbRowOff + rStart*4
 					rBsOff := bsRowOff + rStart*4
 					rLen := (rEnd - rStart) * 4
-					fillDesktopBG(fb[rFbOff : rFbOff+rLen])
 					blitScanlineAlpha(fb[rFbOff:rFbOff+rLen], bs[rBsOff:rBsOff+rLen])
 				}
 			}
@@ -245,45 +362,54 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 	}
 }
 
-// renderDecorOnce renders a NeuBox + title bar into a temporary buffer
-// for the given depth/state and returns the border pixels only.
-// The returned slice has the same layout as the backing store but only
-// the border zone pixels are meaningful.
-func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.WindowState, desktopBG color.NRGBA) []byte {
+// renderDecorOnce renders decoration into a temporary buffer for the given
+// depth/state and returns the pixels. The buffer has the same layout as the
+// backing store.
+//
+// Focused (Raised): light neumorphic shadows with a transparent face. The
+// shadow pixels remain as pure alpha layers so they composite correctly over
+// the actual background at blit time.
+//
+// Unfocused (Flush): opaque surface-colored face with no neumorphic shadows.
+// Only the face area (titlebar + content) is meaningful; border zones are
+// transparent and never blitted for unfocused windows.
+func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.WindowState) []byte {
 	tw := int(ta.bsWidth)
 	th := int(ta.bsHeight)
 	stride := int(ta.bsStride)
 	buf := make([]byte, len(ta.backingStore))
 	// Buffer starts zeroed (alpha=0 = fully transparent).
-	// NeuBox shadows will composite with proper alpha via draw.Over,
-	// and the face fill writes opaque pixels (alpha=255) on top.
 
 	tmpImg := &image.RGBA{
 		Pix:    buf,
 		Stride: stride,
 		Rect:   image.Rect(0, 0, tw, th),
 	}
-	dc := mancini.NewDrawContextForImage(tmpImg, nil)
-	pal := mctheme.NewDefaultPaletteSwapRB()
-	neuP := mctheme.NewDefaultNeumorphicParams().Heavy()
-	// Reduce light shadow intensity for window decorations — full white
-	// (α=255) creates a visible white margin in the border zone.
-	neuP.Raised.LightAlpha = 160
+	dc := mancini.NewDrawContextForImage(tmpImg, titleGlyphProvider)
 
 	x1 := float64(borderLeft)
 	y1 := float64(shadowTop)
 	x2 := float64(tw - borderRight)
 	y2 := float64(th - borderBottom)
-	r := 6.0
+	r := wmTheme.CornerRadius()
 
-	// Use the desktop BG as the NeuBox face color so the shadows float
-	// on the desktop surface — no visible lighter band from pal.Surface().
-	// The buffer was pre-filled in BGRA byte order, but the image.RGBA
-	// drawing expects RGBA — swap R↔B so the rendered face matches.
-	faceColor := color.NRGBA{R: desktopBG.B, G: desktopBG.G, B: desktopBG.R, A: desktopBG.A}
-	std.NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, faceColor, neuP)
+	if depth == mancini.Raised {
+		// Focused: transparent face + light neumorphic shadows.
+		// draw.Over with alpha=0 face is a no-op, preserving shadow pixels.
+		faceColor := color.NRGBA{A: 0}
+		neuP := mctheme.NewDefaultNeumorphicParams().Light()
+		neuP.Raised.LightAlpha = wmTheme.RaisedLightAlpha()
+		std.NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, faceColor, neuP)
+	} else {
+		// Unfocused: opaque face, no neumorphic shadows.
+		// The face provides a solid surface for the title bar text.
+		faceColor := pal.Surface()
+		dc.SetColor(faceColor)
+		dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
+		dc.Fill()
+	}
 
-	// Title bar drawn AFTER NeuBox so stripes are visible on top of the face.
+	// Title bar drawn AFTER face/shadows.
 	if windowTitleBar != nil {
 		tbX := float64(borderLeft) + 4
 		tbY := float64(shadowTop) + 2
@@ -298,9 +424,9 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 // preRenderDecorations pre-renders both focused (Raised) and unfocused
 // (Flush) decorations into cached buffers and applies the focused state
 // to the backing store. Called once at allocation time.
-func preRenderDecorations(ta *trackedApp, desktopBG color.NRGBA) {
-	ta.decorFocused = renderDecorOnce(ta, mancini.Raised, mancini.Active, desktopBG)
-	ta.decorUnfocused = renderDecorOnce(ta, mancini.Flush, mancini.Inactive, desktopBG)
+func preRenderDecorations(ta *trackedApp) {
+	ta.decorFocused = renderDecorOnce(ta, mancini.Raised, mancini.Active)
+	ta.decorUnfocused = renderDecorOnce(ta, mancini.Flush, mancini.Inactive)
 	applyDecorations(ta, true)
 	sys.UartWriteString(fmt.Sprintf("[rachel:decor] pre-rendered %dx%d title=%q\n",
 		ta.bsWidth, ta.bsHeight, ta.title))
@@ -366,8 +492,8 @@ func exposedRegionExcluding(sid, excludeSID int) []image.Rectangle {
 	if !ok {
 		return nil
 	}
-	ox, oy := screenOrigin(ta)
-	winRect := image.Rect(ox, oy, ox+int(ta.bsWidth), oy+int(ta.bsHeight))
+	focused := sid == mouseFocusSID
+	winRect := windowVisibleRect(ta, focused)
 	screenRect := image.Rect(0, 0, int(displayWidth), int(displayHeight))
 	winRect = winRect.Intersect(screenRect)
 	if winRect.Empty() {
@@ -386,8 +512,8 @@ func exposedRegionExcluding(sid, excludeSID int) []image.Rectangle {
 		if !ok {
 			continue
 		}
-		aox, aoy := screenOrigin(above)
-		aboveRect := image.Rect(aox, aoy, aox+int(above.bsWidth), aoy+int(above.bsHeight))
+		aboveFocused := aboveSID == mouseFocusSID
+		aboveRect := windowVisibleRect(above, aboveFocused)
 		var next []image.Rectangle
 		for _, r := range rects {
 			next = append(next, rectSubtract(r, aboveRect)...)
@@ -422,9 +548,9 @@ func startDragComposite(sid int) {
 	if dragBG == nil || len(dragBG) < bufSize {
 		pages := (bufSize + 4095) / 4096
 		var err error
-		dragBG, err = mem.AllocPagesSlice(pages, 0) // regular pages
+		dragBG, err = mem.AllocPagesSlice(pages, mem.PageShared)
 		if err != nil {
-			sys.UartWriteString("[rachel:drag] dragBG alloc failed, falling back\n")
+			sys.UartWriteString(fmt.Sprintf("[rachel:drag] dragBG alloc failed: %v (wanted %d pages for %d bytes)\n", err, pages, bufSize))
 			dragActive = false
 			return
 		}
@@ -457,7 +583,7 @@ func startDragComposite(sid int) {
 	ta := trackedApps[sid]
 	dragActive = true
 	dragSID = sid
-	dragPrevRect = windowScreenRect(ta)
+	dragPrevRect = windowVisibleRect(ta, true) // focused = face + light shadow pad
 	sys.UartWriteString(fmt.Sprintf("[rachel:drag] startDragComposite SID=%d prev=%v\n", sid, dragPrevRect))
 }
 

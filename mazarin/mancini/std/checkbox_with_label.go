@@ -37,6 +37,7 @@ type CheckboxWithLabel struct {
 	Label     mancini.Face // draws the label content (may be nil)
 	LabelW    float64      // width of the label area
 	LabelH    float64      // height of the label area
+	Disabled  bool         // when true, renders dimmed and ignores input
 }
 
 // NewCheckboxWithLabel creates a CheckboxWithLabel wired to the constraint
@@ -118,10 +119,7 @@ func (c *CheckboxWithLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 
 	pal := c.Theme().Palette()
-	var params *mancini.NeuParams
-	if neu := c.Theme().Neumorphic(); neu != nil {
-		params = neu.Light()
-	}
+	style := c.Theme().Style()
 
 	ox := float64(x)
 	oy := float64(y)
@@ -166,17 +164,23 @@ func (c *CheckboxWithLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
 	x2 := checkCX + size/2
 	y2 := checkCY + size/2
 
-	const radius = 4.0
+	radius := c.Theme().ControlRadius() / 2
 
 	if !c.Checked {
-		NeuBoxWith(pal, dc, mancini.Inset, x1, y1, x2, y2, radius, pal.Surface(), params)
+		style.DrawBox(pal, dc, mancini.Inset, mancini.LightWeight,
+			x1, y1, x2, y2, radius, pal.Surface())
 	} else {
-		NeuBoxWith(pal, dc, mancini.Raised, x1, y1, x2, y2, radius, pal.Surface(), params)
+		style.DrawBox(pal, dc, mancini.Raised, mancini.LightWeight,
+			x1, y1, x2, y2, radius, pal.Surface())
 		drawCheckmark(dc, pal, x1, y1, x2-x1, y2-y1)
 	}
 
 	// Draw the label.
 	if c.Label != nil {
 		c.Label.DrawFace(dc, labelX, labelY, labelW, labelH)
+	}
+	if c.Disabled {
+		// Overlay covers the full allocated bounds (checkbox + label).
+		ApplyDisabledOverlay(pal, dc, ox, oy, ox+float64(w), oy+float64(h), 0)
 	}
 }

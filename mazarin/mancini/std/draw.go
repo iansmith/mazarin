@@ -285,7 +285,7 @@ func NeuBoxWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDe
 		}
 		if face != pal.Surface() && depth != mancini.Raised {
 			canvas := dc.Image().(*image.RGBA)
-			applyTintOverlay(pal, dc, canvas, x1, y1, x2, y2, r, face)
+			applyTintOverlay(dc, canvas, x1, y1, x2, y2, r, face)
 		}
 	} else {
 		dc.SetColor(face)
@@ -422,7 +422,7 @@ func neuFlush(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r flo
 	draw.DrawMask(canvas, dst, lightEdge, image.Point{}, mask, image.Point{}, draw.Over)
 }
 
-func applyTintOverlay(pal mancini.Palette, dc mancini.DrawContext, canvas *image.RGBA, x1, y1, x2, y2, r float64, tint color.NRGBA) {
+func applyTintOverlay(dc mancini.DrawContext, canvas *image.RGBA, x1, y1, x2, y2, r float64, tint color.NRGBA) {
 	pad := 2.0
 	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
 	ix1, iy1 := dc.TransformPoint(x1, y1)
@@ -435,6 +435,31 @@ func applyTintOverlay(pal mancini.Palette, dc mancini.DrawContext, canvas *image
 	odc.Fill()
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 	draw.Draw(canvas, dst, overlay, image.Point{}, draw.Over)
+}
+
+// ApplyDisabledOverlay draws a semi-transparent Surface-colored overlay over
+// the given rectangle to indicate a disabled control. The opacity is
+// determined by the palette's DisabledAlpha (0.0–1.0).
+func ApplyDisabledOverlay(pal mancini.Palette, dc mancini.DrawContext,
+	x1, y1, x2, y2, r float64) {
+
+	alpha := uint8(pal.DisabledAlpha() * 255)
+	surf := pal.Surface()
+	dc.SetColor(color.NRGBA{surf.R, surf.G, surf.B, alpha})
+	dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
+	dc.Fill()
+}
+
+// ApplyDisabledCircleOverlay draws a semi-transparent Surface-colored circle
+// overlay to indicate a disabled circular control.
+func ApplyDisabledCircleOverlay(pal mancini.Palette, dc mancini.DrawContext,
+	cx, cy, radius float64) {
+
+	alpha := uint8(pal.DisabledAlpha() * 255)
+	surf := pal.Surface()
+	dc.SetColor(color.NRGBA{surf.R, surf.G, surf.B, alpha})
+	dc.DrawCircle(cx, cy, radius)
+	dc.Fill()
 }
 
 // ── Neumorphic circle rendering ──────────────────────────────────────────────
@@ -456,7 +481,7 @@ func NeuCircleWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.Ne
 		}
 		if face != pal.Surface() && depth != mancini.Raised {
 			canvas := dc.Image().(*image.RGBA)
-			applyCircleTintOverlay(pal, dc, canvas, cx, cy, rad, face)
+			applyCircleTintOverlay(dc, canvas, cx, cy, rad, face)
 		}
 	} else {
 		dc.SetColor(face)
@@ -614,7 +639,7 @@ func neuCircleFlush(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad flo
 	draw.DrawMask(canvas, dst, lightEdge, image.Point{}, mask, image.Point{}, draw.Over)
 }
 
-func applyCircleTintOverlay(pal mancini.Palette, dc mancini.DrawContext, canvas *image.RGBA, cx, cy, rad float64, tint color.NRGBA) {
+func applyCircleTintOverlay(dc mancini.DrawContext, canvas *image.RGBA, cx, cy, rad float64, tint color.NRGBA) {
 	x1, y1, x2, y2 := cx-rad, cy-rad, cx+rad, cy+rad
 	pad := 2.0
 	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)

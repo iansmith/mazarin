@@ -7,8 +7,8 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/gpu"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 )
@@ -77,7 +77,7 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
-		console.KWriteString("[RunShepherd] ERROR: busy or no thread to switch to\r\n")
+		klog.Errf("[RunShepherd] ERROR: busy or no thread to switch to\n")
 		return int64(errNoSpace)
 	}
 
@@ -90,7 +90,7 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	// Copy ELF data from the caller's pages into a contiguous kernel buffer.
 	elfData := copyPagesFromUser(req.StartVA, req.TotalBytes, req.CallerL0PA)
 	if elfData == nil {
-		console.KWriteString("[RunShepherd] ERROR: failed to copy pages from user\r\n")
+		klog.Errf("[RunShepherd] ERROR: failed to copy pages from user\n")
 		return int64(errNullPointer)
 	}
 
@@ -142,7 +142,7 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	// Load ELF into the new shepherd's page table
 	loadedProc, err := loadELF(elfData, "/"+req.Name+".elf", processL0PA, 0)
 	if err != nil {
-		console.KWriteString("[RunShepherd] loadELF failed\r\n")
+		klog.Errf("[RunShepherd] loadELF failed\n")
 		return int64(errInvalidELF)
 	}
 
@@ -152,7 +152,7 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	kmem.FinalUserspaceSync()
 
 	// Create a new thread for this shepherd
-	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
+	_ = CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
 
 	// Cache symbol table, highest VA, filename, and allocate IPC uring ring
 	for i := 0; i < proc.MaxShepherds; i++ {
@@ -167,8 +167,6 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 			allocateUringIPCRing(&proc.ShepherdListData[i])
 			registerUringID(uringID, int16(proc.ShepherdListData[i].PID))
 
-			console.KPrintf("Launching %s (TID=%d, PID=%d)\n",
-				req.Name, tid, proc.ShepherdListData[i].PID)
 			break
 		}
 	}

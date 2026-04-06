@@ -15,8 +15,8 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/block"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
 	"unsafe"
@@ -26,8 +26,6 @@ import (
 // Set to 1 on first SysBlockSubmit call.
 var blockAsyncEnabled uint32
 
-// dbgBlockSubmitCount counts total BlockSubmit syscalls for instrumentation.
-var dbgBlockSubmitCount uint32
 
 // SyscallBlockSubmit submits an async block I/O request.
 //
@@ -83,7 +81,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	// Validate numSectors fits in the buffer
 	totalBytes := numSectors * blockSize
 	if numSectors == 0 || totalBytes > 4096 {
-		serial.RawUARTPuts("[BlockSubmit] EINVAL: numSectors out of range\r\n")
+		klog.Errf("[BlockSubmit] EINVAL: numSectors out of range\n")
 		return -22 // EINVAL
 	}
 
@@ -93,7 +91,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	if targetSID != 0 {
 		clumpOwner = proc.FindShepherdBySID(proc.ShepherdId(targetSID))
 		if clumpOwner == nil {
-			serial.RawUARTPuts("[BlockSubmit] ESRCH: target shepherd not found\r\n")
+			klog.Errf("[BlockSubmit] ESRCH: target shepherd not found\n")
 			return -3 // ESRCH
 		}
 	} else {
@@ -101,13 +99,13 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	}
 	clump := clumpOwner.FindClumpByVA(bufVA)
 	if clump == nil {
-		serial.RawUARTPuts("[BlockSubmit] EFAULT: bufVA not in any DMA clump\r\n")
+		klog.Errf("[BlockSubmit] EFAULT: bufVA not in any DMA clump\n")
 		return -14 // EFAULT
 	}
 	pa := clump.LookupPA(bufVA)
 	endPA := clump.LookupPA(bufVA + uintptr(totalBytes) - 1)
 	if pa == 0 || endPA == 0 {
-		serial.RawUARTPuts("[BlockSubmit] EFAULT: buffer extends beyond clump\r\n")
+		klog.Errf("[BlockSubmit] EFAULT: buffer extends beyond clump\n")
 		return -14 // EFAULT
 	}
 	atomic.AddInt32(&clump.InFlight, 1)
@@ -125,41 +123,11 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 		asm.DmaWmb()
 	}
 
-	// --- INSTRUMENTATION: log descriptor/sidecar state before submit ---
-	submitCount := atomic.AddUint32(&dbgBlockSubmitCount, 1)
-	preNumFree := dev.Eng.VQ.NumFree
-	preSidecarBits := dev.Sidecars.FreeBits
-	if submitCount%100 == 0 || preNumFree < 6 {
-		serial.RawUARTPuts("[BLK-SUB] #")
-		serial.RawUARTDecimal(uint64(submitCount))
-		serial.RawUARTPuts(" free=")
-		serial.RawUARTDecimal(uint64(preNumFree))
-		serial.RawUARTPuts(" sidecar=0x")
-		serial.RawUARTHex64(preSidecarBits)
-		serial.RawUARTPuts(" irqs=")
-		serial.RawUARTDecimal(uint64(getBlockIRQCount()))
-		serial.RawUARTPuts(" drained=")
-		serial.RawUARTDecimal(uint64(getBlockTotalDrained()))
-		serial.RawUARTPuts(" empty=")
-		serial.RawUARTDecimal(uint64(getBlockEmptyIRQ()))
-		serial.RawUARTPuts(" ringFull=")
-		serial.RawUARTDecimal(uint64(getBlockRingFull()))
-		serial.RawUARTPuts(" lastFree=")
-		serial.RawUARTDecimal(uint64(getBlockLastNumFree()))
-		serial.RawUARTPuts("\r\n")
-	}
-
 	// Submit via engine — use slotIdx=0 (async: one request at a time per submit call)
 	// extDataPA = page-aligned PA from DMA pool
 	tag, err := dev.DoBlockIOSubmit(requestType, startLBA, nil, 0, pa, uint32(totalBytes))
 	if err != nil {
-		serial.RawUARTPuts("[BLK-SUB] FAIL #")
-		serial.RawUARTDecimal(uint64(submitCount))
-		serial.RawUARTPuts(" free=")
-		serial.RawUARTDecimal(uint64(preNumFree))
-		serial.RawUARTPuts(" sidecar=0x")
-		serial.RawUARTHex64(preSidecarBits)
-		serial.RawUARTPuts("\r\n")
+		klog.Errf("[BlockSubmit] submit failed: %v\n", err)
 		return -5 // EIO
 	}
 

@@ -6,7 +6,7 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"unsafe"
@@ -76,7 +76,7 @@ func SyscallRunMaz(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
-		console.KWriteString("[RunMaz] ERROR: busy or no thread to switch to\r\n")
+		klog.Errf("[RunMaz] ERROR: busy or no thread to switch to\n")
 		return int64(errNoSpace)
 	}
 
@@ -92,7 +92,7 @@ func DoRunMazWork(req *RunMazWorkRequest) int64 {
 	// Copy ELF data from the caller's pages into a contiguous kernel buffer.
 	elfData := copyPagesFromUser(req.StartVA, req.TotalBytes, l0PA)
 	if elfData == nil {
-		console.KWriteString("[RunMaz] ERROR: failed to copy pages from user\r\n")
+		klog.Errf("[RunMaz] ERROR: failed to copy pages from user\n")
 		return int64(errNullPointer)
 	}
 
@@ -156,12 +156,6 @@ func DoRunMazWork(req *RunMazWorkRequest) int64 {
 		loadOffset = loadBase - mazLowest
 	}
 
-	console.KWriteString("[RunMaz] base=")
-	console.KPrintHex64(loadBase)
-	console.KWriteString(" offset=")
-	console.KPrintHex64(loadOffset)
-	console.KWriteString("\r\n")
-
 	// Load segments into shepherd's page table
 	for i := uint16(0); i < hdr.Phnum; i++ {
 		phdrOffset := hdr.Phoff + uint64(i)*uint64(hdr.Phentsize)
@@ -176,25 +170,18 @@ func DoRunMazWork(req *RunMazWorkRequest) int64 {
 		adjustedPhdr.Vaddr += loadOffset
 		adjustedPhdr.Paddr += loadOffset
 		if loadErr := loadSegment(elfData, &adjustedPhdr, l0PA); loadErr != nil {
-			console.KWriteString("[RunMaz] ERROR: loadSegment failed\r\n")
+			klog.Errf("[RunMaz] ERROR: loadSegment failed\n")
 			return int64(errNoSpace)
 		}
 	}
 
 	// Apply PIE relocations (ET_DYN only)
-	reloCount := 0
 	if isPIE {
-		reloCount = applyPIERelocations(elfData, &hdr, loadOffset, l0PA)
+		applyPIERelocations(elfData, &hdr, loadOffset, l0PA)
 	}
 
 	// Resolve .maz_imports
-	importCount := resolveMazImports(elfData, &hdr, loadOffset, l0PA, shepherd.SymbolTable)
-
-	console.KWriteString("[RunMaz] relocs=")
-	console.KPrintHex64(uint64(reloCount))
-	console.KWriteString(" imports=")
-	console.KPrintHex64(uint64(importCount))
-	console.KWriteString("\r\n")
+	resolveMazImports(elfData, &hdr, loadOffset, l0PA, shepherd.SymbolTable)
 
 	// Find entry point
 	entrySymAddr := findSymbolAddress(elfData, &hdr, "main.MazarinMain")
@@ -237,10 +224,6 @@ func DoRunMazWork(req *RunMazWorkRequest) int64 {
 	writeU64ToUser(uintptr(req.ResultPtr+16), mazHighest-mazLowest, l0PA) // LoadSize
 	writeU64ToUser(uintptr(req.ResultPtr+24), moduledataVA, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+32), shepherdInitVA, l0PA)
-
-	console.KWriteString("[RunMaz] OK entry=")
-	console.KPrintHex64(entryPoint)
-	console.KWriteString("\r\n")
 
 	return 0
 }

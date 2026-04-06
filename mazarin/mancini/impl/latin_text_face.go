@@ -14,7 +14,6 @@ type LatinTextFaceImpl struct {
 	text     string
 	params   mancini.TextAlignmentParams
 	fontPath string
-	opened   bool
 }
 
 // NewLatinTextFace creates a LatinTextFaceImpl from a [mancini.FontConfig].
@@ -39,16 +38,18 @@ func NewLatinTextFace(fc *mancini.FontConfig, bold bool, fontSize int64, params 
 	}
 }
 
-// ensureFont opens the font via dc.OpenFont on first call.
+// ensureFont opens the font via dc.OpenFont. Re-opens when the DC changes
+// (e.g., when rendering decorations into different temporary buffers).
 func (f *LatinTextFaceImpl) ensureFont(dc mancini.DrawContext) {
-	if f.opened || dc == nil {
+	if dc == nil || f.dc == dc {
 		return
 	}
-	f.opened = true
 	f.dc = dc
 	if f.fontPath != "" {
 		m, err := dc.OpenFont(f.fontPath, 0, f.fontSize)
-		if err == nil {
+		if err != nil {
+			println("[ensureFont] OpenFont FAILED:", err.Error())
+		} else {
 			f.fontID = m.FontID
 		}
 	}

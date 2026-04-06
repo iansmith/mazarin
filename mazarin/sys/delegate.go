@@ -176,29 +176,6 @@ func UartWrite(data []byte) int {
 	return int(r1)
 }
 
-// UartWriteDirect writes all bytes to the UART via synchronous PollWrite.
-// Guaranteed delivery — blocks until all bytes are transmitted.
-// Used for stderr output (panics, tracebacks, errors).
-func UartWriteDirect(data []byte) int {
-	if len(data) == 0 {
-		return 0
-	}
-	r1, _, _ := RawSyscall(mazzy.SysUartWriteDirect,
-		uintptr(unsafe.Pointer(&data[0])),
-		uintptr(len(data)),
-		0, 0, 0, 0)
-	return int(r1)
-}
-
-// UartWriteDirectString is a convenience wrapper for writing a string
-// to the UART via synchronous PollWrite.
-func UartWriteDirectString(s string) int {
-	if len(s) == 0 {
-		return 0
-	}
-	return UartWriteDirect([]byte(s))
-}
-
 // UartWriteString is a convenience wrapper for writing a string to the UART.
 func UartWriteString(s string) int {
 	if len(s) == 0 {

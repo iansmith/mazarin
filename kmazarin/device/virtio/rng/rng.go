@@ -8,8 +8,8 @@
 package rng
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
 	"mazzy/shared/constants"
@@ -47,21 +47,18 @@ func Init() bool {
 	}
 
 	if !handshake() {
-		console.KPrintln("[VirtIO RNG] PCI handshake failed")
+		klog.Errf("[VirtIO RNG] PCI handshake failed\n")
 		return false
 	}
 
 	// Allocate DMA page for result buffers
 	dmaPA := kmem.AllocKernelFrame()
 	if dmaPA == 0 {
-		console.KPrintln("[VirtIO RNG] ERROR: Failed to allocate DMA page")
+		klog.Errf("[VirtIO RNG] ERROR: Failed to allocate DMA page\n")
 		return false
 	}
 	dev.DmaPagePA = dmaPA
 	dev.DmaPageVA = dmaPA + constants.KernelMMIOOffset
-
-	console.KPrintf("[VirtIO RNG] Initialized (bus=%d slot=%d func=%d)\n",
-		dev.Bus, dev.Slot, dev.Func)
 
 	return true
 }
@@ -156,7 +153,7 @@ func findDevice() bool {
 
 				if vendorID == pci.VIRTIO_VENDOR_ID && (deviceID == VIRTIO_RNG_DEVICE_ID_MODERN || deviceID == VIRTIO_RNG_DEVICE_ID_TRANSITIONAL) {
 					if !dev.FindAndMapBARs(bus, slot, funcNum, rngMMIOBase) {
-						console.KPrintln("[VirtIO RNG] ERROR: Failed to find/map BARs")
+						klog.Errf("[VirtIO RNG] ERROR: Failed to find/map BARs\n")
 						return false
 					}
 					dev.Found = true
@@ -173,14 +170,14 @@ func findDevice() bool {
 func handshake() bool {
 	// Feature negotiation: Reset → ACK → DRIVER → features → FEATURES_OK
 	if !dev.Handshake(0, virtio.FeatureVersion1) {
-		console.KPrintln("[VirtIO RNG] ERROR: Device rejected features")
+		klog.Errf("[VirtIO RNG] ERROR: Device rejected features\n")
 		return false
 	}
 
 	// Allocate DMA page for virtqueue structures
 	queuePagePA := kmem.AllocKernelFrame()
 	if queuePagePA == 0 {
-		console.KPrintln("[VirtIO RNG] ERROR: Failed to allocate queue DMA page")
+		klog.Errf("[VirtIO RNG] ERROR: Failed to allocate queue DMA page\n")
 		return false
 	}
 	queuePageVA := queuePagePA + constants.KernelMMIOOffset
@@ -195,7 +192,7 @@ func handshake() bool {
 
 	// Initialize engine: sets up VQ on DMA page, enables queue on device
 	if !dev.Eng.Init(&dev.PCIDevice, 0, queueSize, queuePagePA, queuePageVA, 0, virtio.MSIXNoVector) {
-		console.KPrintln("[VirtIO RNG] ERROR: Failed to init engine")
+		klog.Errf("[VirtIO RNG] ERROR: Failed to init engine\n")
 		return false
 	}
 

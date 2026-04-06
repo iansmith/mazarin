@@ -2,9 +2,9 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
 	"unsafe"
@@ -285,9 +285,7 @@ func syscallMmapContiguous(alignedLength uint64) int64 {
 	// Allocate contiguous physical pages
 	basePA := kmem.BuddyAllocTyped(order, kmem.PageUserDMA, int16(p.PID))
 	if basePA == 0 {
-		serial.RawUARTPuts("[mmap] CONTIGUOUS: buddy alloc failed order=")
-		serial.RawUARTHex64(uint64(order))
-		serial.RawUARTPuts("\r\n")
+		klog.Errf("[mmap] CONTIGUOUS: buddy alloc failed order=%x\n", uint64(order))
 		return -12 // ENOMEM
 	}
 

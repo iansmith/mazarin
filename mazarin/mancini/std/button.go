@@ -30,9 +30,10 @@ import (
 type Button struct {
 	impl.ThemedInteractor
 
-	Depth  mancini.NeuDepth // visual state: Raised, Flush, or Inset
-	Radius float64          // corner radius in pixels (default 8.0)
-	Face   mancini.Face     // optional content drawn on top of the button face
+	Depth    mancini.NeuDepth // visual state: Raised, Flush, or Inset
+	Radius   float64          // corner radius in pixels (default 8.0)
+	Face     mancini.Face     // optional content drawn on top of the button face
+	Disabled bool              // when true, renders dimmed and ignores input
 }
 
 // NewButton creates a Button wired to the constraint system and theme.
@@ -81,13 +82,12 @@ func (b *Button) Draw(self mancini.Interactor, x, y, w, h int64) {
 	fw, fh := float64(w), float64(h)
 
 	pal := b.Theme().Palette()
-	var params *mancini.NeuParams
-	if neu := b.Theme().Neumorphic(); neu != nil {
-		params = neu.Light()
-	}
-
-	NeuBoxWith(pal, dc, b.Depth, fx, fy, fx+fw, fy+fh, b.Radius, pal.Surface(), params)
+	b.Theme().Style().DrawBox(pal, dc, b.Depth, mancini.LightWeight,
+		fx, fy, fx+fw, fy+fh, b.Radius, pal.Surface())
 	if b.Face != nil {
 		b.Face.DrawFace(dc, fx, fy, fw, fh)
+	}
+	if b.Disabled {
+		ApplyDisabledOverlay(pal, dc, fx, fy, fx+fw, fy+fh, b.Radius)
 	}
 }

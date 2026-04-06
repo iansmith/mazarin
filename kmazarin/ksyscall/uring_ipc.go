@@ -3,7 +3,6 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/ipc"
 	"unsafe"
 )
@@ -126,9 +125,6 @@ func SyscallUringRecv(arg0, _, _, _, _, _ uint64) int64 {
 	}
 
 	// No other thread — WFI loop
-	serial.RawUARTPuts("[URC:WFI sid=")
-	serial.RawUARTDecimal(uint64(shepherdIdx))
-	serial.RawUARTPuts("]\r\n")
 	for {
 		enableIRQsAndWait()
 		msgKVA, ok = drainUringIPCRing(sid)

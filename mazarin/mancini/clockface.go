@@ -26,6 +26,9 @@ type ClockFace interface {
 // DrawHand draws a single clock hand as a line from center.
 // Exported as a convenience for ClockFace implementations.
 func DrawHand(dc DrawContext, cx, cy, angle, length, width float64, col color.NRGBA) {
+	if length < 0.5 || width < 0.5 {
+		return // degenerate hand — avoid rasterizer divide-by-zero
+	}
 	ex := cx + length*math.Cos(angle)
 	ey := cy + length*math.Sin(angle)
 	dc.SetColor(col)

@@ -2,8 +2,8 @@ package gpu
 
 import (
 	"mazzy/kmazarin/asm"
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"unsafe"
 )
@@ -138,7 +138,7 @@ func InitCursor() bool {
 		unsafe.Pointer(&createCmd), uint32(unsafe.Sizeof(createCmd)),
 		unsafe.Pointer(&createResp), uint32(unsafe.Sizeof(createResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KPrintf("[VirtIO GPU] ERROR: cursor CREATE_2D failed (0x%04x)\n", respType)
+		klog.Errf("[VirtIO GPU] ERROR: cursor CREATE_2D failed (0x%04x)\n", respType)
 		return false
 	}
 
@@ -163,7 +163,7 @@ func InitCursor() bool {
 	respType = virtioGPUSendCommand(attachBuf, attachCmdSize,
 		unsafe.Pointer(&attachResp), uint32(unsafe.Sizeof(attachResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KPrintf("[VirtIO GPU] ERROR: cursor ATTACH_BACKING failed (0x%04x)\n", respType)
+		klog.Errf("[VirtIO GPU] ERROR: cursor ATTACH_BACKING failed (0x%04x)\n", respType)
 		return false
 	}
 
@@ -179,7 +179,7 @@ func InitCursor() bool {
 		unsafe.Pointer(&transferCmd), uint32(unsafe.Sizeof(transferCmd)),
 		unsafe.Pointer(&transferResp), uint32(unsafe.Sizeof(transferResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KPrintf("[VirtIO GPU] ERROR: cursor TRANSFER failed (0x%04x)\n", respType)
+		klog.Errf("[VirtIO GPU] ERROR: cursor TRANSFER failed (0x%04x)\n", respType)
 		return false
 	}
 
@@ -195,11 +195,9 @@ func InitCursor() bool {
 	updateCmd.HotY = CursorHotY
 
 	if !cursorqSendCommand(unsafe.Pointer(&updateCmd), uint32(unsafe.Sizeof(updateCmd))) {
-		console.KPrintln("[VirtIO GPU] ERROR: UPDATE_CURSOR failed via cursorq")
+		klog.Errf("[VirtIO GPU] ERROR: UPDATE_CURSOR failed via cursorq\n")
 		return false
 	}
-
-	console.KPrintln("[VirtIO GPU] Hardware cursor initialized")
 
 	// Register the built-in cursor as cursor ID 0.
 	cursorRegistry[0] = cursorEntry{
@@ -224,12 +222,12 @@ func InitCursor() bool {
 // Returns the cursor ID (>=0) on success, or -1 on failure.
 func RegisterCursorImage(pixelData []byte, hotX, hotY uint32) int32 {
 	if cursorRegistryCount >= MaxCursors {
-		console.KPrintln("[VirtIO GPU] cursor registry full")
+		klog.Errf("[VirtIO GPU] cursor registry full\n")
 		return -1
 	}
 	expectedSize := CursorWidth * CursorHeight * 4
 	if len(pixelData) < expectedSize {
-		console.KPrintf("[VirtIO GPU] cursor pixel data too small: %d < %d\n", len(pixelData), expectedSize)
+		klog.Errf("[VirtIO GPU] cursor pixel data too small: %d < %d\n", len(pixelData), expectedSize)
 		return -1
 	}
 
@@ -271,7 +269,6 @@ func RegisterCursorImage(pixelData []byte, hotX, hotY uint32) int32 {
 	}
 	cursorRegistryCount++
 
-	console.KPrintf("[VirtIO GPU] registered cursor ID %d (resource %d)\n", id, resID)
 	return int32(id)
 }
 
@@ -291,7 +288,7 @@ func registerCursorGPU(id int, resID, hotX, hotY uint32) bool {
 		unsafe.Pointer(&createCmd), uint32(unsafe.Sizeof(createCmd)),
 		unsafe.Pointer(&createResp), uint32(unsafe.Sizeof(createResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KPrintf("[VirtIO GPU] cursor %d CREATE_2D failed (0x%04x)\n", id, respType)
+		klog.Errf("[VirtIO GPU] cursor %d CREATE_2D failed (0x%04x)\n", id, respType)
 		return false
 	}
 
@@ -322,7 +319,7 @@ func registerCursorGPU(id int, resID, hotX, hotY uint32) bool {
 	respType = virtioGPUSendCommand(attachBuf, attachCmdSize,
 		unsafe.Pointer(&attachResp), uint32(unsafe.Sizeof(attachResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KPrintf("[VirtIO GPU] cursor %d ATTACH_BACKING failed (0x%04x)\n", id, respType)
+		klog.Errf("[VirtIO GPU] cursor %d ATTACH_BACKING failed (0x%04x)\n", id, respType)
 		return false
 	}
 
@@ -338,7 +335,7 @@ func registerCursorGPU(id int, resID, hotX, hotY uint32) bool {
 		unsafe.Pointer(&transferCmd), uint32(unsafe.Sizeof(transferCmd)),
 		unsafe.Pointer(&transferResp), uint32(unsafe.Sizeof(transferResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KPrintf("[VirtIO GPU] cursor %d TRANSFER failed (0x%04x)\n", id, respType)
+		klog.Errf("[VirtIO GPU] cursor %d TRANSFER failed (0x%04x)\n", id, respType)
 		return false
 	}
 
@@ -500,7 +497,7 @@ func InitCursorTopHalf() bool {
 	// DMA pages are mapped Device-nGnRnE, so MMIO writes bypass cache.
 	dmaPA, dmaVA := kmem.AllocDMAPageMapped()
 	if dmaPA == 0 {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to alloc cursor DMA page")
+		klog.Errf("[VirtIO GPU] ERROR: Failed to alloc cursor DMA page\n")
 		return false
 	}
 
@@ -539,7 +536,6 @@ func InitCursorTopHalf() bool {
 	topHalfCursorLastUsedIdx = vq.LastUsedIdx
 	topHalfCursorReady = true
 
-	console.KPrintf("[VirtIO GPU] Cursor top-half ready (DMA page PA=0x%x)\n", dmaPA)
 	return true
 }
 

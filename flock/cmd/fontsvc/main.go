@@ -55,6 +55,14 @@ func MazarinShepherd(injected interface{}) error {
 	// values instead of interface{} to avoid cross-.maz type assertions.
 	inj.RegisterOpenFontHandler(handleOpenFontCallback)
 	inj.RegisterRequestGlyphHandler(handleRequestGlyphCallback)
+
+	// Register in-process font callbacks so rachel can use fonts directly
+	// without uring IPC or SharePages (can't share pages with yourself).
+	// Uses plain function callbacks (not interfaces) to avoid cross-.maz
+	// type assertion failures.
+	inj.RegisterInternalOpenFont(internalOpenFont)
+	inj.RegisterInternalGlyphByGID(internalGlyphByGID)
+
 	rawPuts("[fontsvc] MazarinShepherd: handlers registered\n")
 	return nil
 }
@@ -164,73 +172,76 @@ func handleRequestGlyphCallback(senderSID int, fontID, gid, codepoint int32) {
 	handleRequestGlyph(senderSID, rg)
 }
 
-func handleOpenFont(senderSID int, msg *wm.OpenFont) {
-	family := cstring(msg.Path[:])
-
-	// Load font index lazily.
-	if fontIdx == nil {
-		var err error
-		fontIdx, err = fontcache.LoadFontIndex("/fonts/fonts.csv")
-		if err != nil {
-			rawPuts("[fontsvc] failed to load font index: " + err.Error() + "\n")
-			return
-		}
-		rawPuts("[fontsvc] font index loaded\n")
-	}
-
-	// Resolve family name + variant to filesystem path.
-	var style string
-	switch msg.Variant {
+// variantToStyle maps a numeric variant to a style name.
+func variantToStyle(variant int32) string {
+	switch variant {
 	case 1:
-		style = "Bold"
+		return "Bold"
 	case 2:
-		style = "Italic"
+		return "Italic"
 	case 3:
-		style = "BoldItalic"
+		return "BoldItalic"
 	case 4:
-		style = "Light"
+		return "Light"
 	case 5:
-		style = "Condensed"
+		return "Condensed"
 	default:
-		style = "Regular"
+		return "Regular"
 	}
+}
+
+// ensureFontIndex loads the font index lazily.
+func ensureFontIndex() error {
+	if fontIdx != nil {
+		return nil
+	}
+	var err error
+	fontIdx, err = fontcache.LoadFontIndex("/fonts/fonts.csv")
+	if err != nil {
+		rawPuts("[fontsvc] failed to load font index: " + err.Error() + "\n")
+		return err
+	}
+	rawPuts("[fontsvc] font index loaded\n")
+	return nil
+}
+
+// loadOrCacheFont resolves a family+variant+size to a font slot. Returns
+// the fontID (>= 0) on success, or -1 on failure. If the font is already
+// cached, returns the existing slot. Otherwise loads from disk, builds the
+// V2 cache, and stores a new slot.
+func loadOrCacheFont(family string, variant, size int32) int32 {
+	if err := ensureFontIndex(); err != nil {
+		return -1
+	}
+
+	style := variantToStyle(variant)
 	path := fontIdx.Resolve(family, style)
 	if path == "" {
 		rawPuts("[fontsvc] unknown font family: " + family + "/" + style + "\n")
-		return
-	}
-
-	// Ensure we have a return channel to this shepherd.
-	conn, connIdx := getOrCreateConn(senderSID)
-	if conn == nil {
-		rawPuts("[fontsvc] failed to create conn for shepherd\n")
-		return
+		return -1
 	}
 
 	// Check cache.
-	fontID := findCachedFont(path, msg.Variant, msg.Size)
+	fontID := findCachedFont(path, variant, size)
 	if fontID >= 0 {
-		shareCacheAndReply(conn, connIdx, senderSID, fontID)
-		return
+		return fontID
 	}
 
 	// Cache miss — load and render.
 	fontID = allocFontID()
 	if fontID < 0 {
 		rawPuts("[fontsvc] no free font slots\n")
-		sendOpenFontError(senderSID)
-		return
+		return -1
 	}
 
 	// Try reusing an already-parsed font (same file, different size).
-	face, fontData := findExistingFont(path, msg.Variant)
+	face, fontData := findExistingFont(path, variant)
 	if face == nil {
 		// Load font file from FAT32.
 		result, loadErr := sys.LoadFile(path)
 		if loadErr != nil {
 			rawPuts("[fontsvc] LoadFile failed: " + path + "\n")
-			sendOpenFontError(senderSID)
-			return
+			return -1
 		}
 		fontData = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
 
@@ -239,13 +250,12 @@ func handleOpenFont(senderSID int, msg *wm.OpenFont) {
 		face, err = goFont.ParseTTF(bytes.NewReader(fontData))
 		if err != nil {
 			rawPuts("[fontsvc] ParseTTF failed for " + path + ": " + err.Error() + "\n")
-			sendOpenFontError(senderSID)
-			return
+			return -1
 		}
 	}
 
 	upem := float32(face.Upem())
-	scale := float32(msg.Size) / upem
+	scale := float32(size) / upem
 
 	// Compute metrics.
 	metrics := textshape.ComputeFontMetrics(face, scale, fontID)
@@ -259,24 +269,43 @@ func handleOpenFont(senderSID int, msg *wm.OpenFont) {
 		rawPuts(" pages for ")
 		rawPuts(path)
 		rawPuts(" size=")
-		rawPutsInt(int(msg.Size))
+		rawPutsInt(int(size))
 		rawPuts("\n")
 		panic("[fontsvc] AllocPages for font cache failed: OOM")
 	}
 
 	// Build V2 cache into kernel-allocated pages.
-	cache = textshape.BuildGlyphCacheInto(cache, face, scale, uint32(fontID), msg.Size, metrics)
+	cache = textshape.BuildGlyphCacheInto(cache, face, scale, uint32(fontID), size, metrics)
 
 	// Store font slot.
 	fonts[fontID] = fontSlot{
 		inUse:    true,
 		path:     path,
-		variant:  msg.Variant,
-		size:     msg.Size,
+		variant:  variant,
+		size:     size,
 		cache:    cache,
 		face:     face,
 		fontData: fontData,
 		scale:    scale,
+	}
+
+	return fontID
+}
+
+func handleOpenFont(senderSID int, msg *wm.OpenFont) {
+	family := cstring(msg.Path[:])
+
+	fontID := loadOrCacheFont(family, msg.Variant, msg.Size)
+	if fontID < 0 {
+		sendOpenFontError(senderSID)
+		return
+	}
+
+	// Ensure we have a return channel to this shepherd.
+	conn, connIdx := getOrCreateConn(senderSID)
+	if conn == nil {
+		rawPuts("[fontsvc] failed to create conn for shepherd\n")
+		return
 	}
 
 	shareCacheAndReply(conn, connIdx, senderSID, fontID)
@@ -530,6 +559,62 @@ func rawPutsInt(n int) {
 		n /= 10
 	}
 	rawPuts(string(buf[i:]))
+}
+
+// --- Internal font callbacks for in-process use by rachel ---
+
+// internalOpenFont is a plain function callback for rachel's in-process
+// font opening. Same code path as handleOpenFont but returns results
+// directly — no SharePages, no uring send.
+func internalOpenFont(family string, variant, size int32) (fontcache.InternalOpenFontResult, bool) {
+	fontID := loadOrCacheFont(family, variant, size)
+	if fontID < 0 {
+		return fontcache.InternalOpenFontResult{}, false
+	}
+
+	slot := &fonts[fontID]
+	metrics := textshape.ComputeFontMetrics(slot.face, slot.scale, fontID)
+
+	return fontcache.InternalOpenFontResult{
+		FontID:   fontID,
+		Height:   metrics.Height,
+		Ascent:   metrics.Ascent,
+		Descent:  metrics.Descent,
+		Cache:    slot.cache,
+		FontData: slot.fontData,
+	}, true
+}
+
+// internalGlyphByGID is a plain function callback for rachel's in-process
+// glyph rendering. Same code path as handleRequestGlyph but returns
+// the glyph data directly.
+func internalGlyphByGID(fontID int32, gid uint32) (fontcache.InternalGlyphResult, bool) {
+	if fontID < 0 || fontID >= fontcache.MaxFonts || !fonts[fontID].inUse {
+		return fontcache.InternalGlyphResult{}, false
+	}
+
+	slot := &fonts[fontID]
+	info, alpha := textshape.RenderGlyph(slot.face, goFont.GID(gid), slot.scale)
+	if info == nil {
+		return fontcache.InternalGlyphResult{}, true // ok but no renderable outline
+	}
+
+	// Copy alpha so the caller owns the data.
+	alphaCopy := make([]byte, len(alpha))
+	copy(alphaCopy, alpha)
+
+	return fontcache.InternalGlyphResult{
+		Info: fontcache.GlyphEntry{
+			Advance: info.Advance,
+			DrMinX:  info.DrMinX,
+			DrMinY:  info.DrMinY,
+			DrMaxX:  info.DrMaxX,
+			DrMaxY:  info.DrMaxY,
+			Width:   info.Width,
+			Height:  info.Height,
+		},
+		Alpha: alphaCopy,
+	}, true
 }
 
 func main() {

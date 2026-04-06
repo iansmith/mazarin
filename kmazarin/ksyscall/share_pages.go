@@ -1,9 +1,9 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 )
 
 // MaxTransferPages is the maximum number of pages that can be transferred in a single call.
@@ -77,9 +77,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		pa := kmem.DemandMapUserPage(va, sourceL0PA)
 		if pa == 0 {
 			restoreIRQs(savedDAIF)
-			serial.RawUARTPuts("[IPC] TransferPages: page not mapped at VA 0x")
-			serial.RawUARTHex64(uint64(va))
-			serial.RawUARTPuts("\r\n")
+			klog.Errf("[IPC] TransferPages: page not mapped at VA %x\n", uint64(va))
 			return -14 // EFAULT
 		}
 		// Strip page offset (WalkUserPageTableWithL0 may include offset bits)
@@ -87,9 +85,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		desc := kmem.GetPageDescriptor(pa)
 		if desc == nil || desc.Owner != callerSID {
 			restoreIRQs(savedDAIF)
-			serial.RawUARTPuts("[IPC] TransferPages: page not owned by caller at PA 0x")
-			serial.RawUARTHex64(uint64(pa))
-			serial.RawUARTPuts("\r\n")
+			klog.Errf("[IPC] TransferPages: page not owned by caller at PA %x\n", uint64(pa))
 			return -1 // EPERM
 		}
 		pas[i] = pa

@@ -3,7 +3,6 @@
 package main
 
 import (
-	"mazzy/kmazarin/console"
 	"unsafe"
 )
 
@@ -193,27 +192,23 @@ func SetupSyscallMSRs() {
 	// Validate SYSCALL MSRs are configured by diplomat
 	efer := readMSR(msrEFER)
 	if efer&eferSCE == 0 {
-		console.KPrintln("[SYSCALL] WARNING: EFER.SCE not set, enabling")
 		efer |= eferSCE
 		writeMSR(msrEFER, efer)
 	}
 
 	lstar := readMSR(msrLSTAR)
 	if lstar == 0 {
-		console.KPrintln("[SYSCALL] WARNING: LSTAR not set, configuring")
 		entry := getSyscallEntryAddr()
 		writeMSR(msrLSTAR, uint64(entry))
 	}
 
 	star := readMSR(msrSTAR)
 	if star == 0 {
-		console.KPrintln("[SYSCALL] WARNING: STAR not set, configuring")
 		writeMSR(msrSTAR, syscallCS<<32)
 	}
 
 	fmask := readMSR(msrFMASK)
 	if fmask == 0 {
-		console.KPrintln("[SYSCALL] WARNING: FMASK not set, configuring")
 		writeMSR(msrFMASK, 0x200)
 	}
 }

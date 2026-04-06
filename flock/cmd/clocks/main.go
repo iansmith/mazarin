@@ -126,13 +126,13 @@ func main() {
 		{name: "Los Angeles", id: "LosAngeles", tz: "America/Los_Angeles", tzLabel: "US/Los_Angeles"},
 	}
 	for i := range cities {
-		sys.UartWriteDirectString("[clocks] loading tz " + cities[i].tz + "...\n")
+		sys.UartWriteString("[clocks] loading tz " + cities[i].tz + "...\n")
 		loc, err := time.LoadLocation(cities[i].tz)
 		if err != nil {
-			sys.UartWriteDirectString("[clocks] tz " + cities[i].tz + " FAILED\n")
+			sys.UartWriteString("[clocks] tz " + cities[i].tz + " FAILED\n")
 			loc = time.UTC
 		} else {
-			sys.UartWriteDirectString("[clocks] tz " + cities[i].tz + " OK\n")
+			sys.UartWriteString("[clocks] tz " + cities[i].tz + " OK\n")
 		}
 		cities[i].loc = loc
 	}
@@ -282,7 +282,7 @@ func main() {
 	scroller.SetVirtualSize(rowContentW, 0)
 
 	winH := int(appLH.Height.Get())
-	sys.UartWriteDirectString(fmt.Sprintf("[clocks] winW=%d winH=%d rowH=%d rowW=%d scrollerH=%d\n",
+	sys.UartWriteString(fmt.Sprintf("[clocks] winW=%d winH=%d rowH=%d rowW=%d scrollerH=%d\n",
 		winW, winH,
 		rowLH.Height.Get(), rowContentW,
 		scrollerLH.Height.Get()))
@@ -327,7 +327,7 @@ func main() {
 	announceToWM(int32(winX), int32(winY), int32(winW), int32(winH))
 
 	// 10. Wait for rachel to allocate backing store and share it with us.
-	sys.UartWriteDirectString("[clocks] waiting for BackingStoreReady...\n")
+	sys.UartWriteString("[clocks] waiting for BackingStoreReady...\n")
 	var bsr wm.BackingStoreReady
 	for {
 		raw := <-wmCh
@@ -367,7 +367,7 @@ func main() {
 	dc.DrawRectangle(0, 0, float64(winW), float64(winH))
 	dc.Clip()
 
-	sys.UartWriteDirectString(fmt.Sprintf("[clocks] backing store ready: total=%dx%d inset=(%d,%d) app=%dx%d\n",
+	sys.UartWriteString(fmt.Sprintf("[clocks] backing store ready: total=%dx%d inset=(%d,%d) app=%dx%d\n",
 		totalW, totalH, bsr.LeftInset, bsr.TopInset, winW, winH))
 
 	// 11. Draw to the backing store at (0,0) — screen position is rachel's concern.

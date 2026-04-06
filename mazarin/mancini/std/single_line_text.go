@@ -33,6 +33,8 @@ type SingleLineText struct {
 	BorderWidth float64     // border thickness in pixels (default 2)
 	Focused     bool        // shows cursor when true
 	TextColor   color.NRGBA // zero value uses palette Text()
+	Disabled    bool        // when true, renders dimmed and ignores input
+	OnSubmit    func(string) // called when Enter is pressed; receives current text (may be empty)
 
 	textAttr    *attr.Attribute[string]
 	textLenAttr *attr.Attribute[int64]
@@ -150,7 +152,7 @@ func (t *SingleLineText) resolveTextColor(pal mancini.Palette) color.NRGBA {
 	if t.TextColor != (color.NRGBA{}) {
 		return t.TextColor
 	}
-	return pal.Text()
+	return pal.BaseText()
 }
 
 // CursorMoveLeftChar moves the cursor one rune to the left.
@@ -597,6 +599,9 @@ func (t *SingleLineText) SelectionAll() {
 //   - Opt+Right: CursorMoveForwardWord
 //   - Ctrl+W: DeleteBackwardWord
 func (t *SingleLineText) KeyPress(ch rune, action string, ev *mancini.InputEvent) bool {
+	if t.Disabled {
+		return false
+	}
 	mods := int64(ev.Mods)
 
 	switch action {
@@ -659,6 +664,11 @@ func (t *SingleLineText) KeyPress(ch rune, action string, ev *mancini.InputEvent
 		}
 		return true
 	case "enter":
+		if t.OnSubmit != nil {
+			t.OnSubmit(t.textAttr.Get())
+			t.SetText("")
+			t.FullDamage()
+		}
 		return true
 	case "escape":
 		if t.HasSelection() {
@@ -721,10 +731,6 @@ func (t *SingleLineText) Draw(self mancini.Interactor, x, y, w, h int64) {
 	t.ensureFonts(dc)
 
 	pal := t.Theme().Palette()
-	var params *mancini.NeuParams
-	if neu := t.Theme().Neumorphic(); neu != nil {
-		params = neu.Light()
-	}
 
 	fx, fy := float64(x), float64(y)
 	fw, fh := float64(w), float64(h)
@@ -740,8 +746,8 @@ func (t *SingleLineText) Draw(self mancini.Interactor, x, y, w, h int64) {
 	// 2. Draw inset field background inside the border.
 	ix, iy := fx+bw, fy+bw
 	iw, ih := fw-2*bw, fh-2*bw
-	NeuBoxWith(pal, dc, mancini.Inset, ix, iy, ix+iw, iy+ih, t.Radius,
-		pal.Surface(), params)
+	t.Theme().Style().DrawBox(pal, dc, mancini.Inset, mancini.LightWeight,
+		ix, iy, ix+iw, iy+ih, t.Radius, pal.Base())
 
 	// 3. Content area (inside border + padding).
 	pad := t.Padding
@@ -840,6 +846,11 @@ func (t *SingleLineText) Draw(self mancini.Interactor, x, y, w, h int64) {
 		dc.SetLineWidth(1.0)
 		dc.DrawRectangle(cursorX, cursorY, cursorCharW, cursorH)
 		dc.Stroke()
+	}
+
+	// 9. Disabled overlay.
+	if t.Disabled {
+		ApplyDisabledOverlay(pal, dc, fx, fy, fx+fw, fy+fh, t.Radius)
 	}
 
 	// Clear damage after drawing so parents see empty damage next frame.

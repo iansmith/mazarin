@@ -10,7 +10,7 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"unsafe"
@@ -66,12 +66,12 @@ func SyscallLoadMaz(filenamePtr, resultPtr, dataVA, dataLen, _, _ uint64) int64 
 	// Find the calling shepherd
 	shepherd := proc.CurrentShepherd()
 	if shepherd == nil {
-		console.KWriteString("[LoadMaz] ERROR: not called from a shepherd\r\n")
+		klog.Errf("[LoadMaz] ERROR: not called from a shepherd\n")
 		return int64(errNullPointer)
 	}
 
 	if shepherd.SymbolTable == nil {
-		console.KWriteString("[LoadMaz] ERROR: shepherd has no symbol table\r\n")
+		klog.Errf("[LoadMaz] ERROR: shepherd has no symbol table\n")
 		return int64(errNoSymbol)
 	}
 
@@ -88,7 +88,7 @@ func SyscallLoadMaz(filenamePtr, resultPtr, dataVA, dataLen, _, _ uint64) int64 
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
-		console.KWriteString("[LoadMaz] ERROR: busy or no thread to switch to\r\n")
+		klog.Errf("[LoadMaz] ERROR: busy or no thread to switch to\n")
 		return int64(errNoSpace)
 	}
 
@@ -114,7 +114,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		// Pre-loaded mode: read ELF from caller's pages via kernel linear map
 		elfData = readUserData(req.DataVA, req.DataLen, l0PA)
 		if elfData == nil {
-			console.KWriteString("[LoadMaz] ERROR: failed to read pre-loaded data\r\n")
+			klog.Errf("[LoadMaz] ERROR: failed to read pre-loaded data\n")
 			return int64(errFileNotFound)
 		}
 	} else {
@@ -122,7 +122,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		// loadMazInternal, but it has been removed. All .maz loading must
 		// go through the LoadFile delegate (fs shepherd) which provides
 		// pre-loaded pages via DataVA/DataLen.
-		console.KWriteString("[LoadMaz] ERROR: direct disk load path removed — use LoadFile delegate\r\n")
+		klog.Errf("[LoadMaz] ERROR: direct disk load path removed — use LoadFile delegate\n")
 		return int64(errFileNotFound)
 	}
 
@@ -143,7 +143,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	isFixedAddr := hdr.Type == 2 // ET_EXEC
 	isPIE := hdr.Type == 3       // ET_DYN
 	if !isFixedAddr && !isPIE {
-		console.KWriteString("[LoadMaz] ERROR: unsupported ELF type (expected ET_EXEC or ET_DYN)\r\n")
+		klog.Errf("[LoadMaz] ERROR: unsupported ELF type (expected ET_EXEC or ET_DYN)\n")
 		return int64(errInvalidELF)
 	}
 
@@ -203,7 +203,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		adjustedPhdr.Paddr += loadOffset
 
 		if loadErr := loadSegment(elfData, &adjustedPhdr, l0PA); loadErr != nil {
-			console.KWriteString("[LoadMaz] ERROR: loadSegment failed\r\n")
+			klog.Errf("[LoadMaz] ERROR: loadSegment failed\n")
 			return int64(errNoSpace)
 		}
 	}
@@ -226,7 +226,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		entrySymAddr = findSymbolAddress(elfData, &hdr, "main")
 	}
 	if entrySymAddr == 0 {
-		console.KWriteString("[LoadMaz] ERROR: no entry point symbol found\r\n")
+		klog.Errf("[LoadMaz] ERROR: no entry point symbol found\n")
 		return int64(errNoSymbol)
 	}
 	entryPoint := entrySymAddr + loadOffset
@@ -290,9 +290,7 @@ func readUserData(dataVA uintptr, dataLen uint64, l0PA uintptr) []byte {
 		va := dataVA + uintptr(offset)
 		pa := kmem.WalkUserPageTableWithL0(va, l0PA)
 		if pa == 0 {
-			console.KWriteString("[LoadMaz] readUserData: unmapped VA ")
-			console.KPrintHex64(uint64(va))
-			console.KWriteString("\r\n")
+			klog.Errf("[LoadMaz] readUserData: unmapped VA %x\n", uint64(va))
 			return nil
 		}
 		// MapPAToKernelScratch converts PA (with byte offset) to kernel VA
@@ -439,7 +437,7 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 	}
 
 	if importsSection == nil || strtabSection == nil {
-		console.KWriteString("[LoadMaz] no .maz_imports section found\r\n")
+		klog.Errf("[LoadMaz] no .maz_imports section found\n")
 		return 0
 	}
 
@@ -481,9 +479,7 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 		if !found {
 			unresolved++
 			if unresolved <= 5 {
-				console.KWriteString("[LoadMaz] UNRESOLVED import: ")
-				console.KWriteString(symbolName)
-				console.KWriteString("\r\n")
+				klog.Errf("[LoadMaz] UNRESOLVED import: %s\n", symbolName)
 			}
 			continue
 		}
@@ -519,11 +515,7 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 	}
 
 	if unresolved > 0 {
-		console.KWriteString("[LoadMaz] unresolved: ")
-		console.KPrintHex64(uint64(unresolved))
-		console.KWriteString(" of ")
-		console.KPrintHex64(numEntries)
-		console.KWriteString(" total\r\n")
+		klog.Errf("[LoadMaz] unresolved: %d of %d total\n", unresolved, numEntries)
 	}
 
 	return count
@@ -575,11 +567,7 @@ func patchBL_ARM64(instrVA, targetAddr uint64, l0PA uintptr) bool {
 func patchB_ARM64(funcVA, targetAddr uint64, l0PA uintptr) bool {
 	offset := int64(targetAddr) - int64(funcVA)
 	if offset < -(1<<27) || offset >= (1<<27) {
-		console.KWriteString("[LoadMaz] B range exceeded: from=")
-		console.KPrintHex64(funcVA)
-		console.KWriteString(" to=")
-		console.KPrintHex64(targetAddr)
-		console.KWriteString("\r\n")
+		klog.Errf("[LoadMaz] B range exceeded: from=%x to=%x\n", funcVA, targetAddr)
 		return false
 	}
 

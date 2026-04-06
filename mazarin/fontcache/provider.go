@@ -45,6 +45,9 @@ type tier2Glyph struct {
 	alpha []byte
 }
 
+// Compile-time check that FontSvcGlyphProvider implements textshape.GlyphProvider.
+var _ textshape.GlyphProvider = (*FontSvcGlyphProvider)(nil)
+
 // NewFontSvcGlyphProvider creates a GlyphProvider backed by fontsvc IPC.
 func NewFontSvcGlyphProvider(fc *FontCache) *FontSvcGlyphProvider {
 	return &FontSvcGlyphProvider{fc: fc}

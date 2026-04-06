@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/klog"
 	"mazzy/shared/hid"
 	"reflect"
 	"sync/atomic"
@@ -13,9 +14,6 @@ import (
 // topHalfUartRing. Rachel (or any userspace shepherd registered on the
 // UART soft IRQ slot) receives these bytes via WaitSoftIRQ.
 //
-// Breadcrumb remains direct MMIO for IRQ-safe debug output.
-// write(2) from userspace also remains Breadcrumb, so rachel's own
-// fmt.Printf does not loop back through the ring.
 type SoftIRQConsole struct {
 	// pendingWake is set to 1 by nosplit pushes that cannot call
 	// WakeSlotForIRQ. The event poller checks this flag and wakes
@@ -157,6 +155,30 @@ func EnableSoftIRQConsole() {
 	softIRQConsole = c
 	console.Set(c)
 	atomic.StoreUint32(&suppressSerial, 1)
+
+	// Wire klog output through the soft IRQ ring so the linux shepherd
+	// receives kernel log messages in its console window.
+	klog.SetOutputFuncs(
+		func(s string) { pushStringToRing(c, 1, s) }, // stdout
+		func(s string) { pushStringToRing(c, 2, s) }, // stderr
+	)
+	klog.SetLinuxReady()
+}
+
+// pushStringToRing pushes every byte of s into the UART soft IRQ ring
+// with the given fd (1=stdout, 2=stderr), converting \n to \r\n, then
+// wakes the linux shepherd.
+func pushStringToRing(c *SoftIRQConsole, fd byte, s string) {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b == '\n' {
+			ev := hid.HIDEvent{Type: 0, Code: uint16(fd), Value: uint32('\r')}
+			ringPush(&topHalfUartRing, ev)
+		}
+		ev := hid.HIDEvent{Type: 0, Code: uint16(fd), Value: uint32(b)}
+		ringPush(&topHalfUartRing, ev)
+	}
+	c.wake()
 }
 
 // IsSoftIRQConsoleActive returns true if the soft IRQ console is active.

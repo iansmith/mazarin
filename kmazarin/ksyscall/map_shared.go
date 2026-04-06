@@ -1,9 +1,9 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 )
 
 // SyscallMapSharedPage creates a shared mapping of a page owned by another shepherd
@@ -46,9 +46,7 @@ func SyscallMapSharedPage(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	// Resolve PA from owner's page table
 	pa := kmem.WalkUserPageTableWithL0(ownerVA, ownerShepherd.PageTableL0PA)
 	if pa == 0 {
-		serial.RawUARTPuts("[IPC] MapSharedPage: page not mapped in owner at VA 0x")
-		serial.RawUARTHex64(uint64(ownerVA))
-		serial.RawUARTPuts("\r\n")
+		klog.Errf("[IPC] MapSharedPage: page not mapped in owner at VA %x\n", uint64(ownerVA))
 		return -14 // EFAULT
 	}
 	// Strip page offset
@@ -57,9 +55,7 @@ func SyscallMapSharedPage(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	// Verify ownership
 	desc := kmem.GetPageDescriptor(pa)
 	if desc == nil || desc.Owner != ownerSID {
-		serial.RawUARTPuts("[IPC] MapSharedPage: page not owned by specified shepherd at PA 0x")
-		serial.RawUARTHex64(uint64(pa))
-		serial.RawUARTPuts("\r\n")
+		klog.Errf("[IPC] MapSharedPage: page not owned by specified shepherd at PA %x\n", uint64(pa))
 		return -1 // EPERM
 	}
 
@@ -160,9 +156,7 @@ func SyscallSharePagesWithTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
 				// may not have instantiated all intermediate page table entries.
 				// The pages will be cleaned up when the target exits.
 			}
-			serial.RawUARTPuts("[IPC] SharePagesWithTarget: page not mapped in caller at VA 0x")
-			serial.RawUARTHex64(uint64(srcVA))
-			serial.RawUARTPuts("\r\n")
+			klog.Errf("[IPC] SharePagesWithTarget: page not mapped in caller at VA %x\n", uint64(srcVA))
 			return -14 // EFAULT
 		}
 		pa = pa &^ (kmem.PageSize - 1)
@@ -181,9 +175,7 @@ func SyscallSharePagesWithTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
 					}
 				}
 			}
-			serial.RawUARTPuts("[IPC] SharePagesWithTarget: page not owned by caller at PA 0x")
-			serial.RawUARTHex64(uint64(pa))
-			serial.RawUARTPuts("\r\n")
+			klog.Errf("[IPC] SharePagesWithTarget: page not owned by caller at PA %x\n", uint64(pa))
 			return -1 // EPERM
 		}
 

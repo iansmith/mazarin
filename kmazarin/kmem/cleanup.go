@@ -22,7 +22,6 @@ package kmem
 
 import (
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"unsafe"
 )
 
@@ -49,8 +48,6 @@ func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGrou
 		SwitchTTBR0WithASID(kernelL0PA, 0)
 	}
 
-	freed := 0
-
 	// Phase 1: Walk Spans (our VMA list) to find all mapped VA regions and
 	// free their leaf pages. Fast path: skips sparse (unmapped) ranges.
 	spans.ForEach(func(start, length uint64) {
@@ -60,24 +57,14 @@ func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGrou
 			if pa == 0 {
 				continue // Not mapped yet (demand paging)
 			}
-			if releasePageByPA(pa) {
-				freed++
-			}
+			releasePageByPA(pa)
 		}
 	})
 
 	// Phase 2: Walk the full page table hierarchy bottom-up.
 	// Frees any leaf pages missed by Phase 1 (ELF segments not in Spans, etc.)
 	// and all intermediate page table pages (L1/L2/L3 tables + L0 root).
-	ptFreed := walkAndFreePageTablePages(l0PA)
-
-	serial.RawUARTPuts("[kmem] shepherd ")
-	serial.RawUARTHex64(uint64(shepherdID))
-	serial.RawUARTPuts(" cleanup: freed ")
-	serial.RawUARTHex64(uint64(freed))
-	serial.RawUARTPuts(" leaf-pages, ")
-	serial.RawUARTHex64(uint64(ptFreed))
-	serial.RawUARTPuts(" PT-pages\r\n")
+	walkAndFreePageTablePages(l0PA)
 }
 
 // ReleasePageByPA decrements the refcount for the physical page at pa and

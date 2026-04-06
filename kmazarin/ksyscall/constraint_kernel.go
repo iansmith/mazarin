@@ -13,8 +13,8 @@ package ksyscall
 import (
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kirq"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/ktime"
-	"mazzy/kmazarin/serial"
 	"mazzy/mazarin/vm/flat"
 	"sync/atomic"
 )
@@ -141,7 +141,7 @@ func KernelAttrWriteStr(slot uint16, val string) {
 
 	nameOff, ok := attrMgr.allocString(val)
 	if !ok {
-		serial.RawUARTPuts("[attr] KernelAttrWriteStr: allocString failed\r\n")
+		klog.Errf("[attr] KernelAttrWriteStr: allocString failed\n")
 		return
 	}
 
@@ -166,7 +166,7 @@ func PublishKernelAttributes() {
 		return
 	}
 	if !attrMgr.initialized {
-		serial.RawUARTPuts("[attr] PublishKernelAttributes: manager not initialized\r\n")
+		klog.Errf("[attr] PublishKernelAttributes: manager not initialized\n")
 		return
 	}
 
@@ -175,31 +175,31 @@ func PublishKernelAttributes() {
 	// Time attributes.
 	slotTimeSeconds, ok = KernelAttrCreate("attr:///kernel/int64/time/utc_seconds", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/time/utc_seconds\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/time/utc_seconds\n")
 		return
 	}
 	slotTimeNanos, ok = KernelAttrCreate("attr:///kernel/int64/time/utc_nanos", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/time/utc_nanos\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/time/utc_nanos\n")
 		return
 	}
 
 	// Screen dimensions.
 	slotScreenW, ok = KernelAttrCreate("attr:///kernel/int64/screen/width", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/screen/width\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/screen/width\n")
 		return
 	}
 	slotScreenH, ok = KernelAttrCreate("attr:///kernel/int64/screen/height", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/screen/height\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/screen/height\n")
 		return
 	}
 
 	// Dark mode toggle.
 	slotDarkMode, ok = KernelAttrCreate("attr:///kernel/bool/darkMode", flat.TypeBool)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/bool/darkMode\r\n")
+		klog.Errf("[attr] FAIL: kernel/bool/darkMode\n")
 		return
 	}
 
@@ -219,19 +219,18 @@ func PublishKernelAttributes() {
 	// charWidth=10, charHeight=19 (matches linux shepherd's font init output).
 	slotCharWidth, ok = KernelAttrCreate("attr:///kernel/int64/screen/charWidth", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/screen/charWidth\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/screen/charWidth\n")
 		return
 	}
 	slotCharHeight, ok = KernelAttrCreate("attr:///kernel/int64/screen/charHeight", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/screen/charHeight\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/screen/charHeight\n")
 		return
 	}
 	KernelAttrWriteI64(slotCharWidth, 10)
 	KernelAttrWriteI64(slotCharHeight, 19)
 
 	kernelAttrsPublished = true
-	serial.RawUARTPuts("[attr] kernel attributes published (time, screen, darkMode, charMetrics)\r\n")
 }
 
 // StartKernelAttrUpdaters initializes the tick-based time update state.
@@ -249,11 +248,6 @@ func StartKernelAttrUpdaters() {
 	if kirq.SystemTimerFrequency > 0 {
 		topHalfUpdateInterval = kirq.SystemTimerFrequency / 10
 		topHalfLastCounter = kirq.ReadCounterValue()
-		serial.RawUARTPuts("[attr] top-half time update: interval=")
-		serial.RawUARTDecimal(topHalfUpdateInterval)
-		serial.RawUARTPuts(" freq=")
-		serial.RawUARTDecimal(kirq.SystemTimerFrequency)
-		serial.RawUARTPuts("\r\n")
 	}
 }
 
@@ -360,26 +354,25 @@ func PublishSystemAttributes(ramMB, cpuCount, kernelBudgetMB uint64) {
 
 	slotRAMMB, ok = KernelAttrCreate("attr:///kernel/int64/system/ram_mb", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/system/ram_mb\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/system/ram_mb\n")
 		return
 	}
 	KernelAttrWriteI64(slotRAMMB, int64(ramMB))
 
 	slotCPUCount, ok = KernelAttrCreate("attr:///kernel/int64/system/cpu_count", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/system/cpu_count\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/system/cpu_count\n")
 		return
 	}
 	KernelAttrWriteI64(slotCPUCount, int64(cpuCount))
 
 	slotKernelBudgetMB, ok = KernelAttrCreate("attr:///kernel/int64/system/kernel_budget_mb", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/system/kernel_budget_mb\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/system/kernel_budget_mb\n")
 		return
 	}
 	KernelAttrWriteI64(slotKernelBudgetMB, int64(kernelBudgetMB))
 
-	serial.RawUARTPuts("[attr] system attributes published (ram, cpu, budget)\r\n")
 }
 
 // PublishBootConfigAttributes creates kernel-owned attributes from TOML boot config.
@@ -394,7 +387,7 @@ func PublishBootConfigAttributes(tz string, goMemLimitMB, gcPercentage int) {
 	if tz != "" {
 		slotTimezone, ok = KernelAttrCreate("attr:///kernel/str/timezone", flat.TypeStr)
 		if !ok {
-			serial.RawUARTPuts("[attr] FAIL: kernel/str/timezone\r\n")
+			klog.Errf("[attr] FAIL: kernel/str/timezone\n")
 		} else {
 			KernelAttrWriteStr(slotTimezone, tz)
 		}
@@ -402,19 +395,18 @@ func PublishBootConfigAttributes(tz string, goMemLimitMB, gcPercentage int) {
 
 	slotGoMemLimitMB, ok = KernelAttrCreate("attr:///kernel/int64/system/go_mem_limit_mb", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/system/go_mem_limit_mb\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/system/go_mem_limit_mb\n")
 	} else {
 		KernelAttrWriteI64(slotGoMemLimitMB, int64(goMemLimitMB))
 	}
 
 	slotGCPercentage, ok = KernelAttrCreate("attr:///kernel/int64/system/gc_percentage", flat.TypeI64)
 	if !ok {
-		serial.RawUARTPuts("[attr] FAIL: kernel/int64/system/gc_percentage\r\n")
+		klog.Errf("[attr] FAIL: kernel/int64/system/gc_percentage\n")
 	} else {
 		KernelAttrWriteI64(slotGCPercentage, int64(gcPercentage))
 	}
 
-	serial.RawUARTPuts("[attr] boot config attributes published\r\n")
 }
 
 

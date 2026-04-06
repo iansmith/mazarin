@@ -2,10 +2,11 @@
 package main
 
 import (
+	"fmt"
 	"mazzy/kmazarin/asm"
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/ds"
 	"mazzy/kmazarin/kirq"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/ktime"
@@ -43,7 +44,7 @@ const (
 const SMPDebugEnabled = false
 
 // smpDebugPrintRun prints "R<cpu><tid><pid>" when a thread starts running.
-// Uses Breadcrumb for minimal overhead.
+// Uses serial.PollWrite for minimal overhead.
 func smpDebugPrintRun(cpuID uint64, tid ThreadId, pid ShepherdId) {
 	if !SMPDebugEnabled {
 		return
@@ -59,7 +60,7 @@ func smpDebugPrintRun(cpuID uint64, tid ThreadId, pid ShepherdId) {
 }
 
 // smpDebugPrintSteal prints "S<cpu><tid><from>" when work is stolen.
-// Uses Breadcrumb for minimal overhead.
+// Uses serial.PollWrite for minimal overhead.
 func smpDebugPrintSteal(thisCPU uint64, tid ThreadId, victimCPU uint64) {
 	if !SMPDebugEnabled {
 		return
@@ -75,7 +76,7 @@ func smpDebugPrintSteal(thisCPU uint64, tid ThreadId, victimCPU uint64) {
 }
 
 // smpDebugPrintIRQ prints "I<cpu><irq>" when an IRQ fires.
-// Uses Breadcrumb for minimal overhead.
+// Uses serial.PollWrite for minimal overhead.
 func smpDebugPrintIRQ(cpuID uint64, irqNum uint32) {
 	if !SMPDebugEnabled {
 		return
@@ -166,30 +167,25 @@ func topHalfGCWakeImpl() {
 	}
 }
 
+// deliverSignalHook calls DeliverPendingSignal via an indirect function
+// pointer so the nosplit checker cannot trace through the call. This breaks
+// the ExceptionVectorTable → checkThreadPreemptionImpl → DeliverPendingSignal
+// → BuildSignalFrame → ZeroUserMemoryWithL0 → WalkUserPTLean chain that
+// otherwise exceeds the 792-byte nosplit stack limit by 8 bytes.
+var deliverSignalHook func(t *Thread)
+
+// tryPickupWorkHook calls tryPickupWorkIdleCPU via an indirect function
+// pointer to break the nosplit chain through findReadyThreadWithStealing →
+// stealWorkFromOtherCPUs → StaticQueue.PopBack → panicIndex.
+var tryPickupWorkHook func(sf *SchedulerFunc) uint64
+
 // InitTopHalfGCWake installs the GC wake hook for the timer top-half.
 // Called from InitThreads after the thread system is ready.
 func InitTopHalfGCWake() {
 	topHalfGCWakeHook = topHalfGCWakeImpl
-	epochUptimeHook = epochUptimeImpl
-}
-
-// epochUptimeHook prints kernel uptime at epoch boundaries. Called via
-// indirect function pointer to keep division out of the nosplit budget.
-var epochUptimeHook func()
-
-//go:nosplit
-//go:noinline
-func epochUptimeImpl() {
-	freq := uint64(kirq.GetTimerFrequency())
-	if freq > 0 && kernelBootTick > 0 {
-		elapsed := kirq.ReadCounterValue() - kernelBootTick
-		uptimeSec := elapsed / freq
-		serial.RawUARTPuts("\n[E:up=")
-		serial.RawUARTDecimal(uptimeSec)
-		serial.RawUARTPuts("s]")
-	} else {
-		serial.RawUARTPuts("\n[E]")
-	}
+	deliverSignalHook = DeliverPendingSignal
+	tryPickupWorkHook = tryPickupWorkIdleCPU
+	buddyFreeHook = kmem.BuddyFreeTyped
 }
 
 // timerCtxSwitchCount counts timer interrupts that resulted in a context switch.
@@ -1139,11 +1135,6 @@ func processStaticDeadlinesSchedLockHeld() {
 			}
 		} else {
 			// Deadline fired but thread in unexpected state — dropped
-			serial.RawUARTPuts("Dx")
-			serial.RawUARTDecimal(uint64(tid))
-			serial.RawUARTPuts(":")
-			serial.RawUARTDecimal(uint64(t.State))
-			serial.RawUARTPuts(" ")
 		}
 	}
 
@@ -1189,323 +1180,137 @@ func ProcessDeadlinesTopHalf() {
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 
+	// Post-lock work that may allocate or do channel ops.
+	// Extracted to a separate function so it is NOT nosplit.
+	processDeadlinesPostLock(cnt)
+}
+
+// processDeadlinesPostLock handles work after the scheduler lock is released
+// in ProcessDeadlinesTopHalf. NOT nosplit — can do channel sends safely.
+//
+//go:noinline
+func processDeadlinesPostLock(cnt uint64) {
 	// Flush any pending console ring data to userspace.
-	// This was in KernelIdleLoop but the idle loop is starved when many
-	// userspace threads are cycling through futex/sleep deadlines.
-	// Moving it here ensures the linux shepherd gets woken every timer tick.
 	if softIRQConsole != nil {
 		softIRQConsole.CheckPendingWake()
 	}
 
-	// Compact stats every ~10 seconds (assuming ~100 Hz timer)
-	if cnt%1000 == 0 {
-		// Print kernel uptime (excluding UEFI boot). Called via function
-		// pointer to avoid division adding to the nosplit stack budget.
-		upFn := epochUptimeHook
-		if upFn != nil {
-			upFn()
+	// Epoch status every ~10 seconds (~330 Hz timer → 3300 ticks).
+	// Increment counter and wake channel. The bottom-half goroutine deduplicates
+	// by comparing its last-seen counter value, so multiple wakeups between
+	// goroutine scheduling produce only one status print.
+	if cnt%3300 == 0 && cnt > 0 {
+		atomic.AddUint64(&epochStatusCounter, 1)
+		select {
+		case epochStatusChan <- struct{}{}:
+		default:
 		}
-		serial.RawUARTPuts(" svc=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.TotalSVCCount))
-		serial.RawUARTPuts(" fw=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWaitBlocked))
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWakeCalls))
-		printThreadStateSummary()
-		printYieldCounters()
-		// Top-half time update fires (should be ~10/sec × 10s = ~100)
-		thf := atomic.LoadUint64(&ksyscall.TopHalfFireCount)
-		if thf > 0 {
-			serial.RawUARTPuts(" THF=")
-			serial.RawUARTDecimal(thf)
-		}
-		// Kernel goroutine preemption counters (seen/notWanted/unsafe/injected)
-		seen, notWanted, unsafePt, injected := getKGPCounters()
-		if seen > 0 || injected > 0 {
-			serial.RawUARTPuts(" KGP=")
-			serial.RawUARTDecimal(seen)
-			serial.RawUARTPuts("/")
-			serial.RawUARTDecimal(notWanted)
-			serial.RawUARTPuts("/")
-			serial.RawUARTDecimal(unsafePt)
-			serial.RawUARTPuts("/")
-			serial.RawUARTDecimal(injected)
-		}
-		// Thread preemption: timer context switches / no-switch / NeedsThreadPreempt sets
-		tcs := atomic.LoadUint64(&timerCtxSwitchCount)
-		tns := atomic.LoadUint64(&timerNoSwitchCount)
-		serial.RawUARTPuts(" T=")
-		serial.RawUARTDecimal(tcs)
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(tns)
-		// Boost thread 0 diagnostics: attempts/successes/lastFailState
-		ba := atomic.LoadUint64(&dbgBoostAttempt)
-		bs := atomic.LoadUint64(&dbgBoostSuccess)
-		if ba > 0 {
-			serial.RawUARTPuts(" B0=")
-			serial.RawUARTDecimal(ba)
-			serial.RawUARTPuts("/")
-			serial.RawUARTDecimal(bs)
-			serial.RawUARTPuts("/s")
-			serial.RawUARTDecimal(atomic.LoadUint64(&dbgBoostFailState))
-		}
-		serial.RawUARTPuts(" IL=")
-		serial.RawUARTDecimal(dbgIdleCount)
-		// Timer preemption assembly diagnostics: reached/hit/nothit
-		trc := atomic.LoadUint64(&kirq.DbgTimerReachedCheck)
-		tdh := atomic.LoadUint64(&kirq.DbgTimerDeadlineHit)
-		tdn := atomic.LoadUint64(&kirq.DbgTimerDeadlineNotHit)
-		serial.RawUARTPuts("\n TP=")
-		serial.RawUARTDecimal(trc)
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(tdh)
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(tdn)
-		// Timer Hz measurement: compute actual rate from counter deltas
-		firstC := atomic.LoadUint64(&kirq.DbgTimerFirstCounter)
-		latestC := atomic.LoadUint64(&kirq.DbgTimerLatestCounter)
-		maxD := atomic.LoadUint64(&kirq.DbgTimerMaxDelta)
-		irqCount := atomic.LoadUint64(&kirq.TimerIRQCount)
-		if firstC != 0 && latestC > firstC && irqCount > 1 {
-			elapsedTicks := latestC - firstC
-			// actualHz = (irqCount-1) * freq / elapsedTicks
-			// To avoid overflow: divide first
-			actualHz := ((irqCount - 1) * kirq.SystemTimerFrequency) / elapsedTicks
-			serial.RawUARTPuts(" Hz=")
-			serial.RawUARTDecimal(actualHz)
-			serial.RawUARTPuts(" maxGap=")
-			// maxDelta in ticks → microseconds: maxD * 1000000 / freq
-			maxUs := (maxD * 1000000) / kirq.SystemTimerFrequency
-			serial.RawUARTDecimal(maxUs)
-			serial.RawUARTPuts("us")
-		}
-		// Exception handler path: el0/el1h/svc/notset
-		serial.RawUARTPuts(" EH=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgTimerEL0))
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgTimerSkipEL1h))
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgTimerSkipSVC))
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgTimerPreemptNotSet))
-		// checkThreadPreemptionImpl: switch/noNext
-		serial.RawUARTPuts(" PS=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptSwitchCount))
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptNoNextCount))
-		// A/D scan deltas since last [E] dump
-		printADScanCounters()
-		// Input device IRQ counts: kbd/mouse/tablet
-		printInputIRQCounters()
-		// Yield diagnostics: call/switch/noready
-		printYieldCounters()
-		// SaveThread0AndYield paths: mlocks_skip/sleep/yield/noNext
-		serial.RawUARTPuts(" SY=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgYieldMlocksSkip))
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgYieldSleepPath))
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgYieldYieldPath))
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgYieldNoNext))
-		serial.RawUARTPuts("/dw")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgDeadlineWokeSleeper))
-		// Block IRQ + WakeSlot + BlockOnSlot instrumentation
-		printBlockIRQCounters()
-		// Per-shepherd GC cycle counts
-		printGCCounters()
-	}
-	// Heartbeat: print '.' every ~5 seconds to confirm timer is alive
-	if cnt%500 == 0 {
-		serial.RawUART('.')
 	}
 }
 
-// printYieldCounters prints yield success/fail counters for the [E] event dump.
-// NOT nosplit — breaks the nosplit chain.
-func printYieldCounters() {
-	serial.RawUARTPuts(" Y=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.YieldCallCount))
-	serial.RawUART('/')
-	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.YieldSwitchCount))
-	serial.RawUART('/')
-	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.YieldNoReadyCount))
-}
-
-// printBlockIRQCounters prints block IRQ, WakeSlot, and BlockOnSlot counters.
-// NOT nosplit — breaks the nosplit chain (same pattern as printGCCounters).
-func printBlockIRQCounters() {
-	// Block IRQ instrumentation: total/sync/async/events
-	bic := atomic.LoadUint32(&dbgBlockIRQCount)
-	if bic > 0 {
-		serial.RawUARTPuts("\n BLK=")
-		serial.RawUARTDecimal(uint64(bic))
-		serial.RawUARTPuts("/s")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockIRQSync)))
-		serial.RawUARTPuts("/a")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockIRQAsync)))
-		serial.RawUARTPuts("/ev")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockAsyncEvents)))
-		serial.RawUARTPuts("/cq")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockCQEWritten)))
-		serial.RawUARTPuts("/miss")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockCQEMissed)))
-	}
-	// WakeSlot instrumentation: calls/noSlot/noThread/woke/stale
-	wsc := atomic.LoadUint32(&dbgWakeSlotCalls)
-	if wsc > 0 {
-		serial.RawUARTPuts(" WK=")
-		serial.RawUARTDecimal(uint64(wsc))
-		serial.RawUARTPuts("/ns")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeSlotNoSlot)))
-		serial.RawUARTPuts("/nt")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeSlotNoThread)))
-		serial.RawUARTPuts("/ok")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeSlotWoke)))
-		serial.RawUARTPuts("/st")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeSlotStale)))
-	}
-	// WakeIOUringFromIRQ instrumentation
-	wurc := atomic.LoadUint32(&dbgWakeURCalls)
-	if wurc > 0 {
-		serial.RawUARTPuts(" UR=")
-		serial.RawUARTDecimal(uint64(wurc))
-		serial.RawUARTPuts("/nw")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeURNoWaiter)))
-		serial.RawUARTPuts("/ne")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeURNotEnough)))
-		serial.RawUARTPuts("/ok")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeURWoke)))
-	}
-	// Timeout wake instrumentation
-	tow := atomic.LoadUint32(&dbgTimeoutWakes)
-	if tow > 0 {
-		serial.RawUARTPuts(" TO=")
-		serial.RawUARTDecimal(uint64(tow))
-		serial.RawUARTPuts("/ok")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutHadEnough)))
-		serial.RawUARTPuts("/ne")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutNotEnough)))
-		serial.RawUARTPuts(" blk=")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutBlkOK)))
-		serial.RawUART('/')
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutBlkNE)))
-		serial.RawUARTPuts(" inp=")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutInpOK)))
-		serial.RawUART('/')
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgTimeoutInpNE)))
-	}
-	// BlockOnSlot instrumentation: calls/blocked/noNext
-	bos := atomic.LoadUint32(&dbgBlockOnSlotCalls)
-	if bos > 0 {
-		serial.RawUARTPuts(" BO=")
-		serial.RawUARTDecimal(uint64(bos))
-		serial.RawUARTPuts("/blk")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockOnSlotBlocked)))
-		serial.RawUARTPuts("/nn")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockOnSlotNoNext)))
-	}
-	// Futex PID mismatch: address matched but caller PID != waiter PID
-	fpm := atomic.LoadUint64(&DbgFutexPIDMismatch)
-	if fpm > 0 {
-		serial.RawUARTPuts(" FPM=")
-		serial.RawUARTDecimal(fpm)
-	}
-	printPriorityWakeCounters()
-}
-
-// printPriorityWakeCounters prints priority wake diagnostics.
-// NOT nosplit — breaks the nosplit chain.
-func printPriorityWakeCounters() {
-	pwc := atomic.LoadUint32(&dbgPWakeChecked)
-	if pwc > 0 {
-		serial.RawUARTPuts(" PW=")
-		serial.RawUARTDecimal(uint64(pwc))
-		serial.RawUARTPuts("/el1h=")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgPWakeEL1h)))
-		serial.RawUARTPuts("/svc=")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgPWakeSVC)))
-		serial.RawUARTPuts("/noctx=")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgPWakeNoCtx)))
-		serial.RawUARTPuts("/ok=")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgPWakeSwitched)))
-	}
-}
-
-// printADScanCounters prints A/D scan delta counters for the [E] event dump.
-// NOT nosplit — breaks the nosplit chain so it doesn't add to the timer IRQ
-// nosplit budget (same pattern as printGCCounters).
-func printADScanCounters() {
-	adRuns, adAccessed, adTotal := kmem.ReadAndResetScanDeltas()
-	serial.RawUARTPuts(" AD=")
-	serial.RawUARTDecimal(adRuns)
-	serial.RawUARTPuts("/")
-	serial.RawUARTDecimal(adAccessed)
-	serial.RawUARTPuts("/")
-	serial.RawUARTDecimal(adTotal)
-}
-
-// printGCCounters prints per-shepherd GC cycle counts, kernel heap size,
-// and per-type page breakdown.
-// NOT nosplit — this gets its own stack check so it doesn't add to the
-// timer IRQ nosplit chain budget.
+// printEpochStatus formats a human-readable kernel status report and sends
+// it via klog.Criticalf every ~10 seconds. The short tag "[status]" always
+// hits the UART; the detailed breakdown goes to stderr (ring when linux is
+// up, UART when not).
 //
-// WARNING: This runs from the timer top-half (~every 10 seconds) and performs
-// significant serial UART output — iterating page type arrays and writing
-// multiple strings per type. Could cause timer ISR overruns if many page types
-// are active, since UART writes are blocking. Mitigated by go:noinline keeping
-// it out of the nosplit chain (stack can grow if needed), and by being called
-// infrequently (every ~1000 ticks).
-//
+// epochStatusCounter is incremented by processDeadlinesPostLock every ~10s.
+// The bottom-half goroutine compares against its local copy to deduplicate.
+var epochStatusCounter uint64
+
 //go:noinline
-func printGCCounters() {
-	// Kernel heap size: pages/MBm, page faults
-	khPages := kmem.KernelHeapPageCount()
-	serial.RawUARTPuts(" kh=")
-	serial.RawUARTDecimal(khPages)
-	serial.RawUARTPuts("/")
-	serial.RawUARTDecimal(khPages / 256)
-	serial.RawUARTPuts("m pf=")
-	serial.RawUARTDecimal(kmem.KernelPageFaultCount())
-	// Per-type page breakdown (only non-zero types)
-	byType := kmem.PagesByType()
-	serial.RawUARTPuts(" [")
-	first := true
-	typeNames := [...]string{"kh", "kpt", "ks", "mmio", "fb", "vq", "ut", "uro", "ud", "uh", "us", "upt", "ipc", "fil", "bs", "drv", "vdso", "cstr", "fc", "ipb"}
-	for i, cnt := range byType {
-		if cnt == 0 {
+func printEpochStatus() {
+	// Uptime
+	var uptimeSec uint64
+	freq := uint64(kirq.GetTimerFrequency())
+	if freq > 0 && kernelBootTick > 0 {
+		elapsed := kirq.ReadCounterValue() - kernelBootTick
+		uptimeSec = elapsed / freq
+	}
+
+	// Thread state summary
+	var nReady, nFutex, nSleep, nSoftIRQ, nRunning, nMailbox, nDelegate int
+	for i := 0; i < threadArraySize; i++ {
+		if !threadListInUse[i] {
 			continue
 		}
-		if !first {
-			serial.RawUARTPuts(",")
+		switch threadListData[i].State {
+		case ThreadReady:
+			nReady++
+		case ThreadRunning:
+			nRunning++
+		case ThreadBlockedFutex:
+			nFutex++
+		case ThreadSleeping:
+			nSleep++
+		case ThreadBlockedSoftIRQ:
+			nSoftIRQ++
+		case ThreadBlockedUringRecv:
+			nMailbox++
+		case ThreadBlockedDelegate:
+			nDelegate++
 		}
-		first = false
-		if i < len(typeNames) {
-			serial.RawUARTPuts(typeNames[i])
-		} else {
-			serial.RawUARTPuts("?")
-		}
-		serial.RawUARTPuts("=")
-		serial.RawUARTDecimal(cnt)
 	}
-	serial.RawUARTPuts("]")
-	// Per-shepherd GC cycle counts
-	hasGC := false
+
+	// Syscall counts
+	totalSVC := atomic.LoadUint64(&ksyscall.TotalSVCCount)
+	yieldCalls := atomic.LoadUint64(&ksyscall.YieldCallCount)
+	yieldSwitch := atomic.LoadUint64(&ksyscall.YieldSwitchCount)
+	futexWait := atomic.LoadUint64(&ksyscall.FutexWaitBlocked)
+	futexWake := atomic.LoadUint64(&ksyscall.FutexWakeCalls)
+
+	// Timer stats
+	tcs := atomic.LoadUint64(&timerCtxSwitchCount)
+	irqCount := atomic.LoadUint64(&kirq.TimerIRQCount)
+	var actualHz uint64
+	firstC := atomic.LoadUint64(&kirq.DbgTimerFirstCounter)
+	latestC := atomic.LoadUint64(&kirq.DbgTimerLatestCounter)
+	if firstC != 0 && latestC > firstC && irqCount > 1 {
+		actualHz = ((irqCount - 1) * kirq.SystemTimerFrequency) / (latestC - firstC)
+	}
+
+	// Memory
+	khPages := kmem.KernelHeapPageCount()
+	khMB := khPages / 256
+	pageFaults := kmem.KernelPageFaultCount()
+
+	// Per-SID SVC deltas
+	svcDelta := ""
+	for i := 0; i < 32; i++ {
+		cur := atomic.LoadUint64(&ksyscall.SVCCountBySID[i])
+		delta := cur - prevSVCCountBySID[i]
+		if delta > 0 {
+			svcDelta += fmt.Sprintf(" s%d=%d", i, delta)
+		}
+		prevSVCCountBySID[i] = cur
+	}
+
+	// GC counts
+	gcInfo := ""
 	for i := 0; i < len(ksyscall.GCCountBySID); i++ {
 		gc := atomic.LoadUint64(&ksyscall.GCCountBySID[i])
 		if gc > 0 {
-			if !hasGC {
-				serial.RawUARTPuts(" GC=")
-				hasGC = true
-			} else {
-				serial.RawUARTPuts(",")
-			}
-			serial.RawUARTDecimal(uint64(i))
-			serial.RawUARTPuts(":")
-			serial.RawUARTDecimal(gc)
+			gcInfo += fmt.Sprintf(" s%d=%d", i, gc)
 		}
 	}
+
+	klog.Criticalf("[status] ",
+		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
+			"  threads: running=%d ready=%d futex=%d sleep=%d softirq=%d uring=%d delegate=%d\n"+
+			"  yield: calls=%d switched=%d futex: wait=%d wake=%d\n"+
+			"  memory: kernel_heap=%d_pages(%dMB) page_faults=%d\n"+
+			"  svc/shepherd:%s\n"+
+			"  gc cycles:%s\n",
+		uptimeSec, totalSVC, actualHz, tcs,
+		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nDelegate,
+		yieldCalls, yieldSwitch, futexWait, futexWake,
+		khPages, khMB, pageFaults,
+		svcDelta,
+		gcInfo,
+	)
 }
+
+
+
 
 // IdleLoop is called when no threads are ready to run.
 // It processes deadlines and uses WFI to wait for the next interrupt.
@@ -1583,131 +1388,11 @@ var dbgYieldSleepPath uint64      // SaveThread0AndYield took deadline sleep pat
 var dbgYieldYieldPath uint64      // SaveThread0AndYield took normal yield path
 var dbgYieldNoNext uint64         // SaveThread0AndYield found no ready thread
 
-func printThreadStateSummary() {
-	var nReady, nFutex, nSleep, nSoftIRQ, nRunning, nMailbox, nDelegate int
-	var runTID int32 = -1
-	var runSID int16 = -1
-	var readyTIDs [8]int32 // Track up to 8 Ready thread TIDs
-	var readyCount int
-	for i := 0; i < threadArraySize; i++ {
-		if !threadListInUse[i] {
-			continue
-		}
-		switch threadListData[i].State {
-		case ThreadReady:
-			nReady++
-			if readyCount < len(readyTIDs) {
-				readyTIDs[readyCount] = int32(threadListData[i].TID)
-				readyCount++
-			}
-		case ThreadRunning:
-			nRunning++
-			runTID = int32(threadListData[i].TID)
-			runSID = threadListData[i].ShepherdIdx
-		case ThreadBlockedFutex:
-			nFutex++
-		case ThreadSleeping:
-			nSleep++
-		case ThreadBlockedSoftIRQ:
-			nSoftIRQ++
-		case ThreadBlockedUringRecv:
-			nMailbox++ // IPC category
-		case ThreadBlockedDelegate:
-			nDelegate++
-		}
-	}
-	serial.RawUARTPuts(" R=")
-	serial.RawUARTDecimal(uint64(nReady))
-	if readyCount > 0 {
-		serial.RawUART('{')
-		for i := 0; i < readyCount; i++ {
-			if i > 0 {
-				serial.RawUART(',')
-			}
-			serial.RawUARTDecimal(uint64(readyTIDs[i]))
-		}
-		serial.RawUART('}')
-	}
-	serial.RawUARTPuts(" F=")
-	serial.RawUARTDecimal(uint64(nFutex))
-	serial.RawUARTPuts(" S=")
-	serial.RawUARTDecimal(uint64(nSleep))
-	serial.RawUARTPuts(" I=")
-	serial.RawUARTDecimal(uint64(nSoftIRQ))
-	serial.RawUARTPuts(" M=")
-	serial.RawUARTDecimal(uint64(nMailbox))
-	serial.RawUARTPuts(" D=")
-	serial.RawUARTDecimal(uint64(nDelegate))
-	serial.RawUARTPuts(" X=")
-	serial.RawUARTDecimal(uint64(nRunning))
-	if runTID >= 0 {
-		serial.RawUART('[')
-		serial.RawUARTDecimal(uint64(runTID))
-		serial.RawUART('s')
-		serial.RawUARTDecimal(uint64(runSID))
-		serial.RawUART(']')
-	}
-	el1hELR := atomic.LoadUint64(&dbgLastEL1hELR)
-	el1hSPSR := atomic.LoadUint64(&dbgLastEL1hSPSR)
-	if el1hELR != 0 {
-		serial.RawUARTPuts(" EL1h:0x")
-		serial.RawUARTHex64(el1hELR)
-		serial.RawUARTPuts(",0x")
-		serial.RawUARTHex64(el1hSPSR)
-	}
-	// Per-SID SVC deltas since last epoch
-	serial.RawUARTPuts("\n  svc/sid:")
-	for i := 0; i < 32; i++ {
-		cur := atomic.LoadUint64(&ksyscall.SVCCountBySID[i])
-		delta := cur - prevSVCCountBySID[i]
-		if delta > 0 {
-			serial.RawUART(' ')
-			serial.RawUARTDecimal(uint64(i))
-			serial.RawUART('=')
-			serial.RawUARTDecimal(delta)
-		}
-		prevSVCCountBySID[i] = cur
-	}
-	// Nanosleep breakdown
-	serial.RawUARTPuts("\n  ns: zero=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepZeroTickCount))
-	serial.RawUARTPuts(" real=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepRealSleepCount))
-	serial.RawUARTPuts(" total=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepCallCount))
-	serial.RawUARTPuts(" disp0=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepDispatchedSID0))
-	serial.RawUARTPuts(" null=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepEarlyNull))
-	serial.RawUARTPuts(" efault=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepEarlyEfault))
-	serial.RawUARTPuts(" readfail=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.NanosleepEarlyReadFail))
-	// SID 0 per-syscall-number breakdown (top consumers).
-	serial.RawUARTPuts("\n  sid0/svc:")
-	for i := 0; i < 256; i++ {
-		cur := atomic.LoadUint64(&ksyscall.SID0SyscallCounts[i])
-		delta := cur - prevSID0Syscalls[i]
-		if delta > 100000 { // only print high-volume syscalls
-			serial.RawUART(' ')
-			serial.RawUARTDecimal(uint64(i))
-			serial.RawUART('=')
-			serial.RawUARTDecimal(delta)
-		}
-		prevSID0Syscalls[i] = cur
-	}
-	serial.RawUARTPuts("\n")
-}
-
 //go:noinline
 func KernelIdleLoop() {
 	for {
 		dbgIdleCount++
-		if dbgIdleCount <= 3 {
-			serial.RawUARTPuts("\n[IL")
-			serial.RawUARTDecimal(dbgIdleCount)
-			serial.RawUARTPuts("]")
-		}
+
 		// Relay pending SVC work requests to worker goroutines.
 		// Each Relay converts an atomic flag to a channel send.
 		loadMazKW.Relay()
@@ -1807,9 +1492,6 @@ func KernelIdleLoop() {
 		// No ready threads — wait for an interrupt (timer tick, etc.)
 		// IRQs MUST be enabled for WFI so the timer interrupt can fire
 		wfiCount++
-		if wfiCount <= 3 {
-			serial.RawUARTPuts("[WFI]")
-		}
 		EnableIRQs()
 		WaitForInterrupt()
 	}
@@ -1957,9 +1639,7 @@ func SaveThread0AndYield() uint64 {
 	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
 	if next.Context.GetPC() == 0 {
-		serial.RawUARTPuts("[BUG] Yield RIP=0 TID=")
-		serial.RawUARTHex64(uint64(next.TID))
-		serial.PollWrite('\n')
+		klog.Criticalf("[BUG] ", "Yield RIP=0 TID=%d\n", next.TID)
 		for {
 			WaitForInterrupt()
 		}
@@ -1967,7 +1647,7 @@ func SaveThread0AndYield() uint64 {
 
 	// Deliver pending signals before ERET to this thread.
 	if next.PendingSignals != 0 && next.InSignalHandler == 0 {
-		DeliverPendingSignal(next)
+		deliverSignalHook(next)
 	}
 
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
@@ -2044,28 +1724,12 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	// END CRITICAL SECTION
 	schedulerLock.Unlock()
 
-	// DEBUG: Print thread details before ERET
-	console.KPrintf("[StartFirst] TID=%d PID=%d PC=0x%x SP=0x%x PState=0x%x L0PA=0x%x\n",
-		thread.TID, thread.PID, thread.Context.GetPC(), thread.Context.GetSP(), thread.Context.GetProcessorState(), thread.PageTableL0PA)
-
-	// DEBUG: Verify stack page is mapped by walking the page table
-	stackAddr := uintptr(thread.Context.GetSP())
-	stackPA := kmem.WalkUserPageTableWithL0(stackAddr, thread.PageTableL0PA)
-	console.KPrintf("[StartFirst] StackWalk: VA=0x%x PA=0x%x\n", stackAddr, stackPA)
-
-	// DEBUG: Read L0[255] directly via linear map
-	const koff = uintptr(0xFFFFFFFF00000000)
-	l0VA := thread.PageTableL0PA + koff
-	l0e255 := *(*uint64)(unsafe.Pointer(l0VA + 255*8))
-	l0e0 := *(*uint64)(unsafe.Pointer(l0VA + 0*8))
-	console.KPrintf("[StartFirst] L0[0]=0x%x L0[255]=0x%x\n", l0e0, l0e255)
-
 	// Don't restore DAIF - the ERET will set SPSR which controls IRQ state
 	_ = savedDAIF
 
 	// Deliver pending signals before ERET to this thread.
 	if thread.PendingSignals != 0 && thread.InSignalHandler == 0 {
-		DeliverPendingSignal(thread)
+		deliverSignalHook(thread)
 	}
 
 	return uint64(uintptr(unsafe.Pointer(&thread.Context)))
@@ -2225,17 +1889,6 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	} else {
 		RestoreIRQs(savedDAIF)
 	}
-
-	// Diagnostic: log which shepherd is cloning a new kernel thread.
-	serial.RawUARTPuts("[clone] SID=")
-	serial.RawUARTDecimal(uint64(t.PID))
-	serial.RawUARTPuts(" TID=")
-	serial.RawUARTDecimal(uint64(t.TID))
-	if parent != nil {
-		serial.RawUARTPuts(" parentTID=")
-		serial.RawUARTDecimal(uint64(parent.TID))
-	}
-	serial.RawUARTPuts("\r\n")
 
 	// CRITICAL: Tell the syscall return path to switch to this new thread!
 	// After SyscallDispatch returns, assembly will:
@@ -2441,15 +2094,6 @@ func terminateShepherdImpl(sf *SchedulerFunc, pid ShepherdId, status int64) uint
 	if next == nil {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
-
-		// Diagnostic output
-		serial.RawUARTPuts("[EXIT] shepherd PID=")
-		serial.RawUARTDecimal(uint64(pid))
-		serial.RawUARTPuts(" status=")
-		serial.RawUARTDecimal(uint64(status))
-		serial.RawUARTPuts(" threads_killed=")
-		serial.RawUARTDecimal(uint64(killed))
-		serial.RawUARTPuts("\r\n")
 		return 0
 	}
 
@@ -2465,15 +2109,6 @@ func terminateShepherdImpl(sf *SchedulerFunc, pid ShepherdId, status int64) uint
 
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
-
-	// Diagnostic output after lock release
-	serial.RawUARTPuts("[EXIT] shepherd PID=")
-	serial.RawUARTDecimal(uint64(pid))
-	serial.RawUARTPuts(" status=")
-	serial.RawUARTDecimal(uint64(status))
-	serial.RawUARTPuts(" threads_killed=")
-	serial.RawUARTDecimal(uint64(killed))
-	serial.RawUARTPuts("\r\n")
 
 	return uintptr(unsafe.Pointer(&next.Context))
 }
@@ -3323,7 +2958,7 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 
 		if t == nil {
 			// Invalid TID in queue - skip it
-			console.KPrintf("ThreadWakeFutex: invalid TID %d in blockedQueue\n", tid)
+			klog.Errf("ThreadWakeFutex: invalid TID %d in blockedQueue\n", tid)
 			continue
 		}
 
@@ -3563,9 +3198,7 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
 	if next.Context.GetPC() == 0 {
-		serial.RawUARTPuts("[BUG] Pickup RIP=0 TID=")
-		serial.RawUARTHex64(uint64(next.TID))
-		serial.PollWrite('\n')
+		klog.Criticalf("[BUG] ", "Pickup RIP=0 TID=%d\n", next.TID)
 		for {
 			WaitForInterrupt()
 		}
@@ -3667,13 +3300,13 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		// Idle CPU (no current thread) - check if there's work to pick up
 		// This is critical for SMP: secondary CPUs start idle and need to
 		// pick up work from their local queues when timer interrupts wake them.
-		ctxPtr := tryPickupWorkIdleCPU(sf)
+		ctxPtr := tryPickupWorkHook(sf)
 		if ctxPtr != 0 {
 			// Deliver pending signals at this stack depth (shallower than inside
 			// tryPickupWorkIdleCPU) to stay within nosplit stack budget.
 			next := GetCurrentThread()
 			if next != nil && next.PendingSignals != 0 && next.InSignalHandler == 0 {
-				DeliverPendingSignal(next)
+				deliverSignalHook(next)
 			}
 		}
 		return ctxPtr
@@ -3818,9 +3451,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	_ = savedDAIF // Keep compiler happy
 
 	if next.Context.GetPC() == 0 {
-		serial.RawUARTPuts("[BUG] Preempt RIP=0 TID=")
-		serial.RawUARTHex64(uint64(next.TID))
-		serial.PollWrite('\n')
+		klog.Criticalf("[BUG] ", "Preempt RIP=0 TID=%d\n", next.TID)
 		for {
 			WaitForInterrupt()
 		}
@@ -3828,7 +3459,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 
 	// Deliver pending signals before ERET to this thread.
 	if next.PendingSignals != 0 && next.InSignalHandler == 0 {
-		DeliverPendingSignal(next)
+		deliverSignalHook(next)
 	}
 
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
@@ -4035,222 +3666,16 @@ func GetThread(idx uintptr) *Thread {
 
 // SaveCurrentThreadContext is defined in save_context_<arch>.go (per-architecture).
 
-// printTickDistributionNoSplit prints tick distribution using only nosplit
-// console functions. Called from checkThreadPreemptionImpl/doContextSwitchImpl at shutdown.
-// now is the current CNTVCT_EL0 value.
+// printTickDistributionNoSplit is a no-op retained for call-site compatibility.
 //
 //go:nosplit
 func printTickDistributionNoSplit(now uint64) {
-	freq := kirq.SystemTimerFrequency
-
-	// "\n===TICKS===\n"
-	serial.RawUARTPuts("\n===TICKS===\n")
-
-	for i := 0; i < MaxThreads; i++ {
-		if threadListInUse[i] {
-			t := &threadListData[i]
-			ticks := t.TotalTicksRunning
-			if t.TicksStartedRunning != 0 {
-				if now < t.TicksStartedRunning {
-					serial.PollWrite('%') // Bogus: current time < started time
-				} else {
-					ticks += now - t.TicksStartedRunning
-				}
-			} else if t.State == ThreadRunning {
-				serial.PollWrite('%') // Bogus: running but no start time
-			}
-			// "T<TID> P<PID> <hex> <secs>s\n"
-			serial.PollWrite('T')
-			serial.RawUARTHex8(byte(t.TID))
-			serial.PollWrite(' ')
-			serial.PollWrite('P')
-			serial.RawUARTHex8(byte(t.PID))
-			serial.PollWrite(' ')
-			serial.RawUARTHex64(ticks)
-			serial.PollWrite(' ')
-			if freq > 0 {
-				serial.RawUARTDecimal(ticks / freq)
-			} else {
-				serial.PollWrite('?')
-			}
-			serial.PollWrite('s')
-			serial.PollWrite('\n')
-		}
-	}
-
-	// "===SHEPHERD===\n"
-	serial.RawUARTPuts("===SHEPHERD===\n")
-
-	for i := 0; i < MaxShepherds; i++ {
-		if proc.ShepherdListInUse[i] {
-			p := &proc.ShepherdListData[i]
-			ticks := p.TotalTicksRunning
-			if p.TicksStartedRunning != 0 {
-				if now < p.TicksStartedRunning {
-					serial.PollWrite('%')
-				} else {
-					ticks += now - p.TicksStartedRunning
-				}
-			}
-			// "P<PID> <hex> <secs>s\n"
-			serial.PollWrite('P')
-			serial.RawUARTHex8(byte(p.PID))
-			serial.PollWrite(' ')
-			serial.RawUARTHex64(ticks)
-			serial.PollWrite(' ')
-			if freq > 0 {
-				serial.RawUARTDecimal(ticks / freq)
-			} else {
-				serial.PollWrite('?')
-			}
-			serial.PollWrite('s')
-			serial.PollWrite('\n')
-		}
-	}
-
-	// "===TOTAL===\n"
-	serial.RawUARTPuts("===TOTAL===\n")
-	if startingTicksProgram != 0 && now >= startingTicksProgram && freq > 0 {
-		serial.RawUARTDecimal((now - startingTicksProgram) / freq)
-	} else {
-		serial.PollWrite('?')
-	}
-	serial.RawUARTPuts("s\n")
-
-	// Brief spin for UART FIFO drain (main flush is in Exit() assembly)
-	for i := uint64(0); i < 10000000; i++ {
-		_ = i
-	}
 }
 
-// PrintTickDistribution prints the tick distribution for all active threads.
-// Shows TID, PID, and TotalTicksRunning for each thread.
+// PrintTickDistribution is a no-op retained for call-site compatibility.
 func PrintTickDistribution() {
-	console.KPrint("\n=== Thread Tick Distribution ===\n")
-
-	var totalTicks uint64
-	activeCount := 0
-
-	// First pass: count totals
-	for i := 0; i < MaxThreads; i++ {
-		if threadListInUse[i] {
-			t := &threadListData[i]
-			// For running thread, add current runtime to total
-			ticks := t.TotalTicksRunning
-			if t.TicksStartedRunning != 0 && t.State == ThreadRunning {
-				ticks += kirq.ReadCounterValue() - t.TicksStartedRunning
-			}
-			totalTicks += ticks
-			activeCount++
-		}
-	}
-
-	console.KPrintf("Active threads: %d, Total ticks: %d\n", activeCount, totalTicks)
-
-	// Second pass: print each thread
-	for i := 0; i < MaxThreads; i++ {
-		if threadListInUse[i] {
-			t := &threadListData[i]
-			// For running thread, add current runtime to total
-			ticks := t.TotalTicksRunning
-			if t.TicksStartedRunning != 0 && t.State == ThreadRunning {
-				ticks += kirq.ReadCounterValue() - t.TicksStartedRunning
-			}
-
-			// Calculate percentage (avoid division by zero)
-			var pct uint64
-			if totalTicks > 0 {
-				pct = (ticks * 100) / totalTicks
-			}
-
-			stateStr := "?"
-			switch t.State {
-			case ThreadRunning:
-				stateStr = "RUN"
-			case ThreadReady:
-				stateStr = "RDY"
-			case ThreadBlockedFutex:
-				stateStr = "FTX"
-			case ThreadSleeping:
-				stateStr = "SLP"
-			case ThreadExited:
-				stateStr = "EXT"
-			case ThreadBlockedSoftIRQ:
-				stateStr = "IRQ"
-			case ThreadBlockedDelegate:
-				stateStr = "DLG"
-			// ThreadBlockedDelegateRecv ("DLR") removed
-			case ThreadBlockedDirtyNotify:
-				stateStr = "DNT"
-			case ThreadBlockedInputEvent:
-				stateStr = "INP"
-			case ThreadBlockedKernelWork:
-				stateStr = "KW"
-			case ThreadBlockedIOUring:
-				stateStr = "IOU"
-			case ThreadBlockedUringRecv:
-				stateStr = "URC"
-			}
-
-			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",
-				t.TID, t.PID, stateStr, ticks, pct)
-		}
-	}
-	console.KPrint("================================\n")
-
-	PrintThreadStateSummary()
-
-	// Per-shepherd tick distribution
-	console.KPrint("\n=== Shepherd Tick Distribution ===\n")
-	var shepherdTotalTicks uint64
-	for i := 0; i < MaxShepherds; i++ {
-		if proc.ShepherdListInUse[i] {
-			p := &proc.ShepherdListData[i]
-			ticks := p.TotalTicksRunning
-			if p.TicksStartedRunning != 0 {
-				ticks += kirq.TimerIRQCount - p.TicksStartedRunning
-			}
-			shepherdTotalTicks += ticks
-		}
-	}
-	for i := 0; i < MaxShepherds; i++ {
-		if proc.ShepherdListInUse[i] {
-			p := &proc.ShepherdListData[i]
-			ticks := p.TotalTicksRunning
-			if p.TicksStartedRunning != 0 {
-				ticks += kirq.TimerIRQCount - p.TicksStartedRunning
-			}
-			var pct uint64
-			if shepherdTotalTicks > 0 {
-				pct = (ticks * 100) / shepherdTotalTicks
-			}
-			console.KPrintf("  P%02d ticks=%d (%d%%)\n", p.PID, ticks, pct)
-		}
-	}
-	console.KPrint("================================\n")
 }
 
-// PrintThreadStateSummary prints a compact one-line summary of thread states.
+// PrintThreadStateSummary is a no-op retained for call-site compatibility.
 func PrintThreadStateSummary() {
-	var run, rdy, ftx, irq, slp, total int
-	for i := 0; i < MaxThreads; i++ {
-		if threadListInUse[i] {
-			total++
-			switch threadListData[i].State {
-			case ThreadRunning:
-				run++
-			case ThreadReady:
-				rdy++
-			case ThreadBlockedFutex:
-				ftx++
-			case ThreadBlockedSoftIRQ:
-				irq++
-			case ThreadSleeping:
-				slp++
-			}
-		}
-	}
-	avail := threadIdAllocator.Available()
-	console.KPrintf("[Threads] total=%d run=%d rdy=%d ftx=%d irq=%d slp=%d free=%d\n",
-		total, run, rdy, ftx, irq, slp, avail)
 }

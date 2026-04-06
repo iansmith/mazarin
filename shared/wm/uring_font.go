@@ -125,13 +125,24 @@ func DecodeFontRequest(msg *ipc.UringIPCMsg) any {
 // DecodeFontResponse decodes a ProtoFontResponse message (fontsvc→shepherd).
 // Panics on unknown message type.
 func DecodeFontResponse(msg *ipc.UringIPCMsg) any {
-	msgType := *(*uint32)(unsafe.Pointer(&msg.Payload[0]))
+	return DecodeFontResponseFromPayload(msg.Payload[:])
+}
+
+// DecodeFontResponseFromPayload decodes a font response from raw payload bytes.
+// Used by .maz modules that receive raw payloads from the shepherd's uring
+// dispatcher and need to decode in their own type namespace.
+// Returns nil on unknown message type.
+func DecodeFontResponseFromPayload(payload []byte) any {
+	if len(payload) < 4 {
+		return nil
+	}
+	msgType := *(*uint32)(unsafe.Pointer(&payload[0]))
 	switch msgType {
 	case MsgTypeOpenFontReply:
-		return *(*OpenFontReply)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*OpenFontReply)(unsafe.Pointer(&payload[4]))
 	case MsgTypeGlyphReply:
-		return *(*GlyphReply)(unsafe.Pointer(&msg.Payload[4]))
+		return *(*GlyphReply)(unsafe.Pointer(&payload[4]))
 	default:
-		panic("wm.DecodeFontResponse: unknown message type")
+		return nil
 	}
 }

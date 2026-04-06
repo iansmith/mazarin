@@ -8,8 +8,8 @@ package ksyscall
 // Zero-copy: data goes from disk → caller's physical pages via DMA.
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/sysid"
 	"sync/atomic"
 )
@@ -47,19 +47,19 @@ func SyscallReadFilePages(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	}
 	clump := callerShepherd.FindClumpByVA(uintptr(destVA))
 	if clump == nil {
-		serial.RawUARTPuts("[ReadFilePages] EFAULT: destVA not in any DMA clump\r\n")
+		klog.Errf("[ReadFilePages] EFAULT: destVA not in any DMA clump\n")
 		return -14 // EFAULT
 	}
 	endVA := uintptr(destVA + destSize - 1)
 	if !clump.ContainsVA(endVA) {
-		serial.RawUARTPuts("[ReadFilePages] EFAULT: buffer extends beyond clump\r\n")
+		klog.Errf("[ReadFilePages] EFAULT: buffer extends beyond clump\n")
 		return -14 // EFAULT
 	}
 
 	// Check if ReadFilePages delegate is registered and ready.
 	hpid := atomic.LoadInt32(&syscallDelegates[sysid.ReadFilePages].pid)
 	if hpid < 0 {
-		serial.RawUARTPuts("[ReadFilePages] no delegate registered\r\n")
+		klog.Errf("[ReadFilePages] no delegate registered\n")
 		return int64(errNoDelegate)
 	}
 	handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(hpid))

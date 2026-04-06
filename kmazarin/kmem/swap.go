@@ -19,7 +19,6 @@ package kmem
 import (
 	"errors"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 )
 
 // ErrSwapNotImplemented is returned by swap stubs until swap I/O is implemented.
@@ -42,26 +41,6 @@ type SwapSlot struct {
 //
 // Returns the swap slot where the page was written, or ErrSwapNotImplemented.
 func SwapOutPage(pa uintptr, desc *PageDescriptor, va uintptr, shepherdID proc.ShepherdId) (SwapSlot, error) {
-	serial.RawUARTPuts("[swap] Would swap out PA=0x")
-	serial.RawUARTHex64(uint64(pa))
-	serial.RawUARTPuts(" VA=0x")
-	serial.RawUARTHex64(uint64(va))
-	serial.RawUARTPuts(" shepherd=")
-	serial.RawUARTHex64(uint64(shepherdID))
-	if desc != nil {
-		serial.RawUARTPuts(" type=")
-		typeName := desc.Type.String()
-		for i := 0; i < len(typeName); i++ {
-			serial.PollWrite(typeName[i])
-		}
-		serial.RawUARTPuts(" dirty=")
-		if desc.Flags&PD_DIRTY != 0 {
-			serial.RawUARTPuts("true")
-		} else {
-			serial.RawUARTPuts("false")
-		}
-	}
-	serial.RawUARTPuts("\r\n")
 	return SwapSlot{}, ErrSwapNotImplemented
 }
 
@@ -95,14 +74,5 @@ func extractSwapSlot(pte uint64) SwapSlot {
 }
 
 func SwapInPage(va uintptr, slot SwapSlot, shepherdID proc.ShepherdId) (uintptr, error) {
-	serial.RawUARTPuts("[swap] Would swap in VA=0x")
-	serial.RawUARTHex64(uint64(va))
-	serial.RawUARTPuts(" device=")
-	serial.RawUARTHex64(uint64(slot.DeviceID))
-	serial.RawUARTPuts(" block=")
-	serial.RawUARTHex64(slot.BlockNum)
-	serial.RawUARTPuts(" shepherd=")
-	serial.RawUARTHex64(uint64(shepherdID))
-	serial.RawUARTPuts("\r\n")
 	return 0, ErrSwapNotImplemented
 }

@@ -36,6 +36,7 @@ type RadialMenu struct {
 	InnerR   float64                  // inner radius (center hole)
 	Faces    []mancini.LatinTextFace  // text content for each segment (nil entries OK)
 	Selected int                      // selected segment index (-1 for none)
+	Disabled bool                     // when true, renders dimmed and ignores input
 }
 
 // NewRadialMenu creates a RadialMenu wired to the constraint system and theme.
@@ -139,6 +140,9 @@ func (m *RadialMenu) Draw(self mancini.Interactor, x, y, w, h int64) {
 			rOut -= insetMargin
 		}
 		radialDrawContent(dc, canvas, pal, cx, cy, rOut, rIn, tStart, tEnd, face)
+	}
+	if m.Disabled {
+		ApplyDisabledCircleOverlay(pal, dc, cx, cy, m.OuterR)
 	}
 }
 
@@ -249,7 +253,8 @@ func menuDrawInsetSegment(canvas *image.RGBA, pal mancini.Palette,
 	// Selected tint fill.
 	tintBuf := image.NewRGBA(image.Rect(0, 0, w, h))
 	tctx := gg.NewContextForRGBA(tintBuf)
-	tctx.SetColor(color.NRGBA{selectedBg.R, selectedBg.G, selectedBg.B, 60})
+	hi := pal.Highlight()
+	tctx.SetColor(color.NRGBA{hi.R, hi.G, hi.B, 60})
 	traceArcPath(tctx, cx, cy, outerR, innerR, startAngle, endAngle)
 	tctx.Fill()
 	draw.DrawMask(canvas, bounds, tintBuf, image.Point{}, mask, image.Point{}, draw.Over)

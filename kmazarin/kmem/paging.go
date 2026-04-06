@@ -2,7 +2,7 @@
 package kmem
 
 import (
-	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
@@ -144,9 +144,7 @@ func InitPaging() {
 	pagingInitialized = true
 
 	// Initialize the unified pool for PT allocation
-	serial.RawUARTPuts("[kmem] InitPaging: before InitUnifiedPool\r\n")
 	InitUnifiedPool()
-	serial.RawUARTPuts("[kmem] InitPaging: done\r\n")
 
 	// L1 PA will be discovered by lazy init when needed (read from L0 entry)
 }
@@ -843,23 +841,21 @@ func DemandMapUserPage(va uintptr, l0PA uintptr) uintptr {
 	inSpanRegion := currentShepherdSpanContains(uint64(va))
 
 	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
-		serial.RawUARTPuts("[DemandMap] VA 0x")
-		serial.RawUARTHex64(uint64(va))
-		serial.RawUARTPuts(" not in valid region\r\n")
+		klog.Errf("[DemandMap] VA 0x%x not in valid region\n", va)
 		return 0
 	}
 
 	// Allocate a physical frame
 	framePA := AllocUserFrame()
 	if framePA == 0 {
-		serial.RawUARTPuts("[DemandMap] out of frames\r\n")
+		klog.Errf("[DemandMap] out of frames\n")
 		return 0
 	}
 
 	// Map page with RWX permissions (same as HandleUserPageFault)
 	elfFlags := uint32(ELF_PF_R | ELF_PF_W | ELF_PF_X)
 	if !mapUserPageWithL0(pageAddr, framePA, elfFlags, l0PA) {
-		serial.RawUARTPuts("[DemandMap] mapUserPageWithL0 failed\r\n")
+		klog.Errf("[DemandMap] mapUserPageWithL0 failed\n")
 		return 0
 	}
 
@@ -1824,32 +1820,6 @@ func MapUserFramebuffer(framebufferPA uintptr, framebufferSize uintptr) bool {
 // Located after the PT pool region, safely before the Go heap.
 const KernelScratchVA = 0xFFFFFFFF42260000
 
-// DEBUG: Watchpoint mechanism to track when a specific PA gets corrupted.
-// PrintPoolRanges prints the memory pool ranges for debugging overlap issues.
-func PrintPoolRanges() {
-	cfg := getRuntimeConfigTyped()
-	console.KWriteString("[POOLS] KernelPTPool:    0x")
-	console.KPrintHex64(cfg.KernelPTPoolStart)
-	console.KWriteString(" - 0x")
-	console.KPrintHex64(cfg.KernelPTPoolEnd)
-	console.KWriteString("\r\n")
-	console.KWriteString("[POOLS] KernelFramePool: 0x")
-	console.KPrintHex64(cfg.FramePoolStart)
-	console.KWriteString(" - 0x")
-	console.KPrintHex64(cfg.FramePoolEnd)
-	console.KWriteString("\r\n")
-	console.KWriteString("[POOLS] UserFramePool:   0x")
-	console.KPrintHex64(cfg.UserspaceFramePoolStart)
-	console.KWriteString(" - 0x")
-	console.KPrintHex64(cfg.UserspaceFramePoolEnd)
-	console.KWriteString("\r\n")
-	console.KWriteString("[POOLS] UserPTPool:      0x")
-	console.KPrintHex64(cfg.UserspacePTPoolStart)
-	console.KWriteString(" - 0x")
-	console.KPrintHex64(cfg.UserspacePTPoolEnd)
-	console.KWriteString("\r\n")
-}
-
 // MapPAToKernelScratch returns a kernel VA for accessing a physical address.
 // Uses the linear map directly (PA + KernelMMIOOffset) which covers all
 // physical RAM via 2MB block descriptors set up by diplomat.
@@ -1997,104 +1967,20 @@ func WalkUserPTLean(va uintptr, l0PA uintptr) uintptr {
 	return pa | (va & (PageSize - 1))
 }
 
-// DumpUserPTEWithL0 walks the page table for a userspace VA and prints each level's entry.
-// Used for debugging page table issues.
-// dumpUserPTERaw walks the page table for a userspace VA and prints each level's raw PTE.
 // repeatFaultDiagnostic prints repeat-fault diagnostic information.
 // NOT nosplit — called from HandleUserPageFault only on the fatal repeat-fault path.
-// By being non-nosplit, its deep call tree (dumpUserPTERaw → serial.PollWrite, 312+ bytes)
-// doesn't count against the x86_64 nosplit chain limit.
 //
 //go:noinline
 func repeatFaultDiagnostic(faultAddr uintptr) {
-	serial.RawUARTPuts("[PF] REPEAT VA=0x")
-	serial.RawUARTHex64(uint64(faultAddr))
-	serial.RawUARTPuts(" CR3=0x")
-	l0PA := readCurrentL0PA()
-	serial.RawUARTHex64(uint64(l0PA))
-	serial.RawUARTPuts("\r\n")
-	dumpUserPTERaw(faultAddr, l0PA)
+	klog.Errf("[PF] REPEAT VA=0x%x CR3=0x%x\n", faultAddr, readCurrentL0PA())
 }
 
-// Uses only rawUART output — safe from nosplit page fault handler context.
-//
-//go:nosplit
-func dumpUserPTERaw(va uintptr, l0PA uintptr) {
-	l0Idx := (va >> L0Shift) & 0x1FF
-	l1Idx := (va >> L1Shift) & 0x1FF
-	l2Idx := (va >> L2Shift) & 0x1FF
-	l3Idx := (va >> L3Shift) & 0x1FF
-
-	l0VA := paToVAOrCache(l0PA)
-	if l0VA == 0 {
-		serial.RawUARTPuts("  L0VA=0!\r\n")
-		return
-	}
-	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
-	serial.RawUARTPuts("  L0[")
-	serial.RawUARTHex64(uint64(l0Idx))
-	serial.RawUARTPuts("]=0x")
-	serial.RawUARTHex64(l0Entry)
-	serial.RawUARTPuts("\r\n")
-	if !pteIsValid(l0Entry) {
-		serial.RawUARTPuts("  L0 NOT PRESENT\r\n")
-		return
-	}
-
-	l1PA := pteExtractPA(l0Entry)
-	l1VA := paToVAOrCache(l1PA)
-	if l1VA == 0 {
-		serial.RawUARTPuts("  L1VA=0!\r\n")
-		return
-	}
-	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
-	serial.RawUARTPuts("  L1[")
-	serial.RawUARTHex64(uint64(l1Idx))
-	serial.RawUARTPuts("]=0x")
-	serial.RawUARTHex64(l1Entry)
-	serial.RawUARTPuts("\r\n")
-	if !pteIsValid(l1Entry) {
-		serial.RawUARTPuts("  L1 NOT PRESENT\r\n")
-		return
-	}
-
-	l2PA := pteExtractPA(l1Entry)
-	l2VA := paToVAOrCache(l2PA)
-	if l2VA == 0 {
-		serial.RawUARTPuts("  L2VA=0!\r\n")
-		return
-	}
-	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
-	serial.RawUARTPuts("  L2[")
-	serial.RawUARTHex64(uint64(l2Idx))
-	serial.RawUARTPuts("]=0x")
-	serial.RawUARTHex64(l2Entry)
-	serial.RawUARTPuts("\r\n")
-	if !pteIsValid(l2Entry) {
-		serial.RawUARTPuts("  L2 NOT PRESENT\r\n")
-		return
-	}
-
-	l3PA := pteExtractPA(l2Entry)
-	l3VA := paToVAOrCache(l3PA)
-	if l3VA == 0 {
-		serial.RawUARTPuts("  L3VA=0!\r\n")
-		return
-	}
-	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
-	serial.RawUARTPuts("  L3[")
-	serial.RawUARTHex64(uint64(l3Idx))
-	serial.RawUARTPuts("]=0x")
-	serial.RawUARTHex64(l3Entry)
-	serial.RawUARTPuts("\r\n")
-}
-
-//
-//go:nosplit
+// DumpUserPTEWithL0 walks the page table for a userspace VA and prints each level's entry.
+// Used for diagnostic purposes — called on error paths.
 func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	// Userspace addresses must have bit 63 = 0
 	if (va>>63)&1 != 0 {
-		serial.RawUARTPuts("[DumpPTE] VA has bit63=1 (kernel addr)\r\n")
+		klog.Errf("[DumpPTE] VA has bit63=1 (kernel addr)\n")
 		return
 	}
 
@@ -2104,7 +1990,7 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	l2Idx := (va >> L2Shift) & 0x1FF
 	l3Idx := (va >> L3Shift) & 0x1FF
 
-	console.KPrintf("[DumpPTE] VA=0x%x L0PA=0x%x indices=[%d,%d,%d,%d]\n",
+	klog.Errf("[DumpPTE] VA=0x%x L0PA=0x%x indices=[%d,%d,%d,%d]\n",
 		va, l0PAParam, l0Idx, l1Idx, l2Idx, l3Idx)
 
 	// Use explicit L0 if provided
@@ -2114,15 +2000,15 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	}
 	l0VA := paToVAOrCache(l0PA)
 	if l0VA == 0 {
-		serial.RawUARTPuts("[DumpPTE] Failed to get L0 VA from cache\r\n")
+		klog.Errf("[DumpPTE] Failed to get L0 VA from cache\n")
 		return
 	}
 
 	// L0 entry
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
-	console.KPrintf("[DumpPTE] L0[%d]=0x%016x (VA=0x%x)\n", l0Idx, l0Entry, l0VA+l0Idx*8)
+	klog.Errf("[DumpPTE] L0[%d]=0x%016x (VA=0x%x)\n", l0Idx, l0Entry, l0VA+l0Idx*8)
 	if !pteIsValid(l0Entry) {
-		serial.RawUARTPuts("[DumpPTE] L0 entry INVALID\r\n")
+		klog.Errf("[DumpPTE] L0 entry INVALID\n")
 		return
 	}
 
@@ -2130,13 +2016,13 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	l1PA := pteExtractPA(l0Entry)
 	l1VA := paToVAOrCache(l1PA)
 	if l1VA == 0 {
-		console.KPrintf("[DumpPTE] Failed to get L1 VA from cache (L1PA=0x%x)\n", l1PA)
+		klog.Errf("[DumpPTE] Failed to get L1 VA from cache (L1PA=0x%x)\n", l1PA)
 		return
 	}
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
-	console.KPrintf("[DumpPTE] L1[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l1Idx, l1Entry, l1PA, l1VA+l1Idx*8)
+	klog.Errf("[DumpPTE] L1[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l1Idx, l1Entry, l1PA, l1VA+l1Idx*8)
 	if !pteIsValid(l1Entry) {
-		serial.RawUARTPuts("[DumpPTE] L1 entry INVALID\r\n")
+		klog.Errf("[DumpPTE] L1 entry INVALID\n")
 		return
 	}
 
@@ -2144,13 +2030,13 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	l2PA := pteExtractPA(l1Entry)
 	l2VA := paToVAOrCache(l2PA)
 	if l2VA == 0 {
-		console.KPrintf("[DumpPTE] Failed to get L2 VA from cache (L2PA=0x%x)\n", l2PA)
+		klog.Errf("[DumpPTE] Failed to get L2 VA from cache (L2PA=0x%x)\n", l2PA)
 		return
 	}
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
-	console.KPrintf("[DumpPTE] L2[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l2Idx, l2Entry, l2PA, l2VA+l2Idx*8)
+	klog.Errf("[DumpPTE] L2[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l2Idx, l2Entry, l2PA, l2VA+l2Idx*8)
 	if !pteIsValid(l2Entry) {
-		serial.RawUARTPuts("[DumpPTE] L2 entry INVALID\r\n")
+		klog.Errf("[DumpPTE] L2 entry INVALID\n")
 		return
 	}
 
@@ -2158,13 +2044,13 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	l3PA := pteExtractPA(l2Entry)
 	l3VA := paToVAOrCache(l3PA)
 	if l3VA == 0 {
-		console.KPrintf("[DumpPTE] Failed to get L3 VA from cache (L3PA=0x%x)\n", l3PA)
+		klog.Errf("[DumpPTE] Failed to get L3 VA from cache (L3PA=0x%x)\n", l3PA)
 		return
 	}
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
-	console.KPrintf("[DumpPTE] L3[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l3Idx, l3Entry, l3PA, l3VA+l3Idx*8)
+	klog.Errf("[DumpPTE] L3[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l3Idx, l3Entry, l3PA, l3VA+l3Idx*8)
 	if !pteIsValid(l3Entry) {
-		serial.RawUARTPuts("[DumpPTE] L3 entry INVALID\r\n")
+		klog.Errf("[DumpPTE] L3 entry INVALID\n")
 		return
 	}
 
@@ -2178,7 +2064,7 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	uxn := (l3Entry >> 54) & 0x1
 	pxn := (l3Entry >> 53) & 0x1
 
-	console.KPrintf("[DumpPTE] PA=0x%x AP=%d SH=%d ATTR=%d AF=%d UXN=%d PXN=%d\n",
+	klog.Errf("[DumpPTE] PA=0x%x AP=%d SH=%d ATTR=%d AF=%d UXN=%d PXN=%d\n",
 		pa, ap, sh, attr, af, uxn, pxn)
 }
 

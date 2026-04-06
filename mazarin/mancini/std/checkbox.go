@@ -20,8 +20,9 @@ import (
 type Checkbox struct {
 	impl.ThemedInteractor
 
-	Checked bool    // true = raised with checkmark, false = inset
-	Size    float64 // side length of the square box in pixels
+	Checked  bool    // true = raised with checkmark, false = inset
+	Size     float64 // side length of the square box in pixels
+	Disabled bool    // when true, renders dimmed and ignores input
 }
 
 // NewCheckbox creates a Checkbox wired to the constraint system and theme.
@@ -65,28 +66,30 @@ func (c *Checkbox) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 
 	pal := c.Theme().Palette()
-	var params *mancini.NeuParams
-	if neu := c.Theme().Neumorphic(); neu != nil {
-		params = neu.Light()
-	}
+	style := c.Theme().Style()
 	size := c.Size
 
 	// Center the square box within the allocated bounds.
-	cx := float64(x) + float64(w)/2
-	cy := float64(y) + float64(h)/2
-	x1 := cx - size/2
-	y1 := cy - size/2
-	x2 := cx + size/2
-	y2 := cy + size/2
+	cbcx := float64(x) + float64(w)/2
+	cbcy := float64(y) + float64(h)/2
+	x1 := cbcx - size/2
+	y1 := cbcy - size/2
+	x2 := cbcx + size/2
+	y2 := cbcy + size/2
 
-	const radius = 4.0
+	radius := c.Theme().ControlRadius() / 2
 
 	if !c.Checked {
 		// Unchecked: inset (depressed) box, no face content.
-		NeuBoxWith(pal, dc, mancini.Inset, x1, y1, x2, y2, radius, pal.Surface(), params)
+		style.DrawBox(pal, dc, mancini.Inset, mancini.LightWeight,
+			x1, y1, x2, y2, radius, pal.Surface())
 	} else {
 		// Checked: raised box with a checkmark drawn on the face.
-		NeuBoxWith(pal, dc, mancini.Raised, x1, y1, x2, y2, radius, pal.Surface(), params)
+		style.DrawBox(pal, dc, mancini.Raised, mancini.LightWeight,
+			x1, y1, x2, y2, radius, pal.Surface())
 		drawCheckmark(dc, pal, x1, y1, x2-x1, y2-y1)
+	}
+	if c.Disabled {
+		ApplyDisabledOverlay(pal, dc, x1, y1, x2, y2, radius)
 	}
 }

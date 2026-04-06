@@ -34,8 +34,13 @@ type NeuCircle struct {
 
 	Pal    mancini.Palette
 	Depth  mancini.NeuDepth
-	Params mancini.NeuParams
+	Weight mancini.Weight
+	Style  mancini.SurfaceStyle
 	Face   color.NRGBA
+
+	// Params is retained for backward compatibility and for the bevel ring
+	// rendering in Decorate (which accesses Raised sub-params directly).
+	Params mancini.NeuParams
 }
 
 // NewNeuCircle creates a NeuCircle wired to the constraint system.
@@ -48,6 +53,8 @@ func NewNeuCircle(layout *mancini.LayoutAttributes, pal mancini.Palette,
 	n := &NeuCircle{
 		Pal:    pal,
 		Depth:  depth,
+		Weight: mancini.LightWeight,
+		Style:  NewNeumorphicStyle(&params, &params),
 		Params: params,
 	}
 	n.Decorator.Initialize(n, layout, margin, margin, margin, margin)
@@ -138,6 +145,6 @@ func (n *NeuCircle) Decorate(self mancini.Interactor, x, y, w, h int64) {
 
 	if face != n.Pal.Surface() && n.Depth != mancini.Raised {
 		canvas := dc.Image().(*image.RGBA)
-		applyCircleTintOverlay(n.Pal, dc, canvas, cx, cy, faceRad, face)
+		applyCircleTintOverlay(dc, canvas, cx, cy, faceRad, face)
 	}
 }

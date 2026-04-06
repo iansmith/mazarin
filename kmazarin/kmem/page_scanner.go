@@ -33,7 +33,6 @@ package kmem
 
 import (
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"sync/atomic"
 )
 
@@ -230,14 +229,3 @@ func FindEvictionCandidates(shepherdID proc.ShepherdId, count int) []uintptr {
 	return result
 }
 
-// LogScanResult logs a one-line A/D scan summary for a shepherd.
-// Uses serial directly to avoid fmt/console allocation in the kmem package.
-func LogScanResult(shepherdID proc.ShepherdId, accessed, total int) {
-	serial.RawUARTPuts("[scan] shepherd ")
-	serial.RawUARTHex64(uint64(shepherdID))
-	serial.RawUARTPuts(": accessed=")
-	serial.RawUARTHex64(uint64(accessed))
-	serial.RawUARTPuts("/")
-	serial.RawUARTHex64(uint64(total))
-	serial.RawUARTPuts("\r\n")
-}
