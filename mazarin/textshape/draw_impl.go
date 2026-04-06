@@ -289,6 +289,11 @@ func (dc *DrawContextImpl) RotateAbout(angle, x, y float64) {
 	dc.Translate(-x, -y)
 }
 
+func (dc *DrawContextImpl) MultiplyMatrix(xx, yx, xy, yy, x0, y0 float64) {
+	m := Matrix{XX: xx, YX: yx, XY: xy, YY: yy, X0: x0, Y0: y0}
+	dc.gs.matrix = m.Multiply(dc.gs.matrix)
+}
+
 // transformPoint applies the current matrix to a point.
 func (dc *DrawContextImpl) transformPoint(x, y float64) (float64, float64) {
 	return dc.gs.matrix.TransformPoint(x, y)

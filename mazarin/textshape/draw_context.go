@@ -85,6 +85,9 @@ type DrawContext interface {
 	Scale(x, y float64)
 	Rotate(angle float64)
 	RotateAbout(angle, x, y float64)
+	// MultiplyMatrix pre-multiplies the current transform by the given
+	// 2D affine matrix (CSS matrix(a,b,c,d,e,f) parameter order).
+	MultiplyMatrix(xx, yx, xy, yy, x0, y0 float64)
 
 	// --- Compositing groups ---
 	PushGroup()
