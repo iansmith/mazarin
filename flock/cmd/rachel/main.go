@@ -513,6 +513,29 @@ func pickWindow(x, y int64) int {
 	return -1
 }
 
+// moveWindowTo updates a window's screen position and redraws.
+// Used by DragAgent during titlebar drag. Clamps to keep at least
+// part of the window visible on screen.
+func moveWindowTo(ta *trackedApp, newX, newY int32) {
+	dw, dh := int32(displayWidth), int32(displayHeight)
+	// Clamp so borders stay within framebuffer.
+	if newX < int32(borderLeft) {
+		newX = int32(borderLeft)
+	}
+	if newY < int32(borderTop) {
+		newY = int32(borderTop)
+	}
+	if newX+ta.appWidth+int32(borderRight) > dw {
+		newX = dw - ta.appWidth - int32(borderRight)
+	}
+	if newY+ta.appHeight+int32(borderBottom) > dh {
+		newY = dh - ta.appHeight - int32(borderBottom)
+	}
+	ta.x = newX
+	ta.y = newY
+	timedBlitAllWindows()
+}
+
 // grantFocus gives both keyboard and mouse focus to newSID and raises it
 // to the front of the z-order. This is the single-click-on-unfocused-window path.
 func grantFocus(newSID int) {

@@ -105,6 +105,23 @@ func (w *WindowInteractor) PickedBy(x, y int32) bool {
 
 func (w *WindowInteractor) SID() int { return w.ta.sid }
 
+// InTitleBar returns true if screen point (x,y) is inside this window's
+// title bar region. The title bar sits at [shadowTop, shadowTop+titleBarHeight)
+// within the backing store, offset by the window's screen position.
+func (w *WindowInteractor) InTitleBar(x, y int32) bool {
+	ta := w.ta
+	// Title bar in screen coordinates:
+	//   X: from left edge of NeuBox face to right edge
+	//   Y: from shadowTop to shadowTop+titleBarHeight (within the border zone)
+	ox := ta.x - int32(borderLeft)
+	oy := ta.y - int32(borderTop)
+	tbY0 := oy + int32(shadowTop)
+	tbY1 := tbY0 + int32(titleBarHeight)
+	tbX0 := ox + int32(borderLeft)
+	tbX1 := ox + ta.bsWidth - int32(borderRight)
+	return x >= tbX0 && x < tbX1 && y >= tbY0 && y < tbY1
+}
+
 func (w *WindowInteractor) Press(ev *input.InputEvent) bool {
 	msg := wm.EncodeMousePress(&wm.MousePress{
 		X: ev.X, Y: ev.Y, Button: int32(ev.Code), Mods: ev.Mods,
@@ -236,8 +253,11 @@ func (a *AcceleratorAgent) Deliver(ev *input.InputEvent, target input.Interactor
 // The PressAgent sets the drag target on mouse button press; the DragAgent
 // delivers subsequent events to that target until release.
 type DragAgent struct {
-	target     input.Interactor
-	buttonCode uint16
+	target       input.Interactor
+	buttonCode   uint16
+	titlebarDrag bool  // true = moving the window, false = content drag
+	dragOffsetX  int32 // mouse offset from ta.x at press time
+	dragOffsetY  int32 // mouse offset from ta.y at press time
 }
 
 func (a *DragAgent) Name() string                  { return "drag" }
@@ -245,19 +265,40 @@ func (a *DragAgent) FocusTarget() input.Interactor { return a.target }
 func (a *DragAgent) SetFocus(t input.Interactor)   { a.target = t }
 
 // StartDrag establishes the drag target and the button code that ends it.
-func (a *DragAgent) StartDrag(target input.Interactor, buttonCode uint16) {
+// If the press is in the title bar, the drag moves the window directly.
+func (a *DragAgent) StartDrag(target input.Interactor, buttonCode uint16, pressX, pressY int32) {
 	a.target = target
 	a.buttonCode = buttonCode
+	a.titlebarDrag = false
+	if wi, ok := target.(*WindowInteractor); ok && wi.InTitleBar(pressX, pressY) {
+		a.titlebarDrag = true
+		a.dragOffsetX = pressX - wi.ta.x
+		a.dragOffsetY = pressY - wi.ta.y
+		sys.UartWriteDirectString(fmt.Sprintf("[rachel:drag] titlebar drag SID=%d offset=(%d,%d)\n",
+			wi.ta.sid, a.dragOffsetX, a.dragOffsetY))
+	}
 }
 
 func (a *DragAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool {
 	if ev.IsMouseMove() {
+		if a.titlebarDrag {
+			if wi, ok := target.(*WindowInteractor); ok {
+				moveWindowTo(wi.ta, ev.X-a.dragOffsetX, ev.Y-a.dragOffsetY)
+			}
+			return true
+		}
 		if m, ok := target.(input.Movable); ok {
 			return m.Move(ev)
 		}
 		return false
 	}
 	if ev.IsMouseButton() && ev.IsRelease() && ev.Code == a.buttonCode {
+		if a.titlebarDrag {
+			a.titlebarDrag = false
+			a.target = nil
+			a.buttonCode = 0
+			return true
+		}
 		result := false
 		if p, ok := target.(input.Pressable); ok {
 			result = p.Release(ev)
@@ -493,7 +534,14 @@ func (a *PressAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool
 	}
 
 	// Establish drag focus so DragAgent handles subsequent move/release.
-	a.dragAgent.StartDrag(target, ev.Code)
+	// Pass press coordinates so DragAgent can detect titlebar drags.
+	a.dragAgent.StartDrag(target, ev.Code, ev.X, ev.Y)
+
+	// If this is a titlebar drag, don't forward the press to the shepherd —
+	// the shepherd doesn't need to know about WM-level window moves.
+	if a.dragAgent.titlebarDrag {
+		return true
+	}
 
 	sys.UartWriteDirectString(fmt.Sprintf("[rachel:input] mouse press %s at (%d,%d)\n",
 		buttonName(ev.Code), ev.X, ev.Y))

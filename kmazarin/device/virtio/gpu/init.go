@@ -78,10 +78,25 @@ func Flush(x, y, width, height uint32) {
 }
 
 // UpdateDisplay transfers and flushes a region of the framebuffer.
+// Uses batched submission: both TRANSFER_TO_HOST_2D and RESOURCE_FLUSH are
+// submitted to the virtqueue together with a single device notify, eliminating
+// one round-trip compared to submitting them separately.
 // Safe to call concurrently from multiple shepherds — serialized by gpuLock.
 //
 //go:nosplit
 func UpdateDisplay(x, y, width, height uint32) {
+	savedDAIF := saveAndDisableIRQs()
+	lockGPU()
+	virtioGPUTransferAndFlush(x, y, width, height)
+	unlockGPU()
+	restoreIRQs(savedDAIF)
+}
+
+// UpdateDisplayUnbatched transfers and flushes separately (original path).
+// Kept for comparison and fallback.
+//
+//go:nosplit
+func UpdateDisplayUnbatched(x, y, width, height uint32) {
 	savedDAIF := saveAndDisableIRQs()
 	lockGPU()
 	virtioGPUTransferToHost(x, y, width, height)

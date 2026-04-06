@@ -548,3 +548,126 @@ func virtioGPUFlush(x, y, width, height uint32) {
 		return
 	}
 }
+
+// virtioGPUTransferAndFlush batches TRANSFER_TO_HOST_2D + RESOURCE_FLUSH
+// into a single virtqueue submission. Both descriptor chains are added to the
+// available ring before notifying the device, and we poll once for both
+// completions. This eliminates one notify + poll round-trip compared to
+// calling virtioGPUTransferToHost + virtioGPUFlush separately.
+//
+//go:nosplit
+func virtioGPUTransferAndFlush(x, y, width, height uint32) {
+	// Flush framebuffer cache before DMA transfer
+	pitch := virtioGPUDevice.Pitch
+	fbBase := uintptr(virtioGPUDevice.Framebuffer)
+	startOffset := uintptr(y)*uintptr(pitch) + uintptr(x)*4
+	regionSize := uintptr(height) * uintptr(pitch)
+	asm.CleanDCacheRange(fbBase+startOffset, regionSize)
+	asm.DmaWmb()
+
+	// Build transfer command
+	var transferCmd VirtIOGPUTransferToHost2D
+	transferCmd.Hdr.Type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D
+	transferCmd.Rect.X = x
+	transferCmd.Rect.Y = y
+	transferCmd.Rect.Width = width
+	transferCmd.Rect.Height = height
+	transferCmd.Offset = uint64(y)*uint64(pitch) + uint64(x)*4
+	transferCmd.ResourceID = virtioGPUDevice.ResourceID
+
+	// Build flush command
+	var flushCmd VirtIOGPUResourceFlush
+	flushCmd.Hdr.Type = VIRTIO_GPU_CMD_RESOURCE_FLUSH
+	flushCmd.Rect.X = x
+	flushCmd.Rect.Y = y
+	flushCmd.Rect.Width = width
+	flushCmd.Rect.Height = height
+	flushCmd.ResourceID = virtioGPUDevice.ResourceID
+
+	var transferResp VirtIOGPUCtrlHdr
+	var flushResp VirtIOGPUCtrlHdr
+
+	vq := &virtioGPUDevice.ControlQueue
+
+	// --- Set up transfer descriptor chain (cmd → resp) ---
+	tCmdPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&transferCmd))
+	tCmdIdx := virtio.VirtqueueAddDesc(vq, tCmdPhys, uint32(unsafe.Sizeof(transferCmd)), 0, 0xFFFF)
+	if tCmdIdx == 0xFFFF {
+		return
+	}
+	tRespPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&transferResp))
+	tRespIdx := virtio.VirtqueueAddDesc(vq, tRespPhys, uint32(unsafe.Sizeof(transferResp)), virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
+	if tRespIdx == 0xFFFF {
+		virtio.VirtqueueFreeDescChain(vq, tCmdIdx)
+		return
+	}
+	// Link transfer cmd → resp
+	descSize := unsafe.Sizeof(virtio.VirtQDesc{})
+	tCmdPtr := virtio.CastToPointer[virtio.VirtQDesc](virtio.PointerToUintptr(vq.DescTable) + uintptr(tCmdIdx)*descSize)
+	tCmdPtr.Flags |= virtio.VIRTQ_DESC_F_NEXT
+	tCmdPtr.Next = tRespIdx
+
+	// --- Set up flush descriptor chain (cmd → resp) ---
+	fCmdPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&flushCmd))
+	fCmdIdx := virtio.VirtqueueAddDesc(vq, fCmdPhys, uint32(unsafe.Sizeof(flushCmd)), 0, 0xFFFF)
+	if fCmdIdx == 0xFFFF {
+		virtio.VirtqueueFreeDescChain(vq, tCmdIdx)
+		return
+	}
+	fRespPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&flushResp))
+	fRespIdx := virtio.VirtqueueAddDesc(vq, fRespPhys, uint32(unsafe.Sizeof(flushResp)), virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
+	if fRespIdx == 0xFFFF {
+		virtio.VirtqueueFreeDescChain(vq, tCmdIdx)
+		virtio.VirtqueueFreeDescChain(vq, fCmdIdx)
+		return
+	}
+	// Link flush cmd → resp
+	fCmdPtr := virtio.CastToPointer[virtio.VirtQDesc](virtio.PointerToUintptr(vq.DescTable) + uintptr(fCmdIdx)*descSize)
+	fCmdPtr.Flags |= virtio.VIRTQ_DESC_F_NEXT
+	fCmdPtr.Next = fRespIdx
+
+	// --- Add both chains to available ring, one notify, poll for both ---
+	virtio.VirtqueueAddToAvailable(vq, tCmdIdx)
+	virtio.VirtqueueAddToAvailable(vq, fCmdIdx)
+
+	// Cache maintenance for descriptors and available ring
+	descTableSize := uintptr(vq.QueueSize) * unsafe.Sizeof(virtio.VirtQDesc{})
+	descTableAddr := virtio.PointerToUintptr(vq.DescTable)
+	asm.CleanDCacheRange(descTableAddr, descTableSize)
+	availSize := uintptr(4 + vq.QueueSize*2 + 2)
+	asm.CleanDCacheRange(virtio.PointerToUintptr(unsafe.Pointer(vq.Available)), availSize)
+	asm.DmaWmb()
+
+	// Single notify for both commands
+	queueNotifyAddr := virtioGPUDevice.NotifyBase +
+		uintptr(virtioGPUDevice.ControlQueueNotifyOff)*uintptr(virtioGPUDevice.NotifyConfig.NotifyOffMultiplier)
+	virtio.VirtqueueNotify(vq, queueNotifyAddr, 0)
+
+	// Poll until both completions arrive (2 used entries)
+	maxWait := 1000000
+	completions := 0
+	waited := 0
+	for completions < 2 && waited < maxWait {
+		if virtio.VirtqueueHasUsed(vq) {
+			asm.DmaRmb()
+			usedIdx, _ := virtio.VirtqueueGetUsed(vq)
+			if usedIdx != 0xFFFF {
+				virtio.VirtqueueFreeDescChain(vq, uint16(usedIdx))
+				completions++
+			}
+		}
+		if completions < 2 {
+			for delay := 0; delay < 100; delay++ {
+			}
+			waited++
+		}
+	}
+	if waited >= maxWait {
+		serial.PollWrite('!')
+	}
+
+	// Invalidate response buffers and check results
+	asm.InvalidateDCacheRange(uintptr(unsafe.Pointer(&transferResp)), uintptr(unsafe.Sizeof(transferResp)))
+	asm.InvalidateDCacheRange(uintptr(unsafe.Pointer(&flushResp)), uintptr(unsafe.Sizeof(flushResp)))
+	asm.DmaRmb()
+}
