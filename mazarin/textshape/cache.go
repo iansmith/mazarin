@@ -20,6 +20,7 @@ type shapeCacheKey struct {
 	direction Direction
 	script    Script
 	language  string
+	features  string // serialized FontFeature list for cache differentiation
 }
 
 type shapeCacheEntry struct {

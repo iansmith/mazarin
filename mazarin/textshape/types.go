@@ -84,6 +84,14 @@ const (
 	ScriptCommon     Script = 0x5a797979 // Zyyy
 )
 
+// FontFeature represents an OpenType feature tag and its value.
+// This maps directly to CSS font-feature-settings entries like "kern" 1.
+// A value of 0 disables the feature; non-zero enables it (usually 1).
+type FontFeature struct {
+	Tag   [4]byte // 4-byte OpenType tag, e.g. {'k','e','r','n'}
+	Value uint32  // 0 = off, 1 = on, >1 for alternates (e.g. salt)
+}
+
 // ShapingParams describes the input to text shaping.
 type ShapingParams struct {
 	Text      string
@@ -96,6 +104,9 @@ type ShapingParams struct {
 	// so that glyphs are positioned as if this run is a continuation of the prior
 	// run. This matches Blink's sub-pixel pen accumulation across inline boxes.
 	StartPenX int32
+	// Features is an optional list of OpenType features to apply during shaping.
+	// Maps to CSS font-feature-settings. When nil, HarfBuzz uses default features.
+	Features []FontFeature
 }
 
 // ShapedGlyph is a single glyph produced by shaping.

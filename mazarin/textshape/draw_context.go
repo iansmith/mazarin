@@ -53,6 +53,12 @@ type DrawContext interface {
 	// MeasureText returns the advance width of text in pixels.
 	MeasureText(text string, fontID int32) float64
 
+	// DrawTextWithFeatures is like DrawText but applies OpenType features.
+	DrawTextWithFeatures(text string, fontID int32, x, y float64, features []FontFeature)
+
+	// MeasureTextWithFeatures is like MeasureText but applies OpenType features.
+	MeasureTextWithFeatures(text string, fontID int32, features []FontFeature) float64
+
 	// FontMetrics returns the cached metrics for a previously opened font.
 	GetFontMetrics(fontID int32) FontMetrics
 

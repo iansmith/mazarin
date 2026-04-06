@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	goFont "github.com/go-text/typesetting/font"
+	"github.com/go-text/typesetting/font/opentype"
 	"github.com/go-text/typesetting/harfbuzz"
 	"github.com/go-text/typesetting/language"
 )
@@ -60,8 +61,20 @@ func (s *HarfBuzzShaper) Shape(params ShapingParams) (ShapedRun, error) {
 	}
 	buf.GuessSegmentProperties()
 
-	// Shape with default features.
-	buf.Shape(hbFont, nil)
+	// Convert FontFeature slice to harfbuzz.Feature slice.
+	var hbFeatures []harfbuzz.Feature
+	for _, f := range params.Features {
+		tag := opentype.NewTag(f.Tag[0], f.Tag[1], f.Tag[2], f.Tag[3])
+		hbFeatures = append(hbFeatures, harfbuzz.Feature{
+			Tag:   tag,
+			Value: f.Value,
+			Start: harfbuzz.FeatureGlobalStart,
+			End:   harfbuzz.FeatureGlobalEnd,
+		})
+	}
+
+	// Shape with requested features (nil when no features specified).
+	buf.Shape(hbFont, hbFeatures)
 
 	// Convert output.
 	glyphs := make([]ShapedGlyph, len(buf.Info))

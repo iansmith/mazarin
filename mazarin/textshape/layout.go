@@ -90,6 +90,19 @@ func (tl *HarfBuzzTextLayout) OpenFont(req OpenFontRequest) (FontMetrics, error)
 	return metrics, nil
 }
 
+// serializeFeatures returns a stable string key for a FontFeature slice.
+func serializeFeatures(features []FontFeature) string {
+	if len(features) == 0 {
+		return ""
+	}
+	buf := make([]byte, 0, len(features)*8)
+	for _, f := range features {
+		buf = append(buf, f.Tag[:]...)
+		buf = append(buf, byte(f.Value>>24), byte(f.Value>>16), byte(f.Value>>8), byte(f.Value))
+	}
+	return string(buf)
+}
+
 // shapeWithCache shapes params, using the LRU cache to avoid reshaping
 // identical runs.
 func (tl *HarfBuzzTextLayout) shapeWithCache(params ShapingParams) (ShapedRun, error) {
@@ -99,6 +112,7 @@ func (tl *HarfBuzzTextLayout) shapeWithCache(params ShapingParams) (ShapedRun, e
 		direction: params.Direction,
 		script:    params.Script,
 		language:  params.Language,
+		features:  serializeFeatures(params.Features),
 	}
 	if run, ok := tl.cache.get(key); ok {
 		return run, nil

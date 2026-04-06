@@ -483,6 +483,19 @@ func (dc *DrawContextImpl) fillWithPattern(pat Pattern) {
 	if bw <= 0 || bh <= 0 {
 		return
 	}
+	// Guard against rasterizer allocation overflow — if pathBounds
+	// returned a rect larger than the canvas (e.g., due to float→int
+	// conversion overflow), clamp to canvas dimensions.
+	cb := dc.im.Bounds()
+	if bw > cb.Dx() {
+		bw = cb.Dx()
+	}
+	if bh > cb.Dy() {
+		bh = cb.Dy()
+	}
+	if bw <= 0 || bh <= 0 {
+		return
+	}
 	ox, oy := float32(bbox.Min.X), float32(bbox.Min.Y)
 
 	r := vector.NewRasterizer(bw, bh)
@@ -1011,6 +1024,102 @@ func (dc *DrawContextImpl) MeasureText(text string, fontID int32) float64 {
 		FontID:    fontID,
 		Direction: LTR,
 		Script:    ScriptLatin,
+	})
+	if err != nil {
+		return 0
+	}
+	return float64(adv) / 64.0
+}
+
+// DrawTextWithFeatures is like DrawText but applies OpenType features during shaping.
+func (dc *DrawContextImpl) DrawTextWithFeatures(text string, fontID int32, x, y float64, features []FontFeature) {
+	if len(features) == 0 {
+		dc.DrawText(text, fontID, x, y)
+		return
+	}
+
+	tx, ty := dc.transformPoint(x, y)
+	txFloor := math.Floor(tx)
+	fracPenX := int32(math.Round((tx - txFloor) * 64))
+
+	run, err := dc.tl.LayoutText(ShapingParams{
+		Text:      text,
+		FontID:    fontID,
+		Direction: LTR,
+		Script:    ScriptLatin,
+		StartPenX: fracPenX,
+		Features:  features,
+	})
+	if err != nil || run == nil {
+		return
+	}
+
+	fr, fg, fb, fa := dc.gs.color.RGBA()
+	fR := uint8(fr >> 8)
+	fG := uint8(fg >> 8)
+	fB := uint8(fb >> 8)
+	fA := uint8(fa >> 8)
+
+	bounds := dc.im.Bounds()
+
+	for _, g := range run.Glyphs {
+		if len(g.Alpha) == 0 {
+			continue
+		}
+		originX := int(txFloor) + int(g.X)
+		originY := int(math.Round(ty)) + int(g.Y)
+		w := int(g.Width)
+		h := int(g.Height)
+
+		for py := 0; py < h; py++ {
+			for px := 0; px < w; px++ {
+				dstX := originX + px
+				dstY := originY + py
+				if dstX < bounds.Min.X || dstX >= bounds.Max.X ||
+					dstY < bounds.Min.Y || dstY >= bounds.Max.Y {
+					continue
+				}
+				mask := g.Alpha[py*w+px]
+				if mask == 0 {
+					continue
+				}
+
+				if dc.gs.clipMask != nil {
+					cm := dc.gs.clipMask.AlphaAt(dstX, dstY).A
+					if cm == 0 {
+						continue
+					}
+					mask = uint8(uint32(mask) * uint32(cm) / 255)
+				}
+
+				off := (dstY-bounds.Min.Y)*dc.im.Stride + (dstX-bounds.Min.X)*4
+				dR := dc.im.Pix[off+0]
+				dG := dc.im.Pix[off+1]
+				dB := dc.im.Pix[off+2]
+				dA := dc.im.Pix[off+3]
+
+				srcA := uint32(fA) * uint32(mask) / 255
+				invA := 255 - srcA
+				dc.im.Pix[off+0] = uint8((uint32(fR)*srcA + uint32(dR)*invA) / 255)
+				dc.im.Pix[off+1] = uint8((uint32(fG)*srcA + uint32(dG)*invA) / 255)
+				dc.im.Pix[off+2] = uint8((uint32(fB)*srcA + uint32(dB)*invA) / 255)
+				dc.im.Pix[off+3] = uint8((srcA + uint32(dA)*invA/255))
+			}
+		}
+	}
+}
+
+// MeasureTextWithFeatures is like MeasureText but applies OpenType features during shaping.
+func (dc *DrawContextImpl) MeasureTextWithFeatures(text string, fontID int32, features []FontFeature) float64 {
+	if len(features) == 0 {
+		return dc.MeasureText(text, fontID)
+	}
+	adv, err := dc.tl.MeasureText(ShapingParams{
+		Text:     text,
+		FontID:   fontID,
+		Direction: LTR,
+		Script:   ScriptLatin,
+		Features: features,
 	})
 	if err != nil {
 		return 0
