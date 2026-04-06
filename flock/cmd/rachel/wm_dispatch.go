@@ -276,6 +276,7 @@ func (a *DragAgent) StartDrag(target input.Interactor, buttonCode uint16, pressX
 		a.dragOffsetY = pressY - wi.ta.y
 		sys.UartWriteDirectString(fmt.Sprintf("[rachel:drag] titlebar drag SID=%d offset=(%d,%d)\n",
 			wi.ta.sid, a.dragOffsetX, a.dragOffsetY))
+		startDragComposite(wi.ta.sid)
 	}
 }
 
@@ -294,6 +295,7 @@ func (a *DragAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool 
 	}
 	if ev.IsMouseButton() && ev.IsRelease() && ev.Code == a.buttonCode {
 		if a.titlebarDrag {
+			endDragComposite()
 			a.titlebarDrag = false
 			a.target = nil
 			a.buttonCode = 0

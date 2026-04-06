@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/file"
@@ -209,8 +210,20 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 		switch ev.Code {
 		case hid.AbsX:
 			mouseX = int32((uint32(ev.Value) * uint32(displayWidth)) / (hid.AbsMax + 1))
+			if mouseX < 0 {
+				mouseX = 0
+			}
+			if mouseX >= displayWidth {
+				mouseX = displayWidth - 1
+			}
 		case hid.AbsY:
 			mouseY = int32((uint32(ev.Value) * uint32(displayHeight)) / (hid.AbsMax + 1))
+			if mouseY < 0 {
+				mouseY = 0
+			}
+			if mouseY >= displayHeight {
+				mouseY = displayHeight - 1
+			}
 		}
 		*posChanged = true
 	}
@@ -240,6 +253,13 @@ var blitRateStart time.Time
 var fbCtx *mancini.FramebufferContext
 var fbPix []byte  // raw pixel data of the GPU framebuffer
 var fbStride int  // bytes per scanline of the GPU framebuffer
+
+// Drag compositing state — pre-rendered background for fast window dragging.
+var dragBG []byte            // screen-sized buffer, allocated lazily on first drag
+var dragBGStride int         // = int(displayWidth) * 4
+var dragActive bool          // true during a titlebar drag
+var dragSID int              // SID of the window being dragged
+var dragPrevRect image.Rectangle // previous screen rect of the dragged window
 
 // flushRect tells the GPU to update a rectangular region of the framebuffer.
 // Coordinates are clamped to the display bounds.
@@ -514,23 +534,54 @@ func pickWindow(x, y int64) int {
 }
 
 // moveWindowTo updates a window's screen position and redraws.
-// Used by DragAgent during titlebar drag. Clamps to keep at least
-// part of the window visible on screen.
+// Used by DragAgent during titlebar drag.
+// Constraint 1: the cursor (drag point) cannot leave the screen — enforced
+//   by the input layer (QEMU clamps mouse coords), so no extra work here.
+// Constraint 2: the leftmost 50px of the title bar must remain on screen.
+//   The title bar left edge is at ta.x in screen coords.
 func moveWindowTo(ta *trackedApp, newX, newY int32) {
-	dw, dh := int32(displayWidth), int32(displayHeight)
-	// Clamp so borders stay within framebuffer.
-	if newX < int32(borderLeft) {
-		newX = int32(borderLeft)
+	dw := int32(displayWidth)
+	const minTitleVisible int32 = 50
+
+	// Horizontal: at least minTitleVisible pixels of titlebar on screen.
+	// Title bar left edge = newX, so newX must be >= 0 (can't go off left)
+	// and newX + minTitleVisible <= dw (grab area stays on screen right).
+	if newX < 0 {
+		newX = 0
 	}
-	if newY < int32(borderTop) {
+	if newX+minTitleVisible > dw {
+		newX = dw - minTitleVisible
+	}
+
+	// Vertical: keep backing store top on screen (can't blit above y=0).
+	// No bottom clamp — window may extend below screen, clipped by exposedRegion.
+	if newY-int32(borderTop) < 0 {
 		newY = int32(borderTop)
 	}
-	if newX+ta.appWidth+int32(borderRight) > dw {
-		newX = dw - ta.appWidth - int32(borderRight)
+
+	if dragActive && ta.sid == dragSID {
+		oldRect := dragPrevRect
+		ta.x = newX
+		ta.y = newY
+		newRect := windowScreenRect(ta)
+
+		// 1. Restore newly-exposed area from drag background.
+		exposed := rectSubtract(oldRect, newRect)
+		for _, r := range exposed {
+			copyRectFromBuffer(fbPix, fbStride, dragBG, dragBGStride, r)
+		}
+
+		// 2. Blit the dragged window at its new position (with alpha).
+		blitWindow(ta.sid, []image.Rectangle{newRect}, fbPix, fbStride, true)
+
+		// 3. Flush only the union of old and new rects.
+		union := oldRect.Union(newRect)
+		flushRect(union.Min.X, union.Min.Y, union.Dx(), union.Dy())
+
+		dragPrevRect = newRect
+		return
 	}
-	if newY+ta.appHeight+int32(borderBottom) > dh {
-		newY = dh - ta.appHeight - int32(borderBottom)
-	}
+
 	ta.x = newX
 	ta.y = newY
 	timedBlitAllWindows()
@@ -623,16 +674,6 @@ func blitAllWindows() {
 		}
 		regions := exposedRegion(sid)
 		blitWindow(sid, regions, fbPix, fbStride, sid == mouseFocusSID)
-	}
-	// Post-composite diagnostic: check the front window's border zone.
-	if len(zOrder) > 0 {
-		frontSID := zOrder[0]
-		if ta, ok := trackedApps[frontSID]; ok && ta.backingStore != nil {
-			n := sampleBorderZone("blitAll-front", frontSID, ta, fbPix, fbStride)
-			if n > 0 {
-				sys.UartWriteString(fmt.Sprintf("[blit:diag] blitAllWindows front SID=%d has %d non-blue border pixels\n", frontSID, n))
-			}
-		}
 	}
 	// Flush the entire display once.
 	flushRect(0, 0, int(displayWidth), int(displayHeight))
@@ -896,18 +937,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				}
 				regions, occDur := timedExposedRegion(senderSID)
 
-				// Diagnostic: sample border zone at 3 checkpoints (every 200 blits).
-				borderDiagCount++
-				doDiag := borderDiagCount%200 == 50
-				if doDiag {
-					sampleBorderZone("pre-blit", senderSID, ta, fbPix, fbStride)
-				}
-
 				copyDur := timedBlitWindow(senderSID, regions, fbPix, fbStride, senderSID == mouseFocusSID)
-
-				if doDiag {
-					sampleBorderZone("post-blit", senderSID, ta, fbPix, fbStride)
-				}
 
 				ox, oy := screenOrigin(ta)
 				flushDur := timedFlushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
