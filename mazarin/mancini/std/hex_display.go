@@ -35,6 +35,7 @@ type HexDisplay struct {
 	impl.Parent
 
 	Format   OutputFormat   // controls Display() number formatting
+	HPadding float64        // horizontal padding inset for background fill
 	digits   []*FourteenSeg // ordered array: digits[0] is leftmost position
 	bgColor  color.NRGBA
 	onColor  color.NRGBA
@@ -109,7 +110,7 @@ func (hd *HexDisplay) computeNumChars() int {
 	if lh == nil || lh.Width == nil {
 		return 1
 	}
-	availW := float64(lh.Width.Get()) - 2*hexDisplayPad
+	availW := float64(lh.Width.Get()) - 2*(hd.HPadding+hexDisplayPad)
 	if availW < hd.cellW {
 		availW = hd.cellW
 	}
@@ -211,14 +212,15 @@ func (hd *HexDisplay) Draw(self mancini.Interactor, x, y, w, h int64) {
 		hd.rebuildDigits(numC)
 	}
 
-	// Paint background.
+	// Paint background (inset by HPadding to align with padded content below).
+	pad := hd.HPadding
 	dc.SetColor(hd.bgColor)
-	dc.DrawRoundedRectangle(float64(x), float64(y), float64(w), float64(h), 3)
+	dc.DrawRoundedRectangle(float64(x)+pad, float64(y), float64(w)-2*pad, float64(h), 3)
 	dc.Fill()
 
 	// Center digits vertically; pad horizontally.
 	digitY := y + (h-int64(hd.cellH))/2
-	cx := float64(x) + hexDisplayPad
+	cx := float64(x) + pad + hexDisplayPad
 	for _, seg := range hd.digits {
 		if cs, ok := mancini.Interactor(seg).(interface{ SetDC(mancini.DrawContext) }); ok {
 			cs.SetDC(dc)

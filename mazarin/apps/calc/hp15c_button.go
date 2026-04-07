@@ -1,4 +1,9 @@
-// hp15c_button.go — HP 15C calculator button interactor.
+// hp15c_button.go — HP 15C calculator button interactors.
+//
+// Three button types:
+//   - HP15CShiftButton: the f and g shift keys with latching on/off state.
+//   - HP15CFunctionButton: every other key. Reads f.on/g.on to pick label/color.
+//   - HP15CButton: legacy wrapper (to be removed once migration is complete).
 package main
 
 import (
@@ -16,6 +21,246 @@ const (
 	ShiftF                      // f-shift (gold/amber): show fLabel
 	ShiftG                      // g-shift (blue): show gLabel
 )
+
+// --- HP15CShiftButton ---
+
+// HP15CShiftButton is the f or g shift key. It has a latching on/off state.
+// When on, it draws with a bright color; when off, a muted version.
+type HP15CShiftButton struct {
+	std.Button
+
+	on       bool        // latching state
+	onColor  color.NRGBA // bright color when on
+	offColor color.NRGBA // muted color when off
+	label    string
+	fontID   int32
+	other    *HP15CShiftButton // the other shift button (for mutual exclusion)
+}
+
+// NewHP15CShiftButton creates a shift button (f or g).
+func NewHP15CShiftButton(myName, parent string, theme mancini.Theme,
+	width, height int64, label string, fontID int32,
+	onColor, offColor, textColor color.NRGBA) *HP15CShiftButton {
+
+	b := &HP15CShiftButton{
+		on:       false,
+		onColor:  onColor,
+		offColor: offColor,
+		label:    label,
+		fontID:   fontID,
+	}
+
+	lh := mancini.NewLayoutAttributes(myName, parent)
+	lh.Width.Set(width)
+	lh.Height.Set(height)
+
+	b.Button = std.Button{
+		Depth:  mancini.Raised,
+		Radius: 4.0,
+	}
+	b.Button.ThemedInteractor.Initialize(b, lh, theme)
+	return b
+}
+
+// SetOther links the two shift buttons for mutual exclusion.
+func (b *HP15CShiftButton) SetOther(other *HP15CShiftButton) {
+	b.other = other
+}
+
+// IsOn returns true if this shift button is currently latched on.
+func (b *HP15CShiftButton) IsOn() bool {
+	return b.on
+}
+
+// Press handles a click on the shift button.
+// If the other shift is on, turn it off first. Then toggle self.
+func (b *HP15CShiftButton) Press() {
+	if b.other != nil && b.other.on {
+		b.other.TurnOff()
+	}
+	b.on = !b.on
+	b.FullDamage()
+}
+
+// TurnOff clears the shift state. If already off, does nothing.
+// If transitioning from on to off, forces a full redraw.
+func (b *HP15CShiftButton) TurnOff() {
+	if !b.on {
+		return
+	}
+	b.on = false
+	b.FullDamage()
+}
+
+// Draw renders the shift button with bright or muted fill.
+func (b *HP15CShiftButton) Draw(self mancini.Interactor, x, y, w, h int64) {
+	if !self.Visible() {
+		return
+	}
+	dc := self.DC()
+	if dc == nil {
+		return
+	}
+
+	fx, fy := float64(x), float64(y)
+	fw, fh := float64(w), float64(h)
+
+	fillColor := b.offColor
+	if b.on {
+		fillColor = b.onColor
+	}
+
+	pal := b.Theme().Palette()
+	b.Theme().Style().DrawBox(pal, dc, b.Depth, mancini.LightWeight,
+		fx, fy, fx+fw, fy+fh, b.Radius, fillColor)
+
+	// Label always drawn in white.
+	dc.SetColor(colWhite)
+	dc.DrawStringAnchored(b.label, b.fontID, fx+fw/2, fy+fh/2, 0.5, 0.5)
+}
+
+// --- functionHandler ---
+
+// functionHandler is the interface for button-specific logic.
+// which: 0=normal, 1=f-shift, 2=g-shift.
+type functionHandler interface {
+	Function(which int)
+}
+
+// --- HP15CFunctionButton ---
+
+// HP15CFunctionButton is any HP 15C key except f and g.
+// It reads the shift buttons' state to pick which label/color to display,
+// and calls ClearShiftButtons() after executing its function.
+type HP15CFunctionButton struct {
+	std.Button
+
+	primaryLabel string
+	fLabel       string
+	gLabel       string
+
+	primaryFontID int32
+	shiftFontID   int32
+
+	normalColor color.NRGBA
+	fColor      color.NRGBA
+	gColor      color.NRGBA
+	fillColor   color.NRGBA
+
+	fBtn    *HP15CShiftButton // reference to f shift button
+	gBtn    *HP15CShiftButton // reference to g shift button
+	handler functionHandler   // concrete function logic (via backpointer)
+}
+
+// NewHP15CFunctionButton creates a function button.
+// handler may be nil for keys with no shifted functions (uses default no-op).
+func NewHP15CFunctionButton(myName, parent string, theme mancini.Theme,
+	width, height int64,
+	primaryLabel, fLabel, gLabel string,
+	primaryFontID, shiftFontID int32,
+	fillColor, normalColor, fColor, gColor color.NRGBA,
+	fBtn, gBtn *HP15CShiftButton,
+	handler functionHandler) *HP15CFunctionButton {
+
+	b := &HP15CFunctionButton{
+		primaryLabel:  primaryLabel,
+		fLabel:        fLabel,
+		gLabel:        gLabel,
+		primaryFontID: primaryFontID,
+		shiftFontID:   shiftFontID,
+		normalColor:   normalColor,
+		fColor:        fColor,
+		gColor:        gColor,
+		fillColor:     fillColor,
+		fBtn:          fBtn,
+		gBtn:          gBtn,
+		handler:       handler,
+	}
+
+	lh := mancini.NewLayoutAttributes(myName, parent)
+	lh.Width.Set(width)
+	lh.Height.Set(height)
+
+	b.Button = std.Button{
+		Depth:  mancini.Raised,
+		Radius: 4.0,
+	}
+	b.Button.ThemedInteractor.Initialize(b, lh, theme)
+	return b
+}
+
+// ShiftWhich returns the current shift state: 0=normal, 1=f, 2=g.
+func (b *HP15CFunctionButton) ShiftWhich() int {
+	if b.fBtn != nil && b.fBtn.IsOn() {
+		return 1
+	}
+	if b.gBtn != nil && b.gBtn.IsOn() {
+		return 2
+	}
+	return 0
+}
+
+// ClearShiftButtons resets both shift buttons to off.
+func (b *HP15CFunctionButton) ClearShiftButtons() {
+	if b.fBtn != nil {
+		b.fBtn.TurnOff()
+	}
+	if b.gBtn != nil {
+		b.gBtn.TurnOff()
+	}
+}
+
+// Press handles a click on the function button.
+// Reads shift state, dispatches to the handler, then clears shift.
+func (b *HP15CFunctionButton) Press() {
+	which := b.ShiftWhich()
+	if b.handler != nil {
+		b.handler.Function(which)
+	}
+	b.ClearShiftButtons()
+}
+
+// activeLabel returns the label and color for the current shift state.
+func (b *HP15CFunctionButton) activeLabel() (string, int32, color.NRGBA) {
+	if b.fBtn != nil && b.fBtn.IsOn() {
+		if b.fLabel != "" {
+			return b.fLabel, b.shiftFontID, b.fColor
+		}
+	}
+	if b.gBtn != nil && b.gBtn.IsOn() {
+		if b.gLabel != "" {
+			return b.gLabel, b.shiftFontID, b.gColor
+		}
+	}
+	return b.primaryLabel, b.primaryFontID, b.normalColor
+}
+
+// Draw renders the function button with the appropriate label for shift state.
+func (b *HP15CFunctionButton) Draw(self mancini.Interactor, x, y, w, h int64) {
+	if !self.Visible() {
+		return
+	}
+	dc := self.DC()
+	if dc == nil {
+		return
+	}
+
+	fx, fy := float64(x), float64(y)
+	fw, fh := float64(w), float64(h)
+
+	pal := b.Theme().Palette()
+	b.Theme().Style().DrawBox(pal, dc, b.Depth, mancini.LightWeight,
+		fx, fy, fx+fw, fy+fh, b.Radius, b.fillColor)
+
+	text, fontID, col := b.activeLabel()
+	if text == "" {
+		return
+	}
+	dc.SetColor(col)
+	dc.DrawStringAnchored(text, fontID, fx+fw/2, fy+fh/2, 0.5, 0.5)
+}
+
+// --- Legacy HP15CButton (kept for transition) ---
 
 // HP15CFace implements mancini.Face for the HP 15C button. It draws
 // the currently active label (primary, f, or g) centered on the button

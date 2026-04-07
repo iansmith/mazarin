@@ -11,6 +11,7 @@ import (
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mancini/impl"
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/sys"
@@ -129,7 +130,9 @@ var (
 	colBtnFace color.NRGBA
 	colBtnText color.NRGBA
 	colFKey    color.NRGBA
+	colFKeyDim color.NRGBA // muted f key when off
 	colGKey    color.NRGBA
+	colGKeyDim color.NRGBA // muted g key when off
 	colFLabel  color.NRGBA
 	colGLabel  color.NRGBA
 	colEnter   color.NRGBA
@@ -142,7 +145,9 @@ func initColors(pal mancini.Palette) {
 	colBtnFace = pal.SurfaceTint()
 	colBtnText = pal.Text()
 	colFKey = swapRB(180, 40, 40, 255)
+	colFKeyDim = swapRB(140, 80, 80, 255)
 	colGKey = swapRB(70, 120, 190, 255)
+	colGKeyDim = swapRB(100, 120, 150, 255)
 	colFLabel = swapRB(180, 40, 40, 255)
 	colGLabel = swapRB(80, 130, 200, 255)
 	colEnter = pal.SurfaceTint()
@@ -179,41 +184,25 @@ func initFonts(dc mancini.DrawContext) {
 // --- Button Interactors ---
 
 var (
-	btnGrid    [btnRows][btnCols]*HP15CButton
-	calcShift  ShiftState // shared shift state, synced from engine before draw
+	engine     *RPNEngine                      // RPN calculator engine
+	funcGrid   [btnRows][btnCols]*HP15CFunctionButton
+	fBtn       *HP15CShiftButton // f shift button
+	gBtn       *HP15CShiftButton // g shift button
+	enterBtn   *HP15CFunctionButton
 	mainCol    *std.ColumnPercentage
 	hexDisp    *std.HexDisplay                 // 14-segment LED display
+	throb      *Throbber                       // pulsing orange indicator
+	radialMenu *std.RadialNOfMChooser          // radial chooser (created on throbber click)
+	calcTheme  mancini.Theme                   // saved theme for radial menu creation
 	app        *std.AppWindow                  // top-level AppWindow interactor
 	appLH      *mancini.LayoutAttributes       // AppWindow layout — source of truth for dimensions
 )
 
-// fillColorForKey returns the button fill color based on the key label.
-func fillColorForKey(k *hp15cKey) color.NRGBA {
-	switch k.label {
-	case "f":
-		return colFKey
-	case "g":
-		return colGKey
-	case "E N T E R":
-		return colEnter
-	default:
-		return colBtnFace
-	}
-}
-
-// normalColorForKey returns the text color for a key's primary label.
-func normalColorForKey(k *hp15cKey) color.NRGBA {
-	if k.label == "f" || k.label == "g" {
-		return colWhite
-	}
-	return colBtnText
-}
-
 func createLayout(pal mancini.Palette, theme mancini.Theme) {
 	// Main column with percentage-based layout.
-	// [10% top spacer, 15% display, 75% button grid]
+	// [5% top spacer, 18% display, 72% button grid, 5% bottom spacer]
 	mainCol = std.NewColumnPercentage("main_col", "AppWindow", pal, 0, 0,
-		[]float64{5, 18, 77})
+		[]float64{5, 18, 72, 5})
 
 	// 30px spacer above display.
 	_ = std.NewSpacer("top_spacer", "main_col", int64(660-2*marginX), 30)
@@ -223,248 +212,233 @@ func createLayout(pal mancini.Palette, theme mancini.Theme) {
 	hexDisp = std.NewHexDisplay("display", "main_col", "btn_row",
 		22, 30, colDispTxt, colDisplay)
 	hexDisp.Format = std.FormatDecimal
+	hexDisp.HPadding = 6 // match btn_row's HPadding
 
 	// Button row.
 	btnRow := std.NewRow("btn_row", "main_col", pal, 0, mancini.AxisMinimum, 6)
 	btnRow.SetSpacing(float64(btnGapX))
 
+	// Phase 1: Create all columns (determines column ordering in Row).
+	colNames := make([]string, btnCols)
 	for col := 0; col < btnCols; col++ {
-		colName := fmt.Sprintf("btn_col_%d", col)
-		column := std.NewColumn(colName, "btn_row", pal, 0, mancini.AxisMiddle, 6, 0, false)
+		colNames[col] = fmt.Sprintf("btn_col_%d", col)
+		column := std.NewColumn(colNames[col], "btn_row", pal, 0, mancini.AxisMiddle, 6, 0, false)
 		column.SetSpacing(float64(btnGapY))
+	}
 
-		for row := 0; row < btnRows; row++ {
+	// Phase 2: Create buttons row-by-row so children are registered in
+	// top-to-bottom order within each column. f and g shift buttons are
+	// created at their row 3 positions. Function buttons created before
+	// f/g get nil shift refs — we wire them up in phase 3.
+	for row := 0; row < btnRows; row++ {
+		for col := 0; col < btnCols; col++ {
 			k := keyGrid[row][col]
+			colName := colNames[col]
+
 			if k == nil {
-				if col == 5 {
-					// Fill rows 2-3 in CHS/EEX column with spacers.
-					std.NewSpacer(fmt.Sprintf("spacer_%d_%d", row, col),
-						colName, int64(btnW), int64(btnH))
+				// Col 5 rows 2-3: ENTER occupies this space.
+				// Row 2: create ENTER (spans rows 2-3).
+				// Row 3: no child — ENTER already covers it.
+				if col == 5 && row == 2 {
+					enterH := int64(btnH*2 + btnGapY)
+					enterBtn = NewHP15CFunctionButton(
+						"btn_enter", colName, theme,
+						int64(btnW), enterH,
+						"E N T E R", "", "LSTx",
+						fontBtn, fontShift,
+						colEnter, colBtnText, colFLabel, colGLabel,
+						nil, nil, // shift refs wired in phase 3
+						lookupHandler("E N T E R"),
+					)
 				}
 				continue
 			}
-			name := fmt.Sprintf("btn_%d_%d", row, col)
-			btnGrid[row][col] = NewHP15CButton(
-				name, colName, theme,
-				int64(btnW), int64(btnH), k, &calcShift,
-				fontBtn, fontShift,
-				fillColorForKey(k),
-				normalColorForKey(k),
-				colFLabel, colGLabel,
-			)
-		}
 
-		// After col 5 (CHS/EEX), insert the ENTER column.
-		if col == 5 {
-			enterCol := std.NewColumn("enter_col", "btn_row", pal, 0, mancini.AxisMiddle, 6, 0, false)
-			enterCol.SetSpacing(float64(btnGapY))
-			// Two spacers at top (aligned with rows 0-1).
-			std.NewSpacer("enter_spacer_0", "enter_col", int64(btnW), int64(btnH))
-			std.NewSpacer("enter_spacer_1", "enter_col", int64(btnW), int64(btnH))
-			// ENTER button spanning rows 2-3.
-			enterKey := &hp15cKey{label: "E N T E R", fLabel: "", gLabel: "LSTx"}
-			enterH := int64(btnH*2 + btnGapY)
-			btnGrid[2][5] = NewHP15CButton(
-				"btn_enter", "enter_col", theme,
-				int64(btnW), enterH, enterKey, &calcShift,
+			if k.label == "f" {
+				fBtn = NewHP15CShiftButton("btn_f", colName, theme,
+					int64(btnW), int64(btnH), "f", fontBtn,
+					colFKey, colFKeyDim, colWhite)
+				continue
+			}
+			if k.label == "g" {
+				gBtn = NewHP15CShiftButton("btn_g", colName, theme,
+					int64(btnW), int64(btnH), "g", fontBtn,
+					colGKey, colGKeyDim, colWhite)
+				continue
+			}
+
+			name := fmt.Sprintf("btn_%d_%d", row, col)
+			fillColor := colBtnFace
+
+			funcGrid[row][col] = NewHP15CFunctionButton(
+				name, colName, theme,
+				int64(btnW), int64(btnH),
+				k.label, k.fLabel, k.gLabel,
 				fontBtn, fontShift,
-				fillColorForKey(enterKey),
-				normalColorForKey(enterKey),
-				colFLabel, colGLabel,
+				fillColor, colBtnText, colFLabel, colGLabel,
+				nil, nil, // shift refs wired in phase 3
+				lookupHandler(k.label),
 			)
 		}
 	}
 
+	// Phase 3: Wire up shift button mutual exclusion and set shift refs
+	// on all function buttons now that fBtn/gBtn exist.
+	fBtn.SetOther(gBtn)
+	gBtn.SetOther(fBtn)
+	for row := 0; row < btnRows; row++ {
+		for col := 0; col < btnCols; col++ {
+			if funcGrid[row][col] != nil {
+				funcGrid[row][col].fBtn = fBtn
+				funcGrid[row][col].gBtn = gBtn
+			}
+		}
+	}
+	if enterBtn != nil {
+		enterBtn.fBtn = fBtn
+		enterBtn.gBtn = gBtn
+	}
+
+	// Bottom row (4th child of main_col): spacer pushes throbber to right.
+	_ = std.NewRowPercentage("bottom_row", "main_col", pal, 0, 0,
+		[]float64{95, 5})
+	_ = std.NewSpacer("bottom_spacer", "bottom_row", 1, 10)
+	throb = NewThrobber("throbber", "bottom_row", 10)
 }
 
 // --- Drawing ---
 
-// syncDisplay updates the 14-segment display and shift state from the engine.
-func syncDisplay(engine *RPNEngine) {
-	if engine.FShift {
-		calcShift = ShiftF
-	} else if engine.GShift {
-		calcShift = ShiftG
-	} else {
-		calcShift = ShiftNone
-	}
+// syncDisplay updates the 14-segment display from the engine.
+func syncDisplay() {
 	// Test: display 0xFACEB00C in decimal on the 14-segment display.
 	hexDisp.Display(0xFACEB00C)
 }
 
+// --- Radial Menu ---
+
+// toggleRadialMenu creates or toggles visibility of the radial chooser.
+func toggleRadialMenu() {
+	if radialMenu != nil {
+		// Already created — toggle visibility.
+		lh := radialMenu.GetLayout()
+		if lh != nil && lh.Visible != nil {
+			vis := lh.Visible.Get()
+			lh.Visible.Set(!vis)
+		}
+		return
+	}
+
+	// First time: create the radial menu.
+	throbLH := throb.GetLayout()
+	cx := float64(throbLH.X.Get()) + float64(throbLH.Width.Get())/2
+	cy := float64(throbLH.Y.Get()) + float64(throbLH.Height.Get())/2
+
+	// Font config for the face labels.
+	theme := calcTheme
+	fc := &mancini.FontConfig{
+		FontRegular:  mfont.DefaultSans,
+		FontBold:     mfont.DefaultSans,
+		ShapedFontID: fontSmall,
+	}
+
+	// Create three faces: "Integer", "Hex", "Binary".
+	labels := []string{"Integer", "Hex", "Binary"}
+	faces := make([]mancini.LatinTextFace, len(labels))
+	for i, label := range labels {
+		f := impl.NewLatinTextFace(fc, false, 11, mancini.TextAlignmentParams{})
+		f.SetText(label)
+		faces[i] = f
+	}
+
+	selected := make([]bool, len(labels))
+	selected[0] = true // Integer selected by default
+
+	radialMenu = std.NewRadialNOfMChooserNamed(
+		"radial_menu", "AppWindow", theme,
+		cx, cy, 20, 40, 225, 315,
+		faces, selected,
+	)
+	sys.UartWriteString("[calc] radial menu created\n")
+}
+
 // --- Input Handling ---
 
-func hitTest(lx, ly int) (int, int, bool) {
+// pressResult describes what hitTestAndPress found.
+type pressResult int
+
+const (
+	pressNone    pressResult = iota // no button hit
+	pressFunc                        // function button pressed
+	pressShiftF                      // f shift button pressed
+	pressShiftG                      // g shift button pressed
+	pressThrobber                    // throbber clicked — toggle radial menu
+)
+
+func hitTestAndPress(lx, ly int) pressResult {
+	// Check f button.
+	if fBtn != nil {
+		lh := fBtn.GetLayout()
+		bx, by := int(lh.X.Get()), int(lh.Y.Get())
+		bw, bh := int(lh.Width.Get()), int(lh.Height.Get())
+		if lx >= bx && lx < bx+bw && ly >= by && ly < by+bh {
+			fBtn.Press()
+			return pressShiftF
+		}
+	}
+	// Check g button.
+	if gBtn != nil {
+		lh := gBtn.GetLayout()
+		bx, by := int(lh.X.Get()), int(lh.Y.Get())
+		bw, bh := int(lh.Width.Get()), int(lh.Height.Get())
+		if lx >= bx && lx < bx+bw && ly >= by && ly < by+bh {
+			gBtn.Press()
+			return pressShiftG
+		}
+	}
+	// Check ENTER button.
+	if enterBtn != nil {
+		lh := enterBtn.GetLayout()
+		bx, by := int(lh.X.Get()), int(lh.Y.Get())
+		bw, bh := int(lh.Width.Get()), int(lh.Height.Get())
+		if lx >= bx && lx < bx+bw && ly >= by && ly < by+bh {
+			enterBtn.Press()
+			return pressFunc
+		}
+	}
+	// Check throbber (enlarged hit area for small target).
+	if throb != nil {
+		lh := throb.GetLayout()
+		bx, by := int(lh.X.Get()), int(lh.Y.Get())
+		bw, bh := int(lh.Width.Get()), int(lh.Height.Get())
+		// Expand hit area by 10px on each side for easier clicking.
+		pad := 10
+		if lx >= bx-pad && lx < bx+bw+pad && ly >= by-pad && ly < by+bh+pad {
+			sys.UartWriteString(fmt.Sprintf("[calc] throbber hit at (%d,%d) bounds=(%d,%d,%d,%d)\n",
+				lx, ly, bx, by, bw, bh))
+			toggleRadialMenu()
+			return pressThrobber
+		}
+	}
+	// Check function grid.
 	for row := 0; row < btnRows; row++ {
 		for col := 0; col < btnCols; col++ {
-			b := btnGrid[row][col]
+			b := funcGrid[row][col]
 			if b == nil {
 				continue
 			}
 			lh := b.GetLayout()
-			bx := int(lh.X.Get())
-			by := int(lh.Y.Get())
-			bw := int(lh.Width.Get())
-			bh := int(lh.Height.Get())
+			bx, by := int(lh.X.Get()), int(lh.Y.Get())
+			bw, bh := int(lh.Width.Get()), int(lh.Height.Get())
 			if lx >= bx && lx < bx+bw && ly >= by && ly < by+bh {
-				return row, col, true
+				b.Press()
+				return pressFunc
 			}
 		}
 	}
-	return 0, 0, false
+	return pressNone
 }
 
-func dispatchButton(engine *RPNEngine, row, col int) {
-	k := keyGrid[row][col]
-	if k == nil {
-		return
-	}
-
-	if k.label == "f" {
-		engine.SetFShift()
-		return
-	}
-	if k.label == "g" {
-		engine.SetGShift()
-		return
-	}
-
-	if engine.GShift {
-		dispatchGShift(engine, row, col)
-		return
-	}
-	if engine.FShift {
-		dispatchFShift(engine, row, col)
-		return
-	}
-
-	switch k.label {
-	case "\u221Ax":
-		engine.Sqrt()
-	case "e\u02E3":
-		engine.Exp()
-	case "10\u02E3":
-		engine.Pow10()
-	case "y\u02E3":
-		engine.PowYX()
-	case "1/x":
-		engine.Reciprocal()
-	case "CHS":
-		engine.CHS()
-	case "7":
-		engine.Digit(7)
-	case "8":
-		engine.Digit(8)
-	case "9":
-		engine.Digit(9)
-	case "\u00F7":
-		engine.Div()
-	case "SIN":
-		engine.Sin()
-	case "COS":
-		engine.Cos()
-	case "TAN":
-		engine.Tan()
-	case "EEX":
-		engine.EEX()
-	case "4":
-		engine.Digit(4)
-	case "5":
-		engine.Digit(5)
-	case "6":
-		engine.Digit(6)
-	case "\u00D7":
-		engine.Mul()
-	case "R\u2193":
-		engine.RollDown()
-	case "x\u21C6y":
-		engine.SwapXY()
-	case "\u2190":
-		engine.Backspace()
-	case "E N T E R":
-		engine.Enter()
-	case "1":
-		engine.Digit(1)
-	case "2":
-		engine.Digit(2)
-	case "3":
-		engine.Digit(3)
-	case "\u2212":
-		engine.Sub()
-	case "STO":
-		engine.StoreTo(0)
-	case "RCL":
-		engine.RecallFrom(0)
-	case "0":
-		engine.Digit(0)
-	case "\u00B7":
-		engine.Dot()
-	case "\u03A3+":
-		engine.Add()
-	case "+":
-		engine.Add()
-	case "ON":
-		engine.ClearX()
-		engine.Y = 0
-		engine.Z = 0
-		engine.T = 0
-		engine.LastX = 0
-	}
-}
-
-func dispatchGShift(engine *RPNEngine, row, col int) {
-	k := keyGrid[row][col]
-	if k == nil {
-		return
-	}
-	engine.GShift = false
-	engine.FShift = false
-
-	switch k.gLabel {
-	case "x\u00B2":
-		engine.Square()
-	case "LN":
-		engine.Ln()
-	case "LOG":
-		engine.Log()
-	case "%":
-		engine.Percent()
-	case "ABS":
-		engine.Abs()
-	case "SIN\u207B\u00B9":
-		engine.Asin()
-	case "COS\u207B\u00B9":
-		engine.Acos()
-	case "TAN\u207B\u00B9":
-		engine.Atan()
-	case "\u03C0":
-		engine.Pi()
-	case "R\u2191":
-		engine.RollUp()
-	case "CLx":
-		engine.ClearX()
-	case "LSTx":
-		engine.RecallLastX()
-	case "x!":
-		engine.Factorial()
-	}
-}
-
-func dispatchFShift(engine *RPNEngine, row, col int) {
-	k := keyGrid[row][col]
-	if k == nil {
-		return
-	}
-	engine.FShift = false
-	engine.GShift = false
-
-	switch k.fLabel {
-	case "FIX":
-		engine.FixDigits = (engine.FixDigits + 1) % 10
-	}
-}
-
-func handleKeyPress(engine *RPNEngine, kp wm.KeyPress) {
+func handleKeyPress(kp wm.KeyPress) {
 	ch := kp.Char
 	if ch >= '0' && ch <= '9' {
 		engine.Digit(int(ch - '0'))
@@ -493,10 +467,14 @@ func handleKeyPress(engine *RPNEngine, kp wm.KeyPress) {
 		engine.CHS()
 		return
 	case 'f':
-		engine.SetFShift()
+		if fBtn != nil {
+			fBtn.Press()
+		}
 		return
 	case 'g':
-		engine.SetGShift()
+		if gBtn != nil {
+			gBtn.Press()
+		}
 		return
 	case 's':
 		engine.Sqrt()
@@ -584,6 +562,7 @@ func main() {
 	neu := mctheme.NewDefaultNeumorphicParams()
 	theme := mctheme.NewTheme(pal, neu, mfont.DefaultSans, 18, resolver)
 	theme.SetStyle(std.NewNeumorphicStyle(neu.Heavy(), neu.Light()))
+	calcTheme = theme
 
 	// 4. Screen dimensions.
 	screenWURI := "attr:///kernel/int64/screen/width"
@@ -671,8 +650,8 @@ func main() {
 	createLayout(pal, theme)
 
 	// 12. Initial draw.
-	engine := NewRPNEngine()
-	syncDisplay(engine)
+	engine = NewRPNEngine()
+	syncDisplay()
 	t0 := nanotime()
 	app.SetDC(dc)
 	app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
@@ -681,19 +660,36 @@ func main() {
 	sendBlit()
 	sys.UartWriteString("[calc] initial draw complete\n")
 
-	// 13. Event loop.
+	// 13. 10Hz timer for throbber animation.
+	nanosProg := mancini.BindStrings(mancini.ProgIdentityI64,
+		"_source_", "attr:///kernel/int64/time/utc_nanos")
+	timeNanos := attr.ConstraintI64(attr.ShepherdURI("int64", "time_nanos"), nanosProg)
+	timeNanos.SetEager(true)
+	_ = timeNanos.Get()
+	dirtyCh := attr.OnDirty()
+
+	// 14. Event loop.
 	for {
-		msg := <-wmCh
+		var msg any
+		select {
+		case msg = <-wmCh:
+		case <-dirtyCh:
+			if throb != nil && throb.Tick() {
+				syncDisplay()
+				app.SetDC(dc)
+				app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
+				sendBlit()
+			}
+			continue
+		}
 		switch m := msg.(type) {
 		case wm.KeyPress:
-			handleKeyPress(engine, m)
+			handleKeyPress(m)
 		case wm.MousePress:
 			// Rachel converts screen→app-local coords before sending.
 			lx := int(m.X)
 			ly := int(m.Y)
-			if row, col, ok := hitTest(lx, ly); ok {
-				dispatchButton(engine, row, col)
-			}
+			hitTestAndPress(lx, ly)
 		case wm.YouHaveFocus, wm.KeyboardFocusGained:
 			app.Focused = true
 		case wm.YouLostFocus, wm.KeyboardFocusLost:
@@ -792,7 +788,7 @@ func main() {
 		default:
 			continue
 		}
-		syncDisplay(engine)
+		syncDisplay()
 		t0 := nanotime()
 		app.SetDC(dc)
 		app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
