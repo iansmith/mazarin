@@ -671,6 +671,12 @@ func (a *DragAgent) dragMoveResize(ev *input.InputEvent, wi *WindowInteractor) {
 
 // dragEndResize finalizes a window resize. Allocates a final-size buffer,
 // copies content, shares it with the app, frees the oversized buffer.
+//
+// CRITICAL ORDERING: This must be called only AFTER the drag agent stops
+// sending WindowResized messages. The app-side resize coalescing logic
+// relies on BackingStoreReady appearing after all WindowResized messages
+// for a given drag — if BackingStoreReady arrives interleaved with resizes,
+// the app will skip a draw that should have been the final one.
 func (a *DragAgent) dragEndResize(wi *WindowInteractor) {
 	ta := wi.ta
 	endDragComposite()

@@ -496,7 +496,7 @@ func handleKeyPress(engine *RPNEngine, kp wm.KeyPress) {
 // --- Application Lifecycle ---
 
 var rachelSID int
-var wmCh = make(chan any, 4)
+var wmCh = make(chan any, 16)
 
 func announceToWM(x, y, w, h int32) {
 	msg := wm.EncodeAppStart(&wm.AppStart{
@@ -702,6 +702,51 @@ func main() {
 			sys.UartWriteString(fmt.Sprintf("[calc] new BS: app=%dx%d total=%dx%d\n",
 				m.AppWidth, m.AppHeight, m.TotalWidth, m.TotalHeight))
 		case wm.WindowResized:
+			// Drain any queued resize messages — only the latest matters.
+			// Non-resize messages (focus, keys) are processed inline.
+			// If we find a BackingStoreReady, it means the drag ended and
+			// supersedes all preceding resizes — break out and let the
+			// next loop iteration handle it normally.
+			// CRITICAL: rachel must send BackingStoreReady AFTER the drag
+			// ends (after clearing drag agent state), never interleaved
+			// with WindowResized messages. See dragEndResize() in rachel.
+			drained := 0
+			gotBSR := false
+		drainLoop:
+			for {
+				select {
+				case next := <-wmCh:
+					switch n := next.(type) {
+					case wm.WindowResized:
+						m = n
+						drained++
+					case wm.BackingStoreReady:
+						// Drag ended — push back and let the main
+						// loop handle it on the next iteration.
+						// Safe: we just drained, so channel has room.
+						wmCh <- next
+						gotBSR = true
+						break drainLoop
+					case wm.YouHaveFocus, wm.KeyboardFocusGained:
+						app.Focused = true
+					case wm.YouLostFocus, wm.KeyboardFocusLost:
+						app.Focused = false
+					default:
+						// Drop other messages during resize drain
+						// (keys, mouse events mid-drag are stale).
+					}
+				default:
+					break drainLoop
+				}
+			}
+			if drained > 0 {
+				sys.UartWriteString(fmt.Sprintf("[calc] resize coalesced: skipped %d stale\n", drained))
+			}
+			if gotBSR {
+				// BackingStoreReady is on the channel — skip drawing
+				// at this intermediate size, the final size is next.
+				continue
+			}
 			// Same buffer, new dimensions only.
 			newTotalW := int(m.TotalWidth)
 			newTotalH := int(m.TotalHeight)
