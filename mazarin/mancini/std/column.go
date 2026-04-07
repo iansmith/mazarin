@@ -195,11 +195,18 @@ func (c *Column) Draw(self mancini.Interactor, x, y, w, h int64) {
 		return
 	}
 
-	// Count visible children for fallback height division.
+	// Count visible children and compute natural height sum for
+	// dynamic spacing: if the parent offers more height than the
+	// children need, distribute the excess as inter-child spacing.
 	visCount := int64(0)
+	naturalHeight := int64(0)
 	for _, child := range children {
-		if child.Visible() {
-			visCount++
+		if !child.Visible() {
+			continue
+		}
+		visCount++
+		if childL, ok := child.(mancini.Layouter); ok {
+			naturalHeight += int64(mancini.ChildHeight(childL, 0))
 		}
 	}
 	if visCount == 0 {
@@ -208,7 +215,16 @@ func (c *Column) Draw(self mancini.Interactor, x, y, w, h int64) {
 	fallbackH := h / visCount
 
 	spacing := int64(lh.GetSpacing())
-	curY := y
+	// If parent offers more height than children need, grow spacing
+	// to distribute the excess evenly between children.
+	availableForSpacing := h - 2*c.VPadding - naturalHeight
+	if visCount > 1 && availableForSpacing > 0 {
+		dynamicSpacing := availableForSpacing / (visCount - 1)
+		if dynamicSpacing > spacing {
+			spacing = dynamicSpacing
+		}
+	}
+	curY := y + c.VPadding
 	drawnCount := 0
 	for _, child := range children {
 		if !child.Visible() {

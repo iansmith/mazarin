@@ -80,27 +80,27 @@ func initKeyGrid() {
 		{label: "6", fLabel: "ISG", gLabel: "?"},
 		{label: "\u00D7", fLabel: "Sxy", gLabel: "x=0"},           // ×
 	}
-	// Row 2 — ENTER at col 5 spans into row 3.
+	// Row 2 — ENTER is in its own column (enterCol), not in the grid.
 	keyGrid[2] = [btnCols]*hp15cKey{
 		{label: "R/S", fLabel: "PSE", gLabel: "P/R"},
 		{label: "GSB", fLabel: "SUM", gLabel: "RTN"},
 		{label: "Rv", fLabel: "PRGM", gLabel: "R^"},              // R↓ → Rv, R↑ → R^
 		{label: "x<>y", fLabel: "REG", gLabel: "RND"},            // x↔y → x<>y
 		{label: "<-", fLabel: "PREFIX", gLabel: "CLx"},            // ← → <-
-		{label: "ENTER", fLabel: "", gLabel: "LSTx", rowSpan: 2},
+		nil, // col 5 spacers handle this row
 		{label: "1", fLabel: "->R", gLabel: "->P"},               // →R, →P
 		{label: "2", fLabel: "->H.MS", gLabel: "->H"},            // →H.MS, →H
 		{label: "3", fLabel: "->RAD", gLabel: "->DEG"},           // →RAD, →DEG
 		{label: "-", fLabel: "Re<>Im", gLabel: "TEST"},
 	}
-	// Row 3 — col 5 is nil (occupied by ENTER above).
+	// Row 3 — col 5 spacers handle this row too.
 	keyGrid[3] = [btnCols]*hp15cKey{
 		{label: "ON", fLabel: "", gLabel: ""},
 		{label: "f", fLabel: "", gLabel: ""},
 		{label: "g", fLabel: "", gLabel: ""},
 		{label: "STO", fLabel: "FRAC", gLabel: "INT"},
 		{label: "RCL", fLabel: "USER", gLabel: "MEM"},
-		nil, // occupied by ENTER
+		nil, // col 5 spacers handle this row
 		{label: "0", fLabel: "x!", gLabel: "x"},
 		{label: "\u00B7", fLabel: "y,r", gLabel: "s"},            // ·
 		{label: "E+", fLabel: "L.R.", gLabel: "E-"},
@@ -225,31 +225,51 @@ func createLayout(pal mancini.Palette, theme mancini.Theme) {
 	hexDisp.Format = std.FormatDecimal
 
 	// Button row.
-	btnRow := std.NewRow("btn_row", "main_col", pal, int64(660-2*marginX), mancini.AxisMinimum, 1)
+	btnRow := std.NewRow("btn_row", "main_col", pal, 0, mancini.AxisMinimum, 6)
 	btnRow.SetSpacing(float64(btnGapX))
 
 	for col := 0; col < btnCols; col++ {
 		colName := fmt.Sprintf("btn_col_%d", col)
-		column := std.NewColumn(colName, "btn_row", pal, 0, mancini.AxisMiddle, 1, 0, false)
+		column := std.NewColumn(colName, "btn_row", pal, 0, mancini.AxisMiddle, 6, 0, false)
 		column.SetSpacing(float64(btnGapY))
 
 		for row := 0; row < btnRows; row++ {
 			k := keyGrid[row][col]
 			if k == nil {
+				if col == 5 {
+					// Fill rows 2-3 in CHS/EEX column with spacers.
+					std.NewSpacer(fmt.Sprintf("spacer_%d_%d", row, col),
+						colName, int64(btnW), int64(btnH))
+				}
 				continue
 			}
 			name := fmt.Sprintf("btn_%d_%d", row, col)
-			h := int64(btnH)
-			if k.rowSpan == 2 {
-				h = int64(btnH*2 + btnGapY)
-			}
-
 			btnGrid[row][col] = NewHP15CButton(
 				name, colName, theme,
-				int64(btnW), h, k, &calcShift,
+				int64(btnW), int64(btnH), k, &calcShift,
 				fontBtn, fontShift,
 				fillColorForKey(k),
 				normalColorForKey(k),
+				colFLabel, colGLabel,
+			)
+		}
+
+		// After col 5 (CHS/EEX), insert the ENTER column.
+		if col == 5 {
+			enterCol := std.NewColumn("enter_col", "btn_row", pal, 0, mancini.AxisMiddle, 6, 0, false)
+			enterCol.SetSpacing(float64(btnGapY))
+			// Two spacers at top (aligned with rows 0-1).
+			std.NewSpacer("enter_spacer_0", "enter_col", int64(btnW), int64(btnH))
+			std.NewSpacer("enter_spacer_1", "enter_col", int64(btnW), int64(btnH))
+			// ENTER button spanning rows 2-3.
+			enterKey := &hp15cKey{label: "E N T E R", fLabel: "", gLabel: "LSTx"}
+			enterH := int64(btnH*2 + btnGapY)
+			btnGrid[2][5] = NewHP15CButton(
+				"btn_enter", "enter_col", theme,
+				int64(btnW), enterH, enterKey, &calcShift,
+				fontBtn, fontShift,
+				fillColorForKey(enterKey),
+				normalColorForKey(enterKey),
 				colFLabel, colGLabel,
 			)
 		}

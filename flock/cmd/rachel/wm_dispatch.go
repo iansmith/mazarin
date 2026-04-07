@@ -568,10 +568,13 @@ func (a *DragAgent) startDragResize(wi *WindowInteractor, pressX, pressY int32, 
 	}
 
 	// Send BackingStoreReady to app with the oversized buffer.
+	// TotalWidth/TotalHeight must reflect the FULL oversized buffer so
+	// the app allocates a bsSlice large enough for subsequent
+	// WindowResized messages that may grow the window up to max size.
 	bsr := wm.EncodeBackingStoreReady(&wm.BackingStoreReady{
 		BackingStoreAddr: int64(clientVA),
-		TotalWidth:       ta.bsWidth,
-		TotalHeight:      ta.bsHeight,
+		TotalWidth:       maxTotalW,
+		TotalHeight:      maxTotalH,
 		TotalStride:      ta.bsStride,
 		LeftInset:        int32(borderLeft),
 		TopInset:         int32(borderTop),

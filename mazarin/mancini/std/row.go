@@ -123,11 +123,18 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 		return
 	}
 
-	// Count visible children for fallback width division.
+	// Count visible children and compute natural width sum for
+	// dynamic spacing: if the parent offers more width than the
+	// children need, distribute the excess as inter-child spacing.
 	visCount := int64(0)
+	naturalWidth := int64(0)
 	for _, child := range children {
-		if child.Visible() {
-			visCount++
+		if !child.Visible() {
+			continue
+		}
+		visCount++
+		if childL, ok := child.(mancini.Layouter); ok {
+			naturalWidth += int64(mancini.ChildWidth(childL, 0))
 		}
 	}
 	if visCount == 0 {
@@ -142,6 +149,16 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 
 	spacing := int64(lh.GetSpacing())
+	// If parent offers more width than children need, grow spacing
+	// to distribute the excess evenly between children.
+	availableForSpacing := w - 2*r.HPadding - naturalWidth
+	if visCount > 1 && availableForSpacing > 0 {
+		dynamicSpacing := availableForSpacing / (visCount - 1)
+		if dynamicSpacing > spacing {
+			spacing = dynamicSpacing
+		}
+	}
+
 	curX := x + r.HPadding
 	visIndex := 0
 	for _, child := range children {
@@ -167,13 +184,32 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 			childH = int64(mancini.ChildHeight(childL, float64(h)))
 		}
 
-		// Cross-axis (vertical) alignment.
+		// Children with constraint-computed height get the full
+		// available height in Draw so they can distribute excess
+		// space internally (e.g. Column grows inter-child spacing).
+		drawH := childH
 		childY := y
-		switch r.CrossAlign {
-		case mancini.AxisMiddle:
-			childY = y + (h-childH)/2
-		case mancini.AxisMaximum:
-			childY = y + h - childH
+		if hasLayout {
+			clh := childL.GetLayout()
+			if clh != nil && clh.Height.IsConstraint() {
+				drawH = h
+				childY = y // no centering — child fills
+			} else {
+				// Cross-axis (vertical) alignment for value-height children.
+				switch r.CrossAlign {
+				case mancini.AxisMiddle:
+					childY = y + (h-childH)/2
+				case mancini.AxisMaximum:
+					childY = y + h - childH
+				}
+			}
+		} else {
+			switch r.CrossAlign {
+			case mancini.AxisMiddle:
+				childY = y + (h-childH)/2
+			case mancini.AxisMaximum:
+				childY = y + h - childH
+			}
 		}
 
 		// Publish child position and dimensions to layout handles
@@ -206,7 +242,7 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 				pad := overflowW + shadowPad
 				cc := mancini.WithClip(dc, float64(curX), float64(childY), float64(visibleW), float64(h), float64(pad), mancini.ClipRight)
 				if d, ok := child.(mancini.NewDrawer); ok {
-					d.Draw(child, curX, childY, childW, childH)
+					d.Draw(child, curX, childY, childW, drawH)
 				}
 				cc.Flush()
 			}
@@ -217,7 +253,7 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 
 		trc := nanotime()
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, curX, childY, childW, childH)
+			d.Draw(child, curX, childY, childW, drawH)
 		}
 		dt := nanotime() - trc
 		idx := drawPerf.RowChildCount.Add(1) - 1

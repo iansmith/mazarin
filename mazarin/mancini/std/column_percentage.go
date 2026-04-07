@@ -106,13 +106,19 @@ func (cp *ColumnPercentage) Draw(self mancini.Interactor, x, y, w, h int64) {
 			childW = int64(mancini.ChildWidth(childL, float64(innerW)))
 		}
 
-		// Center horizontally within padded area.
+		// Children with constraint-computed width get the full
+		// available width in Draw so they can distribute excess
+		// space internally (e.g. Row grows inter-child spacing).
+		// Value-width children are centered horizontally.
+		drawW := childW
 		childX := innerX + (innerW-childW)/2
-
-		// Publish position and dimensions for pick/hit-testing.
 		if hasLayout {
 			clh := childL.GetLayout()
 			if clh != nil {
+				if clh.Width.IsConstraint() {
+					drawW = innerW
+					childX = innerX
+				}
 				clh.X.Set(childX)
 				clh.Y.Set(curY)
 				if !clh.Width.IsConstraint() {
@@ -129,7 +135,7 @@ func (cp *ColumnPercentage) Draw(self mancini.Interactor, x, y, w, h int64) {
 			cs.SetDC(dc)
 		}
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, childX, curY, childW, childH)
+			d.Draw(child, childX, curY, drawW, childH)
 		}
 
 		curY += childH

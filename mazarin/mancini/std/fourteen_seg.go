@@ -155,6 +155,11 @@ func (s *FourteenSeg) drawChar(dc mancini.DrawContext, x, y float64, mask uint16
 // drawSeg draws one segment: lit (onColor) if the bit is set, dim otherwise.
 func (s *FourteenSeg) drawSeg(dc mancini.DrawContext, mask uint16, bit uint16,
 	x1, y1, x2, y2 float64) {
+	// Skip zero-length segments — the vector rasterizer divides by
+	// the line span and will panic on zero-length lines.
+	if x1 == x2 && y1 == y2 {
+		return
+	}
 	if mask&bit != 0 {
 		dc.SetColor(s.onColor)
 	} else {
