@@ -33,23 +33,26 @@ type Column struct {
 	Pal               mancini.Palette
 	CrossAlign        mancini.Alignment
 	MaxHeight         int64
-	VMargin           int64 // vertical margin applied at top and bottom edges
+	VPadding          int64 // vertical padding applied at top and bottom edges
+	HPadding          int64 // horizontal padding applied at left and right edges
 	ClipChildOverflow bool  // true: clip last partial child; false: skip it
+	PaintBg           bool  // true: fill background with Pal.Surface() before children
 }
 
 // NewColumn creates a Column wired to the constraint system.
 // Children are not passed here — they declare this Column as their parent
 // via their own InitLayout(parentName) call, and are discovered at draw
 // time via the constraint network.
-func NewColumn(myName, parent string, pal mancini.Palette, maxHeight int64, crossAlign mancini.Alignment, vMargin int64, clipOverflow bool) *Column {
-	if vMargin <= 0 {
-		vMargin = 1
+func NewColumn(myName, parent string, pal mancini.Palette, maxHeight int64, crossAlign mancini.Alignment, vPadding, hPadding int64, clipOverflow bool) *Column {
+	if vPadding <= 0 {
+		vPadding = 1
 	}
 	c := &Column{
 		Pal:               pal,
 		CrossAlign:        crossAlign,
 		MaxHeight:         maxHeight,
-		VMargin:           vMargin,
+		VPadding:           vPadding,
+		HPadding:           hPadding,
 		ClipChildOverflow: clipOverflow,
 	}
 
@@ -75,13 +78,17 @@ func NewColumn(myName, parent string, pal mancini.Palette, maxHeight int64, cros
 	maxHeightURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutMaxHeight)
 	lh.MaxHeightAttr = attr.ValueI64(maxHeightURI, maxH)
 
-	// Vertical margin attribute.
-	vMarginURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutVMargin)
-	attr.ValueI64(vMarginURI, vMargin)
+	// Vertical padding attribute.
+	vPaddingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutVPadding)
+	attr.ValueI64(vPaddingURI, vPadding)
+
+	// Horizontal padding attribute.
+	hPaddingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHPadding)
+	attr.ValueI64(hPaddingURI, hPadding)
 
 	// Column HEIGHT constraint.
 	heightProg := mancini.BindStringsChildren(ProgColumnHeight,
-		"_maxHeight_", maxHeightURI, "_spacing_", spacingURI, "_vMargin_", vMarginURI,
+		"_maxHeight_", maxHeightURI, "_spacing_", spacingURI, "_vPadding_", vPaddingURI,
 		"_myName_", myName)
 	heightURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHeight)
 	lh.Height = attr.ConstraintI64(heightURI, heightProg)
@@ -94,12 +101,61 @@ func NewColumn(myName, parent string, pal mancini.Palette, maxHeight int64, cros
 
 	// LastChildDrawn constraint.
 	lastChildProg := mancini.BindStringsChildren(ProgColumnLastChild,
-		"_maxHeight_", maxHeightURI, "_spacing_", spacingURI, "_vMargin_", vMarginURI,
+		"_maxHeight_", maxHeightURI, "_spacing_", spacingURI, "_vPadding_", vPaddingURI,
 		"_myName_", myName)
 	lastChildURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutLastChildDrawn)
 	lh.LastChildDrawnAttr = attr.ConstraintI64(lastChildURI, lastChildProg)
 
 	lh.InitBounds(myName)
+
+	c.Interactor.Initialize(c, lh)
+	c.Parent.Initialize(true, &c.Interactor)
+	return c
+}
+
+// NewColumnWithLayout creates a Column using a pre-built LayoutAttributes.
+// Used when the caller provides bridge/custom layout (e.g., as AppWindow's
+// direct child with inout-bridge constraints on Width/Height).
+// The caller is responsible for setting Width, Height, and Bounds on lh.
+func NewColumnWithLayout(lh *mancini.LayoutAttributes, pal mancini.Palette,
+	crossAlign mancini.Alignment, hPadding, vPadding int64, clipOverflow bool) *Column {
+
+	c := &Column{
+		Pal:               pal,
+		CrossAlign:        crossAlign,
+		HPadding:           hPadding,
+		VPadding:           vPadding,
+		ClipChildOverflow: clipOverflow,
+	}
+	myName := lh.Name()
+
+	// Inter-child spacing attribute.
+	spacingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutSpacing)
+	lh.SpacingAttr = attr.ValueI64(spacingURI, 0)
+
+	// Cross-axis alignment.
+	alignURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutCrossAlign)
+	lh.CrossAlignAttr = attr.ValueI64(alignURI, int64(crossAlign))
+
+	// Horizontal padding attribute.
+	hPaddingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHPadding)
+	attr.ValueI64(hPaddingURI, hPadding)
+
+	// Vertical padding attribute.
+	vPaddingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutVPadding)
+	attr.ValueI64(vPaddingURI, vPadding)
+
+	// Use the layout's own Height as the max height for child clipping.
+	// The bridge layout already constrains Height to
+	// clamp(AppWindow.Height, minH, maxH), so this is the available space.
+	maxHeightURI := lh.Height.URI()
+
+	// LastChildDrawn constraint — determines which children fit.
+	lastChildProg := mancini.BindStringsChildren(ProgColumnLastChild,
+		"_maxHeight_", maxHeightURI, "_spacing_", spacingURI, "_vPadding_", vPaddingURI,
+		"_myName_", myName)
+	lastChildURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutLastChildDrawn)
+	lh.LastChildDrawnAttr = attr.ConstraintI64(lastChildURI, lastChildProg)
 
 	c.Interactor.Initialize(c, lh)
 	c.Parent.Initialize(true, &c.Interactor)
@@ -116,9 +172,20 @@ func (c *Column) SetSpacing(v float64) {
 
 // Draw implements mancini.NewDrawer. Arranges children top-to-bottom
 // with spacing, cross-axis alignment, and overflow clipping.
+// If PaintBg is true and Pal is set, the column fills its background
+// with the theme's Surface color before drawing children.
 func (c *Column) Draw(self mancini.Interactor, x, y, w, h int64) {
 	lh := c.GetLayout()
 	dc := self.DC()
+
+	// Optional themed background fill.
+	if c.PaintBg && c.Pal != nil {
+		bg := c.Pal.Surface()
+		if bg.A > 0 {
+			dc.SetColor(bg)
+			dc.FillRectangle(float64(x), float64(y), float64(w), float64(h))
+		}
+	}
 
 	children := c.GetChildren()
 	if len(children) == 0 {
@@ -178,12 +245,18 @@ func (c *Column) Draw(self mancini.Interactor, x, y, w, h int64) {
 			childX = x + w - childW
 		}
 
-		// Publish child position to layout handles for constraint visibility.
+		// Publish child position and dimensions for pick/hit-testing.
 		if hasLayout {
 			clh := childL.GetLayout()
 			if clh != nil {
 				clh.X.Set(childX)
 				clh.Y.Set(curY)
+				if !clh.Width.IsConstraint() {
+					clh.Width.Set(childW)
+				}
+				if !clh.Height.IsConstraint() {
+					clh.Height.Set(childH)
+				}
 			}
 		}
 

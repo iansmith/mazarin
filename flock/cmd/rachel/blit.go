@@ -437,6 +437,7 @@ func preRenderDecorations(ta *trackedApp) {
 		ta.bsWidth, ta.bsHeight, ta.title))
 }
 
+
 // applyDecorations copies pre-rendered border pixels into the backing store.
 // Only the border zone is overwritten — app content is untouched.
 func applyDecorations(ta *trackedApp, focused bool) {
@@ -596,6 +597,53 @@ func startDragComposite(sid int) {
 func endDragComposite() {
 	dragActive = false
 	timedBlitAllWindows()
+}
+
+// compositeDragWindow re-composites the dragged window over the fixed background.
+// Used during resize drag when the window size changes but the dragBG stays fixed.
+func compositeDragWindow() {
+	if !dragActive {
+		return
+	}
+	ta, ok := trackedApps[dragSID]
+	if !ok || ta.backingStore == nil {
+		return
+	}
+
+	oldRect := dragPrevRect
+	newRect := windowVisibleRect(ta, true)
+
+	screen := image.Rect(0, 0, int(displayWidth), int(displayHeight))
+	oldClip := oldRect.Intersect(screen)
+	newClip := newRect.Intersect(screen)
+
+	// 1. Restore newly-exposed area from drag background.
+	if !oldClip.Empty() {
+		exposed := rectSubtract(oldClip, newClip)
+		for _, r := range exposed {
+			copyRectFromBuffer(fbPix, fbStride, dragBG, dragBGStride, r)
+		}
+	}
+
+	// 2. Restore shadow zone from dragBG.
+	if !newClip.Empty() {
+		face := faceScreenRect(ta).Intersect(screen)
+		shadowStrips := rectSubtract(newClip, face)
+		for _, s := range shadowStrips {
+			copyRectFromBuffer(fbPix, fbStride, dragBG, dragBGStride, s)
+		}
+
+		// 3. Blit the resized window.
+		blitWindow(dragSID, []image.Rectangle{newClip}, fbPix, fbStride, true)
+	}
+
+	// 4. Flush union of old and new rects.
+	union := oldClip.Union(newClip)
+	if !union.Empty() {
+		flushRect(union.Min.X, union.Min.Y, union.Dx(), union.Dy())
+	}
+
+	dragPrevRect = newRect
 }
 
 // blitWindowToBuffer is like blitWindow but renders to an arbitrary buffer

@@ -1,6 +1,8 @@
 package impl
 
 import (
+	"math"
+
 	"mazzy/mazarin/mancini"
 )
 
@@ -90,4 +92,180 @@ func (p *Parent) DrawChildren(self mancini.Interactor, x, y, w, h int64) {
 			d.Draw(child, x, y, w, h)
 		}
 	}
+}
+
+// parentName returns this parent's constraint-system name.
+func (p *Parent) parentName() string {
+	if p.interactor == nil || p.interactor.layout == nil {
+		return ""
+	}
+	return p.interactor.layout.Name()
+}
+
+// assertParent checks that child has no parent declared in the constraint
+// system. If it does, panics. Otherwise sets the parent to this parent.
+func (p *Parent) assertParent(child mancini.Interactor) {
+	l, ok := child.(mancini.Layouter)
+	if !ok {
+		panic("AddChild: child does not implement Layouter")
+	}
+	lh := l.GetLayout()
+	if lh == nil {
+		panic("AddChild: child has nil layout")
+	}
+	if lh.Parent != nil && lh.Parent.Get() != "" {
+		panic("AddChild: child " + lh.Name() + " already has parent " + lh.Parent.Get())
+	}
+	lh.Parent.Set(p.parentName())
+}
+
+// clearParent removes the parent relationship for the given interactor.
+func clearParent(child mancini.Interactor) {
+	if l, ok := child.(mancini.Layouter); ok {
+		if lh := l.GetLayout(); lh != nil && lh.Parent != nil {
+			lh.Parent.Set("")
+		}
+	}
+}
+
+// AddChildFirst adds child as the first (lowest sequence number) child
+// of this parent. If the child's sequence number is already lower than
+// all existing children, it is simply parented. Otherwise its sequence
+// number is swapped with the current first child.
+//
+// Panics if child already has a parent.
+func (p *Parent) AddChildFirst(child mancini.Interactor) {
+	p.assertParent(child)
+
+	childName := mancini.InteractorName(child)
+	if childName == "" {
+		return
+	}
+	childSeq, ok := mancini.RegistrySeq(childName)
+	if !ok {
+		return
+	}
+
+	// Find current first child (lowest seq).
+	children := p.GetChildren()
+	if len(children) <= 1 {
+		// Only child (the one we just parented), nothing to swap.
+		return
+	}
+
+	var firstChild mancini.Interactor
+	var firstName string
+	var firstSeq uint64 = math.MaxUint64
+	for _, c := range children {
+		n := mancini.InteractorName(c)
+		if n == childName {
+			continue // skip the new child
+		}
+		if s, ok := mancini.RegistrySeq(n); ok && s < firstSeq {
+			firstSeq = s
+			firstChild = c
+			firstName = n
+		}
+	}
+
+	if firstChild == nil || childSeq < firstSeq {
+		// Already first, nothing to swap.
+		return
+	}
+
+	// Swap sequence numbers so the new child sorts first.
+	mancini.SwapSequence(childName, firstName)
+}
+
+// AddChildLast adds child as the last (highest sequence number) child
+// of this parent. If the child's sequence number is already higher than
+// all existing children, it is simply parented. Otherwise its sequence
+// number is swapped with the current last child.
+//
+// Panics if child already has a parent.
+func (p *Parent) AddChildLast(child mancini.Interactor) {
+	p.assertParent(child)
+
+	childName := mancini.InteractorName(child)
+	if childName == "" {
+		return
+	}
+	childSeq, ok := mancini.RegistrySeq(childName)
+	if !ok {
+		return
+	}
+
+	// Find current last child (highest seq).
+	children := p.GetChildren()
+	if len(children) <= 1 {
+		// Only child, nothing to swap.
+		return
+	}
+
+	var lastChild mancini.Interactor
+	var lastName string
+	var lastSeq uint64
+	for _, c := range children {
+		n := mancini.InteractorName(c)
+		if n == childName {
+			continue
+		}
+		if s, ok := mancini.RegistrySeq(n); ok && s > lastSeq {
+			lastSeq = s
+			lastChild = c
+			lastName = n
+		}
+	}
+
+	if lastChild == nil || childSeq > lastSeq {
+		// Already last, nothing to swap.
+		return
+	}
+
+	// Swap sequence numbers so the new child sorts last.
+	mancini.SwapSequence(childName, lastName)
+}
+
+// DeleteAllChildren removes all children from this parent by clearing
+// each child's Parent attribute. Returns the removed children in
+// sequence order. Returns an empty (non-nil) slice if no children exist.
+func (p *Parent) DeleteAllChildren() []mancini.Interactor {
+	children := p.GetChildren()
+	if len(children) == 0 {
+		return []mancini.Interactor{}
+	}
+	for _, c := range children {
+		clearParent(c)
+	}
+	return children
+}
+
+// DeleteFirst removes the first child (lowest sequence number) from this
+// parent and returns it. Returns nil if the parent has no children.
+// The child's Parent attribute is cleared.
+func (p *Parent) DeleteFirst() mancini.Interactor {
+	children := p.GetChildren()
+	if len(children) == 0 {
+		return nil
+	}
+
+	// Children are already sorted by seq, so first is index 0.
+	first := children[0]
+	clearParent(first)
+	return first
+}
+
+// DeleteLast removes the last child (highest sequence number) from this
+// parent and returns it. Returns nil if the parent has no children.
+// The child's Parent attribute is cleared.
+func (p *Parent) DeleteLast() mancini.Interactor {
+	children := p.GetChildren()
+	if len(children) == 0 {
+		return nil
+	}
+
+	// Children are already sorted by seq, so last is the final element.
+	last := children[len(children)-1]
+	clearParent(last)
+	return last
 }

@@ -30,22 +30,22 @@ type Row struct {
 	Pal        mancini.Palette
 	CrossAlign mancini.Alignment
 	MaxWidth   int64
-	HMargin    int64 // horizontal margin applied at left and right edges
+	HPadding    int64 // horizontal padding applied at left and right edges
 }
 
 // NewRow creates a Row wired to the constraint system.
 // Children are not passed here — they declare this Row as their parent
 // via their own InitLayout(parentName) call, and are discovered at draw
 // time via the constraint network.
-func NewRow(myName, parent string, pal mancini.Palette, maxWidth int64, crossAlign mancini.Alignment, hMargin int64) *Row {
-	if hMargin <= 0 {
-		hMargin = 1
+func NewRow(myName, parent string, pal mancini.Palette, maxWidth int64, crossAlign mancini.Alignment, hPadding int64) *Row {
+	if hPadding <= 0 {
+		hPadding = 1
 	}
 	r := &Row{
 		Pal:        pal,
 		CrossAlign: crossAlign,
 		MaxWidth:   maxWidth,
-		HMargin:    hMargin,
+		HPadding:    hPadding,
 	}
 
 	if myName == "" {
@@ -70,13 +70,13 @@ func NewRow(myName, parent string, pal mancini.Palette, maxWidth int64, crossAli
 	maxWidthURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutMaxWidth)
 	lh.MaxWidthAttr = attr.ValueI64(maxWidthURI, maxW)
 
-	// Horizontal margin attribute.
-	hMarginURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHMargin)
-	attr.ValueI64(hMarginURI, hMargin)
+	// Horizontal padding attribute.
+	hPaddingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHPadding)
+	attr.ValueI64(hPaddingURI, hPadding)
 
 	// Row WIDTH constraint.
 	widthProg := mancini.BindStringsChildren(ProgRowWidth,
-		"_maxWidth_", maxWidthURI, "_spacing_", spacingURI, "_hMargin_", hMarginURI,
+		"_maxWidth_", maxWidthURI, "_spacing_", spacingURI, "_hPadding_", hPaddingURI,
 		"_myName_", myName)
 	widthURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutWidth)
 	lh.Width = attr.ConstraintI64(widthURI, widthProg)
@@ -89,7 +89,7 @@ func NewRow(myName, parent string, pal mancini.Palette, maxWidth int64, crossAli
 
 	// LastChildDrawn constraint.
 	lastChildProg := mancini.BindStringsChildren(ProgRowLastChild,
-		"_maxWidth_", maxWidthURI, "_spacing_", spacingURI, "_hMargin_", hMarginURI,
+		"_maxWidth_", maxWidthURI, "_spacing_", spacingURI, "_hPadding_", hPaddingURI,
 		"_myName_", myName)
 	lastChildURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutLastChildDrawn)
 	lh.LastChildDrawnAttr = attr.ConstraintI64(lastChildURI, lastChildProg)
@@ -142,7 +142,7 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 
 	spacing := int64(lh.GetSpacing())
-	curX := x + r.HMargin
+	curX := x + r.HPadding
 	visIndex := 0
 	for _, child := range children {
 		if !child.Visible() {
@@ -176,12 +176,19 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 			childY = y + h - childH
 		}
 
-		// Publish child position to layout handles for constraint visibility.
+		// Publish child position and dimensions to layout handles
+		// so that pick/hit-testing uses correct bounds.
 		if hasLayout {
 			clh := childL.GetLayout()
 			if clh != nil {
 				clh.X.Set(curX)
 				clh.Y.Set(childY)
+				if !clh.Width.IsConstraint() {
+					clh.Width.Set(childW)
+				}
+				if !clh.Height.IsConstraint() {
+					clh.Height.Set(childH)
+				}
 			}
 		}
 

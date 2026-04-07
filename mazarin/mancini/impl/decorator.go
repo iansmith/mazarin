@@ -135,12 +135,18 @@ func (d *Decorator) Draw(self mancini.Interactor, x, y, w, h int64) {
 	childW := w - d.Left - d.Right
 	childH := h - d.Top - d.Bottom
 
-	// Publish child position to layout handles for constraint visibility.
+	// Publish child position and dimensions for pick/hit-testing.
 	if l, ok := child.(mancini.Layouter); ok {
 		lh := l.GetLayout()
 		if lh != nil {
 			lh.X.Set(childX)
 			lh.Y.Set(childY)
+			if !lh.Width.IsConstraint() {
+				lh.Width.Set(childW)
+			}
+			if !lh.Height.IsConstraint() {
+				lh.Height.Set(childH)
+			}
 		}
 	}
 

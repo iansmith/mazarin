@@ -22,17 +22,13 @@ import (
 	"golang.org/x/image/font"
 )
 
+//go:linkname nanotime runtime.nanotime
+func nanotime() int64
+
 // Window and layout constants.
 const (
-	winW = 660
-	winH = 300
-
 	// Margins inside the app area.
 	marginX = 20
-
-	// Display LCD area.
-	dispH = 44
-	dispW = winW - 2*marginX
 
 	// Button grid: 10 cols x 4 rows.
 	btnCols = 10
@@ -56,43 +52,46 @@ var keyGrid [btnRows][btnCols]*hp15cKey
 
 func initKeyGrid() {
 	// Row 0
+	// Superscripts use Unicode superscript letters where possible.
+	// U+221A = √, U+00B2 = ², U+02E3 is rare — use "^x" fallback or
+	// U+02E3 replaced with common superscript notation.
 	keyGrid[0] = [btnCols]*hp15cKey{
-		{label: "\u221Ax", fLabel: "A", gLabel: "x\u00B2"},
-		{label: "e\u02E3", fLabel: "B", gLabel: "LN"},
-		{label: "10\u02E3", fLabel: "C", gLabel: "LOG"},
-		{label: "y\u02E3", fLabel: "D", gLabel: "%"},
-		{label: "1/x", fLabel: "E", gLabel: "\u0394%"},
+		{label: "\u221Ax", fLabel: "A", gLabel: "x\u00B2"},       // √x, x²
+		{label: "e^x", fLabel: "B", gLabel: "LN"},                // e^x
+		{label: "10^x", fLabel: "C", gLabel: "LOG"},              // 10^x
+		{label: "y^x", fLabel: "D", gLabel: "%"},                 // y^x
+		{label: "1/x", fLabel: "E", gLabel: "d%"},
 		{label: "CHS", fLabel: "MATRIX", gLabel: "ABS"},
 		{label: "7", fLabel: "FIX", gLabel: "DEG"},
 		{label: "8", fLabel: "SCI", gLabel: "RAD"},
 		{label: "9", fLabel: "ENG", gLabel: "GRD"},
-		{label: "\u00F7", fLabel: "SOLVE", gLabel: "x\u2264y"},
+		{label: "\u00F7", fLabel: "SOLVE", gLabel: "x<=y"},       // ÷
 	}
 	// Row 1
 	keyGrid[1] = [btnCols]*hp15cKey{
 		{label: "SST", fLabel: "LBL", gLabel: "BST"},
-		{label: "GTO", fLabel: "HYP", gLabel: "HYP\u207B\u00B9"},
-		{label: "SIN", fLabel: "DIM", gLabel: "SIN\u207B\u00B9"},
-		{label: "COS", fLabel: "(i)", gLabel: "COS\u207B\u00B9"},
-		{label: "TAN", fLabel: "I", gLabel: "TAN\u207B\u00B9"},
-		{label: "EEX", fLabel: "RESULT", gLabel: "\u03C0"},
-		{label: "4", fLabel: "x\u21CB", gLabel: "SF"},
+		{label: "GTO", fLabel: "HYP", gLabel: "HYP-1"},
+		{label: "SIN", fLabel: "DIM", gLabel: "SIN-1"},
+		{label: "COS", fLabel: "(i)", gLabel: "COS-1"},
+		{label: "TAN", fLabel: "I", gLabel: "TAN-1"},
+		{label: "EEX", fLabel: "RESULT", gLabel: "pi"},
+		{label: "4", fLabel: "x<>", gLabel: "SF"},
 		{label: "5", fLabel: "DSE", gLabel: "CF"},
 		{label: "6", fLabel: "ISG", gLabel: "?"},
-		{label: "\u00D7", fLabel: "\u222Bxy", gLabel: "x=0"},
+		{label: "\u00D7", fLabel: "Sxy", gLabel: "x=0"},           // ×
 	}
 	// Row 2 — ENTER at col 5 spans into row 3.
 	keyGrid[2] = [btnCols]*hp15cKey{
 		{label: "R/S", fLabel: "PSE", gLabel: "P/R"},
-		{label: "GSB", fLabel: "\u03A3", gLabel: "RTN"},
-		{label: "R\u2193", fLabel: "PRGM", gLabel: "R\u2191"},
-		{label: "x\u21C6y", fLabel: "REG", gLabel: "RND"},
-		{label: "\u2190", fLabel: "PREFIX", gLabel: "CLx"},
-		{label: "E N T E R", fLabel: "", gLabel: "LSTx", rowSpan: 2},
-		{label: "1", fLabel: "\u2192R", gLabel: "\u2192P"},
-		{label: "2", fLabel: "\u2192H.MS", gLabel: "\u2192H"},
-		{label: "3", fLabel: "\u2192RAD", gLabel: "\u2192DEG"},
-		{label: "\u2212", fLabel: "Re\u21C6Im", gLabel: "TEST"},
+		{label: "GSB", fLabel: "SUM", gLabel: "RTN"},
+		{label: "Rv", fLabel: "PRGM", gLabel: "R^"},              // R↓ → Rv, R↑ → R^
+		{label: "x<>y", fLabel: "REG", gLabel: "RND"},            // x↔y → x<>y
+		{label: "<-", fLabel: "PREFIX", gLabel: "CLx"},            // ← → <-
+		{label: "ENTER", fLabel: "", gLabel: "LSTx", rowSpan: 2},
+		{label: "1", fLabel: "->R", gLabel: "->P"},               // →R, →P
+		{label: "2", fLabel: "->H.MS", gLabel: "->H"},            // →H.MS, →H
+		{label: "3", fLabel: "->RAD", gLabel: "->DEG"},           // →RAD, →DEG
+		{label: "-", fLabel: "Re<>Im", gLabel: "TEST"},
 	}
 	// Row 3 — col 5 is nil (occupied by ENTER above).
 	keyGrid[3] = [btnCols]*hp15cKey{
@@ -102,9 +101,9 @@ func initKeyGrid() {
 		{label: "STO", fLabel: "FRAC", gLabel: "INT"},
 		{label: "RCL", fLabel: "USER", gLabel: "MEM"},
 		nil, // occupied by ENTER
-		{label: "0", fLabel: "x!", gLabel: "x\u0304"},
-		{label: "\u00B7", fLabel: "y\u0302,r", gLabel: "s"},
-		{label: "\u03A3+", fLabel: "L.R.", gLabel: "\u03A3-"},
+		{label: "0", fLabel: "x!", gLabel: "x"},
+		{label: "\u00B7", fLabel: "y,r", gLabel: "s"},            // ·
+		{label: "E+", fLabel: "L.R.", gLabel: "E-"},
 		{label: "+", fLabel: "Py,x", gLabel: "Cy,x"},
 	}
 
@@ -125,7 +124,6 @@ func swapRB(r, g, b, a uint8) color.NRGBA {
 }
 
 var (
-	colBody    color.NRGBA
 	colDisplay color.NRGBA
 	colDispTxt color.NRGBA
 	colBtnFace color.NRGBA
@@ -139,14 +137,13 @@ var (
 )
 
 func initColors(pal mancini.Palette) {
-	colBody = pal.Surface()
 	colDisplay = swapRB(25, 35, 20, 255)
 	colDispTxt = swapRB(140, 220, 110, 255)
 	colBtnFace = pal.SurfaceTint()
 	colBtnText = pal.Text()
-	colFKey = swapRB(200, 155, 50, 255)
+	colFKey = swapRB(180, 40, 40, 255)
 	colGKey = swapRB(70, 120, 190, 255)
-	colFLabel = swapRB(210, 165, 60, 255)
+	colFLabel = swapRB(180, 40, 40, 255)
 	colGLabel = swapRB(80, 130, 200, 255)
 	colEnter = pal.SurfaceTint()
 	colWhite = swapRB(255, 255, 255, 255)
@@ -154,20 +151,13 @@ func initColors(pal mancini.Palette) {
 
 // --- Font IDs ---
 var (
-	fontDisplay int32
 	fontBtn     int32
 	fontSmall   int32
 	fontShift   int32
 )
 
 func initFonts(dc mancini.DrawContext) {
-	m, err := dc.OpenFont(mfont.DefaultMono, 0, 20)
-	if err != nil {
-		sys.UartWriteString("[calc] OpenFont mono failed: " + err.Error() + "\n")
-	}
-	fontDisplay = m.FontID
-
-	m, err = dc.OpenFont(mfont.DefaultSans, 0, 16)
+	m, err := dc.OpenFont(mfont.DefaultSans, 0, 16)
 	if err != nil {
 		sys.UartWriteString("[calc] OpenFont sans failed: " + err.Error() + "\n")
 	}
@@ -189,10 +179,12 @@ func initFonts(dc mancini.DrawContext) {
 // --- Button Interactors ---
 
 var (
-	btnGrid   [btnRows][btnCols]*HP15CButton
-	calcShift ShiftState // shared shift state, synced from engine before draw
-	mainCol   *std.Column
-	dispSpacer *std.Spacer // placeholder for display drawing
+	btnGrid    [btnRows][btnCols]*HP15CButton
+	calcShift  ShiftState // shared shift state, synced from engine before draw
+	mainCol    *std.ColumnPercentage
+	hexDisp    *std.HexDisplay                 // 14-segment LED display
+	app        *std.AppWindow                  // top-level AppWindow interactor
+	appLH      *mancini.LayoutAttributes       // AppWindow layout — source of truth for dimensions
 )
 
 // fillColorForKey returns the button fill color based on the key label.
@@ -218,23 +210,27 @@ func normalColorForKey(k *hp15cKey) color.NRGBA {
 }
 
 func createLayout(pal mancini.Palette, theme mancini.Theme) {
-	// Main column: top spacer → display spacer → button row.
-	mainCol = std.NewColumn("main_col", "AppWindow", pal, 0, mancini.AxisMiddle, 1, false)
-	mainCol.SetSpacing(10)
+	// Main column with percentage-based layout.
+	// [10% top spacer, 15% display, 75% button grid]
+	mainCol = std.NewColumnPercentage("main_col", "AppWindow", pal, 0, 0,
+		[]float64{5, 18, 77})
 
 	// 30px spacer above display.
-	_ = std.NewSpacer("top_spacer", "main_col", int64(dispW), 30)
+	_ = std.NewSpacer("top_spacer", "main_col", int64(660-2*marginX), 30)
 
-	// Display placeholder — we draw LCD content over this position.
-	dispSpacer = std.NewSpacer("display", "main_col", int64(dispW), int64(dispH))
+	// 14-segment LED display — width equals btn_row's width (sibling constraint).
+	// btn_row is created after this, but the constraint resolves lazily on first Draw.
+	hexDisp = std.NewHexDisplay("display", "main_col", "btn_row",
+		22, 30, colDispTxt, colDisplay)
+	hexDisp.Format = std.FormatDecimal
 
 	// Button row.
-	btnRow := std.NewRow("btn_row", "main_col", pal, int64(winW-2*marginX), mancini.AxisMinimum, 1)
+	btnRow := std.NewRow("btn_row", "main_col", pal, int64(660-2*marginX), mancini.AxisMinimum, 1)
 	btnRow.SetSpacing(float64(btnGapX))
 
 	for col := 0; col < btnCols; col++ {
 		colName := fmt.Sprintf("btn_col_%d", col)
-		column := std.NewColumn(colName, "btn_row", pal, 0, mancini.AxisMiddle, 1, false)
+		column := std.NewColumn(colName, "btn_row", pal, 0, mancini.AxisMiddle, 1, 0, false)
 		column.SetSpacing(float64(btnGapY))
 
 		for row := 0; row < btnRows; row++ {
@@ -258,41 +254,13 @@ func createLayout(pal mancini.Palette, theme mancini.Theme) {
 			)
 		}
 	}
+
 }
 
 // --- Drawing ---
 
-// drawDisplay renders the LCD display area (background + text) at the
-// position determined by the display spacer's layout.
-func drawDisplay(dc mancini.DrawContext, engine *RPNEngine) {
-	lh := dispSpacer.GetLayout()
-	dx := float64(lh.X.Get())
-	dy := float64(lh.Y.Get())
-	dw := float64(dispW)
-	dh := float64(dispH)
-
-	dc.SetColor(colDisplay)
-	dc.DrawRoundedRectangle(dx, dy, dw, dh, 4)
-	dc.Fill()
-
-	// Shift indicator.
-	if engine.FShift {
-		dc.SetColor(colFLabel)
-		dc.DrawStringAnchored("f", fontShift, dx+8, dy+dh/2, 0, 0.5)
-	} else if engine.GShift {
-		dc.SetColor(colGLabel)
-		dc.DrawStringAnchored("g", fontShift, dx+8, dy+dh/2, 0, 0.5)
-	}
-
-	// Display value (right-aligned).
-	dc.SetColor(colDispTxt)
-	dc.DrawStringAnchored(engine.Display(), fontDisplay,
-		dx+dw-12, dy+dh/2, 1.0, 0.5)
-}
-
-// drawAll renders the entire calculator face.
-func drawAll(dc mancini.DrawContext, engine *RPNEngine) {
-	// Sync shift state from engine.
+// syncDisplay updates the 14-segment display and shift state from the engine.
+func syncDisplay(engine *RPNEngine) {
 	if engine.FShift {
 		calcShift = ShiftF
 	} else if engine.GShift {
@@ -300,17 +268,8 @@ func drawAll(dc mancini.DrawContext, engine *RPNEngine) {
 	} else {
 		calcShift = ShiftNone
 	}
-
-	// Background.
-	dc.SetColor(colBody)
-	dc.FillRectangle(0, 0, winW, winH)
-
-	// Layout via Column → (spacer, display spacer, button row).
-	mainCol.SetDC(dc)
-	mainCol.Draw(mainCol, int64(marginX), 0, int64(winW-2*marginX), int64(winH))
-
-	// Display content drawn over the display spacer position.
-	drawDisplay(dc, engine)
+	// Test: display 0xFACEB00C in decimal on the 14-segment display.
+	hexDisp.Display(0xFACEB00C)
 }
 
 // --- Input Handling ---
@@ -620,9 +579,9 @@ func main() {
 	sys.UartWriteString(fmt.Sprintf("[calc] screen: %dx%d\n", screenW, screenH))
 
 	// 5. AppWindow — required by rachel for Bounds/Title attributes.
-	app := std.NewAppWindow(pal, "Calculator", screenWURI, screenHURI)
+	app = std.NewAppWindow(pal, "HP-15C")
 	app.Focused = false
-	appLH := app.GetLayout()
+	appLH = app.GetLayout()
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
 
@@ -630,8 +589,8 @@ func main() {
 	initKeyGrid()
 
 	// 7. Position: centered.
-	winX := screenW/2 - winW/2
-	winY := screenH/2 - winH/2
+	winX := screenW/2 - 660/2
+	winY := screenH/2 - 300/2
 
 	// 8. Announce to rachel.
 	_ = appLH.Bounds.Get()
@@ -639,7 +598,7 @@ func main() {
 	_ = readyAttr
 	sys.UartWriteString("[calc] Ready=true\n")
 
-	announceToWM(int32(winX), int32(winY), int32(winW), int32(winH))
+	announceToWM(int32(winX), int32(winY), 660, 210)
 
 	// 9. Wait for backing store.
 	sys.UartWriteString("[calc] waiting for BackingStoreReady...\n")
@@ -658,8 +617,16 @@ func main() {
 	totalW := int(bsr.TotalWidth)
 	totalH := int(bsr.TotalHeight)
 	totalStride := int(bsr.TotalStride)
-	bsSlice := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(bsr.BackingStoreAddr))),
-		totalStride*totalH)
+	bsLen := totalStride * totalH
+	bsSlice := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(bsr.BackingStoreAddr))), bsLen)
+
+	// Track initial backing store in the stack.
+	app.HandleBackingStoreReady(uintptr(bsr.BackingStoreAddr), bsLen)
+	app.SetSize(int64(bsr.AppWidth), int64(bsr.AppHeight))
+
+	// Set AppWindow dimensions from rachel's actual allocation.
+	appLH.Width.Set(int64(bsr.AppWidth))
+	appLH.Height.Set(int64(bsr.AppHeight))
 
 	bsImg := &image.RGBA{
 		Pix:    bsSlice,
@@ -673,11 +640,11 @@ func main() {
 	topInset := float64(bsr.TopInset)
 	dc.Push()
 	dc.Translate(leftInset, topInset)
-	dc.DrawRectangle(0, 0, float64(winW), float64(winH))
+	dc.DrawRectangle(0, 0, float64(bsr.AppWidth), float64(bsr.AppHeight))
 	dc.Clip()
 
-	sys.UartWriteString(fmt.Sprintf("[calc] backing store ready: total=%dx%d inset=(%d,%d)\n",
-		totalW, totalH, bsr.LeftInset, bsr.TopInset))
+	sys.UartWriteString(fmt.Sprintf("[calc] backing store ready: total=%dx%d inset=(%d,%d) app=%dx%d\n",
+		totalW, totalH, bsr.LeftInset, bsr.TopInset, bsr.AppWidth, bsr.AppHeight))
 
 	// 11. Open fonts + create button interactors.
 	initFonts(dc)
@@ -685,22 +652,25 @@ func main() {
 
 	// 12. Initial draw.
 	engine := NewRPNEngine()
-	drawAll(dc, engine)
+	syncDisplay(engine)
+	t0 := nanotime()
+	app.SetDC(dc)
+	app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
+	dt := nanotime() - t0
+	sys.UartWriteString(fmt.Sprintf("[calc] initial draw: %dms\n", dt/1_000_000))
 	sendBlit()
 	sys.UartWriteString("[calc] initial draw complete\n")
 
 	// 13. Event loop.
-	appX := int(bsr.AppX)
-	appY := int(bsr.AppY)
-
 	for {
 		msg := <-wmCh
 		switch m := msg.(type) {
 		case wm.KeyPress:
 			handleKeyPress(engine, m)
 		case wm.MousePress:
-			lx := int(m.X) - appX
-			ly := int(m.Y) - appY
+			// Rachel converts screen→app-local coords before sending.
+			lx := int(m.X)
+			ly := int(m.Y)
 			if row, col, ok := hitTest(lx, ly); ok {
 				dispatchButton(engine, row, col)
 			}
@@ -708,10 +678,61 @@ func main() {
 			app.Focused = true
 		case wm.YouLostFocus, wm.KeyboardFocusLost:
 			app.Focused = false
+		case wm.BackingStoreReady:
+			// New backing store from rachel (resize start/end).
+			newTotalStride := int(m.TotalStride)
+			newTotalH := int(m.TotalHeight)
+			newBSLen := newTotalStride * newTotalH
+			app.HandleBackingStoreReady(uintptr(m.BackingStoreAddr), newBSLen)
+			app.SetSize(int64(m.AppWidth), int64(m.AppHeight))
+			bsSlice = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(m.BackingStoreAddr))), newBSLen)
+			bsImg = &image.RGBA{
+				Pix:    bsSlice,
+				Stride: newTotalStride,
+				Rect:   image.Rect(0, 0, int(m.TotalWidth), newTotalH),
+			}
+			dc = mancini.NewDrawContextForImage(bsImg, provider)
+			initFonts(dc) // re-register fonts with new DC
+			dc.Push()
+			dc.Translate(float64(m.LeftInset), float64(m.TopInset))
+			dc.DrawRectangle(0, 0, float64(m.AppWidth), float64(m.AppHeight))
+			dc.Clip()
+			appLH.Width.Set(int64(m.AppWidth))
+			appLH.Height.Set(int64(m.AppHeight))
+			sys.UartWriteString(fmt.Sprintf("[calc] new BS: app=%dx%d total=%dx%d\n",
+				m.AppWidth, m.AppHeight, m.TotalWidth, m.TotalHeight))
+		case wm.WindowResized:
+			// Same buffer, new dimensions only.
+			newTotalW := int(m.TotalWidth)
+			newTotalH := int(m.TotalHeight)
+			newTotalStride := int(m.TotalStride)
+			newAppW := int(m.AppWidth)
+			newAppH := int(m.AppHeight)
+			app.SetSize(int64(newAppW), int64(newAppH))
+			bsImg = &image.RGBA{
+				Pix:    bsSlice,
+				Stride: newTotalStride,
+				Rect:   image.Rect(0, 0, newTotalW, newTotalH),
+			}
+			dc = mancini.NewDrawContextForImage(bsImg, provider)
+			initFonts(dc) // re-register fonts with new DC
+			dc.Push()
+			dc.Translate(float64(m.LeftInset), float64(m.TopInset))
+			dc.DrawRectangle(0, 0, float64(newAppW), float64(newAppH))
+			dc.Clip()
+			appLH.Width.Set(int64(newAppW))
+			appLH.Height.Set(int64(newAppH))
+			sys.UartWriteString(fmt.Sprintf("[calc] resized: app=%dx%d total=%dx%d\n",
+				newAppW, newAppH, newTotalW, newTotalH))
 		default:
 			continue
 		}
-		drawAll(dc, engine)
+		syncDisplay(engine)
+		t0 := nanotime()
+		app.SetDC(dc)
+		app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
+		dt := nanotime() - t0
+		sys.UartWriteString(fmt.Sprintf("[calc] draw: %dms\n", dt/1_000_000))
 		sendBlit()
 	}
 }

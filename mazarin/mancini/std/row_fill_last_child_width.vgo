@@ -3,15 +3,15 @@ import "children"
 func rowFillLastChildWidth() int64 {
 	rowW := derefI64("_rowWidth_")
 	spacing := derefI64("_spacing_")
-	margin := derefI64("_hMargin_")
+	padding := derefI64("_hPadding_")
 
 	children := findVisibleChildren("_myName_")
 	n := len(children)
 	if n < 1 {
-		return rowW - 2*margin
+		return rowW - 2*padding
 	}
 	if n < 2 {
-		return rowW - 2*margin
+		return rowW - 2*padding
 	}
 	used := int64(0)
 	idx := 0
@@ -23,5 +23,5 @@ func rowFillLastChildWidth() int64 {
 		used = used + childWidth(seg)
 		idx = idx + 1
 	}
-	return rowW - used - (int64(n)-1)*spacing - 2*margin
+	return rowW - used - (int64(n)-1)*spacing - 2*padding
 }

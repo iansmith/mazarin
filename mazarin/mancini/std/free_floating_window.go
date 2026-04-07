@@ -52,10 +52,10 @@ func NewFreeFloatingWindow(name string, parent mancini.Interactor,
 	side := margin
 	bottom := margin
 
-	hMargin := side
-	vMargin := (top + bottom) / 2
+	hPadding := side
+	vPadding := (top + bottom) / 2
 
-	layout := mancini.NewDecoratorLayout(name, parent, hMargin, vMargin, 800)
+	layout := mancini.NewDecoratorLayout(name, parent, hPadding, vPadding, 800)
 
 	var textFace mancini.LatinTextFace
 	if fonts != nil {

@@ -97,6 +97,12 @@ func (n *NeuCircle) Draw(self mancini.Interactor, x, y, w, h int64) {
 		if lh != nil {
 			lh.X.Set(childX)
 			lh.Y.Set(childY)
+			if !lh.Width.IsConstraint() {
+				lh.Width.Set(childW)
+			}
+			if !lh.Height.IsConstraint() {
+				lh.Height.Set(childH)
+			}
 		}
 	}
 	if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {

@@ -8,9 +8,21 @@ import (
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
+	"mazzy/mazarin/mem"
+	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
+	"mazzy/shared/stack"
 	"mazzy/shared/wm"
+
+	"fmt"
 )
+
+// BackingStoreEntry tracks a shared backing store mapping so it can be
+// released via Munmap when superseded by a newer backing store.
+type BackingStoreEntry struct {
+	Addr uintptr
+	Len  int
+}
 
 // AppWindow is the root application window — a thin, zero-inset decorator
 // whose only job is to anchor the constraint tree at the well-known name
@@ -47,6 +59,10 @@ type AppWindow struct {
 	localToRemote     sync.Map // map[uint64]uint64 (localID → remoteID)
 	RachelSID         int      // set by the shepherd before calling RegisterAnimation
 
+	// bsStack tracks backing store pointers received from rachel.
+	// When a new backing store arrives, old entries are popped and released.
+	bsStack stack.Stack[BackingStoreEntry]
+
 	// --- Retained but unused: will move to rachel ---
 	NeuPrms      mancini.NeuParams
 	Radius       float64
@@ -56,13 +72,12 @@ type AppWindow struct {
 	textFace     mancini.LatinTextFace
 }
 
-// NewAppWindow creates an AppWindow with inside-out sizing constraints
-// clamped to [10%, 90%] of screen dimensions. screenWURI and screenHURI
-// are the kernel attribute URIs for screen width and height.
-func NewAppWindow(pal mancini.Palette, title string,
-	screenWURI, screenHURI string) *AppWindow {
+// NewAppWindow creates an AppWindow with outside-in sizing. Width and
+// Height are value attributes set by rachel via BackingStoreReady /
+// WindowResized messages.
+func NewAppWindow(pal mancini.Palette, title string) *AppWindow {
 
-	layout := mancini.NewAppWindowLayout(screenWURI, screenHURI)
+	layout := mancini.NewAppWindowLayout()
 
 	w := &AppWindow{
 		Pal:   pal,
@@ -70,6 +85,10 @@ func NewAppWindow(pal mancini.Palette, title string,
 	}
 	// Publish title so rachel can read it.
 	attr.ValueStr(attr.ShepherdURI("string", "AppWindow/Title"), title)
+
+	// Publish minimum window size (0 = use rachel's default of 8x8).
+	attr.ValueI64(attr.ShepherdURI("int64", "AppWindow/MinWidth"), 0)
+	attr.ValueI64(attr.ShepherdURI("int64", "AppWindow/MinHeight"), 0)
 
 	// Publish palette colors as packed NRGBA (R<<24 | G<<16 | B<<8 | A).
 	publishColor := func(name string, c color.NRGBA) {
@@ -127,6 +146,36 @@ func (w *AppWindow) InitInput() (*mancini.AppDispatcher, *mancini.ClickAgent, *m
 	d, click, key := mancini.StandardPipeline(w)
 	w.Input = d
 	return d, click, key
+}
+
+// SetSize updates the AppWindow's layout Width and Height to the given
+// app content dimensions. Called when rachel sends BackingStoreReady or
+// WindowResized with new dimensions.
+func (w *AppWindow) SetSize(appW, appH int64) {
+	lh := w.GetLayout()
+	if lh != nil {
+		lh.Width.Set(appW)
+		lh.Height.Set(appH)
+	}
+}
+
+// HandleBackingStoreReady processes a new backing store address from rachel.
+// Pops and releases (via Munmap) any stale entries from the backing store
+// stack. If the new address matches the current top, no action is taken.
+// Otherwise all non-matching entries are released and the new entry is pushed.
+func (w *AppWindow) HandleBackingStoreReady(addr uintptr, length int) {
+	for !w.bsStack.IsEmpty() {
+		top, _ := w.bsStack.Peek()
+		if top.Addr == addr {
+			return // already tracked
+		}
+		popped, _ := w.bsStack.Pop()
+		if err := mem.Munmap(popped.Addr, popped.Len); err != nil {
+			sys.UartWriteString(fmt.Sprintf("[AppWindow] Munmap old BS %x len=%d: %v\n",
+				popped.Addr, popped.Len, err))
+		}
+	}
+	w.bsStack.Push(BackingStoreEntry{Addr: addr, Len: length})
 }
 
 // Focus sets the window to focused state.
@@ -257,13 +306,24 @@ func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 	}
 	child := children[0]
 
-	// Propagate position and DC to child.
-	if l, ok := child.(mancini.Layouter); ok {
-		clh := l.GetLayout()
+	// Read child dimensions from its layout constraints (bridge or inside-out).
+	childW := ww
+	childH := hh
+	childL, hasLayout := child.(mancini.Layouter)
+	if hasLayout {
+		clh := childL.GetLayout()
 		if clh != nil {
 			clh.X.Set(x)
 			clh.Y.Set(y)
+			if !clh.Width.IsConstraint() {
+				clh.Width.Set(ww)
+			}
+			if !clh.Height.IsConstraint() {
+				clh.Height.Set(hh)
+			}
 		}
+		childW = int64(mancini.ChildWidth(childL, float64(ww)))
+		childH = int64(mancini.ChildHeight(childL, float64(hh)))
 	}
 	if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
 		cs.SetDC(dc)
@@ -274,14 +334,14 @@ func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 	const borderPad = 60
 	tc0 := nanotime()
 	ccR := mancini.WithClip(dc, float64(x), float64(y),
-		float64(ww), float64(hh), borderPad, mancini.ClipRight)
+		float64(childW), float64(childH), borderPad, mancini.ClipRight)
 	ccB := mancini.WithClip(dc, float64(x), float64(y),
-		float64(ww), float64(hh), borderPad, mancini.ClipBottom)
+		float64(childW), float64(childH), borderPad, mancini.ClipBottom)
 	drawPerf.AppClipNs.Add(nanotime() - tc0)
 
 	tc1 := nanotime()
 	if d, ok := child.(mancini.NewDrawer); ok {
-		d.Draw(child, x, y, ww, hh)
+		d.Draw(child, x, y, childW, childH)
 	}
 	drawPerf.AppChildNs.Add(nanotime() - tc1)
 

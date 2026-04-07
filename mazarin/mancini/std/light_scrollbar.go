@@ -228,7 +228,7 @@ func (s *LightScrollbar) ClickDragStart(ev *mancini.InputEvent) bool {
 }
 
 // ClickDragMove implements mancini.ClickDraggable.
-func (s *LightScrollbar) ClickDragMove(ev *mancini.InputEvent, outsideBounds bool) bool {
+func (s *LightScrollbar) ClickDragMove(ev *mancini.InputEvent, _ *mancini.InputEvent, outsideBounds bool) bool {
 	sx, sy := s.X(), s.Y()
 	sw, sh := s.W(), s.H()
 	trackStart, _, margin, travel := s.trackGeometry(sx, sy, sw, sh)

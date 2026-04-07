@@ -23,30 +23,30 @@ type RowFillLastChild struct {
 	impl.Parent
 
 	Pal     mancini.Palette
-	HMargin int64
+	HPadding int64
 
 	spacingURI string
-	hMarginURI string
+	hPaddingURI string
 	myName     string
 }
 
 // NewRowFillLastChild creates a RowFillLastChild. The row's width must
 // be set by the caller on GetLayout().Width before calling FinishLayout().
 func NewRowFillLastChild(myName, parent string, pal mancini.Palette, spacing int64) *RowFillLastChild {
-	hMargin := int64(1)
+	hPadding := int64(1)
 
 	if myName == "" {
 		myName = mancini.DefaultName("rowfilllastchild")
 	}
 
 	spacingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutSpacing)
-	hMarginURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHMargin)
+	hPaddingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHPadding)
 
 	r := &RowFillLastChild{
 		Pal:        pal,
-		HMargin:    hMargin,
+		HPadding:    hPadding,
 		spacingURI: spacingURI,
-		hMarginURI: hMarginURI,
+		hPaddingURI: hPaddingURI,
 		myName:     myName,
 	}
 
@@ -61,12 +61,41 @@ func NewRowFillLastChild(myName, parent string, pal mancini.Palette, spacing int
 	// Inter-child spacing attribute.
 	lh.SpacingAttr = attr.ValueI64(spacingURI, spacing)
 
-	// Horizontal margin attribute.
-	attr.ValueI64(hMarginURI, hMargin)
+	// Horizontal padding attribute.
+	attr.ValueI64(hPaddingURI, hPadding)
 
 	r.Interactor.Initialize(r, lh)
 	// Parent.Initialize is deferred to FinishLayout because it needs
 	// Bounds, which depends on Width (set by the caller).
+	return r
+}
+
+// NewRowFillLastChildWithLayout creates a RowFillLastChild using a pre-built
+// LayoutAttributes. Used when the caller provides bridge/custom layout.
+// Width and Height must already be set on lh. Call FinishLayout() after
+// children are created.
+func NewRowFillLastChildWithLayout(lh *mancini.LayoutAttributes, pal mancini.Palette, spacing int64) *RowFillLastChild {
+	myName := lh.Name()
+	hPadding := int64(1)
+
+	spacingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutSpacing)
+	hPaddingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHPadding)
+
+	r := &RowFillLastChild{
+		Pal:        pal,
+		HPadding:    hPadding,
+		spacingURI: spacingURI,
+		hPaddingURI: hPaddingURI,
+		myName:     myName,
+	}
+
+	// Inter-child spacing attribute.
+	lh.SpacingAttr = attr.ValueI64(spacingURI, spacing)
+
+	// Horizontal padding attribute.
+	attr.ValueI64(hPaddingURI, hPadding)
+
+	r.Interactor.Initialize(r, lh)
 	return r
 }
 
@@ -78,12 +107,14 @@ func (r *RowFillLastChild) FinishLayout() {
 
 	// Last child width constraint — computed from row width minus other children.
 	lastChildWidthProg := mancini.BindStringsChildren(ProgRowFillLastChildWidth,
-		"_rowWidth_", widthURI, "_spacing_", r.spacingURI, "_hMargin_", r.hMarginURI,
+		"_rowWidth_", widthURI, "_spacing_", r.spacingURI, "_hPadding_", r.hPaddingURI,
 		"_myName_", r.myName)
 	lastChildWidthURI := mancini.LayoutURI(r.myName, mancini.DataTypeInt64, "LastChildWidth")
 	attr.ConstraintI64(lastChildWidthURI, lastChildWidthProg)
 
-	lh.InitBounds(r.myName)
+	if lh.Bounds == nil {
+		lh.InitBounds(r.myName)
+	}
 	r.Parent.Initialize(true, &r.Interactor)
 }
 
@@ -121,7 +152,7 @@ func (r *RowFillLastChild) Draw(self mancini.Interactor, x, y, w, h int64) {
 
 	lh := r.GetLayout()
 	spacing := int64(lh.GetSpacing())
-	curX := x + r.HMargin
+	curX := x + r.HPadding
 
 	for i, child := range visible {
 		childL, hasLayout := child.(mancini.Layouter)
@@ -130,7 +161,7 @@ func (r *RowFillLastChild) Draw(self mancini.Interactor, x, y, w, h int64) {
 		var childW int64
 		if isLast {
 			// Last child gets remaining width.
-			childW = (x + w - r.HMargin) - curX
+			childW = (x + w - r.HPadding) - curX
 			if childW < 0 {
 				childW = 0
 			}
@@ -153,12 +184,18 @@ func (r *RowFillLastChild) Draw(self mancini.Interactor, x, y, w, h int64) {
 		// Vertically center child.
 		childY := y + (h-childH)/2
 
-		// Publish child position.
+		// Publish child position and dimensions for pick/hit-testing.
 		if hasLayout {
 			clh := childL.GetLayout()
 			if clh != nil {
 				clh.X.Set(curX)
 				clh.Y.Set(childY)
+				if !clh.Width.IsConstraint() {
+					clh.Width.Set(childW)
+				}
+				if !clh.Height.IsConstraint() {
+					clh.Height.Set(childH)
+				}
 			}
 		}
 

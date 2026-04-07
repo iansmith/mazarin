@@ -101,7 +101,7 @@ func (c *ColumnOutsideIn) Draw(self mancini.Interactor, x, y, w, h int64) {
 			continue
 		}
 
-		// Show this child.
+		// Show this child and publish dimensions for pick/hit-testing.
 		if l, ok := child.(mancini.Layouter); ok {
 			lh := l.GetLayout()
 			if lh != nil {
@@ -110,6 +110,12 @@ func (c *ColumnOutsideIn) Draw(self mancini.Interactor, x, y, w, h int64) {
 				}
 				lh.X.Set(x)
 				lh.Y.Set(curY)
+				if !lh.Width.IsConstraint() {
+					lh.Width.Set(w)
+				}
+				if !lh.Height.IsConstraint() {
+					lh.Height.Set(childH)
+				}
 			}
 		}
 

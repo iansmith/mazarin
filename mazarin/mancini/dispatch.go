@@ -85,7 +85,7 @@ type TripleClickable interface {
 // means for its own semantics.
 type ClickDraggable interface {
 	ClickDragStart(ev *InputEvent) bool
-	ClickDragMove(ev *InputEvent, outsideBounds bool) bool
+	ClickDragMove(ev *InputEvent, startEv *InputEvent, outsideBounds bool) bool
 	ClickDragEnd(ev *InputEvent, outsideBounds bool) bool
 }
 

@@ -3,7 +3,7 @@ import "children"
 func columnHeight() int64 {
 	maxH := derefI64("_maxHeight_")
 	spacing := derefI64("_spacing_")
-	margin := derefI64("_vMargin_")
+	padding := derefI64("_vPadding_")
 
 	if hasNoVisibleChildren("_myName_") {
 		return int64(20)
@@ -19,11 +19,11 @@ func columnHeight() int64 {
 		if n > 0 {
 			next = next + spacing
 		}
-		if next + margin > maxH {
+		if next + padding > maxH {
 			return maxH
 		}
 		total = next
 		n = n + 1
 	}
-	return total + 2*margin
+	return total + 2*padding
 }

@@ -107,20 +107,16 @@ func main() {
 	sys.UartWriteString(fmt.Sprintf("[versai] screen: %dx%d\n", screenW, screenH))
 
 	// 5. Build interactor tree: AppWindow > RowFillLastChild > [Scroller, Scrollbar]
-	app := std.NewAppWindow(pal, "Versai",
-		"attr:///kernel/int64/screen/width", "attr:///kernel/int64/screen/height")
+	app := std.NewAppWindow(pal, "Versai")
 	app.Focused = false
 
 	// Window dimensions.
 	const winW, winH = 800, 600
 
-	// RowFillLastChild: parent = AppWindow. Scroller gets 95%, scrollbar gets rest.
-	row := std.NewRowFillLastChild("main_row", "AppWindow", pal, 0)
-
-	// Set row width to window width — RowFillLastChild needs external width.
-	rowLH := row.GetLayout()
-	rowLH.Width = attr.ValueI64(
-		mancini.LayoutURI("main_row", mancini.DataTypeInt64, mancini.LayoutWidth), int64(winW))
+	// RowFillLastChild with absorbing bridge: width has no max (last child absorbs),
+	// height clamped to [300, 800].
+	bridgeLH := mancini.NewBridgeLayout("main_row", 400, 9999, 300, 800)
+	row := std.NewRowFillLastChildWithLayout(bridgeLH, pal, 0)
 
 	// Scroller: parent = main_row. Height = winH (fixed value attribute).
 	scrollerH := attr.ValueI64(std.ScrollerHeightURI("scroller"), int64(winH))
@@ -141,7 +137,6 @@ func main() {
 	appLH := app.GetLayout()
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
-
 	var posXAttr, posYAttr *attr.Attribute[int64]
 	if rachelSID >= 0 {
 		rachelSIDStr := strconv.Itoa(rachelSID)
@@ -188,10 +183,12 @@ func main() {
 		}
 	}
 
-	// 9. Set up drawing.
+	// 9. Set up drawing — use actual dimensions from rachel.
+	appLH.Width.Set(int64(bsr.AppWidth))
+	appLH.Height.Set(int64(bsr.AppHeight))
+
 	disp, _, _ := app.InitInput()
-	disp.OriginX = int64(bsr.AppX)
-	disp.OriginY = int64(bsr.AppY)
+	// Rachel converts screen→app-local coords before sending, so OriginX/Y = 0.
 	mancini.SetScreenOrigin(int64(bsr.AppX), int64(bsr.AppY))
 	disp.Debug = true
 	disp.Tag = "versai"

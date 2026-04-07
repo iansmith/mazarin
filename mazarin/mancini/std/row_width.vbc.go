@@ -285,7 +285,7 @@ var ProgRowWidth = &vm.Program{
 		"",
 		"_maxWidth_",
 		"_spacing_",
-		"_hMargin_",
+		"_hPadding_",
 		"_myName_",
 	},
 	NumArgs: 0,

@@ -286,7 +286,7 @@ func (s *Scrollbar) ClickDragStart(ev *mancini.InputEvent) bool {
 }
 
 // ClickDragMove implements mancini.ClickDraggable.
-func (s *Scrollbar) ClickDragMove(ev *mancini.InputEvent, outsideBounds bool) bool {
+func (s *Scrollbar) ClickDragMove(ev *mancini.InputEvent, _ *mancini.InputEvent, outsideBounds bool) bool {
 	// Track the main axis even when the cursor drifts off the cross axis.
 	// A 15px-tall horizontal scrollbar is too thin to keep the cursor inside.
 	sx, sy := s.X(), s.Y()

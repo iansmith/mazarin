@@ -1,12 +1,13 @@
 // wm_dispatch.go implements rachel's subArctic-style input dispatch pipeline.
 //
-// Rachel's dispatch pipeline has five policies in priority order:
+// Rachel's dispatch pipeline has six policies in priority order:
 //
-//  1. "wm-accel"      (focus)       — AcceleratorAgent: WM keyboard shortcuts
-//  2. "drag"          (focus)       — DragAgent: mouse move/release during active drag
-//  3. "focus-change"  (positional)  — FocusChangeAgent: single/double/triple click FSM
-//  4. "mouse"         (positional)  — PressAgent: forward press to focused window
-//  5. "keyboard"      (focus)       — KeyForwardAgent: forward keyboard to focused app
+//  1. "wm-accel"       (focus)       — AcceleratorAgent: WM keyboard shortcuts
+//  2. "drag"           (focus)       — DragAgent: mouse move/release during active drag
+//  3. "titlebar-drag"  (positional)  — TitlebarDragAgent: titlebar press → focus + move
+//  4. "resize-drag"    (positional)  — ResizeDragAgent: resize handle press → focus + resize
+//  5. "press"          (positional)  — PressAgent: content press → focus + forward to shepherd
+//  6. "keyboard"       (focus)       — KeyForwardAgent: forward keyboard to focused app
 //
 // Interactors:
 //   - WMInteractor: rachel herself (receives accelerator actions)
@@ -15,12 +16,16 @@ package main
 
 import (
 	"fmt"
+	"mazzy/mazarin/attr"
 	"mazzy/mazarin/input"
 	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
 	"mazzy/shared/wm"
+	"strconv"
 	"time"
+	"unsafe"
 )
 
 // wmKeyMapper is the global KeyMapper used by rachel to translate
@@ -122,9 +127,80 @@ func (w *WindowInteractor) InTitleBar(x, y int32) bool {
 	return x >= tbX0 && x < tbX1 && y >= tbY0 && y < tbY1
 }
 
+// ResizeEdge identifies which window edge is being resized.
+type ResizeEdge int
+
+const (
+	EdgeNone   ResizeEdge = iota
+	EdgeLeft              // left border center
+	EdgeRight             // right border center
+	EdgeBottom            // bottom border center
+)
+
+const resizeHitWidth = 24 // pixels of hot zone for resize detection
+
+// midSpan returns the start and end of the middle 20% of a range,
+// clamped to a minimum of 10 pixels.
+func midSpan(lo, hi int32) (int32, int32) {
+	length := hi - lo
+	span := length / 5 // 20%
+	if span < 10 {
+		span = 10
+	}
+	if span > length {
+		span = length
+	}
+	center := lo + length/2
+	return center - span/2, center + span/2
+}
+
+// InResizeEdge returns the resize edge under screen point (x,y), or
+// EdgeNone if the point is not in a resize zone. Only bottom, left,
+// and right edges are supported. Each edge's hit zone is the middle
+// 20% of the edge length (minimum 10px).
+func (w *WindowInteractor) InResizeEdge(x, y int32) ResizeEdge {
+	ta := w.ta
+	oy := ta.y - int32(borderTop)
+
+	// App area in screen coordinates.
+	appX0 := ta.x
+	appX1 := ta.x + ta.appWidth
+	appY0 := ta.y
+	appY1 := ta.y + ta.appHeight
+
+	// Bottom edge: below app area, middle 20% of X range.
+	botY0 := appY1
+	botY1 := oy + ta.bsHeight
+	botX0, botX1 := midSpan(appX0, appX1)
+	if x >= botX0 && x < botX1 && y >= botY0 && y < botY1 {
+		return EdgeBottom
+	}
+
+	// Left edge: inner edge of left border, middle 20% of Y range.
+	leftX0 := appX0 - int32(resizeHitWidth)
+	leftX1 := appX0
+	leftY0, leftY1 := midSpan(appY0, appY1)
+	if x >= leftX0 && x < leftX1 && y >= leftY0 && y < leftY1 {
+		return EdgeLeft
+	}
+
+	// Right edge: inner edge of right border, middle 20% of Y range.
+	rightX0 := appX1
+	rightX1 := appX1 + int32(resizeHitWidth)
+	rightY0, rightY1 := midSpan(appY0, appY1)
+	if x >= rightX0 && x < rightX1 && y >= rightY0 && y < rightY1 {
+		return EdgeRight
+	}
+
+	return EdgeNone
+}
+
 func (w *WindowInteractor) Press(ev *input.InputEvent) bool {
+	// Convert screen coords to app-local coords so the shepherd doesn't
+	// need to know its own screen position (which changes after drags).
 	msg := wm.EncodeMousePress(&wm.MousePress{
-		X: ev.X, Y: ev.Y, Button: int32(ev.Code), Mods: ev.Mods,
+		X: ev.X - int32(w.ta.x), Y: ev.Y - int32(w.ta.y),
+		Button: int32(ev.Code), Mods: ev.Mods,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
 		sys.UartWriteString(fmt.Sprintf("[rachel:press] uring.Send to SID %d: %v\n", w.ta.sid, err))
@@ -134,7 +210,8 @@ func (w *WindowInteractor) Press(ev *input.InputEvent) bool {
 
 func (w *WindowInteractor) Release(ev *input.InputEvent) bool {
 	msg := wm.EncodeMouseRelease(&wm.MouseRelease{
-		X: ev.X, Y: ev.Y, Button: int32(ev.Code), Mods: ev.Mods,
+		X: ev.X - int32(w.ta.x), Y: ev.Y - int32(w.ta.y),
+		Button: int32(ev.Code), Mods: ev.Mods,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
 		sys.UartWriteString(fmt.Sprintf("[rachel:release] uring.Send to SID %d: %v\n", w.ta.sid, err))
@@ -144,7 +221,8 @@ func (w *WindowInteractor) Release(ev *input.InputEvent) bool {
 
 func (w *WindowInteractor) Move(ev *input.InputEvent) bool {
 	msg := wm.EncodeMouseMove(&wm.MouseMove{
-		X: ev.X, Y: ev.Y, Mods: ev.Mods,
+		X: ev.X - int32(w.ta.x), Y: ev.Y - int32(w.ta.y),
+		Mods: ev.Mods,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
 		sys.UartWriteString(fmt.Sprintf("[rachel:move] uring.Send to SID %d: %v\n", w.ta.sid, err))
@@ -260,32 +338,70 @@ type DragAgent struct {
 	dragOffsetY  int32 // mouse offset from ta.y at press time
 	prevCursorX  int32 // cursor position of previous move event
 	prevCursorY  int32 // cursor position of previous move event
+
+	// Resize state.
+	isResize     bool
+	resizeEdge   ResizeEdge
+	resizeOrigW  int32 // app width at drag start
+	resizeOrigH  int32 // app height at drag start
+	resizeMinW   int32 // minimum app width
+	resizeMinH   int32 // minimum app height
+	resizeMaxW   int32 // maximum app width (to screen edge)
+	resizeMaxH   int32 // maximum app height (to screen edge)
+	resizeOrigX  int32 // window X at drag start (for left-edge resize)
+	resizePressX int32 // mouse X at drag start
+	resizePressY int32 // mouse Y at drag start
+	resizePrevW     int32  // previous frame's app width (skip no-op redraws)
+	resizePrevH     int32  // previous frame's app height
+	oversizedBuf    []byte // max-size backing store allocated at drag start
+	oldBackingStore []byte // original backing store saved at drag start
 }
 
 func (a *DragAgent) Name() string                  { return "drag" }
 func (a *DragAgent) FocusTarget() input.Interactor { return a.target }
 func (a *DragAgent) SetFocus(t input.Interactor)   { a.target = t }
 
-// StartDrag establishes the drag target and the button code that ends it.
-// If the press is in the title bar, the drag moves the window directly.
-func (a *DragAgent) StartDrag(target input.Interactor, buttonCode uint16, pressX, pressY int32) {
-	a.target = target
+// StartTitlebarDrag sets up DragAgent for a window move via titlebar drag.
+func (a *DragAgent) StartTitlebarDrag(wi *WindowInteractor, buttonCode uint16, pressX, pressY int32) {
+	a.target = wi
+	a.buttonCode = buttonCode
+	a.titlebarDrag = true
+	a.isResize = false
+	a.dragOffsetX = pressX - wi.ta.x
+	a.dragOffsetY = pressY - wi.ta.y
+	a.prevCursorX = pressX
+	a.prevCursorY = pressY
+	sys.UartWriteString(fmt.Sprintf("[rachel:drag] titlebar drag SID=%d offset=(%d,%d)\n",
+		wi.ta.sid, a.dragOffsetX, a.dragOffsetY))
+	startDragComposite(wi.ta.sid)
+}
+
+// StartContentDrag sets up DragAgent to forward move/release to the target.
+// Used for content-area clicks where the shepherd handles drag semantics.
+func (a *DragAgent) StartContentDrag(wi *WindowInteractor, buttonCode uint16) {
+	a.target = wi
 	a.buttonCode = buttonCode
 	a.titlebarDrag = false
-	if wi, ok := target.(*WindowInteractor); ok && wi.InTitleBar(pressX, pressY) {
-		a.titlebarDrag = true
-		a.dragOffsetX = pressX - wi.ta.x
-		a.dragOffsetY = pressY - wi.ta.y
-		a.prevCursorX = pressX
-		a.prevCursorY = pressY
-		sys.UartWriteString(fmt.Sprintf("[rachel:drag] titlebar drag SID=%d offset=(%d,%d)\n",
-			wi.ta.sid, a.dragOffsetX, a.dragOffsetY))
-		startDragComposite(wi.ta.sid)
-	}
+	a.isResize = false
+}
+
+// StartResizeDrag sets up DragAgent for a window resize drag.
+func (a *DragAgent) StartResizeDrag(wi *WindowInteractor, pressX, pressY int32, buttonCode uint16, edge ResizeEdge) {
+	a.target = wi
+	a.buttonCode = buttonCode
+	a.titlebarDrag = false
+	a.isResize = false
+	a.startDragResize(wi, pressX, pressY, edge)
 }
 
 func (a *DragAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool {
 	if ev.IsMouseMove() {
+		if a.isResize {
+			if wi, ok := target.(*WindowInteractor); ok {
+				a.dragMoveResize(ev, wi)
+			}
+			return true
+		}
 		if a.titlebarDrag {
 			if wi, ok := target.(*WindowInteractor); ok {
 				// Detect cursor teleportation: if the cursor jumped more
@@ -324,6 +440,15 @@ func (a *DragAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool 
 		return false
 	}
 	if ev.IsMouseButton() && ev.IsRelease() && ev.Code == a.buttonCode {
+		if a.isResize {
+			if wi, ok := target.(*WindowInteractor); ok {
+				a.dragEndResize(wi)
+			}
+			a.isResize = false
+			a.target = nil
+			a.buttonCode = 0
+			return true
+		}
 		if a.titlebarDrag {
 			endDragComposite()
 			a.titlebarDrag = false
@@ -342,225 +467,378 @@ func (a *DragAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool 
 	return false
 }
 
-// --- FocusChangeAgent ---
+// startDragResize begins a window resize operation.
+func (a *DragAgent) startDragResize(wi *WindowInteractor, pressX, pressY int32, edge ResizeEdge) {
+	ta := wi.ta
+	a.isResize = true
+	a.resizeEdge = edge
+	a.resizeOrigW = ta.appWidth
+	a.resizeOrigH = ta.appHeight
+	a.resizeOrigX = ta.x
+	a.resizePressX = pressX
+	a.resizePressY = pressY
+	a.resizePrevW = ta.appWidth
+	a.resizePrevH = ta.appHeight
+
+	// Read min size from app attributes (default 8).
+	sidStr := strconv.Itoa(ta.sid)
+	a.resizeMinW = 8
+	a.resizeMinH = 8
+	if v, ok := attr.DerefI64(wm.AppWindowMinWidthURI(sidStr)); ok && v > 0 {
+		a.resizeMinW = int32(v)
+	}
+	if v, ok := attr.DerefI64(wm.AppWindowMinHeightURI(sidStr)); ok && v > 0 {
+		a.resizeMinH = int32(v)
+	}
+
+	// Compute max possible size based on edge direction and screen bounds.
+	dw := int32(displayWidth)
+	dh := int32(displayHeight)
+	switch edge {
+	case EdgeRight:
+		a.resizeMaxW = dw - ta.x - int32(borderRight)
+		a.resizeMaxH = ta.appHeight // not resizing vertically
+	case EdgeLeft:
+		a.resizeMaxW = ta.x + ta.appWidth - int32(borderLeft)
+		a.resizeMaxH = ta.appHeight
+	case EdgeBottom:
+		a.resizeMaxW = ta.appWidth // not resizing horizontally
+		a.resizeMaxH = dh - ta.y - int32(borderBottom)
+	}
+
+	// Raise + focus if needed.
+	if !hasFocus(ta.sid) {
+		grantFocus(ta.sid)
+	}
+
+	// Determine max total buffer size for the oversized backing store.
+	maxAppW := a.resizeMaxW
+	maxAppH := a.resizeMaxH
+	if edge == EdgeBottom {
+		maxAppH = a.resizeMaxH
+	}
+	maxTotalW := maxAppW + int32(borderLeft) + int32(borderRight)
+	maxTotalH := maxAppH + int32(borderTop) + int32(borderBottom)
+	maxBytes := int(maxTotalW) * 4 * int(maxTotalH)
+	maxPages := (maxBytes + 4095) / 4096
+
+	// Allocate oversized backing store.
+	oversized, err := mem.AllocPagesSlice(maxPages, mem.PageShared)
+	if err != nil {
+		sys.UartWriteString(fmt.Sprintf("[rachel:resize] oversized alloc failed: %v\n", err))
+		a.isResize = false
+		return
+	}
+	a.oversizedBuf = oversized
+
+	// Save old backing store for release at end of resize.
+	a.oldBackingStore = ta.backingStore
+
+	// Copy current backing store content into top-left of new buffer.
+	oldBS := ta.backingStore
+	oldStride := int(ta.bsStride)
+	newStride := int(maxTotalW) * 4
+	rows := int(ta.bsHeight)
+	for row := 0; row < rows; row++ {
+		srcOff := row * oldStride
+		dstOff := row * newStride
+		if srcOff+oldStride <= len(oldBS) && dstOff+oldStride <= len(oversized) {
+			copy(oversized[dstOff:dstOff+oldStride], oldBS[srcOff:srcOff+oldStride])
+		}
+	}
+
+	// Update trackedApp to use oversized buffer. Keep bsWidth/bsHeight at
+	// the current logical window size so rachel only blits the visible
+	// portion. The stride must match the oversized buffer's row width so
+	// pixel addressing is correct.
+	ta.backingStore = oversized
+	// bsWidth and bsHeight stay at their current values (unchanged).
+	ta.bsStride = maxTotalW * 4
+
+	// Re-render decorations for current (not yet resized) dimensions.
+	preRenderDecorations(ta)
+
+	// Share oversized buffer with target app.
+	bsVA := uintptr(unsafe.Pointer(&oversized[0]))
+	clientVA, shareErr := sys.SharePagesWithTarget(ta.sid, bsVA, maxPages)
+	if shareErr != nil {
+		sys.UartWriteString(fmt.Sprintf("[rachel:resize] share pages failed: %v\n", shareErr))
+		a.isResize = false
+		return
+	}
+
+	// Send BackingStoreReady to app with the oversized buffer.
+	bsr := wm.EncodeBackingStoreReady(&wm.BackingStoreReady{
+		BackingStoreAddr: int64(clientVA),
+		TotalWidth:       ta.bsWidth,
+		TotalHeight:      ta.bsHeight,
+		TotalStride:      ta.bsStride,
+		LeftInset:        int32(borderLeft),
+		TopInset:         int32(borderTop),
+		AppWidth:         ta.appWidth,
+		AppHeight:        ta.appHeight,
+		AppX:             ta.x,
+		AppY:             ta.y,
+	})
+	_ = uring.Send(ta.sid, &bsr)
+
+	// Pre-render fixed background for compositing.
+	startDragComposite(ta.sid)
+
+	sys.UartWriteString(fmt.Sprintf("[rachel:resize] start edge=%d SID=%d orig=%dx%d max=%dx%d\n",
+		edge, ta.sid, a.resizeOrigW, a.resizeOrigH, maxAppW, maxAppH))
+}
+
+// dragMoveResize handles mouse movement during a resize drag.
+func (a *DragAgent) dragMoveResize(ev *input.InputEvent, wi *WindowInteractor) {
+	ta := wi.ta
+
+	newAppW := a.resizeOrigW
+	newAppH := a.resizeOrigH
+	newX := a.resizeOrigX
+
+	dx := ev.X - a.resizePressX
+	dy := ev.Y - a.resizePressY
+
+	switch a.resizeEdge {
+	case EdgeRight:
+		newAppW = a.resizeOrigW + dx
+	case EdgeLeft:
+		newAppW = a.resizeOrigW - dx
+		newX = a.resizeOrigX + dx
+	case EdgeBottom:
+		newAppH = a.resizeOrigH + dy
+	}
+
+	// Clamp to [min, max].
+	if newAppW < a.resizeMinW {
+		newAppW = a.resizeMinW
+	}
+	if newAppW > a.resizeMaxW {
+		newAppW = a.resizeMaxW
+	}
+	if newAppH < a.resizeMinH {
+		newAppH = a.resizeMinH
+	}
+	if newAppH > a.resizeMaxH {
+		newAppH = a.resizeMaxH
+	}
+
+	// For left edge, re-derive X from width.
+	if a.resizeEdge == EdgeLeft {
+		newX = a.resizeOrigX + (a.resizeOrigW - newAppW)
+	}
+
+	// Skip if size unchanged.
+	if newAppW == a.resizePrevW && newAppH == a.resizePrevH {
+		return
+	}
+	a.resizePrevW = newAppW
+	a.resizePrevH = newAppH
+
+	// Update tracked app dimensions. bsStride stays at the oversized
+	// buffer's row width — do NOT recompute from bsWidth.
+	ta.appWidth = newAppW
+	ta.appHeight = newAppH
+	ta.bsWidth = newAppW + int32(borderLeft) + int32(borderRight)
+	ta.bsHeight = newAppH + int32(borderTop) + int32(borderBottom)
+	if a.resizeEdge == EdgeLeft {
+		ta.x = newX
+	}
+
+	// Re-render decorations for new size.
+	preRenderDecorations(ta)
+
+	// Send WindowResized to app with updated dimensions.
+	// TotalStride is the oversized buffer's stride (unchanged during drag).
+	wr := wm.EncodeWindowResized(&wm.WindowResized{
+		BackingStoreAddr: 0, // same buffer, no change
+		TotalWidth:       ta.bsWidth,
+		TotalHeight:      ta.bsHeight,
+		TotalStride:      ta.bsStride, // oversized stride
+		LeftInset:        int32(borderLeft),
+		TopInset:         int32(borderTop),
+		AppWidth:         newAppW,
+		AppHeight:        newAppH,
+		AppX:             ta.x,
+		AppY:             ta.y,
+	})
+	_ = uring.Send(ta.sid, &wr)
+
+	// Composite: blit resized window over drag background.
+	compositeDragWindow()
+}
+
+// dragEndResize finalizes a window resize. Allocates a final-size buffer,
+// copies content, shares it with the app, frees the oversized buffer.
+func (a *DragAgent) dragEndResize(wi *WindowInteractor) {
+	ta := wi.ta
+	endDragComposite()
+
+	// Allocate final-size backing store.
+	finalW := ta.bsWidth
+	finalH := ta.bsHeight
+	finalBytes := int(finalW) * 4 * int(finalH)
+	finalPages := (finalBytes + 4095) / 4096
+	finalBuf, err := mem.AllocPagesSlice(finalPages, mem.PageShared)
+	if err != nil {
+		sys.UartWriteString(fmt.Sprintf("[rachel:resize] final alloc failed: %v\n", err))
+		// Keep using oversized buffer — not ideal, but not fatal.
+		a.oversizedBuf = nil
+		return
+	}
+
+	// Copy content from oversized buffer to final buffer.
+	oversized := a.oversizedBuf
+	oversizedStride := int(ta.bsWidth) * 4 // bsWidth was updated during resize
+	// The oversized buffer may have a wider stride from allocation.
+	// We compute the actual oversized stride from the max dimensions.
+	maxTotalW := int(a.resizeMaxW) + borderLeft + borderRight
+	actualOversizedStride := maxTotalW * 4
+	finalStride := int(finalW) * 4
+	for row := 0; row < int(finalH); row++ {
+		srcOff := row * actualOversizedStride
+		dstOff := row * finalStride
+		copyLen := finalStride
+		if srcOff+copyLen <= len(oversized) && dstOff+copyLen <= len(finalBuf) {
+			copy(finalBuf[dstOff:dstOff+copyLen], oversized[srcOff:srcOff+copyLen])
+		}
+	}
+	_ = oversizedStride // used above
+
+	// Update trackedApp to use final buffer.
+	ta.backingStore = finalBuf
+	ta.bsStride = int32(finalStride)
+
+	// Share final buffer with target app.
+	bsVA := uintptr(unsafe.Pointer(&finalBuf[0]))
+	clientVA, shareErr := sys.SharePagesWithTarget(ta.sid, bsVA, finalPages)
+	if shareErr != nil {
+		sys.UartWriteString(fmt.Sprintf("[rachel:resize] final share failed: %v\n", shareErr))
+	} else {
+		// Send BackingStoreReady with final buffer.
+		bsr := wm.EncodeBackingStoreReady(&wm.BackingStoreReady{
+			BackingStoreAddr: int64(clientVA),
+			TotalWidth:       finalW,
+			TotalHeight:      finalH,
+			TotalStride:      int32(finalStride),
+			LeftInset:        int32(borderLeft),
+			TopInset:         int32(borderTop),
+			AppWidth:         ta.appWidth,
+			AppHeight:        ta.appHeight,
+			AppX:             ta.x,
+			AppY:             ta.y,
+		})
+		_ = uring.Send(ta.sid, &bsr)
+	}
+
+	// Free oversized buffer (rachel's side).
+	oversizedAddr := uintptr(unsafe.Pointer(&oversized[0]))
+	if err := mem.Munmap(oversizedAddr, len(oversized)); err != nil {
+		sys.UartWriteString(fmt.Sprintf("[rachel:resize] Munmap oversized: %v\n", err))
+	}
+	a.oversizedBuf = nil
+
+	// Free old original backing store (rachel's side). The app releases
+	// its mapping via the BackingStoreStack algorithm when it processes
+	// the BackingStoreReady message above.
+	if a.oldBackingStore != nil {
+		oldAddr := uintptr(unsafe.Pointer(&a.oldBackingStore[0]))
+		if err := mem.Munmap(oldAddr, len(a.oldBackingStore)); err != nil {
+			sys.UartWriteString(fmt.Sprintf("[rachel:resize] Munmap old BS: %v\n", err))
+		}
+		a.oldBackingStore = nil
+	}
+
+	// Restore normal cursor.
+	if standardCursorID >= 0 {
+		_ = sys.SetCursor(standardCursorID)
+		cursorIsResize = 0
+		cursorIsInverse = false
+	}
+
+	sys.UartWriteString(fmt.Sprintf("[rachel:resize] end SID=%d final=%dx%d\n",
+		ta.sid, ta.appWidth, ta.appHeight))
+}
+
+// --- TitlebarDragAgent ---
 //
-// Positional agent implementing a 5-state FSM that distinguishes single-click,
-// double-click, and triple-click on unfocused windows. Only consumes clicks
-// that are about focus management; clicks on already-focused windows pass
-// through to PressAgent.
+// Positional agent that fires only when the cursor is pressed in a
+// window's title bar. Grants focus if needed and starts a titlebar
+// drag so the user can focus+move in one gesture. Returns true to
+// stop the pick-list loop from reaching windows behind the topmost.
+
+type TitlebarDragAgent struct {
+	dragAgent *DragAgent
+	keyFwd    *KeyForwardAgent
+}
+
+func (a *TitlebarDragAgent) Name() string { return "titlebar-drag" }
+
+func (a *TitlebarDragAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool {
+	if !ev.IsMouseButton() || !ev.IsPress() {
+		return false
+	}
+	wi, ok := target.(*WindowInteractor)
+	if !ok {
+		return false
+	}
+	if !wi.InTitleBar(ev.X, ev.Y) {
+		return false
+	}
+	// Grant focus if not already focused.
+	if !hasFocus(wi.ta.sid) {
+		sys.UartWriteString(fmt.Sprintf("[rachel:titlebar] raise+focus SID %d\n", wi.ta.sid))
+		grantFocus(wi.ta.sid)
+		a.keyFwd.SetFocus(wi)
+	}
+	a.dragAgent.StartTitlebarDrag(wi, ev.Code, ev.X, ev.Y)
+	return true
+}
+
+// --- ResizeDragAgent ---
 //
-// Actions:
-//   - Single click (unfocused): raise to front + grant focus
-//   - Double click (unfocused): grant focus, no raise
-//   - Triple click (unfocused): reserved (no action yet)
-//   - Click on empty space: revoke all focus
+// Positional agent that fires only when the cursor is pressed on a
+// resize handle (bottom, left, or right edge hot zones). Grants focus
+// if needed and starts a resize drag. Returns true to stop the
+// pick-list loop.
 
-type focusState int
-
-const (
-	fcIdle focusState = iota
-	fcGotPress
-	fcWaitSecond
-	fcGotSecondPress
-	fcWaitThird
-	fcGotThirdPress
-)
-
-// doubleClickTimeout is the maximum time between clicks for multi-click
-// detection. Checked by CheckTimer after each input batch.
-const doubleClickTimeout = 250 * time.Millisecond
-
-// clickRadius is the maximum distance (in pixels) the cursor can move
-// between press and release for the gesture to count as a click.
-const clickRadius int32 = 5
-
-type FocusChangeAgent struct {
-	state    focusState
-	target   *WindowInteractor // the unfocused window being clicked
-	pressX   int32             // position of the initial press
-	pressY   int32
-	deadline time.Time // when the current wait state expires
-	keyFwd   *KeyForwardAgent
+type ResizeDragAgent struct {
+	dragAgent *DragAgent
+	keyFwd    *KeyForwardAgent
 }
 
-func (a *FocusChangeAgent) Name() string { return "focus-change" }
+func (a *ResizeDragAgent) Name() string { return "resize-drag" }
 
-// Deliver is called by the positional dispatch policy for each picked
-// interactor under the cursor.
-func (a *FocusChangeAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool {
-	// Only handle mouse button events.
-	if !ev.IsMouseButton() {
+func (a *ResizeDragAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool {
+	if !ev.IsMouseButton() || !ev.IsPress() {
 		return false
 	}
-
-	wi, isWindow := target.(*WindowInteractor)
-
-	switch a.state {
-	case fcIdle:
-		if !ev.IsPress() {
-			return false
-		}
-		// Click on empty space handled by the pick list being empty —
-		// but if we reach here with a non-window target, ignore it.
-		if !isWindow {
-			return false
-		}
-		// Already focused — let it pass through to PressAgent.
-		if hasFocus(wi.ta.sid) {
-			return false
-		}
-		// Titlebar click on unfocused window: immediately grant focus
-		// and let PressAgent start a drag so the user can focus+move
-		// in one gesture.
-		if wi.InTitleBar(ev.X, ev.Y) {
-			sys.UartWriteString(fmt.Sprintf("[rachel:focus] titlebar-click → raise+focus SID %d\n", wi.ta.sid))
-			grantFocus(wi.ta.sid)
-			a.keyFwd.SetFocus(wi)
-			return false // pass through to PressAgent for drag
-		}
-		// Client area click on unfocused window: begin click detection FSM.
-		a.state = fcGotPress
-		a.target = wi
-		a.pressX = ev.X
-		a.pressY = ev.Y
-		return true // consume the press
-
-	case fcGotPress:
-		if !ev.IsRelease() {
-			return true // consume stray events while waiting for release
-		}
-		if !a.nearPress(ev.X, ev.Y) {
-			// Moved too far — commit as single click immediately.
-			a.commitSingleClick()
-			return true
-		}
-		// Clean release near the press point. Wait for possible second click.
-		a.state = fcWaitSecond
-		a.deadline = time.Now().Add(doubleClickTimeout)
-		return true
-
-	case fcWaitSecond:
-		if !ev.IsPress() {
-			return false
-		}
-		if isWindow && wi == a.target && a.nearPress(ev.X, ev.Y) {
-			// Second press on same target within area.
-			a.state = fcGotSecondPress
-			return true
-		}
-		// Press on a different target or too far away.
-		a.commitSingleClick()
-		// Don't consume — let the new press be re-evaluated from Idle
-		// on the next dispatch cycle.
+	wi, ok := target.(*WindowInteractor)
+	if !ok {
 		return false
-
-	case fcGotSecondPress:
-		if !ev.IsRelease() {
-			return true
-		}
-		if !a.nearPress(ev.X, ev.Y) {
-			// Moved too far — fall back to single click.
-			a.commitSingleClick()
-			return true
-		}
-		// Clean second release. Wait for possible third click.
-		a.state = fcWaitThird
-		a.deadline = time.Now().Add(doubleClickTimeout)
-		return true
-
-	case fcWaitThird:
-		if !ev.IsPress() {
-			return false
-		}
-		if isWindow && wi == a.target && a.nearPress(ev.X, ev.Y) {
-			a.state = fcGotThirdPress
-			return true
-		}
-		// Different target or too far — commit as double click.
-		a.commitDoubleClick()
+	}
+	edge := wi.InResizeEdge(ev.X, ev.Y)
+	if edge == EdgeNone {
 		return false
-
-	case fcGotThirdPress:
-		if !ev.IsRelease() {
-			return true
-		}
-		if !a.nearPress(ev.X, ev.Y) {
-			// Moved too far — fall back to double click.
-			a.commitDoubleClick()
-			return true
-		}
-		// Triple click completed.
-		a.commitTripleClick()
-		return true
 	}
-	return false
+	// Grant focus if not already focused.
+	if !hasFocus(wi.ta.sid) {
+		sys.UartWriteString(fmt.Sprintf("[rachel:resize] raise+focus SID %d\n", wi.ta.sid))
+		grantFocus(wi.ta.sid)
+		a.keyFwd.SetFocus(wi)
+	}
+	a.dragAgent.StartResizeDrag(wi, ev.X, ev.Y, ev.Code, edge)
+	return true
 }
 
-// CheckTimer should be called after each input batch to commit pending
-// clicks whose deadline has expired. Returns true if a timer fired.
-func (a *FocusChangeAgent) CheckTimer() bool {
-	switch a.state {
-	case fcWaitSecond:
-		if time.Now().After(a.deadline) {
-			a.commitSingleClick()
-			return true
-		}
-	case fcWaitThird:
-		if time.Now().After(a.deadline) {
-			a.commitDoubleClick()
-			return true
-		}
-	}
-	return false
-}
-
-func (a *FocusChangeAgent) commitSingleClick() {
-	if a.target != nil {
-		sys.UartWriteString(fmt.Sprintf("[rachel:focus] single-click → raise+focus SID %d\n", a.target.ta.sid))
-		grantFocus(a.target.ta.sid)
-		a.keyFwd.SetFocus(a.target)
-	}
-	a.reset()
-}
-
-func (a *FocusChangeAgent) commitDoubleClick() {
-	if a.target != nil {
-		sys.UartWriteString(fmt.Sprintf("[rachel:focus] double-click → focus (no raise) SID %d\n", a.target.ta.sid))
-		grantFocusNoRaise(a.target.ta.sid)
-		a.keyFwd.SetFocus(a.target)
-	}
-	a.reset()
-}
-
-func (a *FocusChangeAgent) commitTripleClick() {
-	if a.target != nil {
-		sys.UartWriteString(fmt.Sprintf("[rachel:focus] triple-click SID %d (no action yet)\n", a.target.ta.sid))
-	}
-	a.reset()
-}
-
-func (a *FocusChangeAgent) reset() {
-	a.state = fcIdle
-	a.target = nil
-	a.deadline = time.Time{}
-}
-
-func (a *FocusChangeAgent) nearPress(x, y int32) bool {
-	dx := x - a.pressX
-	dy := y - a.pressY
-	if dx < 0 {
-		dx = -dx
-	}
-	if dy < 0 {
-		dy = -dy
-	}
-	return dx <= clickRadius && dy <= clickRadius
-}
-
-// PressAgent handles mouse button press events on already-focused windows.
-// It forwards the press to the target and establishes a drag.
+// PressAgent handles mouse button press events on windows. It is the
+// catch-all positional agent: if TitlebarDragAgent and ResizeDragAgent
+// both declined, this agent grants focus (if needed), establishes a
+// content drag, and forwards the press to the shepherd.
 type PressAgent struct {
 	dragAgent *DragAgent
+	keyFwd    *KeyForwardAgent
 }
 
 func (a *PressAgent) Name() string { return "press" }
@@ -569,25 +847,25 @@ func (a *PressAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool
 	if !ev.IsMouseButton() || !ev.IsPress() {
 		return false
 	}
-	p, ok := target.(input.Pressable)
+	wi, ok := target.(*WindowInteractor)
 	if !ok {
 		return false
 	}
 
-	// Establish drag focus so DragAgent handles subsequent move/release.
-	// Pass press coordinates so DragAgent can detect titlebar drags.
-	a.dragAgent.StartDrag(target, ev.Code, ev.X, ev.Y)
-
-	// If this is a titlebar drag, don't forward the press to the shepherd —
-	// the shepherd doesn't need to know about WM-level window moves.
-	if a.dragAgent.titlebarDrag {
-		return true
+	// Grant focus if not already focused.
+	if !hasFocus(wi.ta.sid) {
+		sys.UartWriteString(fmt.Sprintf("[rachel:press] raise+focus SID %d\n", wi.ta.sid))
+		grantFocus(wi.ta.sid)
+		a.keyFwd.SetFocus(wi)
 	}
+
+	// Establish content drag so DragAgent forwards move/release to shepherd.
+	a.dragAgent.StartContentDrag(wi, ev.Code)
 
 	sys.UartWriteString(fmt.Sprintf("[rachel:input] mouse press %s at (%d,%d)\n",
 		buttonName(ev.Code), ev.X, ev.Y))
 
-	return p.Press(ev)
+	return wi.Press(ev)
 }
 
 // KeyForwardAgent forwards keyboard events to the focused shepherd window.
@@ -621,13 +899,20 @@ func (a *KeyForwardAgent) Deliver(ev *input.InputEvent, target input.Interactor)
 // wmDispatch holds the dispatcher and references to agents that need
 // cross-agent coordination.
 type wmDispatch struct {
-	dispatcher       *input.InputDispatcher
-	dragAgent        *DragAgent
-	keyFwd           *KeyForwardAgent
-	focusChangeAgent *FocusChangeAgent
+	dispatcher *input.InputDispatcher
+	dragAgent  *DragAgent
+	keyFwd     *KeyForwardAgent
 }
 
-// buildDispatcher creates rachel's five-policy dispatch pipeline.
+// buildDispatcher creates rachel's dispatch pipeline.
+//
+// Policies in priority order:
+//  1. "wm-accel"       (focus)       — AcceleratorAgent: WM keyboard shortcuts
+//  2. "drag"           (focus)       — DragAgent: mouse move/release during active drag
+//  3. "titlebar-drag"  (positional)  — TitlebarDragAgent: titlebar press → focus + move drag
+//  4. "resize-drag"    (positional)  — ResizeDragAgent: resize handle press → focus + resize drag
+//  5. "press"          (positional)  — PressAgent: content press → focus + forward to shepherd
+//  6. "keyboard"       (focus)       — KeyForwardAgent: forward keyboard to focused app
 func buildDispatcher() *wmDispatch {
 	wmTarget := &WMInteractor{}
 
@@ -637,8 +922,9 @@ func buildDispatcher() *wmDispatch {
 	})
 	dragAgent := &DragAgent{}
 	keyFwd := &KeyForwardAgent{}
-	focusAgent := &FocusChangeAgent{keyFwd: keyFwd}
-	pressAgent := &PressAgent{dragAgent: dragAgent}
+	titlebarAgent := &TitlebarDragAgent{dragAgent: dragAgent, keyFwd: keyFwd}
+	resizeAgent := &ResizeDragAgent{dragAgent: dragAgent, keyFwd: keyFwd}
+	pressAgent := &PressAgent{dragAgent: dragAgent, keyFwd: keyFwd}
 
 	// Build policies in priority order.
 	d := input.NewInputDispatcher()
@@ -653,17 +939,22 @@ func buildDispatcher() *wmDispatch {
 	dragPolicy.AddAgent(dragAgent)
 	d.AddPolicy(dragPolicy)
 
-	// 3. Focus change (positional) — single/double/triple click on unfocused windows.
-	focusPolicy := input.NewDispatchPolicy("focus-change", input.PolicyPositional)
-	focusPolicy.AddAgent(focusAgent)
-	d.AddPolicy(focusPolicy)
+	// 3. Titlebar drag (positional) — titlebar press starts window move.
+	titlebarPolicy := input.NewDispatchPolicy("titlebar-drag", input.PolicyPositional)
+	titlebarPolicy.AddAgent(titlebarAgent)
+	d.AddPolicy(titlebarPolicy)
 
-	// 4. Mouse press (positional) — forward press to already-focused window.
-	mousePolicy := input.NewDispatchPolicy("mouse", input.PolicyPositional)
-	mousePolicy.AddAgent(pressAgent)
-	d.AddPolicy(mousePolicy)
+	// 4. Resize drag (positional) — resize handle press starts window resize.
+	resizePolicy := input.NewDispatchPolicy("resize-drag", input.PolicyPositional)
+	resizePolicy.AddAgent(resizeAgent)
+	d.AddPolicy(resizePolicy)
 
-	// 5. Keyboard forward (focus) — sends keys to focused app.
+	// 5. Press (positional) — content press forwards to shepherd.
+	pressPolicy := input.NewDispatchPolicy("press", input.PolicyPositional)
+	pressPolicy.AddAgent(pressAgent)
+	d.AddPolicy(pressPolicy)
+
+	// 6. Keyboard forward (focus) — sends keys to focused app.
 	kbdPolicy := input.NewDispatchPolicy("keyboard", input.PolicyFocus)
 	kbdPolicy.AddAgent(keyFwd)
 	d.AddPolicy(kbdPolicy)
@@ -684,9 +975,8 @@ func buildDispatcher() *wmDispatch {
 	}
 
 	return &wmDispatch{
-		dispatcher:       d,
-		dragAgent:        dragAgent,
-		keyFwd:           keyFwd,
-		focusChangeAgent: focusAgent,
+		dispatcher: d,
+		dragAgent:  dragAgent,
+		keyFwd:     keyFwd,
 	}
 }

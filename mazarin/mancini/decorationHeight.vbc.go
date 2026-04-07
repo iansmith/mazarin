@@ -259,7 +259,7 @@ var ProgDecorationHeight = &vm.Program{
 		"_boundsHashSuffix_",
 		"_childPattern_",
 		"",
-		"_margin_",
+		"_padding_",
 		"_maxSize_",
 		"_myName_",
 	},

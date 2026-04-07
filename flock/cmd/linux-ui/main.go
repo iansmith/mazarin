@@ -196,7 +196,22 @@ func MazarinMain() {
 	theme := mctheme.NewTheme(pal, neu, mfont.DefaultMono, fontSize, resolver)
 	theme.SetStyle(std.NewNeumorphicStyle(neu.Heavy(), neu.Light()))
 
-	col := std.NewColumn("column", "AppWindow", pal, 0, mancini.AxisMinimum, 2, false)
+	// AppWindow must be created before the bridge so its Width/Height URIs exist.
+	app := std.NewAppWindow(pal, "Linux Console")
+	app.Focused = false // wait for rachel to grant focus
+
+	// Column: width/height mirror AppWindow's dimensions.
+	colLH := mancini.NewLayoutAttributesBase("column", "AppWindow")
+	appWURI := mancini.LayoutURI("AppWindow", mancini.DataTypeInt64, mancini.LayoutWidth)
+	appHURI := mancini.LayoutURI("AppWindow", mancini.DataTypeInt64, mancini.LayoutHeight)
+	colLH.Width = attr.ConstraintI64(
+		mancini.LayoutURI("column", mancini.DataTypeInt64, mancini.LayoutWidth),
+		mancini.EqualI64(appWURI))
+	colLH.Height = attr.ConstraintI64(
+		mancini.LayoutURI("column", mancini.DataTypeInt64, mancini.LayoutHeight),
+		mancini.EqualI64(appHURI))
+	colLH.InitBounds("column")
+	col := std.NewColumnWithLayout(colLH, pal, mancini.AxisMinimum, 0, 1, false)
 	_ = col
 
 	// Console first so its width attribute exists for the input constraint.
@@ -205,19 +220,19 @@ func MazarinMain() {
 
 	// Input row: label + text field side by side, width matches console.
 	const inputRowSpacing = int64(4)
-	const inputRowHMargin = int64(1)
-	inputRow := std.NewRow("inputRow", "column", pal, 0, mancini.AxisMiddle, inputRowHMargin)
+	const inputRowHPadding = int64(1)
+	inputRow := std.NewRow("inputRow", "column", pal, 0, mancini.AxisMiddle, inputRowHPadding)
 	inputRow.SetSpacing(float64(inputRowSpacing))
 
 	inputLabel := std.NewLabelNamed("inputLabel", "inputRow", theme,
 		"Stdio Input", fontSize)
 	inputLabel.Transparent = true
 
-	// Input field — width = consoleWidth - labelWidth - (spacing + 2*hMargin).
+	// Input field — width = consoleWidth - labelWidth - (spacing + 2*hPadding).
 	consoleWidthURI := mancini.LayoutURI("console", mancini.DataTypeInt64, mancini.LayoutWidth)
 	labelWidthURI := mancini.LayoutURI("inputLabel", mancini.DataTypeInt64, mancini.LayoutWidth)
 	fixedOffsetURI := attr.ShepherdURI("int64", "inputFixedOffset")
-	attr.ValueI64(fixedOffsetURI, inputRowSpacing+2*inputRowHMargin)
+	attr.ValueI64(fixedOffsetURI, inputRowSpacing+2*inputRowHPadding)
 
 	inputLH := mancini.NewLayoutAttributesBase("input", "inputRow")
 	inputLH.Width = attr.ConstraintI64(
@@ -248,8 +263,6 @@ func MazarinMain() {
 	// Swap sequence so inputRow appears above console in the Column.
 	mancini.SwapSequence("inputRow", "console")
 
-	app := std.NewAppWindow(pal, "Serial Console", screenWURI, screenHURI)
-	app.Focused = false // wait for rachel to grant focus
 	app.RachelSID = rachelSID
 	input.AppWindow = app
 
@@ -264,14 +277,9 @@ func MazarinMain() {
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
 
-	winW := int(appLH.Width.Get())
-	winH := int(appLH.Height.Get())
-	if winW < 100 {
-		winW = 800
-	}
-	if winH < 50 {
-		winH = 400
-	}
+	// Preferred size for AppStart — rachel may adjust.
+	winW := 800
+	winH := 400
 
 	// Force Bounds evaluation and publish Ready for rachel.
 	_ = appLH.Bounds.Get()
@@ -294,6 +302,19 @@ func MazarinMain() {
 			break
 		}
 	}
+
+	// Use actual dimensions from rachel's response.
+	winW = int(bsr.AppWidth)
+	winH = int(bsr.AppHeight)
+	if winW < 100 {
+		winW = 800
+	}
+	if winH < 50 {
+		winH = 400
+	}
+	// Set AppWindow dimensions so bridge constraints can read them.
+	appLH.Width.Set(int64(winW))
+	appLH.Height.Set(int64(winH))
 
 	totalW := int(bsr.TotalWidth)
 	totalH := int(bsr.TotalHeight)

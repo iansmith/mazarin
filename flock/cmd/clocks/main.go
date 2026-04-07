@@ -175,23 +175,25 @@ func main() {
 	theme := mctheme.NewTheme(mctheme.NewDefaultPaletteWithColors(transparent, textColor), mctheme.NewDefaultNeumorphicParams(), mfont.DefaultMono, 18, resolver)
 	subtitleTheme := mctheme.NewTheme(mctheme.NewDefaultPaletteWithColors(transparent, subtitleColor), mctheme.NewDefaultNeumorphicParams(), mfont.DefaultMono, 18, resolver)
 
-	app := std.NewAppWindow(pal, "World Clocks",
-		"attr:///kernel/int64/screen/width", "attr:///kernel/int64/screen/height")
+	app := std.NewAppWindow(pal, "World Clocks")
 	app.Focused = false // wait for rachel to grant focus
 
-	// Scroller height = row height (constraint). Build the constraint
-	// before the scroller so it's passed to the constructor.
-	rowHeightURI := mancini.LayoutURI("main_row", mancini.DataTypeInt64, mancini.LayoutHeight)
+	// Scroller height = AppWindow height (viewport matches window).
+	appHeightURI := mancini.LayoutURI("AppWindow", mancini.DataTypeInt64, mancini.LayoutHeight)
 	scrollerHeightProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"_source_", rowHeightURI)
+		"_source_", appHeightURI)
 	scrollerHeight := attr.ConstraintI64(
 		std.ScrollerHeightURI("scroller"), scrollerHeightProg)
 	scroller := std.NewScroller("scroller", "AppWindow", pal, scrollerHeight)
 
-	// Row: parent = "scroller" (child of the scroller viewport).
-	row := std.NewRow("main_row", "scroller", pal, 0, mancini.AxisMinimum, 1)
-	row.SetSpacing(25)
+	// Row: inside-out sizing. Natural width = sum of children.
+	// Scroller handles horizontal scrolling to show one city at a time.
+	nCities := len(cities)
+	cityColW := int64(200) // width per city column
+	row := std.NewRow("main_row", "scroller", pal, 0, mancini.AxisMinimum, 0)
+	row.SetSpacing(0)
 
+	cityCols := make([]*std.ColumnPercentage, len(cities))
 	for i, city := range cities {
 		colName := city.id + "_col"
 		circleName := city.id + "_circle"
@@ -212,9 +214,10 @@ func main() {
 		// Rotate starting normal face per city so each shows a different style.
 		start := i % len(normalFaces)
 
-		// Column: parent = "main_row". Created first so its name is registered.
-		col := std.NewColumn(colName, "main_row", pal, 0, mancini.AxisMiddle, 1, false)
-		col.SetSpacing(4)
+		// ColumnPercentage: percentage-based vertical layout for each city.
+		// Width = cityColW so Row can compute natural total width.
+		cityCols[i] = std.NewColumnPercentage(colName, "main_row", pal, cityColW, 0,
+			[]float64{10, 48, 16, 16, 10})
 
 		// Children created in display order — sequence numbers give deterministic ordering.
 		_ = std.NewLabelNamedBold(city.id+"_name", colName, theme, city.name, 18)
@@ -246,7 +249,7 @@ func main() {
 		spacer.GetLayout().Visible.Set(false)
 	}
 
-	rowLH := row.GetLayout()
+	_ = row
 
 	sys.UartWriteString("[clocks] interactor tree built\n")
 	// 6. Read kernel screen dimensions for DrawContext sizing.
@@ -268,27 +271,21 @@ func main() {
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
 
-	// Scroller width = viewport showing one clock column.
+	// Window size: show 1 city at a time, scroll horizontally to see others.
 	scrollerLH := scroller.GetLayout()
-
-	rowContentW := rowLH.Width.Get()
-	winW := int(rowContentW / int64(len(cities)))
-	if winW < 100 {
-		winW = 300 // fallback
-	}
+	winW := int(cityColW)
+	virtualW := cityColW * int64(nCities)
 	scrollerLH.Width.Set(int64(winW))
+	scroller.SetVirtualSize(virtualW, 0)
+	scroller.SnapX = cityColW // snap to city boundaries on drag end
 
-	// Virtual width = full row content (no vertical scrolling).
-	scroller.SetVirtualSize(rowContentW, 0)
-
-	winH := int(appLH.Height.Get())
-	sys.UartWriteString(fmt.Sprintf("[clocks] winW=%d winH=%d rowH=%d rowW=%d scrollerH=%d\n",
-		winW, winH,
-		rowLH.Height.Get(), rowContentW,
-		scrollerLH.Height.Get()))
-	if winH < 50 {
-		winH = 300
-	}
+	winH := 210
+	sys.UartWriteString(fmt.Sprintf("[clocks] winW=%d winH=%d virtualW=%d\n",
+		winW, winH, virtualW))
+	// Set AppWindow dimensions — preferred size for AppStart.
+	// Will be updated from BSR response below.
+	appLH.Width.Set(int64(winW))
+	appLH.Height.Set(int64(winH))
 
 	// 8. Compute screen position via rachel's visibleArea constraints.
 	var posXAttr, posYAttr *attr.Attribute[int64]
@@ -337,13 +334,20 @@ func main() {
 		}
 	}
 
+	// Update AppWindow from rachel's actual allocation.
+	appLH.Width.Set(int64(bsr.AppWidth))
+	appLH.Height.Set(int64(bsr.AppHeight))
+	winW = int(bsr.AppWidth)
+	winH = int(bsr.AppHeight)
+
 	// Initialize input dispatch pipeline.
 	disp, clickAgent, _ := app.InitInput()
-	disp.OriginX = int64(bsr.AppX)
-	disp.OriginY = int64(bsr.AppY)
+	// Rachel converts screen→app-local coords before sending, so OriginX/Y = 0.
 	mancini.SetScreenOrigin(int64(bsr.AppX), int64(bsr.AppY))
 	disp.Debug = true
 	disp.Tag = "clocks"
+	sys.UartWriteString(fmt.Sprintf("[clocks] content area on screen: (%d,%d)-(%d,%d) origin=(%d,%d)\n",
+		bsr.AppX, bsr.AppY, int32(winW)+bsr.AppX, int32(winH)+bsr.AppY, bsr.AppX, bsr.AppY))
 
 	// Create a []byte slice over the shared backing store.
 	totalW := int(bsr.TotalWidth)
@@ -367,8 +371,8 @@ func main() {
 	dc.DrawRectangle(0, 0, float64(winW), float64(winH))
 	dc.Clip()
 
-	sys.UartWriteString(fmt.Sprintf("[clocks] backing store ready: total=%dx%d inset=(%d,%d) app=%dx%d\n",
-		totalW, totalH, bsr.LeftInset, bsr.TopInset, winW, winH))
+	sys.UartWriteString(fmt.Sprintf("[clocks] backing store ready: total=%dx%d inset=(%d,%d) app=%dx%d appXY=(%d,%d)\n",
+		totalW, totalH, bsr.LeftInset, bsr.TopInset, winW, winH, bsr.AppX, bsr.AppY))
 
 	// 11. Draw to the backing store at (0,0) — screen position is rachel's concern.
 	appLH.X.Set(0)
@@ -377,6 +381,34 @@ func main() {
 	dc.FillRectangle(0, 0, float64(winW), float64(winH))
 	app.SetDC(dc)
 	app.Draw(app, 0, 0, int64(winW), int64(winH))
+
+	// Debug: verify interactor tree dimensions after first draw.
+	{
+		scrollerLH := scroller.GetLayout()
+		rowLH := row.GetLayout()
+		sys.UartWriteString(fmt.Sprintf("[clocks] tree: app=%dx%d scroller=%dx%d row=%dx%d\n",
+			appLH.Width.Get(), appLH.Height.Get(),
+			scrollerLH.Width.Get(), scrollerLH.Height.Get(),
+			rowLH.Width.Get(), rowLH.Height.Get()))
+		for i, col := range cityCols {
+			clh := col.GetLayout()
+			sys.UartWriteString(fmt.Sprintf("[clocks] col[%d] %s: %dx%d @ x=%d y=%d\n",
+				i, clh.Name(), clh.Width.Get(), clh.Height.Get(), clh.X.Get(), clh.Y.Get()))
+			if i == 0 {
+				// Dump first column's children dimensions.
+				children := col.GetChildren()
+				for j, child := range children {
+					if l, ok := child.(mancini.Layouter); ok {
+						ch := l.GetLayout()
+						if ch != nil {
+							sys.UartWriteString(fmt.Sprintf("[clocks]   child[%d] %s: %dx%d @ y=%d\n",
+								j, ch.Name(), ch.Width.Get(), ch.Height.Get(), ch.Y.Get()))
+						}
+					}
+				}
+			}
+		}
+	}
 
 	// 12. Instrumentation counters.
 	eagerAttr := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)

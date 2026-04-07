@@ -2,8 +2,8 @@ func childVisible(seg string) bool {
 	return derefBool("_boolPrefix_" + seg + "_visSuffix_")
 }
 
-func childDmgRect(seg string) Rect {
-	return derefRect("_rectPrefix_" + seg + "_damageRectSuffix_")
+func childDmgURI(seg string) string {
+	return "_rectPrefix_" + seg + "_damageRectSuffix_"
 }
 
 func parentDamageDefault() Rect {
@@ -21,7 +21,11 @@ func parentDamageDefault() Rect {
 		if !childVisible(seg) {
 			continue
 		}
-		childDmg := childDmgRect(seg)
+		dmgURI := childDmgURI(seg)
+		if !exists(dmgURI) {
+			continue
+		}
+		childDmg := derefRect(dmgURI)
 		if !rectEmpty(childDmg) {
 			if rectEmpty(result) {
 				result = childDmg

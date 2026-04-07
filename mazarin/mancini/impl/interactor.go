@@ -95,6 +95,7 @@ func (i *Interactor) Y() int64       { return i.layout.Y.Get() }
 func (i *Interactor) W() int64       { return i.layout.Width.Get() }
 func (i *Interactor) H() int64       { return i.layout.Height.Get() }
 func (i *Interactor) Visible() bool  { return i.layout.Visible.Get() }
+func (i *Interactor) SetVisible(v bool) { i.layout.Visible.Set(v) }
 func (i *Interactor) DC() mancini.DrawContext { return i.dc }
 
 // ScreenCoordConvertTo converts interactor-local coordinates to screen

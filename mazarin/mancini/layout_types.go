@@ -37,9 +37,9 @@ const (
 	LayoutMaxHeight      LayoutProp = "MaxHeight"
 
 	// Decorator properties (NeuBox, NeuCircle, AppWindow, AppTitleBar).
-	LayoutMargin  LayoutProp = "Margin"
-	LayoutHMargin LayoutProp = "HMargin"
-	LayoutVMargin LayoutProp = "VMargin"
+	LayoutPadding  LayoutProp = "Padding"
+	LayoutHPadding LayoutProp = "HPadding"
+	LayoutVPadding LayoutProp = "VPadding"
 	LayoutMaxSize LayoutProp = "MaxSize"
 
 	// Clock properties.

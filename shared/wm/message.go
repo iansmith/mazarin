@@ -175,6 +175,16 @@ func AppWindowTitleURI(sid string) string {
 	return "attr:///shepherd/" + sid + "/string/AppWindow/Title"
 }
 
+// AppWindowMinWidthURI returns the URI for a shepherd's minimum window width.
+func AppWindowMinWidthURI(sid string) string {
+	return "attr:///shepherd/" + sid + "/int64/AppWindow/MinWidth"
+}
+
+// AppWindowMinHeightURI returns the URI for a shepherd's minimum window height.
+func AppWindowMinHeightURI(sid string) string {
+	return "attr:///shepherd/" + sid + "/int64/AppWindow/MinHeight"
+}
+
 // PaletteColorURI returns the URI for a shepherd's palette color attribute.
 // name is a palette color name (e.g., "Surface", "Text", "DarkShadow").
 func PaletteColorURI(sid, name string) string {

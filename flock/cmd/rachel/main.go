@@ -168,8 +168,6 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 			if pickWindow(int64(mouseX), int64(mouseY)) < 0 {
 				revokeFocus()
 				wmd.keyFwd.SetFocus(nil)
-				// Also cancel any pending focus-change FSM.
-				wmd.focusChangeAgent.reset()
 				return
 			}
 		}
@@ -234,7 +232,10 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 // Cursor state — set by initCursors, used by mouseMovementLoop.
 var standardCursorID = -1
 var inverseCursorID = -1
-var cursorIsInverse bool // current cursor state
+var hResizeCursorID = -1  // horizontal resize (↔)
+var vResizeCursorID = -1  // vertical resize (↕)
+var cursorIsInverse bool  // current cursor state
+var cursorIsResize int    // 0=normal, 1=hResize, 2=vResize
 
 // Mouse position — accumulated from relative events. Clamped to display.
 // Initialized to center of screen in main() after reading kernel dimensions.
@@ -349,6 +350,125 @@ func generateInverseCursor() []byte {
 	return img
 }
 
+// generateHResizeCursor returns a 64x64 NRGBA horizontal resize cursor (↔).
+func generateHResizeCursor() []byte {
+	img := make([]byte, 64*64*4)
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			off := (y*64 + x) * 4
+			v := hResizeBitmap[y][x]
+			switch v {
+			case 0:
+				// transparent
+			case 1: // white outline
+				img[off+0] = 255
+				img[off+1] = 255
+				img[off+2] = 255
+				img[off+3] = 255
+			case 2: // black fill
+				img[off+0] = 0
+				img[off+1] = 0
+				img[off+2] = 0
+				img[off+3] = 255
+			}
+		}
+	}
+	return img
+}
+
+// generateVResizeCursor returns a 64x64 NRGBA vertical resize cursor (↕).
+func generateVResizeCursor() []byte {
+	img := make([]byte, 64*64*4)
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			off := (y*64 + x) * 4
+			v := vResizeBitmap[y][x]
+			switch v {
+			case 0:
+				// transparent
+			case 1: // white outline
+				img[off+0] = 255
+				img[off+1] = 255
+				img[off+2] = 255
+				img[off+3] = 255
+			case 2: // black fill
+				img[off+0] = 0
+				img[off+1] = 0
+				img[off+2] = 0
+				img[off+3] = 255
+			}
+		}
+	}
+	return img
+}
+
+// hResizeBitmap is a double-headed horizontal arrow (↔), centered at (32,32).
+// 0 = transparent, 1 = outline, 2 = fill.
+var hResizeBitmap = [64][64]byte{
+	// rows 0-26: empty
+	// row 27: left arrowhead tip
+	27: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+	// row 28
+	28: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	// row 29
+	29: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 2, 1},
+	// row 30
+	30: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 1},
+	// row 31: top edge of shaft + arrowheads
+	31: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 1},
+	// row 32: center shaft (the horizontal bar)
+	32: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1},
+	// row 33: bottom edge of shaft + arrowheads
+	33: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 1},
+	// row 34
+	34: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 1},
+	// row 35
+	35: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 2, 1},
+	// row 36
+	36: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	// row 37: right arrowhead tip
+	37: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+}
+
+// vResizeBitmap is a double-headed vertical arrow (↕), centered at (32,32).
+// 0 = transparent, 1 = outline, 2 = fill.
+var vResizeBitmap = [64][64]byte{
+	// row 22: top arrowhead tip
+	22: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+	// row 23
+	23: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	// row 24
+	24: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 1},
+	// row 25
+	25: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 1},
+	// row 26: top arrowhead base + shaft start
+	26: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 1},
+	// row 27
+	27: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 1, 1},
+	// rows 28-36: shaft
+	28: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	29: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	30: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	31: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	32: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	33: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	34: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	35: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	36: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	// row 37: bottom arrowhead start
+	37: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 1, 1},
+	// row 38
+	38: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 1},
+	// row 39
+	39: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 1},
+	// row 40
+	40: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 1},
+	// row 41
+	41: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1},
+	// row 42: bottom arrowhead tip
+	42: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+}
+
 // cursorBitmap is the same arrow shape used by the kernel's built-in cursor.
 // 0 = transparent, 1 = outline, 2 = fill.
 var cursorBitmap = [64][64]byte{
@@ -393,6 +513,23 @@ func initCursors() {
 	}
 	inverseCursorID = id
 
+	// Register resize cursors.
+	hImg := generateHResizeCursor()
+	id, err = sys.RegisterCursor(hImg, 32, 32)
+	if err != nil {
+		fmt.Printf("[rachel] RegisterCursor(hResize) failed: %v\n", err)
+	} else {
+		hResizeCursorID = id
+	}
+
+	vImg := generateVResizeCursor()
+	id, err = sys.RegisterCursor(vImg, 32, 32)
+	if err != nil {
+		fmt.Printf("[rachel] RegisterCursor(vResize) failed: %v\n", err)
+	} else {
+		vResizeCursorID = id
+	}
+
 	// Set the standard cursor as the active cursor at startup.
 	if err = sys.SetCursor(standardCursorID); err != nil {
 		fmt.Printf("[rachel] SetCursor(standard) failed: %v\n", err)
@@ -408,9 +545,6 @@ func pointInAnyAppBounds(x, y int64) bool {
 // Dispatches a synthetic mouse-move event if the cursor moved (for drag
 // forwarding via the DragAgent) and updates cursor appearance.
 func postBatchInputUpdate(posChanged *bool, modState *input.ModifierState, wmd *wmDispatch) {
-	// Check focus-change agent's double/triple-click timer.
-	wmd.focusChangeAgent.CheckTimer()
-
 	if *posChanged {
 		// Dispatch synthetic mouse-move through the pipeline.
 		// The DragAgent (focus policy) will forward to the drag target
@@ -425,16 +559,59 @@ func postBatchInputUpdate(posChanged *bool, modState *input.ModifierState, wmd *
 		*posChanged = false
 	}
 
-	// Check cursor state (inverse when over app bounds).
+	// Check cursor state: resize edges take priority, then inverse-over-app.
 	if standardCursorID >= 0 && inverseCursorID >= 0 {
-		inApp := pointInAnyAppBounds(int64(mouseX), int64(mouseY))
-		if inApp && !cursorIsInverse {
-			if err := sys.SetCursor(inverseCursorID); err == nil {
-				cursorIsInverse = true
+		// Check resize edges on topmost window under cursor.
+		edge := EdgeNone
+		if hResizeCursorID >= 0 && vResizeCursorID >= 0 {
+			for _, sid := range zOrder {
+				ta, ok := trackedApps[sid]
+				if !ok {
+					continue
+				}
+				wi := &WindowInteractor{ta: ta}
+				if wi.PickedBy(mouseX, mouseY) {
+					edge = wi.InResizeEdge(mouseX, mouseY)
+					break
+				}
 			}
-		} else if !inApp && cursorIsInverse {
-			if err := sys.SetCursor(standardCursorID); err == nil {
+		}
+
+		switch {
+		case edge == EdgeBottom && cursorIsResize != 2:
+			if err := sys.SetCursor(vResizeCursorID); err == nil {
+				cursorIsResize = 2
 				cursorIsInverse = false
+			}
+		case (edge == EdgeLeft || edge == EdgeRight) && cursorIsResize != 1:
+			if err := sys.SetCursor(hResizeCursorID); err == nil {
+				cursorIsResize = 1
+				cursorIsInverse = false
+			}
+		case edge == EdgeNone && cursorIsResize != 0:
+			// Leaving a resize edge — restore normal cursor.
+			inApp := pointInAnyAppBounds(int64(mouseX), int64(mouseY))
+			if inApp {
+				if err := sys.SetCursor(inverseCursorID); err == nil {
+					cursorIsInverse = true
+				}
+			} else {
+				if err := sys.SetCursor(standardCursorID); err == nil {
+					cursorIsInverse = false
+				}
+			}
+			cursorIsResize = 0
+		case edge == EdgeNone:
+			// Normal cursor switching (inverse when over app bounds).
+			inApp := pointInAnyAppBounds(int64(mouseX), int64(mouseY))
+			if inApp && !cursorIsInverse {
+				if err := sys.SetCursor(inverseCursorID); err == nil {
+					cursorIsInverse = true
+				}
+			} else if !inApp && cursorIsInverse {
+				if err := sys.SetCursor(standardCursorID); err == nil {
+					cursorIsInverse = false
+				}
 			}
 		}
 	}
@@ -863,11 +1040,6 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 		select {
 		case raw := <-wmCh:
 			rachelNotifyCount++
-			// Check focus-change timer on WM messages so that single-click
-			// commits even when no further HID input arrives after the click.
-			if wmd.focusChangeAgent.CheckTimer() {
-				timedBlitAllWindows()
-			}
 			wmMsg, ok := raw.(wm.WMNotifyMsg)
 			if !ok {
 				rachelMsgOther++

@@ -117,6 +117,45 @@ func FindChildren(parentName string) []Interactor {
 	return result
 }
 
+// UnregisterInteractor removes an interactor from the global registry.
+func UnregisterInteractor(name string) {
+	delete(registry, name)
+}
+
+// RegistrySeq returns the sequence number for a named interactor,
+// and whether it was found.
+func RegistrySeq(name string) (uint64, bool) {
+	e, ok := registry[name]
+	if !ok {
+		return 0, false
+	}
+	return e.seq, true
+}
+
+// SetRegistrySeq sets the sequence number for a named interactor.
+// Panics if the name is not in the registry.
+func SetRegistrySeq(name string, seq uint64) {
+	e, ok := registry[name]
+	if !ok {
+		panic("SetRegistrySeq: " + name + " not in registry")
+	}
+	e.seq = seq
+	registry[name] = e
+}
+
+// InteractorName returns the constraint-system name for an interactor
+// by looking it up via its GetLayout().Name(). Returns "" if the
+// interactor doesn't implement Layouter or has no layout.
+func InteractorName(i Interactor) string {
+	if l, ok := i.(Layouter); ok {
+		lh := l.GetLayout()
+		if lh != nil {
+			return lh.Name()
+		}
+	}
+	return ""
+}
+
 // uriSegment extracts the nth path segment from an attr URI.
 // URI format: "attr:///segment0/segment1/segment2/..."
 // Returns "" if the segment index is out of range.

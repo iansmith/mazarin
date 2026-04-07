@@ -230,24 +230,49 @@ func PublishLayout(l *LayoutAttributes, x, y, w, h float64) {
 
 
 // NewAppWindowLayout creates layout attributes for the root AppWindow interactor.
-// Width and height are inside-out from the single child, clamped to [10%, 90%]
-// of the screen dimensions published by the kernel. The constraint name is
-// always "AppWindow" so that rachel can locate it at a well-known path.
-// screenWURI and screenHURI are the kernel attribute URIs for screen dimensions
-// (typically "attr:///kernel/int64/screen/width" and ".../height").
-func NewAppWindowLayout(screenWURI, screenHURI string) *LayoutAttributes {
+// Width and Height are value attributes set by rachel via BackingStoreReady /
+// WindowResized messages (outside-in sizing). The constraint name is always
+// "AppWindow" so that rachel can locate it at a well-known path.
+func NewAppWindowLayout() *LayoutAttributes {
 	myName := "AppWindow"
 	lh := NewLayoutAttributesBase(myName, "")
 
-	widthProg := BindStringsChildren(ProgAppWindowWidth,
-		"_myName_", myName, "_screenW_", screenWURI)
-	lh.Width = attr.ConstraintI64(
-		LayoutURI(myName, DataTypeInt64, LayoutWidth), widthProg)
+	// Outside-in: rachel sets these via BackingStoreReady / WindowResized.
+	lh.Width = attr.ValueI64(
+		LayoutURI(myName, DataTypeInt64, LayoutWidth), 0)
+	lh.Height = attr.ValueI64(
+		LayoutURI(myName, DataTypeInt64, LayoutHeight), 0)
 
-	heightProg := BindStringsChildren(ProgAppWindowHeight,
-		"_myName_", myName, "_screenH_", screenHURI)
+	lh.InitBounds(myName)
+	return lh
+}
+
+// NewBridgeLayout creates layout attributes for the topmost child of an AppWindow.
+// Width and Height are constraints that clamp AppWindow's outside-in dimensions
+// to the given [min, max] range, bridging outside-in sizing (from rachel) to
+// inside-out sizing (children below compute their own sizes).
+func NewBridgeLayout(myName string, minW, maxW, minH, maxH int64) *LayoutAttributes {
+	lh := NewLayoutAttributesBase(myName, "AppWindow")
+
+	appWURI := LayoutURI("AppWindow", DataTypeInt64, LayoutWidth)
+	appHURI := LayoutURI("AppWindow", DataTypeInt64, LayoutHeight)
+
+	minWURI := LayoutURI(myName, DataTypeInt64, "MinWidth")
+	attr.ValueI64(minWURI, minW)
+	maxWURI := LayoutURI(myName, DataTypeInt64, "MaxWidth")
+	attr.ValueI64(maxWURI, maxW)
+	minHURI := LayoutURI(myName, DataTypeInt64, "MinHeight")
+	attr.ValueI64(minHURI, minH)
+	maxHURI := LayoutURI(myName, DataTypeInt64, "MaxHeight")
+	attr.ValueI64(maxHURI, maxH)
+
+	lh.Width = attr.ConstraintI64(
+		LayoutURI(myName, DataTypeInt64, LayoutWidth),
+		BindStrings(ProgInoutBridge, "_dim_", appWURI, "_min_", minWURI, "_max_", maxWURI))
+
 	lh.Height = attr.ConstraintI64(
-		LayoutURI(myName, DataTypeInt64, LayoutHeight), heightProg)
+		LayoutURI(myName, DataTypeInt64, LayoutHeight),
+		BindStrings(ProgInoutBridge, "_dim_", appHURI, "_min_", minHURI, "_max_", maxHURI))
 
 	lh.InitBounds(myName)
 	return lh
@@ -255,12 +280,12 @@ func NewAppWindowLayout(screenWURI, screenHURI string) *LayoutAttributes {
 
 // NewDecoratorLayout creates layout attributes with inside-out constraint sizing
 // for decorator-style parents. The parent interactor is used to extract the
-// parent's constraint-system name. hMargin and vMargin are the half-margins
-// for width and height respectively: width = child.Width + 2*hMargin,
-// height = child.Height + 2*vMargin (both clamped to maxSize).
+// parent's constraint-system name. hPadding and vPadding are the half-padding
+// for width and height respectively: width = child.Width + 2*hPadding,
+// height = child.Height + 2*vPadding (both clamped to maxSize).
 // For symmetric decorators (equal insets), pass the same value for both.
 // If no child is found, defaults from ProgDecorationWidth/Height apply (20/30).
-func NewDecoratorLayout(name string, parent Interactor, hMargin, vMargin, maxSize int64) *LayoutAttributes {
+func NewDecoratorLayout(name string, parent Interactor, hPadding, vPadding, maxSize int64) *LayoutAttributes {
 	parentName := ""
 	if parent != nil {
 		if l, ok := parent.(Layouter); ok {
@@ -270,31 +295,31 @@ func NewDecoratorLayout(name string, parent Interactor, hMargin, vMargin, maxSiz
 			}
 		}
 	}
-	return NewDecoratorLayoutByParentName(name, parentName, hMargin, vMargin, maxSize)
+	return NewDecoratorLayoutByParentName(name, parentName, hPadding, vPadding, maxSize)
 }
 
 // NewDecoratorLayoutByParentName is the string-based variant of NewDecoratorLayout.
 // Prefer NewDecoratorLayout which takes an Interactor — this version exists for
 // cases where only the parent's constraint-system name is available.
-func NewDecoratorLayoutByParentName(myName, parentName string, hMargin, vMargin, maxSize int64) *LayoutAttributes {
+func NewDecoratorLayoutByParentName(myName, parentName string, hPadding, vPadding, maxSize int64) *LayoutAttributes {
 	lh := NewLayoutAttributesBase(myName, parentName)
 
-	hMarginURI := LayoutURI(myName, DataTypeInt64, LayoutHMargin)
-	attr.ValueI64(hMarginURI, hMargin)
+	hPaddingURI := LayoutURI(myName, DataTypeInt64, LayoutHPadding)
+	attr.ValueI64(hPaddingURI, hPadding)
 
-	vMarginURI := LayoutURI(myName, DataTypeInt64, LayoutVMargin)
-	attr.ValueI64(vMarginURI, vMargin)
+	vPaddingURI := LayoutURI(myName, DataTypeInt64, LayoutVPadding)
+	attr.ValueI64(vPaddingURI, vPadding)
 
 	maxSizeURI := LayoutURI(myName, DataTypeInt64, LayoutMaxSize)
 	attr.ValueI64(maxSizeURI, maxSize)
 
 	widthProg := BindStringsChildren(ProgDecorationWidth,
-		"_myName_", myName, "_margin_", hMarginURI, "_maxSize_", maxSizeURI)
+		"_myName_", myName, "_padding_", hPaddingURI, "_maxSize_", maxSizeURI)
 	lh.Width = attr.ConstraintI64(
 		LayoutURI(myName, DataTypeInt64, LayoutWidth), widthProg)
 
 	heightProg := BindStringsChildren(ProgDecorationHeight,
-		"_myName_", myName, "_margin_", vMarginURI, "_maxSize_", maxSizeURI)
+		"_myName_", myName, "_padding_", vPaddingURI, "_maxSize_", maxSizeURI)
 	lh.Height = attr.ConstraintI64(
 		LayoutURI(myName, DataTypeInt64, LayoutHeight), heightProg)
 

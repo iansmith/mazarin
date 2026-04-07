@@ -9,8 +9,9 @@ package mancini
 // regardless of cursor position. The agent computes outsideBounds by
 // testing the cursor against the target's layout bounds.
 type ClickDragAgent struct {
-	captured   Interactor // non-nil during active interaction
-	buttonCode uint16     // button that started the interaction
+	captured   Interactor  // non-nil during active interaction
+	buttonCode uint16      // button that started the interaction
+	startEvent *InputEvent // event that initiated the drag (from ClickDragStart)
 }
 
 func (a *ClickDragAgent) Name() string { return "clickdrag" }
@@ -37,6 +38,7 @@ func (a *ClickDragAgent) Deliver(ev *InputEvent, target Interactor) bool {
 		if cd.ClickDragStart(ev) {
 			a.captured = target
 			a.buttonCode = ev.Code
+			a.startEvent = ev
 			return true
 		}
 		return false
@@ -47,7 +49,7 @@ func (a *ClickDragAgent) Deliver(ev *InputEvent, target Interactor) bool {
 			return false
 		}
 		outside := !InsideBounds(target, ev.X, ev.Y)
-		return cd.ClickDragMove(ev, outside)
+		return cd.ClickDragMove(ev, a.startEvent, outside)
 
 	case EvRelease:
 		// Only deliver to captured target, matching button.
@@ -58,6 +60,7 @@ func (a *ClickDragAgent) Deliver(ev *InputEvent, target Interactor) bool {
 		result := cd.ClickDragEnd(ev, outside)
 		a.captured = nil
 		a.buttonCode = 0
+		a.startEvent = nil
 		return result
 	}
 

@@ -38,6 +38,8 @@ const (
 	MsgTypeAnimationFinish       uint32 = 24 // rachel → shepherd
 	MsgTypeAnimationUnregister   uint32 = 25 // shepherd → rachel
 	MsgTypeAnimationUnregistered uint32 = 26 // rachel → shepherd
+
+	MsgTypeWindowResized uint32 = 30 // rachel → shepherd
 )
 
 // AnimationAlways is used as the EndNanos for animations that run
@@ -192,6 +194,22 @@ type AnimationUnregister struct {
 type AnimationUnregistered struct {
 	AnimationID uint64
 	Nonce       uint64
+}
+
+// WindowResized is sent by rachel to a shepherd when its window has been
+// resized. The shepherd must rebuild its DrawContext from the new backing
+// store address and dimensions, then redraw and blit.
+type WindowResized struct {
+	BackingStoreAddr int64
+	TotalWidth       int32
+	TotalHeight      int32
+	TotalStride      int32
+	LeftInset        int32
+	TopInset         int32
+	AppWidth         int32
+	AppHeight        int32
+	AppX             int32
+	AppY             int32
 }
 
 // --- Encode functions (typed struct → UringIPCMsg) ---
@@ -358,6 +376,14 @@ func EncodeAnimationUnregistered(a *AnimationUnregistered) ipc.UringIPCMsg {
 	return msg
 }
 
+func EncodeWindowResized(wr *WindowResized) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoShepherdNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeWindowResized
+	*(*WindowResized)(unsafe.Pointer(&msg.Payload[4])) = *wr
+	return msg
+}
+
 // --- Decode functions (UringIPCMsg → typed struct) ---
 
 // WMNotifyMsg wraps a decoded WM notification with the sender's SID
@@ -450,6 +476,8 @@ func DecodeShepherdNotifyFromPayload(payload []byte) any {
 		return *(*AnimationFinish)(unsafe.Pointer(&payload[4]))
 	case MsgTypeAnimationUnregistered:
 		return *(*AnimationUnregistered)(unsafe.Pointer(&payload[4]))
+	case MsgTypeWindowResized:
+		return *(*WindowResized)(unsafe.Pointer(&payload[4]))
 	default:
 		return nil
 	}

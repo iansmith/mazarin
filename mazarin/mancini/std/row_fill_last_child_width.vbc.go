@@ -298,7 +298,7 @@ var ProgRowFillLastChildWidth = &vm.Program{
 		"",
 		"_rowWidth_",
 		"_spacing_",
-		"_hMargin_",
+		"_hPadding_",
 		"_myName_",
 	},
 	NumArgs: 0,

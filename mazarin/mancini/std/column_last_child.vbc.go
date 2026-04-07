@@ -282,7 +282,7 @@ var ProgColumnLastChild = &vm.Program{
 		"",
 		"_maxHeight_",
 		"_spacing_",
-		"_vMargin_",
+		"_vPadding_",
 		"_myName_",
 	},
 	NumArgs: 0,

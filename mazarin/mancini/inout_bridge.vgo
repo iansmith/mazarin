@@ -1,0 +1,6 @@
+func inoutBridge() int64 {
+	dim := derefI64("_dim_")
+	minVal := derefI64("_min_")
+	maxVal := derefI64("_max_")
+	return clamp(dim, minVal, maxVal)
+}

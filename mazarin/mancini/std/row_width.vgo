@@ -3,7 +3,7 @@ import "children"
 func rowWidth() int64 {
 	maxW := derefI64("_maxWidth_")
 	spacing := derefI64("_spacing_")
-	margin := derefI64("_hMargin_")
+	padding := derefI64("_hPadding_")
 
 	if hasNoVisibleChildren("_myName_") {
 		return int64(20)
@@ -19,11 +19,11 @@ func rowWidth() int64 {
 		if n > 0 {
 			next = next + spacing
 		}
-		if next + margin > maxW {
+		if next + padding > maxW {
 			return maxW
 		}
 		total = next
 		n = n + 1
 	}
-	return total + 2*margin
+	return total + 2*padding
 }

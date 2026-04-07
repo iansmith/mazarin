@@ -3,7 +3,7 @@ import "children"
 func columnLastChild() int64 {
 	maxH := derefI64("_maxHeight_")
 	spacing := derefI64("_spacing_")
-	margin := derefI64("_vMargin_")
+	padding := derefI64("_vPadding_")
 
 	if hasNoVisibleChildren("_myName_") {
 		return int64(-1)
@@ -20,7 +20,7 @@ func columnLastChild() int64 {
 			next = next + spacing
 		}
 		// no bottom margin when clipping
-		if next + margin > maxH {
+		if next + padding > maxH {
 			return n
 		}
 		total = next

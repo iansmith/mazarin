@@ -48,6 +48,15 @@ type Scroller struct {
 	offW, offH   int  // current offscreen buffer dimensions (virtual size)
 	contentDirty bool // true = need to re-render children into offBuf
 
+	// SnapX, SnapY: when non-zero, ClickDragEnd snaps the scroll
+	// position to a multiple of this value based on drag direction.
+	SnapX int64
+	SnapY int64
+
+	// SnapThreshold: fraction of SnapX/Y the mouse must travel to
+	// commit to the next snap position (0.0–1.0). Default 0.25 (25%).
+	SnapThreshold float64
+
 	// ClickDraggable state: drag-to-scroll.
 	dragStartX, dragStartY int64 // mouse position at drag start
 	dragOrigVX, dragOrigVY int64 // scroll position at drag start
@@ -202,13 +211,20 @@ func (s *Scroller) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if s.contentDirty {
 		fillRGBA(s.offBuf, s.Pal.Surface())
 
-		// Position child at virtual origin and draw into full virtual buffer.
+		// Position child at virtual origin and set virtual dimensions
+		// so that pick/hit-testing uses correct bounds.
 		// No clip/translate needed — buffer IS virtual-sized.
 		if l, ok := child.(mancini.Layouter); ok {
 			lh := l.GetLayout()
 			if lh != nil {
 				lh.X.Set(0)
 				lh.Y.Set(0)
+				if !lh.Width.IsConstraint() {
+					lh.Width.Set(effW)
+				}
+				if !lh.Height.IsConstraint() {
+					lh.Height.Set(effH)
+				}
 			}
 		}
 		if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
@@ -308,7 +324,7 @@ func (s *Scroller) ClickDragStart(ev *mancini.InputEvent) bool {
 }
 
 // ClickDragMove implements mancini.ClickDraggable.
-func (s *Scroller) ClickDragMove(ev *mancini.InputEvent, outsideBounds bool) bool {
+func (s *Scroller) ClickDragMove(ev *mancini.InputEvent, _ *mancini.InputEvent, outsideBounds bool) bool {
 	dx := ev.X - s.dragStartX
 	dy := ev.Y - s.dragStartY
 	fmt.Printf("[scroller] ClickDragMove delta=(%d,%d) → scroll=(%d,%d)\n",
@@ -318,9 +334,60 @@ func (s *Scroller) ClickDragMove(ev *mancini.InputEvent, outsideBounds bool) boo
 }
 
 // ClickDragEnd implements mancini.ClickDraggable.
+// When SnapX/SnapY are set, measures the distance the mouse traveled
+// (in virtual pixels). If the travel exceeds SnapThreshold (fraction
+// of SnapX/Y, default 0.25), snaps one step in the drag direction.
+// Otherwise snaps back to the starting boundary.
 func (s *Scroller) ClickDragEnd(ev *mancini.InputEvent, outsideBounds bool) bool {
-	fmt.Printf("[scroller] ClickDragEnd scroll=(%d,%d)\n", s.VirtualX, s.VirtualY)
+	thresh := s.SnapThreshold
+	if thresh <= 0 {
+		thresh = 0.25
+	}
+	if s.SnapX > 0 {
+		s.VirtualX = snapByTravel(s.dragOrigVX, s.VirtualX, s.SnapX, thresh)
+	}
+	if s.SnapY > 0 {
+		s.VirtualY = snapByTravel(s.dragOrigVY, s.VirtualY, s.SnapY, thresh)
+	}
+	s.ScrollTo(s.VirtualX, s.VirtualY)
 	return true
+}
+
+// snapByTravel snaps based on distance traveled, not absolute position.
+// travel = endV - startV (positive = scrolled right, negative = left).
+// If |travel| >= step * threshold, snap one step in that direction
+// from the nearest boundary to startV. Otherwise snap back to startV's
+// nearest boundary.
+func snapByTravel(startV, endV, step int64, threshold float64) int64 {
+	if step <= 0 {
+		return endV
+	}
+	// Find the boundary nearest to where the drag started.
+	low := (startV / step) * step
+	high := low + step
+	origin := low
+	if startV-low >= high-startV {
+		origin = high
+	}
+
+	travel := endV - startV
+	minTravel := int64(float64(step) * threshold)
+
+	if travel > 0 && travel >= minTravel {
+		// Scrolled right enough: advance one step.
+		fmt.Printf("[scroller] snapEnd: travel=%d threshold=%d → forward to %d\n",
+			travel, minTravel, origin+step)
+		return origin + step
+	} else if travel < 0 && -travel >= minTravel {
+		// Scrolled left enough: go back one step.
+		fmt.Printf("[scroller] snapEnd: travel=%d threshold=%d → back to %d\n",
+			travel, minTravel, origin-step)
+		return origin - step
+	}
+	// Didn't travel far enough: snap back to origin.
+	fmt.Printf("[scroller] snapEnd: travel=%d threshold=%d → stay at %d\n",
+		travel, minTravel, origin)
+	return origin
 }
 
 // fillRGBA fills an RGBA image with a solid color.
