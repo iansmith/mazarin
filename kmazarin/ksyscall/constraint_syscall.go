@@ -7,6 +7,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
 	"mazzy/mazarin/vm/flat"
 	"unsafe"
 )
@@ -66,6 +67,9 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 	// Allocate a node slot.
 	slot := attrMgr.allocNode()
 	if slot == 0xFFFF {
+		serial.RawUARTPuts("[attr] ENOMEM: allocNode full (cap=")
+		serial.RawUARTDecimal(uint64(attrMgr.nodeCapacity))
+		serial.RawUARTPuts(")\r\n")
 		return -12 // ENOMEM
 	}
 
@@ -87,6 +91,13 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 		needed := uint32(bytecodeLen)
 		if bcOff+needed > uint32(kmem.RegionBytecodeSize) {
 			attrMgr.freeNode(slot)
+			serial.RawUARTPuts("[attr] ENOMEM: bytecode full (off=")
+			serial.RawUARTHex64(uint64(bcOff))
+			serial.RawUARTPuts(" need=")
+			serial.RawUARTDecimal(uint64(needed))
+			serial.RawUARTPuts(" cap=")
+			serial.RawUARTHex64(uint64(kmem.RegionBytecodeSize))
+			serial.RawUARTPuts(")\r\n")
 			return -12 // ENOMEM
 		}
 		// Copy directly from userspace into the bytecode region (no stack buffer limit).
@@ -105,6 +116,9 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 	nameOff, ok := attrMgr.allocString(uri)
 	if !ok {
 		attrMgr.freeNode(slot)
+		serial.RawUARTPuts("[attr] ENOMEM: allocString full (cap=")
+		serial.RawUARTDecimal(uint64(attrMgr.stringCap))
+		serial.RawUARTPuts(")\r\n")
 		return -12 // ENOMEM
 	}
 	node.NameOffset = nameOff
@@ -113,6 +127,11 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 	rc := attrMgr.trieInsert(uri, slot)
 	if rc < 0 {
 		attrMgr.freeNode(slot)
+		if rc == -12 {
+			serial.RawUARTPuts("[attr] ENOMEM: trieInsert full (cap=")
+			serial.RawUARTDecimal(uint64(attrMgr.trieCapacity))
+			serial.RawUARTPuts(")\r\n")
+		}
 		return rc
 	}
 

@@ -50,6 +50,8 @@ includes:
   clocks:       {taskfile: ./flock/cmd/clocks/Taskfile.yml}
   # Shepherds (versai)
   versai:       {taskfile: ./mazarin/apps/versai/Taskfile.yml}
+  # Shepherds (calc)
+  calc:         {taskfile: ./mazarin/apps/calc/Taskfile.yml}
   # Kernel
   kmazarin:     {taskfile: ./kmazarin/Taskfile.yml}
   # Bootloader
@@ -96,6 +98,7 @@ vars:
   CLOCKTEST_ELF: '{{.BUILD_DIR}}/clocktest.elf'
   CLOCKS_ELF: '{{.BUILD_DIR}}/clocks.elf'
   VERSAI_ELF: '{{.BUILD_DIR}}/versai.elf'
+  CALC_ELF: '{{.BUILD_DIR}}/calc.elf'
 
   # .maz program build artifacts (per-architecture: thin overlay, maz overlay, manifest)
   THIN_OVERLAY_DIR: '{{.BUILD_DIR}}/thin-overlay'
@@ -131,6 +134,7 @@ vars:
   CLOCKTEST_AMD64_ELF: '{{.BUILD_DIR}}/clocktest-amd64.elf'
   CLOCKS_AMD64_ELF: '{{.BUILD_DIR}}/clocks-amd64.elf'
   VERSAI_AMD64_ELF: '{{.BUILD_DIR}}/versai-amd64.elf'
+  CALC_AMD64_ELF: '{{.BUILD_DIR}}/calc-amd64.elf'
   DISK_AMD64_IMAGE: '{{.BUILD_DIR}}/disk-amd64.img'
 
   # RISC-V 64-bit userspace programs
@@ -143,6 +147,7 @@ vars:
   CLOCKTEST_RISCV64_ELF: '{{.BUILD_DIR}}/clocktest-riscv64.elf'
   CLOCKS_RISCV64_ELF: '{{.BUILD_DIR}}/clocks-riscv64.elf'
   VERSAI_RISCV64_ELF: '{{.BUILD_DIR}}/versai-riscv64.elf'
+  CALC_RISCV64_ELF: '{{.BUILD_DIR}}/calc-riscv64.elf'
   HELLOWORLD_MAZ_RISCV64: '{{.BUILD_DIR}}/helloworld-riscv64.maz'
   PREFS_MAZ_RISCV64: '{{.BUILD_DIR}}/prefs-riscv64.maz'
   FONTSVC_MAZ_RISCV64: '{{.BUILD_DIR}}/fontsvc-riscv64.maz'
@@ -476,15 +481,15 @@ tasks:
 
   userspace-build:
     desc: Build all ARM64 userspace programs (shepherds, .maz modules, test programs)
-    deps: [rachel:arm64, linux:arm64, fs:arm64, clocks:arm64, versai:arm64, handletest:arm64, clocktest:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64]
+    deps: [rachel:arm64, linux:arm64, fs:arm64, clocks:arm64, versai:arm64, calc:arm64, handletest:arm64, clocktest:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64]
 
   userspace-build-x86_64:
     desc: Build all x86_64 userspace programs (shepherds + test programs)
-    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, clocks:x86_64, versai:x86_64, handletest:x86_64, clocktest:x86_64]
+    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, clocks:x86_64, versai:x86_64, calc:x86_64, handletest:x86_64, clocktest:x86_64]
 
   userspace-build-riscv64:
     desc: Build all RISC-V userspace programs (shepherds, .maz/.mzr modules, test programs)
-    deps: [rachel:riscv64, linux:riscv64, fs:riscv64, clocks:riscv64, versai:riscv64, handletest:riscv64, clocktest:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64, keymapper:riscv64, linux-ui:riscv64]
+    deps: [rachel:riscv64, linux:riscv64, fs:riscv64, clocks:riscv64, versai:riscv64, calc:riscv64, handletest:riscv64, clocktest:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64, keymapper:riscv64, linux-ui:riscv64]
 
   # ===========================================================================
   # Disk Image
@@ -511,7 +516,7 @@ tasks:
 
   disk-arm64:
     desc: Create ext2 disk image with ARM64 flock binaries and kmazarin kernel
-    deps: [rachel:arm64, linux:arm64, fs:arm64, handletest:arm64, clocktest:arm64, clocks:arm64, versai:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, kmazarin:arm64, convert-boot-image]
+    deps: [rachel:arm64, linux:arm64, fs:arm64, handletest:arm64, clocktest:arm64, clocks:arm64, versai:arm64, calc:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, kmazarin:arm64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -524,6 +529,7 @@ tasks:
       - '{{.CLOCKTEST_ELF}}'
       - '{{.CLOCKS_ELF}}'
       - '{{.VERSAI_ELF}}'
+      - '{{.CALC_ELF}}'
       - '{{.HELLOWORLD_MAZ}}'
       - '{{.PREFS_MAZ}}'
       - '{{.FONTSVC_MAZ}}'
@@ -541,7 +547,7 @@ tasks:
       - '{{.GO}} tool go-cp config/startup.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/startup.toml'
       - '{{.GO}} tool go-cp config/rachel.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} {{.RACHEL_ELF}} {{.LINUX_ELF}} {{.FS_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.CLOCKS_ELF}} {{.VERSAI_ELF}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.LINUX_UI_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
+      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} {{.RACHEL_ELF}} {{.LINUX_ELF}} {{.FS_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.CLOCKS_ELF}} {{.VERSAI_ELF}} {{.CALC_ELF}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.LINUX_UI_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:

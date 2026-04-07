@@ -1,0 +1,50 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build calc (ARM64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    sources:
+      - 'mazarin/apps/calc/**/*'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.CALC_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building calc..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CALC_ELF}} ./mazarin/apps/calc'
+      - '{{.GO}} tool go-echo "Calc built at {{.CALC_ELF}}"'
+
+  x86_64:
+    desc: Build calc (x86_64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    sources:
+      - 'mazarin/apps/calc/**/*'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.CALC_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building calc for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CALC_AMD64_ELF}} ./mazarin/apps/calc'
+      - '{{.GO}} tool go-echo "Calc x86_64 built at {{.CALC_AMD64_ELF}}"'
+
+  riscv64:
+    desc: Build calc (RISC-V 64-bit)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    sources:
+      - 'mazarin/apps/calc/**/*'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.CALC_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building calc for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CALC_RISCV64_ELF}} ./mazarin/apps/calc'
+      - '{{.GO}} tool go-echo "Calc RISC-V 64-bit built at {{.CALC_RISCV64_ELF}}"'

@@ -15,8 +15,8 @@ import (
 
 // Constraint page layout constants.
 const (
-	ConstraintPageCount = 512                        // 512 × 4KB = 2MB
-	ConstraintTotalSize = ConstraintPageCount * 4096 // 2MB
+	ConstraintPageCount = 1024                       // 1024 × 4KB = 4MB
+	ConstraintTotalSize = ConstraintPageCount * 4096 // 4MB
 )
 
 // Page header magic for constraint shared pages.
@@ -29,28 +29,28 @@ const (
 	RegionHeaderSize = 256 // SharedPageHeader is 256 bytes
 
 	RegionNodeOff     = 0x0100   // 256 — attribute nodes
-	RegionNodeSize    = 0x40000  // 256KB = 2048 × 128B
-	RegionNodeCap     = 2048     // max attribute slots
+	RegionNodeSize    = 0x80000  // 512KB = 4096 × 128B
+	RegionNodeCap     = 4096     // max attribute slots
 
-	RegionEdgeOff     = 0x40100  // node end
-	RegionEdgeSize    = 0x20000  // 128KB = 65536 × uint16
+	RegionEdgeOff     = 0x80100  // node end
+	RegionEdgeSize    = 0x20000  // 128KB = 65535 × uint16
 	RegionEdgeCap     = 65535    // max edges (uint16 cap)
 
-	RegionBytecodeOff  = 0x60100  // edge end
-	RegionBytecodeSize = 0x80000  // 512KB
-	RegionBytecodeCap  = 32768    // max 16B instructions
+	RegionBytecodeOff  = 0xA0100   // edge end
+	RegionBytecodeSize = 0x100000  // 1MB
+	RegionBytecodeCap  = 65535     // header field (uint16); actual limit is RegionBytecodeSize
 
-	RegionStringOff   = 0xE0100  // bytecode end
-	RegionStringSize  = 0x80000  // 512KB = 2048 × 256B
-	RegionStringCap   = 2048     // max string slots
+	RegionStringOff   = 0x1A0100  // bytecode end
+	RegionStringSize  = 0x80000   // 512KB = 2048 × 256B
+	RegionStringCap   = 2048      // max string slots
 
-	RegionCollOff     = 0x160100 // string end
-	RegionCollSize    = 0x10000  // 64KB = 2048 × 32B
-	RegionCollCap     = 2048     // max collection elements
+	RegionCollOff     = 0x220100  // string end
+	RegionCollSize    = 0x10000   // 64KB = 2048 × 32B
+	RegionCollCap     = 2048      // max collection elements
 
-	RegionTrieOff     = 0x170100 // collection end
-	RegionTrieSize    = 0x80000  // 512KB = 4096 × 128B
-	RegionTrieCap     = 4096     // max trie nodes
+	RegionTrieOff     = 0x230100  // collection end
+	RegionTrieSize    = 0x100000  // 1MB = 8192 × 128B
+	RegionTrieCap     = 8192      // max trie nodes
 )
 
 // SharedPageHeader — first 256 bytes of the shared constraint pages.
@@ -103,8 +103,8 @@ func InitConstraintPages() bool {
 		return true
 	}
 
-	// Order 9 = 512 pages = 2MB (must match ConstraintTotalSize)
-	pa := BuddyAllocTyped(9, PageConstraintShared, 0)
+	// Order 10 = 1024 pages = 4MB (must match ConstraintTotalSize)
+	pa := BuddyAllocTyped(10, PageConstraintShared, 0)
 	if pa == 0 {
 		serial.RawUARTPuts("[kmem] InitConstraintPages: allocation failed\r\n")
 		return false

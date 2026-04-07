@@ -25,3 +25,7 @@ path = "/versai.elf"
 [[shepherd]]
 name = "clocks"
 path = "/clocks.elf"
+
+[[shepherd]]
+name = "calc"
+path = "/calc.elf"
