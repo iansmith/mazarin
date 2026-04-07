@@ -543,28 +543,63 @@ func pickWindow(x, y int64) int {
 
 // moveWindowTo updates a window's screen position and redraws.
 // Used by DragAgent during titlebar drag.
-// Constraint 1: the cursor (drag point) cannot leave the screen — enforced
-//   by the input layer (QEMU clamps mouse coords), so no extra work here.
-// Constraint 2: the leftmost 50px of the title bar must remain on screen.
-//   The title bar left edge is at ta.x in screen coords.
+//
+// Drag constraint: two logical 100x100 boxes sit at the upper-left and
+// lower-right corners of the window (shrunk to the window size if the
+// window is smaller than 100px in either dimension). Per screen edge,
+// at least one box must remain partially on screen:
+//   - Dragging up:    LR box keeps bottom of window on screen
+//   - Dragging down:  UL box keeps top of window on screen
+//   - Dragging left:  LR box keeps right side on screen
+//   - Dragging right: UL box keeps left side on screen
 func moveWindowTo(ta *trackedApp, newX, newY int32) {
 	dw := int32(displayWidth)
-	const minTitleVisible int32 = 50
+	dh := int32(displayHeight)
+	winW := int32(ta.bsWidth)
+	winH := int32(ta.bsHeight)
+	bL := int32(borderLeft)
+	bT := int32(borderTop)
 
-	// Horizontal: at least minTitleVisible pixels of titlebar on screen.
-	// Title bar left edge = newX, so newX must be >= 0 (can't go off left)
-	// and newX + minTitleVisible <= dw (grab area stays on screen right).
-	if newX < 0 {
-		newX = 0
+	// Two anchor boxes (100×100, shrunk if the window is smaller) sit at
+	// the UL and LR corners. Per screen edge, the relevant box must stay
+	// fully on screen — so dragging up keeps the bottom 100px visible, etc.
+	boxW := int32(100)
+	if winW < boxW {
+		boxW = winW
 	}
-	if newX+minTitleVisible > dw {
-		newX = dw - minTitleVisible
+	boxH := int32(100)
+	if winH < boxH {
+		boxH = winH
 	}
 
-	// Vertical: keep backing store top on screen (can't blit above y=0).
-	// No bottom clamp — window may extend below screen, clipped by exposedRegion.
-	if newY-int32(borderTop) < 0 {
-		newY = int32(borderTop)
+	// Window screen rect:
+	//   top    = newY - bT,   bottom = top + winH
+	//   left   = newX - bL,   right  = left + winW
+	//
+	// UL box: [left, left+boxW] × [top, top+boxH]
+	// LR box: [right-boxW, right] × [bottom-boxH, bottom]
+
+	// Clamp Y: keep LR box on screen at top edge.
+	// LR box top = newY - bT + winH - boxH must be < dh  (trivially true going up)
+	// LR box bottom = newY - bT + winH must be > 0
+	// Keep entire box: LR box top >= 0 → newY - bT + winH - boxH >= 0
+	if newY-bT+winH-boxH < 0 {
+		newY = bT - winH + boxH
+	}
+	// Clamp Y: keep UL box on screen at bottom edge.
+	// UL box bottom = newY - bT + boxH must be <= dh
+	if newY-bT+boxH > dh {
+		newY = dh + bT - boxH
+	}
+	// Clamp X: keep LR box on screen at left edge.
+	// LR box left = newX - bL + winW - boxW >= 0
+	if newX-bL+winW-boxW < 0 {
+		newX = bL - winW + boxW
+	}
+	// Clamp X: keep UL box on screen at right edge.
+	// UL box right = newX - bL + boxW <= dw
+	if newX-bL+boxW > dw {
+		newX = dw + bL - boxW
 	}
 
 	if dragActive && ta.sid == dragSID {
@@ -573,27 +608,38 @@ func moveWindowTo(ta *trackedApp, newX, newY int32) {
 		ta.y = newY
 		newRect := windowVisibleRect(ta, true) // focused = face + light shadow pad
 
+		// Clip all rects to screen bounds. Without this, negative
+		// coordinates cause framebuffer row-wrap (writing to the end
+		// of the previous row instead of the current one).
+		screen := image.Rect(0, 0, int(displayWidth), int(displayHeight))
+		oldClip := oldRect.Intersect(screen)
+		newClip := newRect.Intersect(screen)
+
 		// 1. Restore newly-exposed area from drag background.
-		exposed := rectSubtract(oldRect, newRect)
-		for _, r := range exposed {
-			copyRectFromBuffer(fbPix, fbStride, dragBG, dragBGStride, r)
+		if !oldClip.Empty() {
+			exposed := rectSubtract(oldClip, newClip)
+			for _, r := range exposed {
+				copyRectFromBuffer(fbPix, fbStride, dragBG, dragBGStride, r)
+			}
 		}
 
 		// 2. Restore shadow zone background from dragBG for correct alpha.
-		face := faceScreenRect(ta)
-		shadowRect := newRect // newRect = face expanded by lightShadowPad
-		// The shadow zone is the difference between the visible rect and the face.
-		shadowStrips := rectSubtract(shadowRect, face)
-		for _, s := range shadowStrips {
-			copyRectFromBuffer(fbPix, fbStride, dragBG, dragBGStride, s)
+		if !newClip.Empty() {
+			face := faceScreenRect(ta).Intersect(screen)
+			shadowStrips := rectSubtract(newClip, face)
+			for _, s := range shadowStrips {
+				copyRectFromBuffer(fbPix, fbStride, dragBG, dragBGStride, s)
+			}
+
+			// 3. Blit the dragged window at its new position (with alpha).
+			blitWindow(ta.sid, []image.Rectangle{newClip}, fbPix, fbStride, true)
 		}
 
-		// 3. Blit the dragged window at its new position (with alpha).
-		blitWindow(ta.sid, []image.Rectangle{newRect}, fbPix, fbStride, true)
-
-		// 4. Flush only the union of old and new rects.
-		union := oldRect.Union(newRect)
-		flushRect(union.Min.X, union.Min.Y, union.Dx(), union.Dy())
+		// 4. Flush only the union of old and new rects (clipped).
+		union := oldClip.Union(newClip)
+		if !union.Empty() {
+			flushRect(union.Min.X, union.Min.Y, union.Dx(), union.Dy())
+		}
 
 		dragPrevRect = newRect
 		return
@@ -702,6 +748,11 @@ func blitAllWindows() {
 				}
 			}
 			regions = clipped
+		} else {
+			// Focused: restore background under shadow zones so the
+			// alpha-blended shadow matches the per-frame blit path
+			// (which calls restoreBorderBackground on every MsgBlit).
+			restoreBorderBackground(sid, regions, fbPix, fbStride)
 		}
 		blitWindow(sid, regions, fbPix, fbStride, focused)
 	}
@@ -1045,7 +1096,7 @@ func main() {
 	// Initialize palette and desktop background early — everything that
 	// fills or composites the framebuffer reads desktopBG.
 	pal = mctheme.NewDefaultPaletteSwapRB()
-	pal.SetDesktopBG(color.NRGBA{R: 224, G: 224, B: 224, A: 255})
+	pal.SetDesktopBG(color.NRGBA{R: 227, G: 226, B: 232, A: 255})
 	desktopBG = pal.DesktopBG() // BGRA byte order (RB-swapped)
 
 	// Initialize WMTheme from palette — border vars derive from it.

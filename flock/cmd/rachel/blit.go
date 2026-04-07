@@ -9,11 +9,9 @@ package main
 import (
 	"fmt"
 	"image"
-	"image/color"
-	"mazzy/mazarin/mancini"
+"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
-	mctheme "mazzy/mazarin/mancini/theme"
-	"mazzy/mazarin/mem"
+"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazarin/textshape"
 	"strconv"
@@ -80,9 +78,10 @@ func faceScreenRect(ta *trackedApp) image.Rectangle {
 	)
 }
 
-// lightShadowPad is the shadow extent for light neumorphic params.
-// NeuMaxPad for light = ceil(max(4+12+2, 1.5+9+2, 3.5)) = 18.
-var lightShadowPad = 18
+// lightShadowPad is the shadow extent for focused window decoration.
+// neuRaised uses pad = maxOff + ceil(maxBlur*3) + 2.
+// Custom: maxOff=4, maxBlur=3 → pad = 4 + 9 + 2 = 15.
+var lightShadowPad = 15
 
 // windowVisibleRect returns the screen rectangle a window actually occupies.
 // Focused windows use the face rect expanded by the light shadow padding.
@@ -394,15 +393,21 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 	r := wmTheme.CornerRadius()
 
 	if depth == mancini.Raised {
-		// Focused: transparent face + light neumorphic shadows.
-		// draw.Over with alpha=0 face is a no-op, preserving shadow pixels.
-		faceColor := color.NRGBA{A: 0}
-		neuP := mctheme.NewDefaultNeumorphicParams().Light()
-		neuP.Raised.LightAlpha = wmTheme.RaisedLightAlpha()
+		// Focused: opaque surface face + custom window shadow.
+		faceColor := pal.Surface()
+		neuP := &mancini.NeuParams{
+			Raised: mancini.RaisedParams{
+				DarkOff:    4,
+				DarkBlur:   3,
+				DarkAlpha:  200,
+				LightOff:   2,
+				LightBlur:  2.5,
+				LightAlpha: 220,
+			},
+		}
 		std.NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, faceColor, neuP)
 	} else {
 		// Unfocused: opaque face, no neumorphic shadows.
-		// The face provides a solid surface for the title bar text.
 		faceColor := pal.Surface()
 		dc.SetColor(faceColor)
 		dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)

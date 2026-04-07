@@ -258,6 +258,8 @@ type DragAgent struct {
 	titlebarDrag bool  // true = moving the window, false = content drag
 	dragOffsetX  int32 // mouse offset from ta.x at press time
 	dragOffsetY  int32 // mouse offset from ta.y at press time
+	prevCursorX  int32 // cursor position of previous move event
+	prevCursorY  int32 // cursor position of previous move event
 }
 
 func (a *DragAgent) Name() string                  { return "drag" }
@@ -274,6 +276,8 @@ func (a *DragAgent) StartDrag(target input.Interactor, buttonCode uint16, pressX
 		a.titlebarDrag = true
 		a.dragOffsetX = pressX - wi.ta.x
 		a.dragOffsetY = pressY - wi.ta.y
+		a.prevCursorX = pressX
+		a.prevCursorY = pressY
 		sys.UartWriteString(fmt.Sprintf("[rachel:drag] titlebar drag SID=%d offset=(%d,%d)\n",
 			wi.ta.sid, a.dragOffsetX, a.dragOffsetY))
 		startDragComposite(wi.ta.sid)
@@ -284,7 +288,33 @@ func (a *DragAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool 
 	if ev.IsMouseMove() {
 		if a.titlebarDrag {
 			if wi, ok := target.(*WindowInteractor); ok {
-				moveWindowTo(wi.ta, ev.X-a.dragOffsetX, ev.Y-a.dragOffsetY)
+				// Detect cursor teleportation: if the cursor jumped more
+				// than half the screen in one frame, the host cursor
+				// likely exited and re-entered the QEMU window. Absorb
+				// the jump into the offset instead of moving the window.
+				dx := ev.X - a.prevCursorX
+				dy := ev.Y - a.prevCursorY
+				if dx < 0 {
+					dx = -dx
+				}
+				if dy < 0 {
+					dy = -dy
+				}
+				halfW := int32(displayWidth) / 2
+				halfH := int32(displayHeight) / 2
+				if dx > halfW || dy > halfH {
+					// Teleportation — re-sync offset, don't move window.
+					a.dragOffsetX = ev.X - wi.ta.x
+					a.dragOffsetY = ev.Y - wi.ta.y
+				} else {
+					moveWindowTo(wi.ta, ev.X-a.dragOffsetX, ev.Y-a.dragOffsetY)
+					// Re-sync offset after clamping so the cursor must
+					// travel back through "slack" before the window moves.
+					a.dragOffsetX = ev.X - wi.ta.x
+					a.dragOffsetY = ev.Y - wi.ta.y
+				}
+				a.prevCursorX = ev.X
+				a.prevCursorY = ev.Y
 			}
 			return true
 		}
@@ -379,7 +409,16 @@ func (a *FocusChangeAgent) Deliver(ev *input.InputEvent, target input.Interactor
 		if hasFocus(wi.ta.sid) {
 			return false
 		}
-		// Unfocused window: begin click detection.
+		// Titlebar click on unfocused window: immediately grant focus
+		// and let PressAgent start a drag so the user can focus+move
+		// in one gesture.
+		if wi.InTitleBar(ev.X, ev.Y) {
+			sys.UartWriteString(fmt.Sprintf("[rachel:focus] titlebar-click → raise+focus SID %d\n", wi.ta.sid))
+			grantFocus(wi.ta.sid)
+			a.keyFwd.SetFocus(wi)
+			return false // pass through to PressAgent for drag
+		}
+		// Client area click on unfocused window: begin click detection FSM.
 		a.state = fcGotPress
 		a.target = wi
 		a.pressX = ev.X
