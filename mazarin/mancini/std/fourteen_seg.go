@@ -1,7 +1,10 @@
 package std
 
 import (
+	"fmt"
 	"image/color"
+	"math"
+	"os"
 	"strings"
 
 	"mazzy/mazarin/attr"
@@ -29,6 +32,20 @@ type FourteenSeg struct {
 	gap   float64 // gap between characters
 	segW  float64 // segment line thickness
 	pad   float64 // padding inside cell
+}
+
+// fourteenSegMinWidth computes the segment stroke width, clamped to an
+// integer pixel to avoid a divide-by-zero in x/image/vector's fixed-point
+// rasterizer. Fractional stroke widths (e.g. 1.76) can produce degenerate
+// stroke-expansion geometry where two vertices land at the same fixed-point
+// x but in different pixel columns, making twoOverS==0 in fixedLineTo.
+func fourteenSegMinWidth(cellW float64) float64 {
+	w := max(cellW*0.08, 1.5)
+	rounded := math.Ceil(w)
+	if rounded != w {
+		fmt.Fprintf(os.Stderr, "[fourteen_seg] WARNING: segW %.2f rounded to %.0f to work around x/image/vector fixedLineTo divide-by-zero\n", w, rounded)
+	}
+	return rounded
 }
 
 // NewFourteenSeg creates a 14-segment display showing the given text.
@@ -63,7 +80,7 @@ func NewFourteenSeg(myName, parent string,
 		cellW:    cellW,
 		cellH:    cellH,
 		gap:      gap,
-		segW:     max(cellW*0.08, 1.5),
+		segW:     fourteenSegMinWidth(cellW),
 		pad:      max(cellW*0.08, 1.0),
 	}
 	seg.Interactor.Initialize(seg, lh)

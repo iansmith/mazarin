@@ -9,6 +9,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"math"
 "mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
 "mazzy/mazarin/mem"
@@ -567,6 +568,9 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 		titleBarDur = time.Since(t3)
 	}
 
+	// Resize handle semi-circles on left, right, bottom edges.
+	drawResizeHandles(dc, tw, th)
+
 	// Accumulate into phase stats if tracking.
 	if decorPhaseAccum.active {
 		if depth == mancini.Raised {
@@ -585,6 +589,77 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 	}
 
 	return buf
+}
+
+// resizeHandleRadius is the radius of the semi-circle resize handles
+// drawn on the left, right, and bottom edges of each window decoration.
+const resizeHandleRadius = 12
+
+// drawSemiCircleArc draws a semi-circular arc path from startAngle to
+// endAngle (radians, 0=right, Pi/2=down in screen coords). The path is
+// closed with a straight line across the flat edge. If fill is true,
+// the shape is filled; otherwise it is stroked.
+func drawSemiCircleArc(dc textshape.DrawContext, cx, cy, r, startAngle, endAngle float64, fill bool) {
+	const n = 8
+	for i := 0; i < n; i++ {
+		t1 := float64(i) / float64(n)
+		t2 := float64(i+1) / float64(n)
+		aa1 := startAngle + (endAngle-startAngle)*t1
+		aa2 := startAngle + (endAngle-startAngle)*t2
+		x0 := cx + r*math.Cos(aa1)
+		y0 := cy + r*math.Sin(aa1)
+		xMid := cx + r*math.Cos((aa1+aa2)/2)
+		yMid := cy + r*math.Sin((aa1+aa2)/2)
+		x2 := cx + r*math.Cos(aa2)
+		y2 := cy + r*math.Sin(aa2)
+		qcx := 2*xMid - x0/2 - x2/2
+		qcy := 2*yMid - y0/2 - y2/2
+		if i == 0 {
+			dc.MoveTo(x0, y0)
+		}
+		dc.QuadraticTo(qcx, qcy, x2, y2)
+	}
+	dc.ClosePath()
+	if fill {
+		dc.Fill()
+	} else {
+		dc.Stroke()
+	}
+}
+
+// drawResizeHandles draws semi-circle resize handles on the left, right,
+// and bottom edges of the decoration buffer. Each handle is centered at
+// the midpoint of its edge, with the flat side flush against the app area
+// boundary and the curved part bulging into the border zone.
+// Filled with SurfaceTint and outlined with DarkShadow.
+func drawResizeHandles(dc textshape.DrawContext, tw, th int) {
+	r := float64(resizeHandleRadius)
+
+	// App area in buffer coordinates.
+	appMidX := float64(borderLeft+tw-borderRight) / 2
+	appMidY := float64(borderTop+th-borderBottom) / 2
+
+	// Bottom handle: flat edge at top, bulges down.
+	drawResizeHandle(dc, appMidX, float64(th-borderBottom), r, 0, math.Pi)
+
+	// Left handle: flat edge at right, bulges left.
+	drawResizeHandle(dc, float64(borderLeft), appMidY, r, math.Pi/2, 3*math.Pi/2)
+
+	// Right handle: flat edge at left, bulges right.
+	drawResizeHandle(dc, float64(tw-borderRight), appMidY, r, -math.Pi/2, math.Pi/2)
+}
+
+// drawResizeHandle draws a single semi-circle: SurfaceTint fill then
+// DarkShadow outline on top.
+func drawResizeHandle(dc textshape.DrawContext, cx, cy, r, startAngle, endAngle float64) {
+	// Fill first.
+	dc.SetColor(pal.SurfaceTint())
+	drawSemiCircleArc(dc, cx, cy, r, startAngle, endAngle, true)
+
+	// Outline on top of the fill.
+	dc.SetColor(pal.DarkShadow())
+	dc.SetLineWidth(1.5)
+	drawSemiCircleArc(dc, cx, cy, r, startAngle, endAngle, false)
 }
 
 // preRenderDecorations pre-renders both focused (Raised) and unfocused

@@ -160,6 +160,7 @@ var (
 	fontBtn     int32
 	fontSmall   int32
 	fontShift   int32
+	fontRadial  int32
 )
 
 func initFonts(dc mancini.DrawContext) {
@@ -180,6 +181,12 @@ func initFonts(dc mancini.DrawContext) {
 		sys.UartWriteString(fmt.Sprintf("[calc] OpenFont shift failed: %s\n", err.Error()))
 	}
 	fontShift = m.FontID
+
+	m, err = dc.OpenFont(mfont.DefaultSans, 0, 18)
+	if err != nil {
+		sys.UartWriteString(fmt.Sprintf("[calc] OpenFont radial failed: %s\n", err.Error()))
+	}
+	fontRadial = m.FontID
 }
 
 // --- Button Interactors ---
@@ -200,6 +207,11 @@ var (
 
 	// Shared glyph provider for creating DrawContexts.
 	glyphProvider *fontcache.FontSvcGlyphProvider
+
+	// mainDC is the app's primary DrawContext. Used to create child DCs
+	// (e.g., for overlays) that share the same text layout engine and
+	// already-opened fonts.
+	mainDC mancini.DrawContext
 
 	// Overlay state for the radial menu popup.
 	overlayActive    bool
@@ -339,34 +351,35 @@ func requestOverlay() {
 	}
 
 	// Compute screen-space rectangle for the radial menu.
-	// The menu fans upward from the throbber center (225°-315°).
+	// Arc center sits at the throbber (bottom-right corner of the calc layout).
 	throbLH := throb.GetLayout()
 	throbX := throbLH.X.Get()
 	throbY := throbLH.Y.Get()
 	throbW := throbLH.Width.Get()
 	throbH := throbLH.Height.Get()
-	appCX := float64(throbX) + float64(throbW)/2
-	appCY := float64(throbY) + float64(throbH)/2
+	// Bottom-right corner of the throbber in app-local coords.
+	appCX := float64(throbX) + float64(throbW)
+	appCY := float64(throbY) + float64(throbH)
 
 	// Convert app-local to screen coords.
 	screenOX, screenOY := mancini.ScreenOrigin()
 	screenCX := float64(screenOX) + appCX
 	screenCY := float64(screenOY) + appCY
 
-	sys.UartWriteString(fmt.Sprintf("[calc:overlay] throbber layout: X=%d Y=%d W=%d H=%d appCenter=(%.0f,%.0f) screenOrigin=(%d,%d) screenCenter=(%.0f,%.0f)\n",
-		throbX, throbY, throbW, throbH, appCX, appCY, screenOX, screenOY, screenCX, screenCY))
+	sys.UartWriteString(fmt.Sprintf("[calc:overlay] throbber layout: X=%d Y=%d W=%d H=%d screenCenter=(%.0f,%.0f)\n",
+		throbX, throbY, throbW, throbH, screenCX, screenCY))
 
-	// Radial menu arc: -86.25° to -3.75° (fans upper-right from throbber).
-	// Segment centers: -72.5°, -45°, -17.5° (27.5° apart).
-	outerR := 120.0
-	pad := 5.0 // minimal padding — arc center sits right at the throbber
+	// Radial menu arc: fans lower-right from the bottom-right corner.
+	// 3.75° to 86.25°: three 27.5° segments extending the corner outward.
+	outerR := 160.0
+	pad := 5.0
 
-	// Arc extends rightward and upward from center. The center sits at
-	// the bottom-left of the overlay buffer.
+	// Arc extends rightward and downward from center. The center sits at
+	// the top-left of the overlay buffer.
 	x1 := int32(screenCX - pad)
-	y1 := int32(screenCY - outerR - pad)
+	y1 := int32(screenCY - pad)
 	x2 := int32(screenCX + outerR + pad)
-	y2 := int32(screenCY + pad)
+	y2 := int32(screenCY + outerR + pad)
 
 	fmt.Fprintf(os.Stdout, "[calc] requesting overlay: screen rect (%d,%d)-(%d,%d) center=(%.0f,%.0f)\n",
 		x1, y1, x2, y2, screenCX, screenCY)
@@ -396,25 +409,21 @@ func handleOverlayReady(m wm.OverlayReady) {
 		Rect:   image.Rect(0, 0, int(m.Width), int(m.Height)),
 	}
 
-	overlayDC = mancini.NewDrawContextForImage(overlayImg, glyphProvider)
-	initFonts(overlayDC) // register fonts with the overlay DC
+	// Create the overlay DC as a child of the main DC so it shares the
+	// same text layout engine and already-opened fonts.
+	overlayDC = mainDC.NewChildContext(overlayImg)
 
-	// The radial menu center sits at the bottom-left of the overlay buffer,
+	// The radial menu center sits at the top-left of the overlay buffer,
 	// offset by the padding we added in requestOverlay.
 	cx := 5.0 // matches pad in requestOverlay
-	cy := float64(m.Height) - 5.0
+	cy := 5.0
 
-	// Font config for the face labels.
-	fc := &mancini.FontConfig{
-		FontRegular:  mfont.DefaultSans,
-		FontBold:     mfont.DefaultSans,
-		ShapedFontID: fontSmall,
-	}
-
-	labels := []string{"Integer", "Hex", "Binary"}
+	// Create faces using the pre-opened fontSmall ID from the main DC.
+	// The overlay DC shares the same glyph provider, so the fontID is valid.
+	labels := []string{"Integer 123", "Hex 0x7b", "Binary 1111011"}
 	faces := make([]mancini.LatinTextFace, len(labels))
 	for i, label := range labels {
-		f := impl.NewLatinTextFace(fc, false, 14, mancini.TextAlignmentParams{})
+		f := impl.NewLatinTextFaceWithFontID(fontRadial, mancini.TextAlignmentParams{})
 		f.SetText(label)
 		faces[i] = f
 	}
@@ -422,11 +431,12 @@ func handleOverlayReady(m wm.OverlayReady) {
 	selected := make([]bool, len(labels))
 	selected[0] = true // Integer selected by default
 
-	// Arc from -86.25° to -3.75°: three 27.5° segments centered at
-	// -72.5° (Binary), -45° (Hex), -17.5° (Integer).
+	// Arc from 3.75° to 86.25°: three 27.5° segments fanning
+	// lower-right from the bottom-right corner (0°=right, 90°=down).
+	// Inner radius 60 gives a clean gap at the corner; outer 160 for readable text.
 	radialMenu = std.NewRadialNOfMChooserNamed(
 		"overlay_radial", "", calcTheme,
-		cx, cy, 8, 120, -86.25, -3.75,
+		cx, cy, 60, 160, 3.75, 86.25,
 		faces, selected,
 	)
 
@@ -442,49 +452,6 @@ func handleOverlayReady(m wm.OverlayReady) {
 		rLH.Width.Get(), rLH.Height.Get()))
 
 	radialMenu.Draw(radialMenu, 0, 0, int64(m.Width), int64(m.Height))
-
-	// DEBUG: draw diagnostic markers on the overlay.
-	// Red dot at arc center, colored lines along start/mid/end angles.
-	debugRed := color.RGBA{255, 0, 0, 255}
-	debugBlue := color.RGBA{0, 0, 255, 255}
-	debugGreen := color.RGBA{0, 200, 0, 255}
-	for dy := -2; dy <= 2; dy++ {
-		for dx := -2; dx <= 2; dx++ {
-			ix, iy := int(cx)+dx, int(cy)+dy
-			if ix >= 0 && ix < int(m.Width) && iy >= 0 && iy < int(m.Height) {
-				overlayImg.Set(ix, iy, debugRed)
-			}
-		}
-	}
-	type debugLine struct {
-		deg float64
-		c   color.RGBA
-	}
-	for _, dl := range []debugLine{
-		{-86.25, debugRed},
-		{-45, debugGreen},
-		{-3.75, debugBlue},
-	} {
-		rad := dl.deg * math.Pi / 180
-		cosA, sinA := math.Cos(rad), math.Sin(rad)
-		for r := 8.0; r <= 120.0; r += 0.5 {
-			ix := int(cx + r*cosA)
-			iy := int(cy + r*sinA)
-			if ix >= 0 && ix < int(m.Width) && iy >= 0 && iy < int(m.Height) {
-				overlayImg.Set(ix, iy, dl.c)
-			}
-		}
-	}
-
-	// Check how many non-zero pixels were written.
-	nonZero := 0
-	for i := 3; i < len(ovSlice); i += 4 { // check alpha channel
-		if ovSlice[i] != 0 {
-			nonZero++
-		}
-	}
-	sys.UartWriteString(fmt.Sprintf("[calc:overlay] after draw: %d non-transparent pixels out of %d total\n",
-		nonZero, len(ovSlice)/4))
 
 	fmt.Fprintf(os.Stdout, "[calc] overlay drawn: id=%d %dx%d center=(%.0f,%.0f)\n",
 		m.OverlayID, m.Width, m.Height, cx, cy)
@@ -1005,6 +972,7 @@ func main() {
 	glyphProvider = fontcache.NewFontSvcGlyphProvider(fc)
 	provider := glyphProvider
 	dc := mancini.NewDrawContextForImage(bsImg, provider)
+	mainDC = dc
 
 	leftInset := float64(bsr.LeftInset)
 	topInset := float64(bsr.TopInset)
@@ -1085,6 +1053,8 @@ func main() {
 			sys.UartWriteString(fmt.Sprintf("[calc:overlay] OverlayInput id=%d kind=%d xy=(%d,%d) btn=%d char=%d action=%d\n",
 				m.OverlayID, m.Kind, m.X, m.Y, m.Button, m.Char, m.Action))
 			continue // don't redraw main window
+		case wm.WindowMoved:
+			mancini.SetScreenOrigin(int64(m.AppX), int64(m.AppY))
 		case wm.YouHaveFocus, wm.KeyboardFocusGained:
 			msgStatsLog("Focus")
 			app.Focused = true
@@ -1103,6 +1073,7 @@ func main() {
 			newBSLen := newTotalStride * newTotalH
 			app.HandleBackingStoreReady(uintptr(m.BackingStoreAddr), newBSLen)
 			app.SetSize(int64(m.AppWidth), int64(m.AppHeight))
+			mancini.SetScreenOrigin(int64(m.AppX), int64(m.AppY))
 			bsSlice = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(m.BackingStoreAddr))), newBSLen)
 			bsImg = &image.RGBA{
 				Pix:    bsSlice,
@@ -1174,6 +1145,7 @@ func main() {
 				continue
 			}
 			// Same buffer, new dimensions only.
+			mancini.SetScreenOrigin(int64(m.AppX), int64(m.AppY))
 			newTotalW := int(m.TotalWidth)
 			newTotalH := int(m.TotalHeight)
 			newTotalStride := int(m.TotalStride)

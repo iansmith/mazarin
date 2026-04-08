@@ -38,6 +38,22 @@ func NewLatinTextFace(fc *mancini.FontConfig, bold bool, fontSize int64, params 
 	}
 }
 
+// NewLatinTextFaceWithFontID creates a LatinTextFaceImpl that uses a
+// pre-opened fontID. No OpenFont call is ever made — the caller is
+// responsible for ensuring the fontID is valid on whatever DrawContext
+// the face will be rendered into. This is useful when the font was
+// already opened on a shared glyph provider (e.g., the app's main DC)
+// and the face will be drawn on an overlay or child DC that shares the
+// same provider.
+func NewLatinTextFaceWithFontID(fontID int32, params mancini.TextAlignmentParams) *LatinTextFaceImpl {
+	return &LatinTextFaceImpl{
+		fontID:   fontID,
+		fontSize: 0,
+		fontPath: "", // empty prevents ensureFont from calling OpenFont
+		params:   params,
+	}
+}
+
 // ensureFont opens the font via dc.OpenFont. Re-opens when the DC changes
 // (e.g., when rendering decorations into different temporary buffers).
 func (f *LatinTextFaceImpl) ensureFont(dc mancini.DrawContext) {

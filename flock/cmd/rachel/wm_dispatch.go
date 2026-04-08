@@ -137,30 +137,15 @@ const (
 	EdgeBottom            // bottom border center
 )
 
-const resizeHitWidth = 24 // pixels of hot zone for resize detection
-
-// midSpan returns the start and end of the middle 20% of a range,
-// clamped to a minimum of 10 pixels.
-func midSpan(lo, hi int32) (int32, int32) {
-	length := hi - lo
-	span := length / 5 // 20%
-	if span < 10 {
-		span = 10
-	}
-	if span > length {
-		span = length
-	}
-	center := lo + length/2
-	return center - span/2, center + span/2
-}
-
 // InResizeEdge returns the resize edge under screen point (x,y), or
 // EdgeNone if the point is not in a resize zone. Only bottom, left,
-// and right edges are supported. Each edge's hit zone is the middle
-// 20% of the edge length (minimum 10px).
+// and right edges are supported. Each edge has a semi-circle handle
+// centered at the midpoint of the edge; hit testing uses circular
+// distance and requires the point to be on the border side (not inside
+// the app area).
 func (w *WindowInteractor) InResizeEdge(x, y int32) ResizeEdge {
 	ta := w.ta
-	oy := ta.y - int32(borderTop)
+	r := int32(resizeHandleRadius)
 
 	// App area in screen coordinates.
 	appX0 := ta.x
@@ -168,31 +153,35 @@ func (w *WindowInteractor) InResizeEdge(x, y int32) ResizeEdge {
 	appY0 := ta.y
 	appY1 := ta.y + ta.appHeight
 
-	// Bottom edge: below app area, middle 20% of X range.
-	botY0 := appY1
-	botY1 := oy + ta.bsHeight
-	botX0, botX1 := midSpan(appX0, appX1)
-	if x >= botX0 && x < botX1 && y >= botY0 && y < botY1 {
+	// Bottom handle: center at (midX, appY1), must be below app area.
+	botCX := (appX0 + appX1) / 2
+	botCY := appY1
+	if y >= botCY && inCircle(x, y, botCX, botCY, r) {
 		return EdgeBottom
 	}
 
-	// Left edge: inner edge of left border, middle 20% of Y range.
-	leftX0 := appX0 - int32(resizeHitWidth)
-	leftX1 := appX0
-	leftY0, leftY1 := midSpan(appY0, appY1)
-	if x >= leftX0 && x < leftX1 && y >= leftY0 && y < leftY1 {
+	// Left handle: center at (appX0, midY), must be left of app area.
+	leftCX := appX0
+	leftCY := (appY0 + appY1) / 2
+	if x <= leftCX && inCircle(x, y, leftCX, leftCY, r) {
 		return EdgeLeft
 	}
 
-	// Right edge: inner edge of right border, middle 20% of Y range.
-	rightX0 := appX1
-	rightX1 := appX1 + int32(resizeHitWidth)
-	rightY0, rightY1 := midSpan(appY0, appY1)
-	if x >= rightX0 && x < rightX1 && y >= rightY0 && y < rightY1 {
+	// Right handle: center at (appX1, midY), must be right of app area.
+	rightCX := appX1
+	rightCY := (appY0 + appY1) / 2
+	if x >= rightCX && inCircle(x, y, rightCX, rightCY, r) {
 		return EdgeRight
 	}
 
 	return EdgeNone
+}
+
+// inCircle returns true if (x,y) is within radius r of (cx,cy).
+func inCircle(x, y, cx, cy, r int32) bool {
+	dx := x - cx
+	dy := y - cy
+	return dx*dx+dy*dy <= r*r
 }
 
 func (w *WindowInteractor) Press(ev *input.InputEvent) bool {
@@ -451,6 +440,14 @@ func (a *DragAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool 
 		}
 		if a.titlebarDrag {
 			endDragComposite()
+			// Notify the shepherd of its new screen position.
+			if wi, ok := target.(*WindowInteractor); ok {
+				msg := wm.EncodeWindowMoved(&wm.WindowMoved{
+					AppX: wi.ta.x,
+					AppY: wi.ta.y,
+				})
+				_ = uring.Send(wi.ta.sid, &msg)
+			}
 			a.titlebarDrag = false
 			a.target = nil
 			a.buttonCode = 0

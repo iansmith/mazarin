@@ -366,9 +366,9 @@ func radialApplySelection(canvas *image.RGBA, pal mancini.Palette,
 // ── Face content rendering ──────────────────────────────────────────────────
 
 // radialDrawContent renders a Face's content positioned at the midpoint
-// of the segment's angular and radial range. The content is drawn into a
-// temporary buffer, rotated to align with the segment's midpoint angle,
-// and composited onto the canvas masked to the segment area.
+// of the segment's angular and radial range. The text is drawn along the
+// radial line from the arc center through the segment midpoint: the
+// baseline follows the direction from inner to outer radius.
 func radialDrawContent(dc mancini.DrawContext, canvas *image.RGBA, pal mancini.Palette,
 	cx, cy, rOuter, rInner, startAngle, endAngle float64, face mancini.Face) {
 
@@ -383,22 +383,24 @@ func radialDrawContent(dc mancini.DrawContext, canvas *image.RGBA, pal mancini.P
 	faceCX := cx + midR*math.Cos(midAngle)
 	faceCY := cy + midR*math.Sin(midAngle)
 
-	// Render face content into a temporary buffer centered at origin.
-	// The face draws as if it were a horizontal strip: width=arcLen, height=radialH.
-	bufW := int(math.Ceil(arcLen)) + 4
-	bufH := int(math.Ceil(radialH)) + 4
+	// Render face content into a temporary buffer. Text reads left-to-right
+	// along the radial direction (width = radialH), with arcLen as the
+	// perpendicular (height) dimension for centering.
+	bufW := int(math.Ceil(radialH)) + 4
+	bufH := int(math.Ceil(arcLen)) + 4
 	if bufW < 4 || bufH < 4 {
 		return
 	}
 
 	faceBuf := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
 	faceCtx := dc.NewChildContext(faceBuf)
-	face.DrawFace(faceCtx, 2, 2, arcLen, radialH)
+	faceCtx.SetColor(pal.Text())
+	face.DrawFace(faceCtx, 2, 2, radialH, arcLen)
 
-	// Rotate the face buffer to align with the segment angle.
+	// Rotate so the horizontal text aligns with the radial direction.
 	faceNRGBA := rgbaToNRGBA(faceBuf)
-	rotAngle := midAngle + math.Pi/2 // rotate from horizontal to radial orientation
-	// Flip for segments in the lower half to keep text readable.
+	rotAngle := midAngle
+	// Flip for segments in the left half to keep text readable.
 	if midAngle > math.Pi/2 && midAngle < 3*math.Pi/2 {
 		rotAngle += math.Pi
 	}

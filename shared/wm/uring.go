@@ -40,6 +40,7 @@ const (
 	MsgTypeAnimationUnregistered uint32 = 26 // rachel → shepherd
 
 	MsgTypeWindowResized uint32 = 30 // rachel → shepherd
+	MsgTypeWindowMoved   uint32 = 31 // rachel → shepherd
 
 	MsgTypeOverlayAllocate uint32 = 40 // shepherd → rachel
 	MsgTypeOverlayReady    uint32 = 41 // rachel → shepherd
@@ -222,6 +223,15 @@ type WindowResized struct {
 	AppHeight        int32
 	AppX             int32
 	AppY             int32
+}
+
+// WindowMoved is sent by rachel to a shepherd when its window has been
+// moved (e.g. by a title bar drag). The shepherd can update its screen
+// origin so that overlay positioning and other screen-coordinate
+// calculations remain correct.
+type WindowMoved struct {
+	AppX int32
+	AppY int32
 }
 
 // --- Overlay messages ---
@@ -465,6 +475,14 @@ func EncodeWindowResized(wr *WindowResized) ipc.UringIPCMsg {
 	return msg
 }
 
+func EncodeWindowMoved(wm *WindowMoved) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoShepherdNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeWindowMoved
+	*(*WindowMoved)(unsafe.Pointer(&msg.Payload[4])) = *wm
+	return msg
+}
+
 func EncodeOverlayAllocate(o *OverlayAllocate) ipc.UringIPCMsg {
 	var msg ipc.UringIPCMsg
 	msg.Protocol = ipc.ProtoWMNotify
@@ -622,6 +640,8 @@ func DecodeShepherdNotifyFromPayload(payload []byte) any {
 		return *(*AnimationUnregistered)(unsafe.Pointer(&payload[4]))
 	case MsgTypeWindowResized:
 		return *(*WindowResized)(unsafe.Pointer(&payload[4]))
+	case MsgTypeWindowMoved:
+		return *(*WindowMoved)(unsafe.Pointer(&payload[4]))
 	case MsgTypeOverlayReady:
 		return *(*OverlayReady)(unsafe.Pointer(&payload[4]))
 	case MsgTypeOverlayReleased:
