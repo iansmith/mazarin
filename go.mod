@@ -104,8 +104,6 @@ replace mazarin/textshape => ./mazarin/textshape
 // Tool directives - these can be run with "go tool <name>"
 tool (
 	github.com/go-task/task/v3/cmd/task
-	mazzy/cmd/block-serial-bash-hook
-	mazzy/cmd/block-serial-read-hook
 	mazzy/cmd/check-version
 	mazzy/cmd/compile-constraints
 	mazzy/cmd/fix-go-elf

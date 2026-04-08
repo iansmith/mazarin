@@ -156,7 +156,12 @@ vars:
   DISK_RISCV64_IMAGE: '{{.BUILD_DIR}}/disk-riscv64.img'
 
   # Fonts base image (built once, used as -base for disk images)
-  FONTS_DIR: '{{env "FONTS_DIR" | default "../louis14/fonts"}}'
+  GASTON_DIR:  '{{env "GASTON_DIR"  | default "../gaston"}}'
+  LOUIS14_DIR: '{{env "LOUIS14_DIR" | default "../louis14"}}'
+  FONTS_DIR:   '{{env "FONTS_DIR"   | default "../louis14/fonts"}}'
+  GASTON_MAZARIN_BIN: '{{.GASTON_DIR}}/build/gaston-mazarin'
+  GASTON_LIB:         '{{.GASTON_DIR}}/build/libgastonc.a'
+  GASTON_INCLUDE_DIR: '{{.GASTON_DIR}}/cmd/gaston/libc'
   FONTS_BASE_IMAGE: '{{.BUILD_DIR}}/fonts-base.img'
   FONTS_PAD_MB: '300'
 
@@ -514,9 +519,18 @@ tasks:
       - '{{.GO}} tool mkfat32 -o {{.FONTS_BASE_IMAGE}} -pad {{.FONTS_PAD_MB}} -dir /fonts={{.FONTS_DIR}}'
       - '{{.GO}} tool go-echo "Fonts base image created at {{.FONTS_BASE_IMAGE}}"'
 
+  gaston-assets:
+    desc: Build gaston compiler (ARM64) and libgastonc.a from {{.GASTON_DIR}}
+    deps: [build-dir]
+    cmds:
+      - '{{.GO}} tool go-echo "Building gaston ARM64 binary from {{.GASTON_DIR}}..."'
+      - 'cd {{.GASTON_DIR}} && GOOS=linux GOARCH=arm64 {{.GO}} build -ldflags="-X main.defaultIncludes=/gaston/include -X main.defaultLibPaths=/gaston/lib -X main.defaultLibs=gastonc" -o build/gaston-mazarin ./cmd/gaston'
+      - '{{.GO}} tool go-echo "Building libgastonc.a from {{.GASTON_DIR}}..."'
+      - 'cd {{.GASTON_DIR}} && {{.GO}} tool gastonlibc -go {{.GO}} -o build/libgastonc.a'
+
   disk-arm64:
     desc: Create ext2 disk image with ARM64 flock binaries and kmazarin kernel
-    deps: [rachel:arm64, linux:arm64, fs:arm64, handletest:arm64, clocktest:arm64, clocks:arm64, versai:arm64, calc:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, kmazarin:arm64, convert-boot-image]
+    deps: [rachel:arm64, linux:arm64, fs:arm64, handletest:arm64, clocktest:arm64, clocks:arm64, versai:arm64, calc:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, kmazarin:arm64, convert-boot-image, gaston-assets]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -539,6 +553,8 @@ tasks:
       - '{{.BUILD_DIR}}/boot-image.bin'
       - 'config/startup.arm64.toml'
       - 'config/rachel.arm64.toml'
+      - '{{.GASTON_MAZARIN_BIN}}'
+      - '{{.GASTON_LIB}}'
     generates:
       - '{{.DISK_IMAGE}}'
     cmds:
@@ -547,7 +563,11 @@ tasks:
       - '{{.GO}} tool go-cp config/startup.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/startup.toml'
       - '{{.GO}} tool go-cp config/rachel.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} {{.RACHEL_ELF}} {{.LINUX_ELF}} {{.FS_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.CLOCKS_ELF}} {{.VERSAI_ELF}} {{.CALC_ELF}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.LINUX_UI_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
+      - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-arm64/bin'
+      - '{{.GO}} tool go-cp {{.GASTON_MAZARIN_BIN}} {{.BUILD_DIR}}/disk-staging-arm64/bin/gaston'
+      - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-arm64/gaston-lib'
+      - '{{.GO}} tool go-cp {{.GASTON_LIB}} {{.BUILD_DIR}}/disk-staging-arm64/gaston-lib/libgastonc.a'
+      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /bin={{.BUILD_DIR}}/disk-staging-arm64/bin -dir /gaston/include={{.GASTON_INCLUDE_DIR}} -dir /gaston/lib={{.BUILD_DIR}}/disk-staging-arm64/gaston-lib {{.RACHEL_ELF}} {{.LINUX_ELF}} {{.FS_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.CLOCKS_ELF}} {{.VERSAI_ELF}} {{.CALC_ELF}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.LINUX_UI_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
