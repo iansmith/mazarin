@@ -40,6 +40,13 @@ const (
 	MsgTypeAnimationUnregistered uint32 = 26 // rachel → shepherd
 
 	MsgTypeWindowResized uint32 = 30 // rachel → shepherd
+
+	MsgTypeOverlayAllocate uint32 = 40 // shepherd → rachel
+	MsgTypeOverlayReady    uint32 = 41 // rachel → shepherd
+	MsgTypeOverlayBlit     uint32 = 42 // shepherd → rachel
+	MsgTypeOverlayRelease  uint32 = 43 // shepherd → rachel
+	MsgTypeOverlayReleased uint32 = 44 // rachel → shepherd
+	MsgTypeOverlayInput    uint32 = 45 // rachel → shepherd
 )
 
 // AnimationAlways is used as the EndNanos for animations that run
@@ -58,8 +65,13 @@ type AppStart struct {
 }
 
 // Blit is sent by a shepherd to rachel after completing a draw pass.
+// DrawnWidth/DrawnHeight report the app-area dimensions actually rendered,
+// allowing rachel to clip compositing to the drawn region during resize
+// (undrawn pixels are not blitted, so the drag background shows through).
 type Blit struct {
-	SID int32
+	SID         int32
+	DrawnWidth  int32
+	DrawnHeight int32
 }
 
 // BackingStoreReady is sent by rachel to a shepherd after allocating
@@ -211,6 +223,75 @@ type WindowResized struct {
 	AppX             int32
 	AppY             int32
 }
+
+// --- Overlay messages ---
+
+// OverlayAllocate is sent by a shepherd to rachel to request a shared
+// overlay buffer at the given screen rectangle. Rachel allocates shared
+// pages, maps them into the shepherd, installs the OverlayAgent, and
+// responds with OverlayReady.
+type OverlayAllocate struct {
+	ScreenX1 int32 // upper-left X in screen coords
+	ScreenY1 int32 // upper-left Y in screen coords
+	ScreenX2 int32 // lower-right X in screen coords
+	ScreenY2 int32 // lower-right Y in screen coords
+}
+
+// OverlayReady is sent by rachel to a shepherd after allocating the
+// overlay buffer. The shepherd creates an image.RGBA from OverlayAddr
+// and draws into it.
+type OverlayReady struct {
+	OverlayID   int32
+	OverlayAddr int64 // VA in shepherd's address space
+	Width       int32
+	Height      int32
+	Stride      int32
+	ScreenX     int32 // confirmed upper-left X
+	ScreenY     int32 // confirmed upper-left Y
+}
+
+// OverlayBlit is sent by a shepherd to rachel after drawing into the
+// overlay buffer. Rachel alpha-blends it onto the framebuffer and flushes.
+type OverlayBlit struct {
+	OverlayID int32
+}
+
+// OverlayRelease is sent by a shepherd to rachel when it is done with
+// the overlay. Rachel removes the OverlayAgent, frees the shared pages,
+// and responds with OverlayReleased.
+type OverlayRelease struct {
+	OverlayID int32
+}
+
+// OverlayReleased is sent by rachel to confirm the overlay has been torn
+// down. After receiving this, the shepherd must not touch the overlay
+// buffer — the pages have been unmapped.
+type OverlayReleased struct {
+	OverlayID int32
+}
+
+// OverlayInput is sent by rachel to the owning shepherd for every input
+// event while the overlay is active. The OverlayAgent consumes all input
+// and forwards it here. Coordinates are in screen space.
+type OverlayInput struct {
+	OverlayID int32
+	Kind      int32  // 1=press, 2=release, 3=move, 4=key_press, 5=key_release
+	X         int32  // screen X (mouse events)
+	Y         int32  // screen Y (mouse events)
+	Button    int32  // button code (mouse) or keycode (key)
+	Char      uint32 // translated Unicode codepoint (key events)
+	Action    uint16 // translated action (key events)
+	Mods      uint64 // modifier bitmask
+}
+
+// OverlayInput Kind constants.
+const (
+	OverlayInputPress      int32 = 1
+	OverlayInputRelease    int32 = 2
+	OverlayInputMove       int32 = 3
+	OverlayInputKeyPress   int32 = 4
+	OverlayInputKeyRelease int32 = 5
+)
 
 // --- Encode functions (typed struct → UringIPCMsg) ---
 
@@ -384,6 +465,54 @@ func EncodeWindowResized(wr *WindowResized) ipc.UringIPCMsg {
 	return msg
 }
 
+func EncodeOverlayAllocate(o *OverlayAllocate) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoWMNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeOverlayAllocate
+	*(*OverlayAllocate)(unsafe.Pointer(&msg.Payload[4])) = *o
+	return msg
+}
+
+func EncodeOverlayReady(o *OverlayReady) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoShepherdNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeOverlayReady
+	*(*OverlayReady)(unsafe.Pointer(&msg.Payload[4])) = *o
+	return msg
+}
+
+func EncodeOverlayBlit(o *OverlayBlit) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoWMNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeOverlayBlit
+	*(*OverlayBlit)(unsafe.Pointer(&msg.Payload[4])) = *o
+	return msg
+}
+
+func EncodeOverlayRelease(o *OverlayRelease) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoWMNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeOverlayRelease
+	*(*OverlayRelease)(unsafe.Pointer(&msg.Payload[4])) = *o
+	return msg
+}
+
+func EncodeOverlayReleased(o *OverlayReleased) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoShepherdNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeOverlayReleased
+	*(*OverlayReleased)(unsafe.Pointer(&msg.Payload[4])) = *o
+	return msg
+}
+
+func EncodeOverlayInput(o *OverlayInput) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoShepherdNotify
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeOverlayInput
+	*(*OverlayInput)(unsafe.Pointer(&msg.Payload[4])) = *o
+	return msg
+}
+
 // --- Decode functions (UringIPCMsg → typed struct) ---
 
 // WMNotifyMsg wraps a decoded WM notification with the sender's SID
@@ -420,6 +549,21 @@ func DecodeWMNotify(msg *ipc.UringIPCMsg) any {
 		return WMNotifyMsg{
 			SenderSID: senderSID,
 			Msg:       *(*AnimationUnregister)(unsafe.Pointer(&msg.Payload[4])),
+		}
+	case MsgTypeOverlayAllocate:
+		return WMNotifyMsg{
+			SenderSID: senderSID,
+			Msg:       *(*OverlayAllocate)(unsafe.Pointer(&msg.Payload[4])),
+		}
+	case MsgTypeOverlayBlit:
+		return WMNotifyMsg{
+			SenderSID: senderSID,
+			Msg:       *(*OverlayBlit)(unsafe.Pointer(&msg.Payload[4])),
+		}
+	case MsgTypeOverlayRelease:
+		return WMNotifyMsg{
+			SenderSID: senderSID,
+			Msg:       *(*OverlayRelease)(unsafe.Pointer(&msg.Payload[4])),
 		}
 	default:
 		panic("wm.DecodeWMNotify: unknown message type")
@@ -478,6 +622,12 @@ func DecodeShepherdNotifyFromPayload(payload []byte) any {
 		return *(*AnimationUnregistered)(unsafe.Pointer(&payload[4]))
 	case MsgTypeWindowResized:
 		return *(*WindowResized)(unsafe.Pointer(&payload[4]))
+	case MsgTypeOverlayReady:
+		return *(*OverlayReady)(unsafe.Pointer(&payload[4]))
+	case MsgTypeOverlayReleased:
+		return *(*OverlayReleased)(unsafe.Pointer(&payload[4]))
+	case MsgTypeOverlayInput:
+		return *(*OverlayInput)(unsafe.Pointer(&payload[4]))
 	default:
 		return nil
 	}

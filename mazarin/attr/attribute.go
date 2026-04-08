@@ -13,6 +13,9 @@ import (
 	"unsafe"
 )
 
+//go:linkname nanotime runtime.nanotime
+func nanotime() int64
+
 // AttributeAny is a type-erased interface for Attribute[T] that exposes the slot index.
 // Used for dependency registration where the T type parameter doesn't matter.
 type AttributeAny interface {
@@ -130,6 +133,12 @@ func (h *Attribute[T]) seqlockRead() flat.FlatValue {
 // evaluate runs the constraint's bytecode program, writes the result back to
 // the kernel, and updates dependencies if the read set changed.
 func (h *Attribute[T]) evaluate() {
+	t0 := nanotime()
+	defer func() {
+		dt := nanotime() - t0
+		EvalCount.Add(1)
+		EvalNanos.Add(dt)
+	}()
 	if h.prog == nil {
 		// Deserialize bytecode on first evaluation.
 		node := sharedPR.Node(int16(h.slot))

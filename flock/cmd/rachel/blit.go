@@ -297,6 +297,19 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 	bsW := int(ta.bsWidth)
 	bsH := int(ta.bsHeight)
 
+	// Clip content compositing to the region the app has actually drawn.
+	// During resize, the window may be larger than what the app has rendered;
+	// pixels beyond the drawn region are not blitted, so the drag background
+	// (or desktop) shows through instead of black.
+	drawnRight := bsW - borderRight // default: full app area
+	drawnBottom := bsH - borderBottom
+	if ta.lastBlitAppW > 0 && int(ta.lastBlitAppW)+borderLeft < drawnRight {
+		drawnRight = int(ta.lastBlitAppW) + borderLeft
+	}
+	if ta.lastBlitAppH > 0 && int(ta.lastBlitAppH)+borderTop < drawnBottom {
+		drawnBottom = int(ta.lastBlitAppH) + borderTop
+	}
+
 	for _, r := range regions {
 		localX0 := r.Min.X - winX
 		localX1 := r.Max.X - winX
@@ -320,6 +333,11 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 				// (desktop BG + lower windows) via restoreBorderBackground.
 				blitScanlineAlpha(fb[fbRowOff:fbRowOff+w], bs[bsRowOff:bsRowOff+w])
 			} else {
+				// Skip content rows beyond what the app has drawn.
+				if localY >= drawnBottom {
+					continue
+				}
+
 				// Content row — split into left-border | content | right-border.
 				// Left border segment.
 				if localX0 < borderLeft {
@@ -329,12 +347,12 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 					}
 					blitScanlineAlpha(fb[fbRowOff:fbRowOff+lEnd*4], bs[bsRowOff:bsRowOff+lEnd*4])
 				}
-				// Content segment (opaque fast copy).
+				// Content segment (opaque fast copy), clipped to drawn width.
 				cStart := borderLeft - localX0
 				if cStart < 0 {
 					cStart = 0
 				}
-				cEnd := (bsW - borderRight) - localX0
+				cEnd := drawnRight - localX0
 				if cEnd > r.Dx() {
 					cEnd = r.Dx()
 				}
@@ -372,19 +390,117 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 // Unfocused (Flush): opaque surface-colored face with no neumorphic shadows.
 // Only the face area (titlebar + content) is meaningful; border zones are
 // transparent and never blitted for unfocused windows.
+// decorPhaseStats holds per-phase timing for a single renderDecorOnce call.
+type decorPhaseStats struct {
+	bufAllocNs int64
+	dcCreateNs int64
+	neuBoxNs   int64 // NeuBoxWith total (only for Raised)
+	fillNs     int64 // rounded rect fill (only for Flush)
+	titleBarNs int64
+}
+
+// decorPhaseAccum accumulates per-phase timing across a resize operation.
+var decorPhaseAccum struct {
+	active           bool
+	focusedCalls     int
+	unfocusedCalls   int
+	// Focused (Raised) phase totals.
+	fBufAlloc   time.Duration
+	fDCCreate   time.Duration
+	fNeuBox     time.Duration
+	fTitleBar   time.Duration
+	// Unfocused (Flush) phase totals.
+	uBufAlloc   time.Duration
+	uDCCreate   time.Duration
+	uFill       time.Duration
+	uTitleBar   time.Duration
+	// drawPerf snapshots for isolating NeuBox internals.
+	fAllocNs   int64
+	fGGDrawNs  int64
+	fConvertNs int64
+	fBlurNs    int64
+	fComposeNs int64
+	fFaceNs    int64
+	fBlurCount int64
+}
+
+func decorPhaseReset() {
+	decorPhaseAccum = struct {
+		active           bool
+		focusedCalls     int
+		unfocusedCalls   int
+		fBufAlloc   time.Duration
+		fDCCreate   time.Duration
+		fNeuBox     time.Duration
+		fTitleBar   time.Duration
+		uBufAlloc   time.Duration
+		uDCCreate   time.Duration
+		uFill       time.Duration
+		uTitleBar   time.Duration
+		fAllocNs   int64
+		fGGDrawNs  int64
+		fConvertNs int64
+		fBlurNs    int64
+		fComposeNs int64
+		fFaceNs    int64
+		fBlurCount int64
+	}{active: true}
+}
+
+func decorPhaseReport() {
+	a := &decorPhaseAccum
+	if !a.active || (a.focusedCalls == 0 && a.unfocusedCalls == 0) {
+		return
+	}
+	a.active = false
+
+	fmt.Printf("\n=== DECORATION PHASE BREAKDOWN ===\n")
+	if a.focusedCalls > 0 {
+		fmt.Printf("Focused (Raised) — %d calls:\n", a.focusedCalls)
+		fmt.Printf("  buf alloc:   %s\n", a.fBufAlloc)
+		fmt.Printf("  DC create:   %s\n", a.fDCCreate)
+		fmt.Printf("  NeuBoxWith:  %s\n", a.fNeuBox)
+		// NeuBox internal breakdown from drawPerf deltas.
+		fmt.Printf("    shadow alloc:  %d us\n", a.fAllocNs/1000)
+		fmt.Printf("    gg rasterize:  %d us\n", a.fGGDrawNs/1000)
+		fmt.Printf("    RGBA→NRGBA:    %d us\n", a.fConvertNs/1000)
+		fmt.Printf("    gaussian blur: %d us (%d blurs)\n", a.fBlurNs/1000, a.fBlurCount)
+		fmt.Printf("    compositing:   %d us\n", a.fComposeNs/1000)
+		fmt.Printf("    face fill:     %d us\n", a.fFaceNs/1000)
+		fmt.Printf("  title bar:   %s\n", a.fTitleBar)
+		total := a.fBufAlloc + a.fDCCreate + a.fNeuBox + a.fTitleBar
+		if a.focusedCalls > 0 {
+			fmt.Printf("  avg/call:    %s\n", total/time.Duration(a.focusedCalls))
+		}
+	}
+	if a.unfocusedCalls > 0 {
+		fmt.Printf("Unfocused (Flush) — %d calls:\n", a.unfocusedCalls)
+		fmt.Printf("  buf alloc:   %s\n", a.uBufAlloc)
+		fmt.Printf("  DC create:   %s\n", a.uDCCreate)
+		fmt.Printf("  rect fill:   %s\n", a.uFill)
+		fmt.Printf("  title bar:   %s\n", a.uTitleBar)
+	}
+	fmt.Printf("==================================\n\n")
+}
+
 func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.WindowState) []byte {
 	tw := int(ta.bsWidth)
 	th := int(ta.bsHeight)
 	stride := int(ta.bsStride)
+
+	t0 := time.Now()
 	buf := make([]byte, len(ta.backingStore))
-	// Buffer starts zeroed (alpha=0 = fully transparent).
+	bufAllocDur := time.Since(t0)
 
 	tmpImg := &image.RGBA{
 		Pix:    buf,
 		Stride: stride,
 		Rect:   image.Rect(0, 0, tw, th),
 	}
+
+	t1 := time.Now()
 	dc := mancini.NewDrawContextForImage(tmpImg, titleGlyphProvider)
+	dcCreateDur := time.Since(t1)
 
 	x1 := float64(borderLeft)
 	y1 := float64(shadowTop)
@@ -392,8 +508,19 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 	y2 := float64(th - borderBottom)
 	r := wmTheme.CornerRadius()
 
+	var neuBoxDur, fillDur time.Duration
+
 	if depth == mancini.Raised {
-		// Focused: opaque surface face + custom window shadow.
+		// Snapshot drawPerf before NeuBoxWith.
+		dp := std.GetDrawPerf()
+		preAlloc := dp.AllocNs.Load()
+		preGG := dp.GGDrawNs.Load()
+		preConv := dp.ConvertNs.Load()
+		preBlur := dp.BlurNs.Load()
+		preBlurC := dp.BlurCount.Load()
+		preComp := dp.ComposeNs.Load()
+		preFace := dp.FaceNs.Load()
+
 		faceColor := pal.Surface()
 		neuP := &mancini.NeuParams{
 			Raised: mancini.RaisedParams{
@@ -405,22 +532,56 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 				LightAlpha: 220,
 			},
 		}
+		t2 := time.Now()
 		std.NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, faceColor, neuP)
+		neuBoxDur = time.Since(t2)
+
+		// Accumulate drawPerf deltas for focused renders.
+		if decorPhaseAccum.active {
+			decorPhaseAccum.fAllocNs += dp.AllocNs.Load() - preAlloc
+			decorPhaseAccum.fGGDrawNs += dp.GGDrawNs.Load() - preGG
+			decorPhaseAccum.fConvertNs += dp.ConvertNs.Load() - preConv
+			decorPhaseAccum.fBlurNs += dp.BlurNs.Load() - preBlur
+			decorPhaseAccum.fBlurCount += dp.BlurCount.Load() - preBlurC
+			decorPhaseAccum.fComposeNs += dp.ComposeNs.Load() - preComp
+			decorPhaseAccum.fFaceNs += dp.FaceNs.Load() - preFace
+		}
 	} else {
-		// Unfocused: opaque face, no neumorphic shadows.
 		faceColor := pal.Surface()
+		t2 := time.Now()
 		dc.SetColor(faceColor)
 		dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
 		dc.Fill()
+		fillDur = time.Since(t2)
 	}
 
 	// Title bar drawn AFTER face/shadows.
+	var titleBarDur time.Duration
 	if windowTitleBar != nil {
 		tbX := float64(borderLeft) + 4
 		tbY := float64(shadowTop) + 2
 		tbW := float64(tw-borderRight) - tbX - 4
 		tbH := float64(titleBarHeight)
+		t3 := time.Now()
 		windowTitleBar.DrawTitleBar(dc, ta.title, state, mancini.AppWindowType, tbX, tbY, tbW, tbH)
+		titleBarDur = time.Since(t3)
+	}
+
+	// Accumulate into phase stats if tracking.
+	if decorPhaseAccum.active {
+		if depth == mancini.Raised {
+			decorPhaseAccum.focusedCalls++
+			decorPhaseAccum.fBufAlloc += bufAllocDur
+			decorPhaseAccum.fDCCreate += dcCreateDur
+			decorPhaseAccum.fNeuBox += neuBoxDur
+			decorPhaseAccum.fTitleBar += titleBarDur
+		} else {
+			decorPhaseAccum.unfocusedCalls++
+			decorPhaseAccum.uBufAlloc += bufAllocDur
+			decorPhaseAccum.uDCCreate += dcCreateDur
+			decorPhaseAccum.uFill += fillDur
+			decorPhaseAccum.uTitleBar += titleBarDur
+		}
 	}
 
 	return buf
@@ -429,12 +590,65 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 // preRenderDecorations pre-renders both focused (Raised) and unfocused
 // (Flush) decorations into cached buffers and applies the focused state
 // to the backing store. Called once at allocation time.
+// decorTimingStats tracks decoration rendering times during a resize operation.
+var decorTiming struct {
+	active      bool
+	calls       int
+	renderTotal time.Duration // total time in renderDecorOnce (both focused + unfocused)
+	applyTotal  time.Duration // total time in applyDecorations
+	renderMin   time.Duration
+	renderMax   time.Duration
+}
+
+func decorTimingReset() {
+	decorTiming = struct {
+		active      bool
+		calls       int
+		renderTotal time.Duration
+		applyTotal  time.Duration
+		renderMin   time.Duration
+		renderMax   time.Duration
+	}{active: true, renderMin: time.Hour}
+}
+
+func decorTimingReport() {
+	if !decorTiming.active || decorTiming.calls == 0 {
+		return
+	}
+	decorTiming.active = false
+	avg := decorTiming.renderTotal / time.Duration(decorTiming.calls)
+	fmt.Printf("\n=== RACHEL DECORATION TIMING ===\n")
+	fmt.Printf("preRenderDecorations calls: %d\n", decorTiming.calls)
+	fmt.Printf("  Render total:  %s (avg %s, min %s, max %s)\n",
+		decorTiming.renderTotal, avg, decorTiming.renderMin, decorTiming.renderMax)
+	fmt.Printf("  Apply total:   %s\n", decorTiming.applyTotal)
+	fmt.Printf("================================\n\n")
+}
+
 func preRenderDecorations(ta *trackedApp) {
+	t0 := time.Now()
 	ta.decorFocused = renderDecorOnce(ta, mancini.Raised, mancini.Active)
 	ta.decorUnfocused = renderDecorOnce(ta, mancini.Flush, mancini.Inactive)
+	renderDur := time.Since(t0)
+
+	t1 := time.Now()
 	applyDecorations(ta, true)
-	sys.UartWriteString(fmt.Sprintf("[rachel:decor] pre-rendered %dx%d title=%q\n",
-		ta.bsWidth, ta.bsHeight, ta.title))
+	applyDur := time.Since(t1)
+
+	if decorTiming.active {
+		decorTiming.calls++
+		decorTiming.renderTotal += renderDur
+		decorTiming.applyTotal += applyDur
+		if renderDur < decorTiming.renderMin {
+			decorTiming.renderMin = renderDur
+		}
+		if renderDur > decorTiming.renderMax {
+			decorTiming.renderMax = renderDur
+		}
+	}
+
+	sys.UartWriteString(fmt.Sprintf("[rachel:decor] pre-rendered %dx%d title=%q render=%s apply=%s\n",
+		ta.bsWidth, ta.bsHeight, ta.title, renderDur, applyDur))
 }
 
 

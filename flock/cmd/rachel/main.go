@@ -264,6 +264,12 @@ var dragActive bool          // true during a titlebar drag
 var dragSID int              // SID of the window being dragged
 var dragPrevRect image.Rectangle // previous screen rect of the dragged window
 
+// Content-driven resize state — set by startDragResize, read by Blit handler.
+var dragIsResize bool        // true during a resize drag (not titlebar drag)
+var dragResizeEdge ResizeEdge // which edge is being resized
+var dragResizeOrigX int32    // window X at drag start (for left-edge X computation)
+var dragResizeOrigW int32    // app width at drag start (for left-edge X computation)
+
 // flushRect tells the GPU to update a rectangular region of the framebuffer.
 // Coordinates are clamped to the display bounds.
 func flushRect(x, y, w, h int) {
@@ -658,8 +664,20 @@ type trackedApp struct {
 	bsStride     int32                      // bytes per scanline (bsWidth * 4)
 	appWidth     int32                      // client drawing area width
 	appHeight    int32                      // client drawing area height
+	lastBlitAppW int32                      // app width from most recent Blit (0 = not yet received)
+	lastBlitAppH int32                      // app height from most recent Blit (0 = not yet received)
 	zOrder       int                        // higher = on top; assigned at AppStart
 	interactor   *WindowInteractor          // dispatch target for this window
+
+	// Overlay state — shepherd-owned popup drawn outside window bounds.
+	overlayActive  bool
+	overlayID      int32
+	overlayStore   []byte // RGBA pixel buffer for overlay content
+	overlayWidth   int32
+	overlayHeight  int32
+	overlayStride  int32
+	overlayScreenX int32
+	overlayScreenY int32
 }
 
 // keyboardFocusSID is the SID of the shepherd that currently has keyboard focus.
@@ -1081,6 +1099,8 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				// Rachel owns the backing store. Compute total size including borders.
 				ta.appWidth = msg.Width
 				ta.appHeight = msg.Height
+				ta.lastBlitAppW = msg.Width
+				ta.lastBlitAppH = msg.Height
 				totalW := int(msg.Width) + borderLeft + borderRight
 				totalH := int(msg.Height) + borderTop + borderBottom
 				ta.bsWidth = int32(totalW)
@@ -1190,6 +1210,31 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				if !ok || ta.backingStore == nil {
 					continue
 				}
+				// Update last-drawn dimensions from Blit message.
+				if msg.DrawnWidth > 0 && msg.DrawnHeight > 0 {
+					ta.lastBlitAppW = msg.DrawnWidth
+					ta.lastBlitAppH = msg.DrawnHeight
+				}
+
+				// Content-driven resize: when a resize drag is active and the
+				// app confirms new dimensions, update ta to the blit size,
+				// re-render decorations, and composite via the drag path.
+				if dragIsResize && dragActive && senderSID == dragSID &&
+					msg.DrawnWidth > 0 && msg.DrawnHeight > 0 {
+					newAppW := msg.DrawnWidth
+					newAppH := msg.DrawnHeight
+					ta.appWidth = newAppW
+					ta.appHeight = newAppH
+					ta.bsWidth = newAppW + int32(borderLeft) + int32(borderRight)
+					ta.bsHeight = newAppH + int32(borderTop) + int32(borderBottom)
+					if dragResizeEdge == EdgeLeft {
+						ta.x = dragResizeOrigX + (dragResizeOrigW - newAppW)
+					}
+					preRenderDecorations(ta)
+					compositeDragWindow()
+					continue
+				}
+
 				regions, occDur := timedExposedRegion(senderSID)
 
 				focused := senderSID == mouseFocusSID
@@ -1211,6 +1256,12 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				}
 				copyDur := timedBlitWindow(senderSID, regions, fbPix, fbStride, focused)
 
+				// If this shepherd has an active overlay, re-composite it on top
+				// so the regular window blit doesn't obscure the overlay pixels.
+				if ta.overlayActive && ta.overlayStore != nil {
+					handleOverlayBlit(senderSID)
+				}
+
 				ox, oy := screenOrigin(ta)
 				flushDur := timedFlushRect(ox, oy, int(ta.bsWidth), int(ta.bsHeight))
 				blitTimingRecord(occDur.Microseconds(), copyDur.Microseconds(), flushDur.Microseconds())
@@ -1220,6 +1271,15 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 
 			case wm.AnimationUnregister:
 				unregisterAnimation(senderSID, msg)
+
+			case wm.OverlayAllocate:
+				handleOverlayAllocate(senderSID, msg, wmd)
+
+			case wm.OverlayBlit:
+				handleOverlayBlit(senderSID)
+
+			case wm.OverlayRelease:
+				handleOverlayRelease(senderSID, msg, wmd)
 
 			default:
 				rachelMsgOther++

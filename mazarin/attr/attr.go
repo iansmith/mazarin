@@ -4,7 +4,15 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync/atomic"
 )
+
+// EvalCount is an atomic counter incremented each time a constraint is evaluated.
+// Applications can read and reset this to measure constraint system activity.
+var EvalCount atomic.Int64
+
+// EvalNanos is an atomic accumulator of nanoseconds spent in constraint evaluation.
+var EvalNanos atomic.Int64
 
 // PanicOnCycle controls whether a dependency cycle causes a panic.
 // When true (the default), Get() panics with the cycle chain.

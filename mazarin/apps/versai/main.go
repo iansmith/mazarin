@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"image"
-	"os"
 	"strconv"
 	"unsafe"
 
@@ -22,33 +21,19 @@ import (
 )
 
 var rachelSID int
+var app *std.AppWindow
 
 // wmCh receives typed WM messages from the uring Dispatcher.
 var wmCh = make(chan any, 4)
 
 // announceToWM sends AppStart to rachel via uring.
 func announceToWM(x, y, w, h int32) {
-	msg := wm.EncodeAppStart(&wm.AppStart{
-		SID:    int32(os.Getpid()),
-		X:      x,
-		Y:      y,
-		Width:  w,
-		Height: h,
-	})
-	if err := uring.Send(rachelSID, &msg); err != nil {
-		sys.UartWriteString("[versai] uring.Send AppStart failed: " + err.Error() + "\n")
-		return
-	}
-	sys.UartWriteString(fmt.Sprintf("[versai] sent AppStart to rachel: %dx%d at (%d,%d)\n", w, h, x, y))
+	app.AnnounceToWM(x, y, w, h)
 }
 
 // sendBlit tells rachel to copy our backing store to the framebuffer.
 func sendBlit() {
-	if rachelSID < 0 {
-		return
-	}
-	msg := wm.EncodeBlit(&wm.Blit{SID: int32(os.Getpid())})
-	_ = uring.Send(rachelSID, &msg)
+	app.SendBlit()
 }
 
 // startUringDispatcher sets up the uring Dispatcher for WM and font messages.
@@ -107,7 +92,8 @@ func main() {
 	sys.UartWriteString(fmt.Sprintf("[versai] screen: %dx%d\n", screenW, screenH))
 
 	// 5. Build interactor tree: AppWindow > RowFillLastChild > [Scroller, Scrollbar]
-	app := std.NewAppWindow(pal, "Versai")
+	app = std.NewAppWindow(pal, "Versai")
+	app.RachelSID = rachelSID
 	app.Focused = false
 
 	// Window dimensions.

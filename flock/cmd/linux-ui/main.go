@@ -8,7 +8,6 @@ package main
 import (
 	"fmt"
 	"image"
-	"os"
 	"runtime"
 	"unsafe"
 
@@ -21,7 +20,6 @@ import (
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/sys"
-	"mazzy/mazarin/uring"
 	mfont "mazzy/shared/font"
 	"mazzy/shared/wm"
 )
@@ -54,6 +52,7 @@ var fc *fontcache.FontCache
 
 // wmDecodedCh carries WM messages decoded in the .maz's type namespace.
 var wmDecodedCh chan any
+var app *std.AppWindow
 
 // MazarinShepherd receives the LinuxIO injection from the linux shepherd.
 // It creates the four channels and fills the struct so the shepherd can
@@ -103,29 +102,12 @@ func MazarinShepherd(injected interface{}) error {
 
 // sendBlit tells rachel to copy our backing store to the framebuffer.
 func sendBlit(rachelSID int) {
-	if rachelSID < 0 {
-		return
-	}
-	msg := wm.EncodeBlit(&wm.Blit{SID: int32(os.Getpid())})
-	_ = uring.Send(rachelSID, &msg)
+	app.SendBlit()
 }
 
 // announceToWM sends AppStart to rachel via uring.
 func announceToWM(rachelSID int, x, y, w, h int32) {
-	if rachelSID < 0 {
-		return
-	}
-	msg := wm.EncodeAppStart(&wm.AppStart{
-		SID:    int32(os.Getpid()),
-		X:      x,
-		Y:      y,
-		Width:  w,
-		Height: h,
-	})
-	if err := uring.Send(rachelSID, &msg); err != nil {
-		rawPuts("[linux-ui] uring.Send AppStart failed: " + err.Error() + "\n")
-		return
-	}
+	app.AnnounceToWM(x, y, w, h)
 }
 
 // MazarinMain is the .maz entry point. It builds the mancini UI and runs
@@ -197,7 +179,7 @@ func MazarinMain() {
 	theme.SetStyle(std.NewNeumorphicStyle(neu.Heavy(), neu.Light()))
 
 	// AppWindow must be created before the bridge so its Width/Height URIs exist.
-	app := std.NewAppWindow(pal, "Linux Console")
+	app = std.NewAppWindow(pal, "Linux Console")
 	app.Focused = false // wait for rachel to grant focus
 
 	// Column: width/height mirror AppWindow's dimensions.

@@ -2,6 +2,7 @@ package std
 
 import (
 	"image/color"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -400,4 +401,45 @@ func ansiIndexName(i int) string {
 // rachel's responsibility.
 func (w *AppWindow) Decorate(self mancini.Interactor, x, y, ww, hh int64) {
 	// Intentionally empty — decoration will move to rachel.
+}
+
+// SendBlit sends a Blit message to rachel reporting the app-area dimensions
+// that were actually drawn. Rachel uses DrawnWidth/DrawnHeight to clip
+// compositing during resize so undrawn pixels are not blitted.
+func (w *AppWindow) SendBlit() {
+	if w.RachelSID <= 0 {
+		return
+	}
+	lh := w.GetLayout()
+	var dw, dh int32
+	if lh != nil {
+		dw = int32(lh.Width.Get())
+		dh = int32(lh.Height.Get())
+	}
+	msg := wm.EncodeBlit(&wm.Blit{
+		SID:         int32(os.Getpid()),
+		DrawnWidth:  dw,
+		DrawnHeight: dh,
+	})
+	_ = uring.Send(w.RachelSID, &msg)
+}
+
+// AnnounceToWM sends an AppStart message to rachel with the desired
+// initial window position and size.
+func (w *AppWindow) AnnounceToWM(x, y, width, height int32) {
+	if w.RachelSID <= 0 {
+		return
+	}
+	msg := wm.EncodeAppStart(&wm.AppStart{
+		SID:    int32(os.Getpid()),
+		X:      x,
+		Y:      y,
+		Width:  width,
+		Height: height,
+	})
+	if err := uring.Send(w.RachelSID, &msg); err != nil {
+		sys.UartWriteString(fmt.Sprintf("[AppWindow] AnnounceToWM failed: %s\n", err.Error()))
+		return
+	}
+	sys.UartWriteString(fmt.Sprintf("[AppWindow] sent AppStart %dx%d at (%d,%d)\n", width, height, x, y))
 }

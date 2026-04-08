@@ -86,6 +86,8 @@ helloworld
 /fs
 /stdio
 /keymapper
+/calc
+/linux-ui
 
 # Old directories (should be removed)
 src/

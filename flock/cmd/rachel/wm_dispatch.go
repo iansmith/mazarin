@@ -475,6 +475,12 @@ func (a *DragAgent) startDragResize(wi *WindowInteractor, pressX, pressY int32, 
 	a.resizeOrigW = ta.appWidth
 	a.resizeOrigH = ta.appHeight
 	a.resizeOrigX = ta.x
+
+	// Content-driven resize: publish state for the Blit handler.
+	dragIsResize = true
+	dragResizeEdge = edge
+	dragResizeOrigX = ta.x
+	dragResizeOrigW = ta.appWidth
 	a.resizePressX = pressX
 	a.resizePressY = pressY
 	a.resizePrevW = ta.appWidth
@@ -556,6 +562,8 @@ func (a *DragAgent) startDragResize(wi *WindowInteractor, pressX, pressY int32, 
 	ta.bsStride = maxTotalW * 4
 
 	// Re-render decorations for current (not yet resized) dimensions.
+	decorTimingReset()
+	decorPhaseReset()
 	preRenderDecorations(ta)
 
 	// Share oversized buffer with target app.
@@ -639,37 +647,38 @@ func (a *DragAgent) dragMoveResize(ev *input.InputEvent, wi *WindowInteractor) {
 	a.resizePrevW = newAppW
 	a.resizePrevH = newAppH
 
-	// Update tracked app dimensions. bsStride stays at the oversized
-	// buffer's row width — do NOT recompute from bsWidth.
-	ta.appWidth = newAppW
-	ta.appHeight = newAppH
-	ta.bsWidth = newAppW + int32(borderLeft) + int32(borderRight)
-	ta.bsHeight = newAppH + int32(borderTop) + int32(borderBottom)
+	// Content-driven resize: do NOT update ta dimensions or re-render
+	// decorations here. ta stays at the last-blit visual size. Rachel
+	// composites the window at the visual size until the app's Blit
+	// confirms the new dimensions. This avoids decoration trails and
+	// black gaps during fast drags.
+
+	// Compute the target bsWidth/bsHeight and X for the WindowResized
+	// message, but don't store them in ta.
+	targetBsW := newAppW + int32(borderLeft) + int32(borderRight)
+	targetBsH := newAppH + int32(borderTop) + int32(borderBottom)
+	targetX := ta.x
 	if a.resizeEdge == EdgeLeft {
-		ta.x = newX
+		targetX = newX
 	}
 
-	// Re-render decorations for new size.
-	preRenderDecorations(ta)
-
-	// Send WindowResized to app with updated dimensions.
-	// TotalStride is the oversized buffer's stride (unchanged during drag).
+	// Send WindowResized to app with target dimensions.
 	wr := wm.EncodeWindowResized(&wm.WindowResized{
 		BackingStoreAddr: 0, // same buffer, no change
-		TotalWidth:       ta.bsWidth,
-		TotalHeight:      ta.bsHeight,
+		TotalWidth:       targetBsW,
+		TotalHeight:      targetBsH,
 		TotalStride:      ta.bsStride, // oversized stride
 		LeftInset:        int32(borderLeft),
 		TopInset:         int32(borderTop),
 		AppWidth:         newAppW,
 		AppHeight:        newAppH,
-		AppX:             ta.x,
+		AppX:             targetX,
 		AppY:             ta.y,
 	})
 	_ = uring.Send(ta.sid, &wr)
 
-	// Composite: blit resized window over drag background.
-	compositeDragWindow()
+	// No composite here — the visual update happens when the app's
+	// Blit arrives (see Blit handler in main.go).
 }
 
 // dragEndResize finalizes a window resize. Allocates a final-size buffer,
@@ -681,7 +690,25 @@ func (a *DragAgent) dragMoveResize(ev *input.InputEvent, wi *WindowInteractor) {
 // for a given drag — if BackingStoreReady arrives interleaved with resizes,
 // the app will skip a draw that should have been the final one.
 func (a *DragAgent) dragEndResize(wi *WindowInteractor) {
+	decorTimingReport()
+	decorPhaseReport()
+	dragIsResize = false
 	ta := wi.ta
+
+	// Content-driven resize: ta may still be at the last-blit size.
+	// Update ta to the final drag target dimensions before allocating
+	// the final buffer and sending BackingStoreReady.
+	ta.appWidth = a.resizePrevW
+	ta.appHeight = a.resizePrevH
+	ta.bsWidth = a.resizePrevW + int32(borderLeft) + int32(borderRight)
+	ta.bsHeight = a.resizePrevH + int32(borderTop) + int32(borderBottom)
+	if a.resizeEdge == EdgeLeft {
+		ta.x = a.resizeOrigX + (a.resizeOrigW - a.resizePrevW)
+	}
+
+	// Re-render decorations at final size.
+	preRenderDecorations(ta)
+
 	endDragComposite()
 
 	// Allocate final-size backing store.
@@ -908,10 +935,101 @@ func (a *KeyForwardAgent) Deliver(ev *input.InputEvent, target input.Interactor)
 // wmDispatch holds the dispatcher and references to agents that need
 // cross-agent coordination.
 type wmDispatch struct {
-	dispatcher *input.InputDispatcher
-	dragAgent  *DragAgent
-	keyFwd     *KeyForwardAgent
+	dispatcher   *input.InputDispatcher
+	dragAgent    *DragAgent
+	keyFwd       *KeyForwardAgent
+	overlayAgent *OverlayAgent
 }
+
+// OverlayAgent is a focus-based agent that, when active, consumes ALL input
+// events and forwards them to the owning shepherd as OverlayInput messages.
+// The shepherd decides when to dismiss the overlay; rachel never auto-dismisses.
+//
+// When inactive (FocusTarget() returns nil), the policy is skipped entirely.
+type OverlayAgent struct {
+	active    bool
+	ownerSID  int
+	overlayID int32
+	target    input.Interactor // non-nil when active
+}
+
+func (a *OverlayAgent) Name() string                  { return "overlay" }
+func (a *OverlayAgent) FocusTarget() input.Interactor  { return a.target }
+func (a *OverlayAgent) SetFocus(t input.Interactor)    { a.target = t }
+
+// Activate starts consuming all input for the given overlay.
+func (a *OverlayAgent) Activate(sid int, overlayID int32) {
+	a.active = true
+	a.ownerSID = sid
+	a.overlayID = overlayID
+	// Use a stub interactor so FocusTarget() is non-nil (policy won't be skipped).
+	a.target = &overlayStubInteractor{}
+	sys.UartWriteString(fmt.Sprintf("[overlay-agent] activated SID=%d overlay=%d\n", sid, overlayID))
+}
+
+// Deactivate stops consuming input — normal dispatch resumes.
+func (a *OverlayAgent) Deactivate() {
+	sys.UartWriteString(fmt.Sprintf("[overlay-agent] deactivated SID=%d overlay=%d\n", a.ownerSID, a.overlayID))
+	a.active = false
+	a.ownerSID = 0
+	a.overlayID = 0
+	a.target = nil
+}
+
+func (a *OverlayAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool {
+	if !a.active {
+		return false
+	}
+
+	// Build OverlayInput from the event.
+	oi := wm.OverlayInput{
+		OverlayID: a.overlayID,
+		X:         ev.X,
+		Y:         ev.Y,
+		Mods:      ev.Mods,
+	}
+
+	switch {
+	case ev.IsMouseButton() && ev.IsPress():
+		oi.Kind = wm.OverlayInputPress
+		oi.Button = int32(ev.Code)
+	case ev.IsMouseButton() && ev.IsRelease():
+		oi.Kind = wm.OverlayInputRelease
+		oi.Button = int32(ev.Code)
+	case ev.IsMouseMove():
+		oi.Kind = wm.OverlayInputMove
+	case ev.IsKeyboard() && ev.IsPress():
+		oi.Kind = wm.OverlayInputKeyPress
+		oi.Button = int32(ev.Code)
+		// Translate key if keymapper is available.
+		if wmKeyMapper != nil {
+			r, astr := wmKeyMapper.Map(ev.Code, true, ev.Mods)
+			oi.Char = uint32(r)
+			oi.Action = uint16(wm.ActionByName(astr))
+		}
+	case ev.IsKeyboard() && ev.IsRelease():
+		oi.Kind = wm.OverlayInputKeyRelease
+		oi.Button = int32(ev.Code)
+		if wmKeyMapper != nil {
+			r, astr := wmKeyMapper.Map(ev.Code, false, ev.Mods)
+			oi.Char = uint32(r)
+			oi.Action = uint16(wm.ActionByName(astr))
+		}
+	default:
+		return true // consume but don't forward unknown events
+	}
+
+	msg := wm.EncodeOverlayInput(&oi)
+	_ = uring.Send(a.ownerSID, &msg)
+	return true // always consume
+}
+
+// overlayStubInteractor is a minimal interactor used as the focus target
+// when the overlay is active. It always returns true for PickedBy so
+// the focus policy considers it valid.
+type overlayStubInteractor struct{}
+
+func (o *overlayStubInteractor) PickedBy(x, y int32) bool { return true }
 
 // buildDispatcher creates rachel's dispatch pipeline.
 //
@@ -931,6 +1049,7 @@ func buildDispatcher() *wmDispatch {
 	})
 	dragAgent := &DragAgent{}
 	keyFwd := &KeyForwardAgent{}
+	overlayAgent := &OverlayAgent{}
 	titlebarAgent := &TitlebarDragAgent{dragAgent: dragAgent, keyFwd: keyFwd}
 	resizeAgent := &ResizeDragAgent{dragAgent: dragAgent, keyFwd: keyFwd}
 	pressAgent := &PressAgent{dragAgent: dragAgent, keyFwd: keyFwd}
@@ -938,7 +1057,12 @@ func buildDispatcher() *wmDispatch {
 	// Build policies in priority order.
 	d := input.NewInputDispatcher()
 
-	// 1. WM accelerators (focus) — highest priority, consumes hotkeys.
+	// 0. Overlay (focus) — highest priority; when active, consumes ALL events.
+	overlayPolicy := input.NewDispatchPolicy("overlay", input.PolicyFocus)
+	overlayPolicy.AddAgent(overlayAgent)
+	d.AddPolicy(overlayPolicy)
+
+	// 1. WM accelerators (focus) — consumes hotkeys.
 	accelPolicy := input.NewDispatchPolicy("wm-accel", input.PolicyFocus)
 	accelPolicy.AddAgent(accelAgent)
 	d.AddPolicy(accelPolicy)
@@ -984,8 +1108,9 @@ func buildDispatcher() *wmDispatch {
 	}
 
 	return &wmDispatch{
-		dispatcher: d,
-		dragAgent:  dragAgent,
-		keyFwd:     keyFwd,
+		dispatcher:   d,
+		dragAgent:    dragAgent,
+		keyFwd:       keyFwd,
+		overlayAgent: overlayAgent,
 	}
 }

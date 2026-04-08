@@ -143,7 +143,11 @@ func rgbaToNRGBA(src *image.RGBA) *image.NRGBA {
 	return dst
 }
 
-func gaussianBlurNRGBA(src *image.NRGBA, sigma float64) *image.NRGBA {
+// gaussianBlurNRGBA applies a separable Gaussian blur to src.
+// If rect is non-nil, only pixels within [rect.Min, rect.Max) are processed;
+// pixels outside are guaranteed zero (caller must ensure this). This avoids
+// visiting the large transparent regions of shadow buffers.
+func gaussianBlurNRGBA(src *image.NRGBA, sigma float64, rect ...image.Rectangle) *image.NRGBA {
 	if sigma <= 0 {
 		cp := image.NewNRGBA(src.Bounds())
 		copy(cp.Pix, src.Pix)
@@ -154,13 +158,61 @@ func gaussianBlurNRGBA(src *image.NRGBA, sigma float64) *image.NRGBA {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 
+	// Determine active region. Default: full image.
+	// If a bounding rect is provided, expand it by the blur radius
+	// (output pixels up to rad away from the source rect can be nonzero)
+	// and clamp to image bounds.
+	minX, minY, maxX, maxY := 0, 0, w, h
+	if len(rect) > 0 {
+		r := rect[0]
+		minX = r.Min.X - rad
+		minY = r.Min.Y - rad
+		maxX = r.Max.X + rad
+		maxY = r.Max.Y + rad
+		if minX < 0 {
+			minX = 0
+		}
+		if minY < 0 {
+			minY = 0
+		}
+		if maxX > w {
+			maxX = w
+		}
+		if maxY > h {
+			maxY = h
+		}
+	}
+
 	ta := nanotime()
 	tmp := image.NewNRGBA(b)
 	drawPerf.AllocNs.Add(nanotime() - ta)
 	drawPerf.AllocCount.Add(1)
 	drawPerf.AllocBytes.Add(int64(w * h * 4))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+
+	// Horizontal pass — only rows [minY, maxY), only columns [minX, maxX).
+	// (#3: bounding-box restriction)
+	for y := minY; y < maxY; y++ {
+		rowOff := y * src.Stride
+		for x := minX; x < maxX; x++ {
+			// #1: skip-zero — if all kernel-tapped source alphas are zero,
+			// the output is zero and tmp is already zeroed.
+			allZero := true
+			for ki := range k {
+				sx := x + ki - rad
+				if sx < 0 {
+					sx = 0
+				} else if sx >= w {
+					sx = w - 1
+				}
+				if src.Pix[rowOff+sx*4+3] != 0 {
+					allZero = false
+					break
+				}
+			}
+			if allZero {
+				continue
+			}
+
 			var rr, gg, bb, aa float64
 			for ki, kv := range k {
 				sx := x + ki - rad
@@ -169,7 +221,7 @@ func gaussianBlurNRGBA(src *image.NRGBA, sigma float64) *image.NRGBA {
 				} else if sx >= w {
 					sx = w - 1
 				}
-				off := y*src.Stride + sx*4
+				off := rowOff + sx*4
 				rr += float64(src.Pix[off]) * kv
 				gg += float64(src.Pix[off+1]) * kv
 				bb += float64(src.Pix[off+2]) * kv
@@ -188,8 +240,30 @@ func gaussianBlurNRGBA(src *image.NRGBA, sigma float64) *image.NRGBA {
 	drawPerf.AllocNs.Add(nanotime() - ta2)
 	drawPerf.AllocCount.Add(1)
 	drawPerf.AllocBytes.Add(int64(w * h * 4))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+
+	// Vertical pass — same restricted region.
+	// (#3: bounding-box restriction)
+	for y := minY; y < maxY; y++ {
+		for x := minX; x < maxX; x++ {
+			// #1: skip-zero — if all kernel-tapped source alphas are zero,
+			// the output is zero and dst is already zeroed.
+			allZero := true
+			for ki := range k {
+				sy := y + ki - rad
+				if sy < 0 {
+					sy = 0
+				} else if sy >= h {
+					sy = h - 1
+				}
+				if tmp.Pix[sy*tmp.Stride+x*4+3] != 0 {
+					allZero = false
+					break
+				}
+			}
+			if allZero {
+				continue
+			}
+
 			var rr, gg, bb, aa float64
 			for ki, kv := range k {
 				sy := y + ki - rad
@@ -239,7 +313,11 @@ func shadowLayer(w, h int, x1, y1, x2, y2, r float64, c color.NRGBA, alpha uint8
 	drawPerf.ConvertNs.Add(t3 - t2)
 
 	if blur > 0 {
-		result := gaussianBlurNRGBA(nrgba, blur)
+		// Pass the rounded rect's bounding box so the blur skips
+		// the large transparent regions outside the shadow shape.
+		rectMin := image.Pt(int(x1), int(y1))
+		rectMax := image.Pt(int(math.Ceil(x2)), int(math.Ceil(y2)))
+		result := gaussianBlurNRGBA(nrgba, blur, image.Rectangle{Min: rectMin, Max: rectMax})
 		t4 := nanotime()
 		drawPerf.BlurNs.Add(t4 - t3)
 		drawPerf.BlurCount.Add(1)
@@ -322,36 +400,93 @@ func localRect(canvas *image.RGBA, dc mancini.DrawContext, x1, y1, x2, y2, pad f
 	return int(ex - ox), int(ey - oy), ox, oy
 }
 
+// neuRaisedCacheKey identifies a cached neumorphic raised box by its
+// geometry and color parameters. The local-space rect coordinates
+// (lx1..ly2) are included because localRect clamps to canvas bounds,
+// so two same-sized boxes near different edges produce different
+// local-space layouts and must not share a cache entry.
+type neuRaisedCacheKey struct {
+	w, h             int // local buffer dimensions
+	lx1, ly1, lx2, ly2 float64 // rect position within local buffer
+	face             color.NRGBA
+	r                float64
+	p                mancini.RaisedParams
+}
+
+// neuRaisedCacheEntry holds a pre-composited NRGBA image containing the
+// dark shadow + light shadow + face rectangle, rendered at local (0,0)
+// coordinates. To use, draw.Draw it onto the canvas at the correct dst rect.
+type neuRaisedCacheEntry struct {
+	img *image.NRGBA
+}
+
+var neuRaisedCache = make(map[neuRaisedCacheKey]*neuRaisedCacheEntry)
+
+var neuCacheHits, neuCacheMisses atomic.Int64
+
+// NeuCacheStats returns (hits, misses) since last reset.
+func NeuCacheStats() (int64, int64) {
+	return neuCacheHits.Load(), neuCacheMisses.Load()
+}
+
+// ResetNeuCacheStats zeroes the hit/miss counters.
+func ResetNeuCacheStats() {
+	neuCacheHits.Store(0)
+	neuCacheMisses.Store(0)
+}
+
 func neuRaised(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r float64, face color.NRGBA, p mancini.RaisedParams) {
 	canvas := dc.Image().(*image.RGBA)
 	maxOff := math.Max(p.DarkOff, p.LightOff)
 	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
 	pad := maxOff + math.Ceil(maxBlur*3) + 2
 	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
+
 	ix1, iy1 := dc.TransformPoint(x1, y1)
 	ix2, iy2 := dc.TransformPoint(x2, y2)
 	lx1, ly1, lx2, ly2 := ix1-ox, iy1-oy, ix2-ox, iy2-oy
-	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
+
+	key := neuRaisedCacheKey{w: lw, h: lh, lx1: lx1, ly1: ly1, lx2: lx2, ly2: ly2, face: face, r: r, p: p}
+	if entry, ok := neuRaisedCache[key]; ok {
+		// Cache hit — blit the pre-composited image.
+		neuCacheHits.Add(1)
+		tc := nanotime()
+		draw.Draw(canvas, dst, entry.img, image.Point{}, draw.Over)
+		drawPerf.ComposeNs.Add(nanotime() - tc)
+		return
+	}
+	neuCacheMisses.Add(1)
+
+	// Cache miss — render into a local NRGBA buffer, cache it, then blit.
 
 	dark := shadowLayer(lw, lh,
 		lx1+p.DarkOff, ly1+p.DarkOff, lx2+p.DarkOff, ly2+p.DarkOff,
 		r, pal.DarkShadow(), p.DarkAlpha, p.DarkBlur)
-	tc0 := nanotime()
-	draw.Draw(canvas, dst, dark, image.Point{}, draw.Over)
-	drawPerf.ComposeNs.Add(nanotime() - tc0)
-
 	light := shadowLayer(lw, lh,
 		lx1-p.LightOff, ly1-p.LightOff, lx2-p.LightOff, ly2-p.LightOff,
 		r, pal.LightShadow(), p.LightAlpha, p.LightBlur)
-	tc1 := nanotime()
-	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
-	drawPerf.ComposeNs.Add(nanotime() - tc1)
 
-	tf0 := nanotime()
-	dc.SetColor(face)
-	dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
-	dc.Fill()
-	drawPerf.FaceNs.Add(nanotime() - tf0)
+	// Compose dark + light + face into a local NRGBA buffer for caching.
+	local := image.NewNRGBA(image.Rect(0, 0, lw, lh))
+	localR := local.Bounds()
+	draw.Draw(local, localR, dark, image.Point{}, draw.Over)
+	draw.Draw(local, localR, light, image.Point{}, draw.Over)
+
+	// Render face into the local buffer via a temporary gg context.
+	faceRGBA := image.NewRGBA(image.Rect(0, 0, lw, lh))
+	fdc := gg.NewContextForRGBA(faceRGBA)
+	fdc.SetColor(face)
+	fdc.DrawRoundedRectangle(lx1, ly1, lx2-lx1, ly2-ly1, r)
+	fdc.Fill()
+	draw.Draw(local, localR, faceRGBA, image.Point{}, draw.Over)
+
+	neuRaisedCache[key] = &neuRaisedCacheEntry{img: local}
+
+	// Blit to canvas.
+	tc := nanotime()
+	draw.Draw(canvas, dst, local, image.Point{}, draw.Over)
+	drawPerf.ComposeNs.Add(nanotime() - tc)
 }
 
 func neuInset(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r float64, face color.NRGBA, p mancini.InsetParams) {
@@ -511,7 +646,10 @@ func circleShadowLayer(w, h int, cx, cy, rad float64, c color.NRGBA, alpha uint8
 	drawPerf.ConvertNs.Add(t3 - t2)
 
 	if blur > 0 {
-		result := gaussianBlurNRGBA(nrgba, blur)
+		// Pass the circle's bounding box so the blur skips transparent regions.
+		rectMin := image.Pt(int(cx-rad), int(cy-rad))
+		rectMax := image.Pt(int(math.Ceil(cx+rad)), int(math.Ceil(cy+rad)))
+		result := gaussianBlurNRGBA(nrgba, blur, image.Rectangle{Min: rectMin, Max: rectMax})
 		t4 := nanotime()
 		drawPerf.BlurNs.Add(t4 - t3)
 		drawPerf.BlurCount.Add(1)
