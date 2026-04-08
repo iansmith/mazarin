@@ -47,7 +47,7 @@ const (
 	MsgTypeOverlayBlit     uint32 = 42 // shepherd → rachel
 	MsgTypeOverlayRelease  uint32 = 43 // shepherd → rachel
 	MsgTypeOverlayReleased uint32 = 44 // rachel → shepherd
-	MsgTypeOverlayInput    uint32 = 45 // rachel → shepherd
+	// 45 reserved (was OverlayInput)
 )
 
 // AnimationAlways is used as the EndNanos for animations that run
@@ -238,8 +238,8 @@ type WindowMoved struct {
 
 // OverlayAllocate is sent by a shepherd to rachel to request a shared
 // overlay buffer at the given screen rectangle. Rachel allocates shared
-// pages, maps them into the shepherd, installs the OverlayAgent, and
-// responds with OverlayReady.
+// pages, maps them into the shepherd, grants focus, and responds with
+// OverlayReady. The overlay is auto-dismissed on focus loss.
 type OverlayAllocate struct {
 	ScreenX1 int32 // upper-left X in screen coords
 	ScreenY1 int32 // upper-left Y in screen coords
@@ -267,7 +267,7 @@ type OverlayBlit struct {
 }
 
 // OverlayRelease is sent by a shepherd to rachel when it is done with
-// the overlay. Rachel removes the OverlayAgent, frees the shared pages,
+// the overlay. Rachel frees the shared pages, repaints the covered area,
 // and responds with OverlayReleased.
 type OverlayRelease struct {
 	OverlayID int32
@@ -279,29 +279,6 @@ type OverlayRelease struct {
 type OverlayReleased struct {
 	OverlayID int32
 }
-
-// OverlayInput is sent by rachel to the owning shepherd for every input
-// event while the overlay is active. The OverlayAgent consumes all input
-// and forwards it here. Coordinates are in screen space.
-type OverlayInput struct {
-	OverlayID int32
-	Kind      int32  // 1=press, 2=release, 3=move, 4=key_press, 5=key_release
-	X         int32  // screen X (mouse events)
-	Y         int32  // screen Y (mouse events)
-	Button    int32  // button code (mouse) or keycode (key)
-	Char      uint32 // translated Unicode codepoint (key events)
-	Action    uint16 // translated action (key events)
-	Mods      uint64 // modifier bitmask
-}
-
-// OverlayInput Kind constants.
-const (
-	OverlayInputPress      int32 = 1
-	OverlayInputRelease    int32 = 2
-	OverlayInputMove       int32 = 3
-	OverlayInputKeyPress   int32 = 4
-	OverlayInputKeyRelease int32 = 5
-)
 
 // --- Encode functions (typed struct → UringIPCMsg) ---
 
@@ -523,14 +500,6 @@ func EncodeOverlayReleased(o *OverlayReleased) ipc.UringIPCMsg {
 	return msg
 }
 
-func EncodeOverlayInput(o *OverlayInput) ipc.UringIPCMsg {
-	var msg ipc.UringIPCMsg
-	msg.Protocol = ipc.ProtoShepherdNotify
-	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeOverlayInput
-	*(*OverlayInput)(unsafe.Pointer(&msg.Payload[4])) = *o
-	return msg
-}
-
 // --- Decode functions (UringIPCMsg → typed struct) ---
 
 // WMNotifyMsg wraps a decoded WM notification with the sender's SID
@@ -646,8 +615,6 @@ func DecodeShepherdNotifyFromPayload(payload []byte) any {
 		return *(*OverlayReady)(unsafe.Pointer(&payload[4]))
 	case MsgTypeOverlayReleased:
 		return *(*OverlayReleased)(unsafe.Pointer(&payload[4]))
-	case MsgTypeOverlayInput:
-		return *(*OverlayInput)(unsafe.Pointer(&payload[4]))
 	default:
 		return nil
 	}

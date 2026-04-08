@@ -871,6 +871,12 @@ func grantFocusNoRaise(newSID int) {
 // revokeFocus clears both keyboard and mouse focus, notifying the current
 // focused shepherd(s). Does nothing if no shepherd has focus.
 func revokeFocus() {
+	// If the losing app has an active overlay, tear it down.
+	if keyboardFocusSID >= 0 {
+		if ta, ok := trackedApps[keyboardFocusSID]; ok && ta.overlayActive {
+			teardownOverlay(keyboardFocusSID, ta)
+		}
+	}
 	// Swap to unfocused decoration (fast copy from cache).
 	if keyboardFocusSID >= 0 {
 		if ta, ok := trackedApps[keyboardFocusSID]; ok {
@@ -1273,13 +1279,13 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				unregisterAnimation(senderSID, msg)
 
 			case wm.OverlayAllocate:
-				handleOverlayAllocate(senderSID, msg, wmd)
+				handleOverlayAllocate(senderSID, msg)
 
 			case wm.OverlayBlit:
 				handleOverlayBlit(senderSID)
 
 			case wm.OverlayRelease:
-				handleOverlayRelease(senderSID, msg, wmd)
+				handleOverlayRelease(senderSID, msg)
 
 			default:
 				rachelMsgOther++

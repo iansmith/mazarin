@@ -1,6 +1,7 @@
 package std
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -12,16 +13,16 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// RadialNOfMChooser is an arc-shaped N-of-M multi-select interactor. It
-// draws segments of an annulus (partial ring). Each segment can be
-// independently selected. The center of the arc, angular range, and
-// radii are configurable.
+// RadialNOfMChooser is an arc-shaped M-of-N selector interactor. It
+// draws segments of an annulus (partial ring). Up to M segments can be
+// simultaneously selected; selecting an (M+1)th evicts the oldest.
 //
-// RadialNOfMChooser embeds [impl.ThemedInteractor] and uses Light-weight
-// [mancini.NeuParams]. Selected segments receive a purple tint overlay
-// and [mancini.Inset] shadows, matching the treatment used by
-// [NOfMChooser]. When [mancini.NeuParams] is nil, only the filled arc
-// and face content are drawn.
+// RadialNOfMChooser embeds [impl.ThemedInteractor] and [impl.Parent],
+// making it a normal container interactor. Segment items are registered
+// as children via [AddChildLast] at construction time.
+//
+// Selected segments are filled with [mancini.Palette.SurfaceTint];
+// unselected segments use [mancini.Palette.Surface].
 //
 // Each segment can have a [mancini.LatinTextFace] whose content is
 // automatically rotated to align with the segment's angular position.
@@ -29,20 +30,27 @@ import (
 // for a full-circle single-select menu.
 type RadialNOfMChooser struct {
 	impl.ThemedInteractor
+	impl.Parent
 
-	CX, CY          float64                  // center of the arc relative to allocated area
-	InnerR, OuterR   float64                  // inner and outer radii
-	StartDeg, EndDeg float64                  // angular range in degrees (0=right, 90=down)
-	Faces            []mancini.LatinTextFace  // text content for each segment (nil entries OK)
-	Selected         []bool                   // which segments are selected
-	Disabled         bool                     // when true, renders dimmed and ignores input
+	CX, CY          float64 // center of the arc relative to allocated area
+	InnerR, OuterR   float64 // inner and outer radii
+	StartDeg, EndDeg float64 // angular range in degrees (0=right, 90=down)
+	Disabled         bool    // when true, renders dimmed and ignores input
+
+	labels   []*Label // child Label interactors (Transparent=true), one per segment
+	m        int      // max simultaneous selections
+	selected []int    // ordered list of selected indices (oldest first), len <= m
+	hovered  int      // index of hovered segment, or -1 if none
 }
 
 // NewRadialNOfMChooser creates a RadialNOfMChooser wired to the constraint
-// system and theme. layout must already be created.
+// system and theme. m is the maximum number of simultaneously selected
+// segments. labels are the text strings for each segment; a Label child
+// interactor is created for each and added via AddChildLast.
+// layout must already be created.
 func NewRadialNOfMChooser(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	cx, cy, innerR, outerR, startDeg, endDeg float64,
-	faces []mancini.LatinTextFace, selected []bool) *RadialNOfMChooser {
+	labels []string, fontSize int64, m int) *RadialNOfMChooser {
 
 	c := &RadialNOfMChooser{
 		CX:       cx,
@@ -51,19 +59,32 @@ func NewRadialNOfMChooser(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		OuterR:   outerR,
 		StartDeg: startDeg,
 		EndDeg:   endDeg,
-		Faces:    faces,
-		Selected: selected,
+		m:        m,
+		hovered:  -1,
 	}
 	c.ThemedInteractor.Initialize(c, layout, theme)
+	c.Parent.Initialize(false, &c.ThemedInteractor.Interactor)
+
+	// Create a Label child for each segment.
+	c.labels = make([]*Label, len(labels))
+	for i, text := range labels {
+		name := fmt.Sprintf("%s_seg_%d", layout.Name(), i)
+		lbl := NewLabelNamed(name, "", theme, text, fontSize)
+		lbl.Transparent = true
+		c.AddChildLast(lbl)
+		c.labels[i] = lbl
+	}
 	return c
 }
 
 // NewRadialNOfMChooserNamed creates a RadialNOfMChooser with layout built
 // from name + parent strings. Width and height are computed from the arc's
-// bounding box so the constraint system can bootstrap.
+// bounding box so the constraint system can bootstrap. m is the maximum
+// number of simultaneously selected segments. fontSize is used for the
+// segment Label children.
 func NewRadialNOfMChooserNamed(myName, parent string, theme mancini.Theme,
 	cx, cy, innerR, outerR, startDeg, endDeg float64,
-	faces []mancini.LatinTextFace, selected []bool) *RadialNOfMChooser {
+	labels []string, fontSize int64, m int) *RadialNOfMChooser {
 
 	if myName == "" {
 		myName = mancini.DefaultName("radialchooser")
@@ -78,7 +99,135 @@ func NewRadialNOfMChooserNamed(myName, parent string, theme mancini.Theme,
 	lh.Height.Set(int64(math.Ceil(bh)))
 
 	return NewRadialNOfMChooser(lh, theme, cx, cy, innerR, outerR,
-		startDeg, endDeg, faces, selected)
+		startDeg, endDeg, labels, fontSize, m)
+}
+
+// Select selects segment k. If k is already selected, this is a no-op
+// and returns -1. If selecting k would exceed the maximum M, the oldest
+// selected segment is evicted and its index is returned. Otherwise
+// returns -1.
+func (c *RadialNOfMChooser) Select(k int) int {
+	if k < 0 || k >= len(c.labels) {
+		return -1
+	}
+	// Already selected — no-op.
+	for _, s := range c.selected {
+		if s == k {
+			return -1
+		}
+	}
+	evicted := -1
+	if len(c.selected) >= c.m {
+		// Evict oldest.
+		evicted = c.selected[0]
+		c.selected = c.selected[1:]
+	}
+	c.selected = append(c.selected, k)
+	return evicted
+}
+
+// Unselect deselects segment k. If k is not currently selected, this is
+// a no-op and returns -1. Otherwise returns k.
+func (c *RadialNOfMChooser) Unselect(k int) int {
+	for i, s := range c.selected {
+		if s == k {
+			c.selected = append(c.selected[:i], c.selected[i+1:]...)
+			return k
+		}
+	}
+	return -1
+}
+
+// IsSelected returns true if segment k is currently selected.
+func (c *RadialNOfMChooser) IsSelected(k int) bool {
+	for _, s := range c.selected {
+		if s == k {
+			return true
+		}
+	}
+	return false
+}
+
+// Selected returns a copy of the currently selected indices in order
+// (oldest selection first).
+func (c *RadialNOfMChooser) Selected() []int {
+	out := make([]int, len(c.selected))
+	copy(out, c.selected)
+	return out
+}
+
+// TextToIndex returns a map from each segment's text label to its index.
+func (c *RadialNOfMChooser) TextToIndex() map[string]int {
+	m := make(map[string]int, len(c.labels))
+	for i, lbl := range c.labels {
+		m[lbl.Text] = i
+	}
+	return m
+}
+
+// NumSegments returns the number of segments.
+func (c *RadialNOfMChooser) NumSegments() int {
+	return len(c.labels)
+}
+
+// SetHovered sets the hovered segment index. Pass -1 to clear hover.
+// Returns true if the hovered segment changed.
+func (c *RadialNOfMChooser) SetHovered(seg int) bool {
+	if seg == c.hovered {
+		return false
+	}
+	c.hovered = seg
+	return true
+}
+
+// Hovered returns the currently hovered segment index, or -1 if none.
+func (c *RadialNOfMChooser) Hovered() int {
+	return c.hovered
+}
+
+// HitTestSegment returns the index of the segment at local coordinates
+// (lx, ly) relative to the chooser's origin, or -1 if the point is
+// outside the annulus or angular range.
+func (c *RadialNOfMChooser) HitTestSegment(lx, ly float64) int {
+	dx := lx - c.CX
+	dy := ly - c.CY
+	r := math.Sqrt(dx*dx + dy*dy)
+	if r < c.InnerR || r > c.OuterR {
+		return -1
+	}
+	angle := math.Atan2(dy, dx) // radians, -pi to pi
+	if angle < 0 {
+		angle += 2 * math.Pi
+	}
+	startRad := c.StartDeg * math.Pi / 180
+	endRad := c.EndDeg * math.Pi / 180
+	if startRad < 0 {
+		startRad += 2 * math.Pi
+	}
+	if endRad < 0 {
+		endRad += 2 * math.Pi
+	}
+	rel := angle - startRad
+	if rel < 0 {
+		rel += 2 * math.Pi
+	}
+	totalAngle := endRad - startRad
+	if totalAngle < 0 {
+		totalAngle += 2 * math.Pi
+	}
+	if rel >= totalAngle {
+		return -1
+	}
+	n := len(c.labels)
+	if n == 0 {
+		return -1
+	}
+	segAngle := totalAngle / float64(n)
+	idx := int(rel / segAngle)
+	if idx >= n {
+		idx = n - 1
+	}
+	return idx
 }
 
 // arcBoundingBox computes the width and height needed to contain an arc
@@ -125,9 +274,9 @@ func arcBoundingBox(cx, cy, r, startRad, endRad float64) (w, h float64) {
 }
 
 // Draw implements mancini.NewDrawer. It renders the radial arc chooser:
-// an annular arc shape with flush edge outlines, radial groove separators
-// between segments, selected-segment tint+inset treatment, and per-segment
-// face content.
+// an annular arc shape with per-segment fill (SurfaceTint for selected,
+// Surface for unselected), flush edge outlines, radial groove separators
+// between segments, and per-segment face content.
 func (c *RadialNOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if !self.Visible() {
 		return
@@ -144,7 +293,7 @@ func (c *RadialNOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64) {
 		params = neu.Light()
 	}
 
-	n := len(c.Faces)
+	n := len(c.labels)
 	if n == 0 {
 		return
 	}
@@ -161,32 +310,35 @@ func (c *RadialNOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64) {
 	rOuter := c.OuterR
 	rInner := c.InnerR
 
-	// ── 1. Draw the overall arc shape filled with surface color ──────
-	radialDrawFilledArc(canvas, pal, cx, cy, rOuter, rInner, startRad, endRad)
+	// ── 1. Draw per-segment filled arcs ─────────────────────────────────
+	for i := 0; i < n; i++ {
+		segStart := startRad + float64(i)*segAngle
+		segEnd := segStart + segAngle
+		fillColor := pal.Surface()
+		if c.IsSelected(i) {
+			fillColor = pal.SurfaceTint()
+		} else if c.hovered == i {
+			fillColor = pal.Highlight()
+		}
+		radialDrawFilledArcColor(canvas, fillColor, cx, cy, rOuter, rInner, segStart, segEnd)
+	}
 
-	// ── 2–4. Neumorphic effects (flush edge, grooves, selection) ─────
+	// ── 2–3. Neumorphic effects (flush edge, grooves) ───────────────────
 	if params != nil {
 		radialDrawFlushEdge(canvas, pal, cx, cy, rOuter, rInner, startRad, endRad, params.Flush)
 		radialDrawGrooves(canvas, pal, cx, cy, rOuter, rInner, startRad, segAngle, n)
-
-		for i := 0; i < n; i++ {
-			if i >= len(c.Selected) || !c.Selected[i] {
-				continue
-			}
-			segStart := startRad + float64(i)*segAngle
-			segEnd := segStart + segAngle
-			radialApplySelection(canvas, pal, cx, cy, rOuter, rInner, segStart, segEnd, params.Inset)
-		}
 	}
 
-	// ── 5. Draw face content for each segment ────────────────────────
+	// ── 4. Draw label content for each segment ──────────────────────────
 	for i := 0; i < n; i++ {
-		if c.Faces[i] == nil {
+		lbl := c.labels[i]
+		if lbl == nil || lbl.textFace == nil {
 			continue
 		}
+		lbl.textFace.SetText(lbl.Text)
 		segStart := startRad + float64(i)*segAngle
 		segEnd := segStart + segAngle
-		radialDrawContent(dc, canvas, pal, cx, cy, rOuter, rInner, segStart, segEnd, c.Faces[i])
+		radialDrawContent(dc, canvas, pal, cx, cy, rOuter, rInner, segStart, segEnd, lbl.textFace)
 	}
 	if c.Disabled {
 		ApplyDisabledCircleOverlay(pal, dc, cx, cy, rOuter)
@@ -226,11 +378,17 @@ func traceArcPath(ctx *gg.Context, cx, cy, rOuter, rInner, startAngle, endAngle 
 // radialDrawFilledArc fills the annular arc shape with the palette surface color.
 func radialDrawFilledArc(canvas *image.RGBA, pal mancini.Palette,
 	cx, cy, rOuter, rInner, startAngle, endAngle float64) {
+	radialDrawFilledArcColor(canvas, pal.Surface(), cx, cy, rOuter, rInner, startAngle, endAngle)
+}
+
+// radialDrawFilledArcColor fills the annular arc shape with the given color.
+func radialDrawFilledArcColor(canvas *image.RGBA, fillColor color.NRGBA,
+	cx, cy, rOuter, rInner, startAngle, endAngle float64) {
 
 	rgba := image.NewRGBA(canvas.Bounds())
 	ctx := gg.NewContextForRGBA(rgba)
 	traceArcPath(ctx, cx, cy, rOuter, rInner, startAngle, endAngle)
-	ctx.SetColor(pal.Surface())
+	ctx.SetColor(fillColor)
 	ctx.Fill()
 	draw.Draw(canvas, canvas.Bounds(), rgba, image.Point{}, draw.Over)
 }
@@ -324,43 +482,6 @@ func radialDrawGrooves(canvas *image.RGBA, pal mancini.Palette,
 	lightNRGBA := rgbaToNRGBA(lightBuf)
 	lightNRGBA = gaussianBlurNRGBA(lightNRGBA, 1.0)
 	draw.DrawMask(canvas, bounds, lightNRGBA, image.Point{}, mask, image.Point{}, draw.Over)
-}
-
-// ── Selected segment treatment ──────────────────────────────────────────────
-
-// radialApplySelection draws the selected-segment treatment: purple tint
-// overlay and inset shadows, masked to the segment's annular area.
-func radialApplySelection(canvas *image.RGBA, pal mancini.Palette,
-	cx, cy, rOuter, rInner, startAngle, endAngle float64, ip mancini.InsetParams) {
-
-	bounds := canvas.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
-
-	// Segment mask.
-	mask := arcSegmentMask(w, h, cx, cy, rOuter, rInner, startAngle, endAngle)
-
-	// Purple tint fill, masked to segment.
-	tintBuf := image.NewRGBA(image.Rect(0, 0, w, h))
-	tctx := gg.NewContextForRGBA(tintBuf)
-	hi := pal.Highlight()
-	tctx.SetColor(color.NRGBA{hi.R, hi.G, hi.B, 60})
-	traceArcPath(tctx, cx, cy, rOuter, rInner, startAngle, endAngle)
-	tctx.Fill()
-	draw.DrawMask(canvas, bounds, tintBuf, image.Point{}, mask, image.Point{}, draw.Over)
-
-	off := ip.Off
-	darkBlur := ip.DarkBlur
-	lightBlur := ip.LightBlur
-
-	// Dark inset shadow (offset upper-left, blurred, masked to segment).
-	darkSh := arcShadowLayer(w, h, cx-off, cy-off, rOuter, rInner,
-		startAngle, endAngle, pal.DarkShadow(), 190, darkBlur)
-	draw.DrawMask(canvas, bounds, darkSh, image.Point{}, mask, image.Point{}, draw.Over)
-
-	// Light inset shadow (offset lower-right, blurred, masked to segment).
-	lightSh := arcShadowLayer(w, h, cx+off, cy+off, rOuter, rInner,
-		startAngle, endAngle, pal.LightShadow(), 190, lightBlur)
-	draw.DrawMask(canvas, bounds, lightSh, image.Point{}, mask, image.Point{}, draw.Over)
 }
 
 // ── Face content rendering ──────────────────────────────────────────────────

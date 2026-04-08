@@ -7,12 +7,12 @@ import (
 	"image/color"
 	"math"
 	"os"
+	"sync"
 	"unsafe"
 
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/mancini"
-	"mazzy/mazarin/mancini/impl"
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/sys"
@@ -201,7 +201,6 @@ var (
 	hexDisp    *std.HexDisplay                 // 14-segment LED display
 	throb      *Throbber                       // pulsing orange indicator
 	radialMenu *std.RadialNOfMChooser          // radial chooser (created on overlay ready)
-	calcTheme  mancini.Theme                   // saved theme for radial menu creation
 	app        *std.AppWindow                  // top-level AppWindow interactor
 	appLH      *mancini.LayoutAttributes       // AppWindow layout — source of truth for dimensions
 
@@ -214,11 +213,22 @@ var (
 	mainDC mancini.DrawContext
 
 	// Overlay state for the radial menu popup.
-	overlayActive    bool
-	overlayID        int32
-	overlayDC        mancini.DrawContext
-	overlayImg       *image.RGBA
-	overlayW, overlayH int32
+	// overlayMu protects overlayID. Negative values mean no active overlay:
+	//   -100 = rachel revoked the overlay (focus loss)
+	//   -101 = drag finished normally
+	// Positive values are the active overlay's ID from rachel.
+	overlayMu  sync.Mutex
+	overlayID  int32 = -1 // no overlay initially
+
+	overlayDC              mancini.DrawContext
+	overlayImg             *image.RGBA
+	overlayW, overlayH     int32
+	overlayScreenX, overlayScreenY int32 // screen position of overlay origin
+
+	// appScreenX/Y is the app window's screen-space origin, updated from
+	// WindowMoved and BackingStoreReady messages. Used to convert app-local
+	// mouse coordinates to overlay-local coordinates during radial menu drag.
+	appScreenX, appScreenY int32
 )
 
 func createLayout(pal mancini.Palette, theme mancini.Theme) {
@@ -342,11 +352,14 @@ func syncDisplay() {
 // requestOverlay sends OverlayAllocate to rachel for the radial menu popup.
 // If an overlay is already active, sends OverlayRelease to dismiss it.
 func requestOverlay() {
-	if overlayActive {
+	overlayMu.Lock()
+	id := overlayID
+	overlayMu.Unlock()
+	if id >= 0 {
 		// Already showing — dismiss.
-		msg := wm.EncodeOverlayRelease(&wm.OverlayRelease{OverlayID: overlayID})
+		msg := wm.EncodeOverlayRelease(&wm.OverlayRelease{OverlayID: id})
 		_ = uring.Send(rachelSID, &msg)
-		fmt.Fprintf(os.Stdout, "[calc] sent OverlayRelease id=%d\n", overlayID)
+		fmt.Fprintf(os.Stdout, "[calc] sent OverlayRelease id=%d\n", id)
 		return
 	}
 
@@ -390,14 +403,32 @@ func requestOverlay() {
 	_ = uring.Send(rachelSID, &msg)
 }
 
+// initRadialMenu creates the radial menu interactor once at startup.
+// It starts hidden and is shown/hidden when the overlay is allocated/released.
+func initRadialMenu(theme mancini.Theme) {
+	labels := []string{"Integer 123", "Hex 0x7b", "Binary 1111011"}
+
+	// Arc from 3.75° to 86.25°: three 27.5° segments fanning
+	// lower-right from the bottom-right corner (0°=right, 90°=down).
+	// Center at (5,5) matches the padding in requestOverlay.
+	// m=1: only one display mode selected at a time. fontSize=18 for readability.
+	radialMenu = std.NewRadialNOfMChooserNamed(
+		"overlay_radial", "", theme,
+		5, 5, 60, 160, 3.75, 86.25,
+		labels, 18, 1,
+	)
+	radialMenu.Select(0) // Integer selected by default
+	radialMenu.SetVisible(false)
+}
+
 // handleOverlayReady processes the OverlayReady message from rachel.
-// Creates a DrawContext backed by the shared overlay buffer, draws the
-// radial menu into it, and sends OverlayBlit to rachel.
+// Creates a DrawContext backed by the shared overlay buffer, makes the
+// radial menu visible, draws it, and sends OverlayBlit to rachel.
 func handleOverlayReady(m wm.OverlayReady) {
-	overlayActive = true
-	overlayID = m.OverlayID
 	overlayW = m.Width
 	overlayH = m.Height
+	overlayScreenX = m.ScreenX
+	overlayScreenY = m.ScreenY
 
 	// Create image.RGBA backed by the shared overlay buffer.
 	stride := int(m.Stride)
@@ -413,48 +444,18 @@ func handleOverlayReady(m wm.OverlayReady) {
 	// same text layout engine and already-opened fonts.
 	overlayDC = mainDC.NewChildContext(overlayImg)
 
-	// The radial menu center sits at the top-left of the overlay buffer,
-	// offset by the padding we added in requestOverlay.
-	cx := 5.0 // matches pad in requestOverlay
-	cy := 5.0
-
-	// Create faces using the pre-opened fontSmall ID from the main DC.
-	// The overlay DC shares the same glyph provider, so the fontID is valid.
-	labels := []string{"Integer 123", "Hex 0x7b", "Binary 1111011"}
-	faces := make([]mancini.LatinTextFace, len(labels))
-	for i, label := range labels {
-		f := impl.NewLatinTextFaceWithFontID(fontRadial, mancini.TextAlignmentParams{})
-		f.SetText(label)
-		faces[i] = f
-	}
-
-	selected := make([]bool, len(labels))
-	selected[0] = true // Integer selected by default
-
-	// Arc from 3.75° to 86.25°: three 27.5° segments fanning
-	// lower-right from the bottom-right corner (0°=right, 90°=down).
-	// Inner radius 60 gives a clean gap at the corner; outer 160 for readable text.
-	radialMenu = std.NewRadialNOfMChooserNamed(
-		"overlay_radial", "", calcTheme,
-		cx, cy, 60, 160, 3.75, 86.25,
-		faces, selected,
-	)
-
-	// Draw the radial menu into the overlay buffer.
+	// Show the radial menu and draw it into the overlay buffer.
+	radialMenu.SetVisible(true)
 	radialMenu.SetDC(overlayDC)
-
-	// Log the radial menu's stored CX/CY and layout dimensions.
-	rLH := radialMenu.GetLayout()
-	sys.UartWriteString(fmt.Sprintf("[calc:overlay] radial CX=%.1f CY=%.1f innerR=%.1f outerR=%.1f start=%.0f end=%.0f\n",
-		radialMenu.CX, radialMenu.CY, radialMenu.InnerR, radialMenu.OuterR,
-		radialMenu.StartDeg, radialMenu.EndDeg))
-	sys.UartWriteString(fmt.Sprintf("[calc:overlay] radial layout W=%d H=%d\n",
-		rLH.Width.Get(), rLH.Height.Get()))
-
 	radialMenu.Draw(radialMenu, 0, 0, int64(m.Width), int64(m.Height))
 
-	fmt.Fprintf(os.Stdout, "[calc] overlay drawn: id=%d %dx%d center=(%.0f,%.0f)\n",
-		m.OverlayID, m.Width, m.Height, cx, cy)
+	fmt.Fprintf(os.Stdout, "[calc] overlay drawn: id=%d %dx%d\n",
+		m.OverlayID, m.Width, m.Height)
+
+	// Mark overlay as active.
+	overlayMu.Lock()
+	overlayID = m.OverlayID
+	overlayMu.Unlock()
 
 	// Tell rachel to composite the overlay onto the framebuffer.
 	blit := wm.EncodeOverlayBlit(&wm.OverlayBlit{OverlayID: m.OverlayID})
@@ -462,13 +463,29 @@ func handleOverlayReady(m wm.OverlayReady) {
 }
 
 // handleOverlayReleased cleans up overlay state after rachel confirms teardown.
+// Called both when the app requests release and when rachel force-revokes on focus loss.
 func handleOverlayReleased(m wm.OverlayReleased) {
+	overlayMu.Lock()
+	if overlayID == m.OverlayID {
+		// Overlay was revoked while we thought it was still active (e.g., mid-drag).
+		fmt.Fprintf(os.Stderr, "[calc] WARNING: overlay %d revoked while still active!\n", m.OverlayID)
+		overlayMu.Unlock()
+	} else {
+		overlayID = -100
+		overlayMu.Unlock()
+	}
 	fmt.Fprintf(os.Stdout, "[calc] overlay released: id=%d\n", m.OverlayID)
-	overlayActive = false
-	overlayID = 0
 	overlayDC = nil
 	overlayImg = nil
-	radialMenu = nil
+	radialMenu.SetVisible(false)
+}
+
+// overlayActive returns true if an overlay is currently allocated.
+func overlayActive() bool {
+	overlayMu.Lock()
+	id := overlayID
+	overlayMu.Unlock()
+	return id >= 0
 }
 
 // --- Input Handling ---
@@ -797,7 +814,8 @@ var msgStats struct {
 	winResized  int64
 	overlayRdy  int64
 	overlayRel  int64
-	overlayIn   int64
+	mouseMove   int64
+	mouseRel    int64
 	timerTick   int64
 	blitSent    int64
 	other       int64
@@ -823,8 +841,10 @@ func msgStatsLog(label string) {
 		msgStats.overlayRdy++
 	case "OverlayReleased":
 		msgStats.overlayRel++
-	case "OverlayInput":
-		msgStats.overlayIn++
+	case "MouseMove":
+		msgStats.mouseMove++
+	case "MouseRelease":
+		msgStats.mouseRel++
 	case "TimerTick":
 		msgStats.timerTick++
 	default:
@@ -833,10 +853,11 @@ func msgStatsLog(label string) {
 	if msgStats.total-msgStats.lastDump >= msgDumpInterval {
 		msgStats.lastDump = msgStats.total
 		sys.UartWriteString(fmt.Sprintf(
-			"[calc:msg] total=%d key=%d mouse=%d focus=%d bs=%d resize=%d ovRdy=%d ovRel=%d ovIn=%d tick=%d blit=%d other=%d\n",
-			msgStats.total, msgStats.keyPress, msgStats.mousePress, msgStats.focus,
+			"[calc:msg] total=%d key=%d mouse=%d move=%d rel=%d focus=%d bs=%d resize=%d ovRdy=%d ovRel=%d tick=%d blit=%d other=%d\n",
+			msgStats.total, msgStats.keyPress, msgStats.mousePress,
+			msgStats.mouseMove, msgStats.mouseRel, msgStats.focus,
 			msgStats.bsReady, msgStats.winResized,
-			msgStats.overlayRdy, msgStats.overlayRel, msgStats.overlayIn,
+			msgStats.overlayRdy, msgStats.overlayRel,
 			msgStats.timerTick, msgStats.blitSent, msgStats.other))
 	}
 }
@@ -898,8 +919,6 @@ func main() {
 	neu := mctheme.NewDefaultNeumorphicParams()
 	theme := mctheme.NewTheme(pal, neu, mfont.DefaultSans, 18, resolver)
 	theme.SetStyle(std.NewNeumorphicStyle(neu.Heavy(), neu.Light()))
-	calcTheme = theme
-
 	// 4. Screen dimensions.
 	screenWURI := "attr:///kernel/int64/screen/width"
 	screenHURI := "attr:///kernel/int64/screen/height"
@@ -948,6 +967,8 @@ func main() {
 	}
 
 	// 10. Set up drawing.
+	appScreenX = bsr.AppX
+	appScreenY = bsr.AppY
 	mancini.SetScreenOrigin(int64(bsr.AppX), int64(bsr.AppY))
 
 	totalW := int(bsr.TotalWidth)
@@ -987,6 +1008,9 @@ func main() {
 	// 11. Open fonts + create button interactors.
 	initFonts(dc)
 	createLayout(pal, theme)
+
+	// 11b. Create radial menu (once). Starts hidden; shown when overlay is allocated.
+	initRadialMenu(theme)
 
 	// 12. Initial draw.
 	engine = NewRPNEngine()
@@ -1048,12 +1072,73 @@ func main() {
 			sys.UartWriteString(fmt.Sprintf("[calc:overlay] OverlayReleased id=%d\n", m.OverlayID))
 			handleOverlayReleased(m)
 			continue // don't redraw main window
-		case wm.OverlayInput:
-			msgStatsLog("OverlayInput")
-			sys.UartWriteString(fmt.Sprintf("[calc:overlay] OverlayInput id=%d kind=%d xy=(%d,%d) btn=%d char=%d action=%d\n",
-				m.OverlayID, m.Kind, m.X, m.Y, m.Button, m.Char, m.Action))
+		case wm.MouseMove:
+			msgStatsLog("MouseMove")
+			if !overlayActive() {
+				continue
+			}
+			// Convert app-local coords to overlay-local.
+			olx := float64(m.X + appScreenX - overlayScreenX)
+			oly := float64(m.Y + appScreenY - overlayScreenY)
+			seg := radialMenu.HitTestSegment(olx, oly)
+			if radialMenu.SetHovered(seg) {
+				// Hovered segment changed — redraw and reblit.
+				radialMenu.SetDC(overlayDC)
+				radialMenu.Draw(radialMenu, 0, 0, int64(overlayW), int64(overlayH))
+				overlayMu.Lock()
+				id := overlayID
+				overlayMu.Unlock()
+				if id >= 0 {
+					blit := wm.EncodeOverlayBlit(&wm.OverlayBlit{OverlayID: id})
+					_ = uring.Send(rachelSID, &blit)
+				}
+			}
+			continue // don't redraw main window
+		case wm.MouseRelease:
+			msgStatsLog("MouseRelease")
+			if !overlayActive() {
+				continue
+			}
+			// Convert app-local coords to overlay-local.
+			olx := float64(m.X + appScreenX - overlayScreenX)
+			oly := float64(m.Y + appScreenY - overlayScreenY)
+			seg := radialMenu.HitTestSegment(olx, oly)
+			overlayMu.Lock()
+			id := overlayID
+			overlayMu.Unlock()
+			if seg >= 0 && id >= 0 {
+				radialMenu.Select(seg)
+				// Map segment index to display format.
+				switch seg {
+				case 0:
+					hexDisp.Format = std.FormatDecimal
+				case 1:
+					hexDisp.Format = std.FormatHex
+				case 2:
+					hexDisp.Format = std.FormatBinary
+				}
+				syncDisplay()
+				fmt.Fprintf(os.Stdout, "[calc] radial select: seg=%d format=%d\n", seg, hexDisp.Format)
+
+				// Redraw overlay with updated selection, then dismiss.
+				radialMenu.SetDC(overlayDC)
+				radialMenu.Draw(radialMenu, 0, 0, int64(overlayW), int64(overlayH))
+				blit := wm.EncodeOverlayBlit(&wm.OverlayBlit{OverlayID: id})
+				_ = uring.Send(rachelSID, &blit)
+			}
+			// Dismiss the overlay (whether or not a segment was hit).
+			if id >= 0 {
+				overlayMu.Lock()
+				overlayID = -101
+				overlayMu.Unlock()
+				rel := wm.EncodeOverlayRelease(&wm.OverlayRelease{OverlayID: id})
+				_ = uring.Send(rachelSID, &rel)
+			}
+			radialMenu.SetHovered(-1)
 			continue // don't redraw main window
 		case wm.WindowMoved:
+			appScreenX = m.AppX
+			appScreenY = m.AppY
 			mancini.SetScreenOrigin(int64(m.AppX), int64(m.AppY))
 		case wm.YouHaveFocus, wm.KeyboardFocusGained:
 			msgStatsLog("Focus")
@@ -1073,6 +1158,8 @@ func main() {
 			newBSLen := newTotalStride * newTotalH
 			app.HandleBackingStoreReady(uintptr(m.BackingStoreAddr), newBSLen)
 			app.SetSize(int64(m.AppWidth), int64(m.AppHeight))
+			appScreenX = m.AppX
+			appScreenY = m.AppY
 			mancini.SetScreenOrigin(int64(m.AppX), int64(m.AppY))
 			bsSlice = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(m.BackingStoreAddr))), newBSLen)
 			bsImg = &image.RGBA{

@@ -1,10 +1,10 @@
-// overlay.go — Overlay allocation, compositing, and input forwarding for rachel.
+// overlay.go — Overlay allocation, compositing, and lifecycle for rachel.
 //
 // Overlays allow shepherds to draw outside their window bounds (e.g. popup
 // menus, tooltips). Rachel allocates the shared pixel buffer, composites it
-// on top of all windows during blit, and forwards all input events to the
-// owning shepherd while the overlay is active. The shepherd decides when to
-// dismiss the overlay — rachel never judges or auto-dismisses.
+// on top of all windows during blit, and auto-dismisses the overlay when the
+// app loses focus. Input routing uses normal mouse events (MouseMove,
+// MouseRelease) via the DragAgent — overlays do not intercept input.
 package main
 
 import (
@@ -25,7 +25,7 @@ var overlayBlitCount int
 // handleOverlayAllocate processes an OverlayAllocate request from a shepherd.
 // It allocates shared pages for the overlay pixel buffer, records the overlay
 // state in the trackedApp, and sends OverlayReady back to the shepherd.
-func handleOverlayAllocate(senderSID int, msg wm.OverlayAllocate, wmd *wmDispatch) {
+func handleOverlayAllocate(senderSID int, msg wm.OverlayAllocate) {
 	ta, ok := trackedApps[senderSID]
 	if !ok {
 		sys.UartWriteString(fmt.Sprintf("[rachel:overlay] OverlayAllocate from unknown SID %d\n", senderSID))
@@ -96,8 +96,11 @@ func handleOverlayAllocate(senderSID int, msg wm.OverlayAllocate, wmd *wmDispatc
 		return
 	}
 
-	// Activate the overlay agent so input is consumed and forwarded.
-	wmd.overlayAgent.Activate(senderSID, ovID)
+	// Ensure the overlay owner has focus and is raised to front.
+	// This pairs with revokeFocus which tears down the overlay on focus loss.
+	if !hasFocus(senderSID) {
+		grantFocus(senderSID)
+	}
 
 	// Send OverlayReady to shepherd.
 	ready := wm.EncodeOverlayReady(&wm.OverlayReady{
@@ -193,24 +196,13 @@ func handleOverlayBlit(senderSID int) {
 	flushRect(ox, oy, ow, oh)
 }
 
-// handleOverlayRelease tears down the overlay for a shepherd.
-// Deactivates the overlay agent, frees shared pages, and sends OverlayReleased.
-func handleOverlayRelease(senderSID int, msg wm.OverlayRelease, wmd *wmDispatch) {
-	ta, ok := trackedApps[senderSID]
-	if !ok || !ta.overlayActive {
-		return
-	}
-	if ta.overlayID != msg.OverlayID {
-		sys.UartWriteString(fmt.Sprintf("[rachel:overlay] SID %d release ID mismatch: %d != %d\n",
-			senderSID, msg.OverlayID, ta.overlayID))
-		return
-	}
-
-	sys.UartWriteString(fmt.Sprintf("[rachel:overlay] SID %d: releasing overlay %d\n",
-		senderSID, ta.overlayID))
-
-	// Deactivate overlay agent so normal input routing resumes.
-	wmd.overlayAgent.Deactivate()
+// teardownOverlay tears down the active overlay for a shepherd.
+// Called from both app-initiated release and rachel-initiated focus-loss dismissal.
+// Repaints the covered area, clears overlay state, and sends OverlayReleased
+// to the shepherd.
+func teardownOverlay(sid int, ta *trackedApp) {
+	sys.UartWriteString(fmt.Sprintf("[rachel:overlay] SID %d: tearing down overlay %d\n",
+		sid, ta.overlayID))
 
 	// Repaint the area that was under the overlay — blit all windows
 	// to restore correct content.
@@ -229,7 +221,21 @@ func handleOverlayRelease(senderSID int, msg wm.OverlayRelease, wmd *wmDispatch)
 
 	// Send confirmation to shepherd.
 	released := wm.EncodeOverlayReleased(&wm.OverlayReleased{OverlayID: ovID})
-	if err := uring.Send(senderSID, &released); err != nil {
+	if err := uring.Send(sid, &released); err != nil {
 		sys.UartWriteString("[rachel:overlay] uring.Send OverlayReleased failed\n")
 	}
+}
+
+// handleOverlayRelease processes an app-initiated overlay release request.
+func handleOverlayRelease(senderSID int, msg wm.OverlayRelease) {
+	ta, ok := trackedApps[senderSID]
+	if !ok || !ta.overlayActive {
+		return
+	}
+	if ta.overlayID != msg.OverlayID {
+		sys.UartWriteString(fmt.Sprintf("[rachel:overlay] SID %d release ID mismatch: %d != %d\n",
+			senderSID, msg.OverlayID, ta.overlayID))
+		return
+	}
+	teardownOverlay(senderSID, ta)
 }
