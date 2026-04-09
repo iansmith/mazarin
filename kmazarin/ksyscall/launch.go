@@ -151,20 +151,18 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 		return -6
 	}
 
-	// Switch TTBR0 to the new process page table BEFORE loading the ELF.
-	// IC IVAU uses the current TTBR0 translation context.
-	kmem.SwitchTTBR0WithASID(processL0PA, 0)
-
-	// Map the framebuffer into shepherd address space for UI rendering.
+	// Map the framebuffer into shepherd address space using explicit L0PA.
+	// We do NOT switch TTBR0 here — this goroutine is preemptible and other
+	// goroutines on the same M would see the wrong address space.
 	fbPA := gpu.GetFramebufferPA()
 	fbSize := uintptr(gpu.GetFramebufferSize())
-	if !kmem.MapUserFramebuffer(fbPA, fbSize) {
+	if !kmem.MapUserFramebufferWithL0(fbPA, fbSize, processL0PA) {
 		return -7
 	}
 	addSpan(UserFramebufferVA, UserFramebufferSize)
 
 	// Map constraint shared pages read-only into shepherd address space.
-	if !kmem.MapUserConstraintPages() {
+	if !kmem.MapUserConstraintPagesWithL0(processL0PA) {
 		return -8
 	}
 	addSpan(UserConstraintPagesVA, UserConstraintPagesSize)

@@ -47,7 +47,7 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	}
 	// RunShepherd uses copyPagesFromUser (byte-by-byte), not the fixed-size PA
 	// array in TransferPages, so it can handle much larger transfers.
-	const maxRunShepherdPages = 4096 // 16MB
+	const maxRunShepherdPages = 8192 // 32MB
 	if numPages < 1 || numPages > maxRunShepherdPages {
 		return -22 // EINVAL
 	}
@@ -115,19 +115,18 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 		return int64(errNoSpace)
 	}
 
-	// Switch TTBR0 to new process page table for IC IVAU correctness
-	kmem.SwitchTTBR0WithASID(processL0PA, 0)
-
-	// Map framebuffer into new shepherd's address space
+	// Map framebuffer into new shepherd's address space using explicit L0PA.
+	// We do NOT switch TTBR0 here — this goroutine is preemptible and other
+	// goroutines on the same M would see the wrong address space.
 	fbPA := gpu.GetFramebufferPA()
 	fbSize := uintptr(gpu.GetFramebufferSize())
-	if !kmem.MapUserFramebuffer(fbPA, fbSize) {
+	if !kmem.MapUserFramebufferWithL0(fbPA, fbSize, processL0PA) {
 		return int64(errNoSpace)
 	}
 	addSpan(UserFramebufferVA, UserFramebufferSize)
 
 	// Map constraint shared pages read-only into shepherd address space.
-	if !kmem.MapUserConstraintPages() {
+	if !kmem.MapUserConstraintPagesWithL0(processL0PA) {
 		return int64(errNoSpace)
 	}
 	addSpan(UserConstraintPagesVA, UserConstraintPagesSize)

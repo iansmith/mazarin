@@ -225,16 +225,16 @@ bin/target-gdb build/kmazarin.elf
 
 - **`asyncpreemptoff`** must NOT be set — not in GODEBUG, not anywhere. Async preemption is required for correct Go scheduling. If something breaks with async preemption enabled, fix the root cause — do not disable preemption as a workaround.
 - **`GOGC`** must NOT be set to `"off"`. The GC must run. Use a low value like `"5"` if needed to reduce frequency, but never disable it.
-- **`GODEBUG=gctrace=1`** must always be set (both kernel and shepherds) so GC statistics are visible in serial output, confirming the GC is functioning.
+- **`GODEBUG=gccheckmark=1`** must always be set (both kernel and shepherds). This enables the GC's checkmark verification pass, which validates that concurrent mark found all reachable objects. Prefer this over `gctrace=1` which is too noisy for normal development.
 
 The correct kernel environment in `diplomat/main/startup_env.go` is:
 ```go
-s := "GODEBUG=gctrace=1"    // NO asyncpreemptoff!
+s := "GODEBUG=gccheckmark=1"    // NO asyncpreemptoff!
 ```
 
 The correct shepherd environment in `kmazarin/ksyscall/launch.go` is:
 ```go
-penv.SetEnv("GODEBUG", "gctrace=1")
+penv.SetEnv("GODEBUG", "gccheckmark=1")
 penv.SetEnv("GOGC", "5")
 ```
 

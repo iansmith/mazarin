@@ -66,7 +66,7 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	randomPhys := structPhys + 400
 	getTimerBasedRandom(randomPhys)
 
-	// "GODEBUG=gctrace=0" at offset 416
+	// "GODEBUG=gccheckmark=1" at offset 416
 	godebug := (*[48]byte)(unsafe.Pointer(uintptr(structPhys + 416)))
 	s := "GODEBUG=gccheckmark=1"
 	for i := 0; i < len(s); i++ {
