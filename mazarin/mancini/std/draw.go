@@ -111,48 +111,41 @@ func gaussianKernel(sigma float64) []float64 {
 	return k
 }
 
+// rgbaToNRGBA converts premultiplied RGBA pixels to straight-alpha
+// NRGBA in-place, reusing the same pixel buffer. The returned NRGBA wraps
+// the original Pix slice — the source RGBA must not be used afterward.
 func rgbaToNRGBA(src *image.RGBA) *image.NRGBA {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
-	ta := nanotime()
-	dst := image.NewNRGBA(b)
-	drawPerf.AllocNs.Add(nanotime() - ta)
-	drawPerf.AllocCount.Add(1)
-	drawPerf.AllocBytes.Add(int64(w * h * 4))
+	pix := src.Pix
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			soff := y*src.Stride + x*4
-			doff := y*dst.Stride + x*4
-			a := src.Pix[soff+3]
-			if a == 0 {
-				continue
-			}
-			if a == 255 {
-				dst.Pix[doff] = src.Pix[soff]
-				dst.Pix[doff+1] = src.Pix[soff+1]
-				dst.Pix[doff+2] = src.Pix[soff+2]
-				dst.Pix[doff+3] = 255
+			off := y*src.Stride + x*4
+			a := pix[off+3]
+			if a == 0 || a == 255 {
 				continue
 			}
 			a32 := uint32(a)
-			dst.Pix[doff] = uint8(uint32(src.Pix[soff]) * 255 / a32)
-			dst.Pix[doff+1] = uint8(uint32(src.Pix[soff+1]) * 255 / a32)
-			dst.Pix[doff+2] = uint8(uint32(src.Pix[soff+2]) * 255 / a32)
-			dst.Pix[doff+3] = a
+			pix[off] = uint8(uint32(pix[off]) * 255 / a32)
+			pix[off+1] = uint8(uint32(pix[off+1]) * 255 / a32)
+			pix[off+2] = uint8(uint32(pix[off+2]) * 255 / a32)
 		}
 	}
-	return dst
+	return &image.NRGBA{
+		Pix:    pix,
+		Stride: src.Stride,
+		Rect:   b,
+	}
 }
 
 // gaussianBlurNRGBA applies a separable Gaussian blur to src.
-// If rect is non-nil, only pixels within [rect.Min, rect.Max) are processed;
-// pixels outside are guaranteed zero (caller must ensure this). This avoids
-// visiting the large transparent regions of shadow buffers.
+// The source buffer is reused as the vertical-pass output to avoid an
+// extra allocation — src must not be used by the caller afterward.
+// If rect is provided, only pixels near that region are processed;
+// pixels outside are guaranteed zero (caller must ensure this).
 func gaussianBlurNRGBA(src *image.NRGBA, sigma float64, rect ...image.Rectangle) *image.NRGBA {
 	if sigma <= 0 {
-		cp := image.NewNRGBA(src.Bounds())
-		copy(cp.Pix, src.Pix)
-		return cp
+		return src
 	}
 	k := gaussianKernel(sigma)
 	rad := len(k) / 2
@@ -190,13 +183,10 @@ func gaussianBlurNRGBA(src *image.NRGBA, sigma float64, rect ...image.Rectangle)
 	drawPerf.AllocCount.Add(1)
 	drawPerf.AllocBytes.Add(int64(w * h * 4))
 
-	// Horizontal pass — only rows [minY, maxY), only columns [minX, maxX).
-	// (#3: bounding-box restriction)
+	// Horizontal pass: src → tmp
 	for y := minY; y < maxY; y++ {
 		rowOff := y * src.Stride
 		for x := minX; x < maxX; x++ {
-			// #1: skip-zero — if all kernel-tapped source alphas are zero,
-			// the output is zero and tmp is already zeroed.
 			allZero := true
 			for ki := range k {
 				sx := x + ki - rad
@@ -236,18 +226,13 @@ func gaussianBlurNRGBA(src *image.NRGBA, sigma float64, rect ...image.Rectangle)
 		}
 	}
 
-	ta2 := nanotime()
-	dst := image.NewNRGBA(b)
-	drawPerf.AllocNs.Add(nanotime() - ta2)
-	drawPerf.AllocCount.Add(1)
-	drawPerf.AllocBytes.Add(int64(w * h * 4))
+	// Reuse src as vertical-pass destination. Zero its pixels first —
+	// the skip-zero optimization leaves untouched pixels at 0.
+	clear(src.Pix)
 
-	// Vertical pass — same restricted region.
-	// (#3: bounding-box restriction)
+	// Vertical pass: tmp → src (reused as dst)
 	for y := minY; y < maxY; y++ {
 		for x := minX; x < maxX; x++ {
-			// #1: skip-zero — if all kernel-tapped source alphas are zero,
-			// the output is zero and dst is already zeroed.
 			allZero := true
 			for ki := range k {
 				sy := y + ki - rad
@@ -279,14 +264,14 @@ func gaussianBlurNRGBA(src *image.NRGBA, sigma float64, rect ...image.Rectangle)
 				bb += float64(tmp.Pix[off+2]) * kv
 				aa += float64(tmp.Pix[off+3]) * kv
 			}
-			off := y*dst.Stride + x*4
-			dst.Pix[off] = clampU8(rr)
-			dst.Pix[off+1] = clampU8(gg)
-			dst.Pix[off+2] = clampU8(bb)
-			dst.Pix[off+3] = clampU8(aa)
+			off := y*src.Stride + x*4
+			src.Pix[off] = clampU8(rr)
+			src.Pix[off+1] = clampU8(gg)
+			src.Pix[off+2] = clampU8(bb)
+			src.Pix[off+3] = clampU8(aa)
 		}
 	}
-	return dst
+	return src
 }
 
 // ── Shadow / mask helpers ────────────────────────────────────────────────────

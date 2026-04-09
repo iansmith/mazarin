@@ -1,7 +1,9 @@
 package std
 
 import (
-	"image"
+	"fmt"
+	"image/color"
+	"time"
 
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
@@ -12,9 +14,11 @@ import (
 // mancini (e.g., in louis14's resource package) and is passed to the
 // WebInteractor constructor by the shepherd.
 type WebRenderEngine interface {
-	// Render takes raw HTML bytes (possibly a fragment, not necessarily
-	// well-formed) and a viewport size, and returns the rendered pixels.
-	Render(html []byte, width, height int) *image.RGBA
+	// RenderDC renders raw HTML bytes (possibly a fragment, not
+	// necessarily well-formed) using the provided DrawContext.
+	// The DC's translation and clipping define the render viewport.
+	// viewportW and viewportH specify the layout dimensions.
+	RenderDC(html []byte, dc mancini.DrawContext, viewportW, viewportH float64)
 }
 
 // WebInteractor is an outside-in leaf interactor that renders HTML
@@ -37,10 +41,6 @@ type WebInteractor struct {
 	// Current HTML content.
 	html []byte
 
-	// Cached rendered image and the dimensions it was rendered at.
-	cached       *image.RGBA
-	cachedW      int
-	cachedH      int
 	contentDirty bool
 }
 
@@ -82,9 +82,8 @@ func (w *WebInteractor) SetHTML(html []byte) {
 	w.FullDamage()
 }
 
-// Draw implements mancini.NewDrawer. Renders the HTML content to an
-// off-screen image (if dirty or dimensions changed), then blits the
-// result onto the DrawContext at (x, y).
+// Draw implements mancini.NewDrawer. Renders the HTML content directly
+// into the DrawContext at (x, y) using the WebRenderEngine.
 func (w *WebInteractor) Draw(self mancini.Interactor, x, y, width, height int64) {
 	if !self.Visible() {
 		return
@@ -94,33 +93,39 @@ func (w *WebInteractor) Draw(self mancini.Interactor, x, y, width, height int64)
 		return
 	}
 
-	iw, ih := int(width), int(height)
-	if iw <= 0 || ih <= 0 {
+	fw, fh := float64(width), float64(height)
+	if fw <= 0 || fh <= 0 {
 		return
 	}
 
-	// Re-render if content changed or dimensions changed.
-	if w.contentDirty || w.cached == nil || w.cachedW != iw || w.cachedH != ih {
-		w.rerender(iw, ih)
-	}
-
-	if w.cached != nil {
-		dc.DrawImage(w.cached, int(x), int(y))
-	}
-}
-
-// rerender calls the WebRenderEngine to produce a new off-screen image.
-func (w *WebInteractor) rerender(width, height int) {
-	if w.engine == nil || len(w.html) == 0 {
-		w.cached = nil
-		w.cachedW = width
-		w.cachedH = height
+	// If there's no HTML content, just clear the area with the surface color.
+	if len(w.html) == 0 {
+		dc.SetColor(color.NRGBA{R: 232, G: 230, B: 244, A: 255})
+		dc.FillRectangle(float64(x), float64(y), fw, fh)
 		w.contentDirty = false
+		w.ClearDamage()
 		return
 	}
 
-	w.cached = w.engine.Render(w.html, width, height)
-	w.cachedW = width
-	w.cachedH = height
+	if w.engine == nil {
+		w.ClearDamage()
+		return
+	}
+
+	// Render directly into the DrawContext.
+	// Push state, translate so (0,0) is our top-left, clip to our bounds.
+	dc.Push()
+	dc.Translate(float64(x), float64(y))
+	dc.DrawRectangle(0, 0, fw, fh)
+	dc.Clip()
+
+	t0 := time.Now()
+	w.engine.RenderDC(w.html, dc, fw, fh)
+	fmt.Printf("[versai:timing] WebInteractor.render: %v (%dx%d, %d bytes html)\n",
+		time.Since(t0), int(width), int(height), len(w.html))
+
+	dc.Pop()
+
 	w.contentDirty = false
+	w.ClearDamage()
 }

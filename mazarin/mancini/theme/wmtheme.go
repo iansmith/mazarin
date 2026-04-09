@@ -27,17 +27,15 @@ func (t *DefaultWMTheme) SetStyle(s mancini.SurfaceStyle) { t.style = s }
 
 // ── Decoration geometry ─────────────────────────────────────────────────
 
-// Shadow margins match Heavy neumorphic params:
-// DarkOff=14, DarkBlur=14 → dark shadow extends ~56px bottom-right
-// LightOff=4, LightBlur=8 → light shadow extends ~28px top-left
-func (t *DefaultWMTheme) ShadowTop() int    { return 30 }
-func (t *DefaultWMTheme) ShadowBottom() int { return 60 }
-func (t *DefaultWMTheme) ShadowLeft() int   { return 30 }
-func (t *DefaultWMTheme) ShadowRight() int  { return 60 }
+// Shadow margins: flat style needs only a thin border, no blur shadows.
+func (t *DefaultWMTheme) ShadowTop() int    { return 2 }
+func (t *DefaultWMTheme) ShadowBottom() int { return 2 }
+func (t *DefaultWMTheme) ShadowLeft() int   { return 2 }
+func (t *DefaultWMTheme) ShadowRight() int  { return 2 }
 
 func (t *DefaultWMTheme) TitleBarHeight() int { return 20 }
 func (t *DefaultWMTheme) TitleGap() int       { return 2 }
-func (t *DefaultWMTheme) CornerRadius() float64 { return 6.0 }
+func (t *DefaultWMTheme) CornerRadius() float64 { return 0.0 }
 
 // ── Derived border totals ───────────────────────────────────────────────
 

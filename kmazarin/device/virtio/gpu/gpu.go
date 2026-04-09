@@ -349,9 +349,11 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	return respHdr.Type
 }
 
-// virtioGPUGetDisplayInfo queries the GPU for display information
-// This is a simple test command to verify the command channel works
-func virtioGPUGetDisplayInfo() bool {
+// virtioGPUGetDisplayInfo queries the GPU for display information.
+// Returns (width, height, ok). On success, returns the host's preferred
+// display dimensions from the first enabled scanout. On failure, returns
+// (0, 0, false).
+func virtioGPUGetDisplayInfo() (uint32, uint32, bool) {
 	// Prepare GET_DISPLAY_INFO command
 	var cmd VirtIOGPUCtrlHdr
 	cmd.Type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO
@@ -360,8 +362,10 @@ func virtioGPUGetDisplayInfo() bool {
 	cmd.CtxID = 0
 	cmd.Padding = 0
 
-	// Response buffer (header + display info)
-	var resp [384]byte // VirtIOGPUCtrlHdr (24 bytes) + display info (360 bytes max)
+	// Response: VirtIOGPUCtrlHdr (24 bytes) + up to 16 display_one entries.
+	// Each display_one: VirtIOGPURect (16 bytes) + enabled (4 bytes) + flags (4 bytes) = 24 bytes.
+	// Total: 24 + 16*24 = 408 bytes.
+	var resp [408]byte
 
 	respType := virtioGPUSendCommand(
 		unsafe.Pointer(&cmd),
@@ -369,7 +373,24 @@ func virtioGPUGetDisplayInfo() bool {
 		unsafe.Pointer(&resp[0]),
 		uint32(len(resp)))
 
-	return respType == VIRTIO_GPU_RESP_OK_DISPLAY_INFO
+	if respType != VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
+		return 0, 0, false
+	}
+
+	// Parse first enabled scanout. Each display_one entry starts at offset 24 + i*24.
+	for i := 0; i < 16; i++ {
+		off := 24 + i*24
+		// VirtIOGPURect: x(4), y(4), width(4), height(4)
+		w := *(*uint32)(unsafe.Pointer(&resp[off+8]))
+		h := *(*uint32)(unsafe.Pointer(&resp[off+12]))
+		enabled := *(*uint32)(unsafe.Pointer(&resp[off+16]))
+		if enabled != 0 && w > 0 && h > 0 {
+			klog.Logf("[VirtIO GPU] Display info: scanout %d = %dx%d\n", i, w, h)
+			return w, h, true
+		}
+	}
+
+	return 0, 0, false
 }
 
 // virtioGPUSetupFramebuffer sets up the framebuffer using VirtIO GPU.

@@ -3,6 +3,7 @@ package std
 import (
 	"image/color"
 	"io"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -10,6 +11,7 @@ import (
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/vm"
 	"mazzy/shared/hid"
 )
 
@@ -44,6 +46,11 @@ type MultiLineText struct {
 	AppWindow   *AppWindow
 	AfterEdit   func() // optional; called after each text modification
 
+	// Mu guards the gap buffer for concurrent access. The main goroutine
+	// (keyboard handler, draw) and any background reader (e.g., markdown
+	// render goroutine) must hold Mu while accessing the gap buffer.
+	Mu sync.Mutex
+
 	// Internal text storage.
 	gap *gapBuffer
 
@@ -77,6 +84,11 @@ type MultiLineText struct {
 	// Visible line metrics (set during Draw, used for mouse hit testing).
 	lineHeight float64 // pixels per display line
 	visibleLines int   // number of display lines that fit in the viewport
+
+	// textDirty tracks whether the gap buffer content has changed since the
+	// last call to TextChanged(). Set by afterEdit (insertions/deletions),
+	// NOT by cursor movements.
+	textDirty bool
 }
 
 // logLine describes one logical line (terminated by '\n' or end-of-content).
@@ -293,10 +305,17 @@ func (m *MultiLineText) cursorLogicalLine(pos int) int {
 	for i, ll := range m.logLines {
 		end := ll.start + ll.length
 		if i < len(m.logLines)-1 {
-			end++ // include the '\n'
-		}
-		if pos <= end {
-			return i
+			// The '\n' at byte position 'end' terminates this line.
+			// A cursor AT 'end' (on the '\n') belongs to this line,
+			// but a cursor at 'end+1' is the start of the next line.
+			if pos <= end {
+				return i
+			}
+		} else {
+			// Last line: cursor anywhere up to and including end.
+			if pos <= end {
+				return i
+			}
 		}
 	}
 	return len(m.logLines) - 1
@@ -419,30 +438,94 @@ func (m *MultiLineText) scrollCursorIntoView() {
 // Editing operations
 // ──────────────────────────────────────────────────────────────────────
 
+// TextChanged returns true if the text content has been modified since
+// the last call to TextChanged. Resets the flag to false. Callers must
+// hold Mu.
+func (m *MultiLineText) TextChanged() bool {
+	v := m.textDirty
+	m.textDirty = false
+	return v
+}
+
 // afterEdit is called after any text modification. It marks the text
 // attribute dirty, rebuilds the line index, scrolls the cursor into view,
-// and triggers a full repaint.
+// and marks damage.
+//
+// Optimization: if the cursor is at the end of the text (the common
+// append-typing case), only the cursor's display line is damaged.
+// Otherwise the entire interactor is damaged (edits in the middle can
+// reflow all subsequent lines).
 func (m *MultiLineText) afterEdit() {
+	m.textDirty = true
 	m.textAttr.MarkDirty()
 	m.stickyCol = -1
+	// Save wrapWidth before rebuildLineIndex clears it.
+	savedWrapWidth := m.wrapWidth
 	m.rebuildLineIndex()
-	// Re-wrap if we have a known width.
-	if m.wrapWidth > 0 && m.fontsOpened {
+	// Re-wrap if we had a known width before the rebuild.
+	if savedWrapWidth > 0 && m.fontsOpened {
 		dc := m.DC()
 		if dc != nil {
-			m.rewrap(dc, m.wrapWidth)
+			m.rewrap(dc, savedWrapWidth)
 		}
 	}
 	m.scrollCursorIntoView()
-	m.FullDamage()
+
+	// Damage: restrict to cursor line if appending at end.
+	if m.gap.GapPos() == m.gap.Len() && m.lineHeight > 0 {
+		m.damageCursorLine()
+	} else {
+		m.FullDamage()
+	}
 	if m.AfterEdit != nil {
 		m.AfterEdit()
+	}
+}
+
+// damageCursorLine sets the damage rectangle to cover only the display
+// line containing the cursor. Used when appending at end-of-text to
+// avoid redrawing the entire interactor.
+func (m *MultiLineText) damageCursorLine() {
+	lh := m.GetLayout()
+	if lh == nil {
+		m.FullDamage()
+		return
+	}
+	cursorDisp, _ := m.cursorDisplayPos()
+	topLine := m.topLine()
+	visIdx := cursorDisp - topLine
+	if visIdx < 0 || visIdx >= m.visibleLines {
+		// Cursor scrolled off-screen — full damage (scroll happened).
+		m.FullDamage()
+		return
+	}
+
+	// Compute the pixel rect of the cursor's display line.
+	bw := m.BorderWidth
+	pad := m.Padding
+	x := lh.X.Get()
+	y := lh.Y.Get()
+	w := lh.Width.Get()
+	lineY := int64(float64(y) + bw + pad + float64(visIdx)*m.lineHeight)
+	lineH := int64(m.lineHeight) + 1
+
+	rect := vm.RectangleVal(x, lineY, x+w, lineY+lineH)
+	if lh.Damage == nil {
+		lh.Damage = &mancini.DamageAttributes{}
+	}
+	uri := mancini.LayoutURI(lh.Name(), mancini.DataTypeRect, mancini.LayoutDamageRect)
+	if lh.Damage.DamageRect == nil {
+		lh.Damage.DamageRect = attr.ValueRectangle(uri, rect)
+	} else if !lh.Damage.DamageRect.IsConstraint() {
+		lh.Damage.DamageRect.Set(rect)
 	}
 }
 
 // WriteTo writes the editor's content into w via the gap buffer, with no
 // intermediate string allocation.
 func (m *MultiLineText) WriteTo(w io.Writer) (int64, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
 	return m.gap.WriteTo(w)
 }
 
@@ -1000,6 +1083,8 @@ func (m *MultiLineText) KeyPress(ch rune, action string, ev *mancini.InputEvent)
 	if m.Disabled {
 		return false
 	}
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
 	mods := int64(ev.Mods)
 	shift := hid.Shift(mods)
 
@@ -1098,6 +1183,8 @@ func (m *MultiLineText) Click(ev *mancini.InputEvent) bool {
 	if m.Disabled {
 		return false
 	}
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
 	pos := m.hitTestPosition(ev.X, ev.Y)
 	m.stickyCol = -1
 	m.moveCursorTo(pos, false)
@@ -1109,6 +1196,8 @@ func (m *MultiLineText) DoubleClick(ev *mancini.InputEvent) bool {
 	if m.Disabled {
 		return false
 	}
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
 	pos := m.hitTestPosition(ev.X, ev.Y)
 	start, end := m.wordBoundsAt(pos)
 	m.selAnchor = start
@@ -1125,6 +1214,8 @@ func (m *MultiLineText) TripleClick(ev *mancini.InputEvent) bool {
 	if m.Disabled {
 		return false
 	}
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
 	pos := m.hitTestPosition(ev.X, ev.Y)
 	start, end := m.logicalLineBoundsAt(pos)
 	m.selAnchor = start
@@ -1141,6 +1232,8 @@ func (m *MultiLineText) ClickDragStart(ev *mancini.InputEvent) bool {
 	if m.Disabled {
 		return false
 	}
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
 	pos := m.hitTestPosition(ev.X, ev.Y)
 	m.selAnchor = pos
 	m.gap.MoveTo(pos)
@@ -1152,6 +1245,8 @@ func (m *MultiLineText) ClickDragStart(ev *mancini.InputEvent) bool {
 
 // ClickDragMove implements mancini.ClickDraggable — extends drag selection.
 func (m *MultiLineText) ClickDragMove(ev *mancini.InputEvent, startEv *mancini.InputEvent, outsideBounds bool) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
 	pos := m.hitTestPosition(ev.X, ev.Y)
 	m.gap.MoveTo(pos)
 	m.stickyCol = -1
@@ -1162,6 +1257,8 @@ func (m *MultiLineText) ClickDragMove(ev *mancini.InputEvent, startEv *mancini.I
 
 // ClickDragEnd implements mancini.ClickDraggable — finalizes drag selection.
 func (m *MultiLineText) ClickDragEnd(ev *mancini.InputEvent, outsideBounds bool) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
 	pos := m.hitTestPosition(ev.X, ev.Y)
 	m.gap.MoveTo(pos)
 	m.stickyCol = -1

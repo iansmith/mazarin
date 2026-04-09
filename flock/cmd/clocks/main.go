@@ -125,11 +125,11 @@ func main() {
 	timeProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/time/utc_seconds")
 	timeSec := attr.ConstraintI64(attr.ShepherdURI("int64", "time_sec"), timeProg)
-	timeSec.Get()
+	timeSec.SetEager(true) // fire dirtyCh once per second, not per nanosecond
+	_ = timeSec.Get()
 	nanosProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/time/utc_nanos")
 	timeNanos := attr.ConstraintI64(attr.ShepherdURI("int64", "time_nanos"), nanosProg)
-	timeNanos.SetEager(true)
 	_ = timeNanos.Get()
 	sys.UartWriteString("[clocks] time constraints created\n")
 	// 5. Build interactor tree: AppWindow → Row → 6 Columns → [Label, NeuCircle→Clock, Label].
@@ -137,9 +137,14 @@ func main() {
 	textColor := color.NRGBA{0, 0, 0, 255}
 	subtitleColor := mancini.SwapRB(color.NRGBA{78, 72, 112, 255})
 
-	// Shared UTC time source — all clocks read from the same constraint handles.
+	// Shared UTC time source — reads directly from the kernel shared page
+	// via trie lookup + seqlock. Zero SVCs per call.
+	const secURI = "attr:///kernel/int64/time/utc_seconds"
+	const nanosURI = "attr:///kernel/int64/time/utc_nanos"
 	utcFunc := func() (int64, int64) {
-		return timeSec.Get(), timeNanos.Get()
+		sec, _ := attr.ReadI64(secURI)
+		nanos, _ := attr.ReadI64(nanosURI)
+		return sec, nanos
 	}
 
 	// Face name label font size and matching spacer height.
@@ -395,20 +400,11 @@ func main() {
 		}
 	}
 
-	// 12. Instrumentation counters.
-	eagerAttr := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
-	eagerSlot := eagerAttr.Slot()
-
-	// 13. Main loop: select on WM messages and dirty attributes.
+	// 12. Main loop: select on WM messages and dirty attributes.
 	dirtyCh := attr.OnDirty()
-	var drawCount int64
 	redraw := func() {
-		_ = timeSec.Get()
-		_ = timeNanos.Get()
-
 		app.Draw(app, 0, 0, int64(winW), int64(winH))
 		sendBlit()
-		drawCount++
 	}
 
 	// clickTimer fires after ClickAgent's timeout so pending clicks
@@ -441,7 +437,6 @@ func main() {
 			if clickAgent.CheckTimer() {
 				redraw()
 			}
-			sys.AttrIncrementI64(eagerSlot)
 			redraw()
 		case <-clickTimer:
 			clickTimer = nil
@@ -449,7 +444,6 @@ func main() {
 				redraw()
 			}
 		case <-dirtyCh:
-			sys.AttrIncrementI64(eagerSlot)
 			scroller.MarkContentDirty()
 			redraw()
 		}

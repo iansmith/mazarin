@@ -35,15 +35,28 @@ func Init() bool {
 		return false
 	}
 
-	// Test with GET_DISPLAY_INFO first (simpler command)
-	if !virtioGPUGetDisplayInfo() {
-		return false
+	// Query host display dimensions. Use them if available, fall back to constants.
+	dispW, dispH, dispOK := virtioGPUGetDisplayInfo()
+	if !dispOK || dispW == 0 || dispH == 0 {
+		klog.Logf("[VirtIO GPU] No display info, using default %dx%d\n", DisplayWidth, DisplayHeight)
+		dispW = DisplayWidth
+		dispH = DisplayHeight
 	}
 
-	// Setup framebuffer at DisplayWidth x DisplayHeight @ 32bpp.
+	// Cap to what fits in the framebuffer (with 2x height for scrolling).
+	// 64MB / 4 bytes-per-pixel / 2 (resource height) = max 8,388,608 pixels.
+	maxPixels := uint32(virtioGPUFramebufferSize / 4 / 2)
+	for dispW*dispH > maxPixels {
+		// Scale down by 75% until it fits.
+		dispW = dispW * 3 / 4
+		dispH = dispH * 3 / 4
+	}
+	klog.Logf("[VirtIO GPU] Using display resolution: %dx%d\n", dispW, dispH)
+
+	// Setup framebuffer at detected resolution @ 32bpp.
 	// Resource is 2x display height to enable hardware scrolling via SET_SCANOUT offset.
-	const resourceHeight = DisplayHeight * 2
-	if !virtioGPUSetupFramebuffer(DisplayWidth, DisplayHeight, resourceHeight) {
+	resourceHeight := dispH * 2
+	if !virtioGPUSetupFramebuffer(dispW, dispH, resourceHeight) {
 		return false
 	}
 
@@ -52,8 +65,8 @@ func Init() bool {
 	fillScreen(0xFFE8E6F4)
 
 	// Initial transfer and flush to make display visible
-	virtioGPUTransferToHost(0, 0, DisplayWidth, DisplayHeight)
-	virtioGPUFlush(0, 0, DisplayWidth, DisplayHeight)
+	virtioGPUTransferToHost(0, 0, dispW, dispH)
+	virtioGPUFlush(0, 0, dispW, dispH)
 
 	// Initialize hardware cursor
 	if !InitCursor() {

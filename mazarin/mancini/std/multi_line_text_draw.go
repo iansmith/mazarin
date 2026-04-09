@@ -17,6 +17,8 @@ func (m *MultiLineText) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if dc == nil {
 		return
 	}
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
 	m.ensureFonts(dc)
 
 	pal := m.Theme().Palette()

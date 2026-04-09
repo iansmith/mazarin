@@ -64,6 +64,11 @@ type AppWindow struct {
 	// When a new backing store arrives, old entries are popped and released.
 	bsStack stack.Stack[BackingStoreEntry]
 
+	// Track whether we've done an initial full background fill so
+	// subsequent draws don't wipe undamaged children.
+	hasDrawn       bool
+	lastBoundsHash int64
+
 	// --- Retained but unused: will move to rachel ---
 	NeuPrms      mancini.NeuParams
 	Radius       float64
@@ -287,16 +292,26 @@ func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 		return
 	}
 
-	// Clip to damage rectangle if smaller than full bounds.
 	lh := w.GetLayout()
+
+	// Clip to damage rectangle if smaller than full bounds.
 	clipped := false
 	if lh != nil {
 		clipped = lh.PushDamageClip(dc)
 	}
 
-	// Fill window background with palette surface tint color.
-	dc.SetColor(w.Pal.SurfaceTint())
-	dc.FillRectangle(float64(x), float64(y), float64(ww), float64(hh))
+	// Only fill background on first draw or when bounds changed (resize/move).
+	// Otherwise, filling wipes children that have no damage and won't repaint.
+	boundsHash := int64(0)
+	if lh != nil && lh.BoundsHash != nil {
+		boundsHash = lh.BoundsHash.Get()
+	}
+	if !w.hasDrawn || boundsHash != w.lastBoundsHash {
+		dc.SetColor(w.Pal.SurfaceTint())
+		dc.FillRectangle(float64(x), float64(y), float64(ww), float64(hh))
+		w.lastBoundsHash = boundsHash
+	}
+	w.hasDrawn = true
 
 	children := w.GetChildren()
 	if len(children) == 0 {

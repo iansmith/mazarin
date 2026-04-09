@@ -36,10 +36,14 @@ func (s *FlatStyle) DrawBox(pal mancini.Palette, dc mancini.DrawContext, depth m
 	case mancini.Inset:
 		dc.SetColor(adjustBrightness(face, -s.delta))
 	}
-	dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
+	if r > 0 {
+		dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
+	} else {
+		dc.DrawRectangle(x1, y1, x2-x1, y2-y1)
+	}
 	dc.Fill()
 
-	drawUniformEdge(dc, x1, y1, x2, y2, r, pal.Mid(), s.borderWidth)
+	drawUniformEdge(dc, x1, y1, x2, y2, 0, pal.Mid(), s.borderWidth)
 }
 
 func (s *FlatStyle) DrawCircle(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, weight mancini.Weight,

@@ -11,7 +11,6 @@ import (
 	"image"
 	"math"
 "mazzy/mazarin/mancini"
-	"mazzy/mazarin/mancini/std"
 "mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazarin/textshape"
@@ -510,49 +509,16 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 
 	var neuBoxDur, fillDur time.Duration
 
-	if depth == mancini.Raised {
-		// Snapshot drawPerf before NeuBoxWith.
-		dp := std.GetDrawPerf()
-		preAlloc := dp.AllocNs.Load()
-		preGG := dp.GGDrawNs.Load()
-		preConv := dp.ConvertNs.Load()
-		preBlur := dp.BlurNs.Load()
-		preBlurC := dp.BlurCount.Load()
-		preComp := dp.ComposeNs.Load()
-		preFace := dp.FaceNs.Load()
-
-		faceColor := pal.Surface()
-		neuP := &mancini.NeuParams{
-			Raised: mancini.RaisedParams{
-				DarkOff:    4,
-				DarkBlur:   3,
-				DarkAlpha:  200,
-				LightOff:   2,
-				LightBlur:  2.5,
-				LightAlpha: 220,
-			},
-		}
-		t2 := time.Now()
-		std.NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, faceColor, neuP)
-		neuBoxDur = time.Since(t2)
-
-		// Accumulate drawPerf deltas for focused renders.
-		if decorPhaseAccum.active {
-			decorPhaseAccum.fAllocNs += dp.AllocNs.Load() - preAlloc
-			decorPhaseAccum.fGGDrawNs += dp.GGDrawNs.Load() - preGG
-			decorPhaseAccum.fConvertNs += dp.ConvertNs.Load() - preConv
-			decorPhaseAccum.fBlurNs += dp.BlurNs.Load() - preBlur
-			decorPhaseAccum.fBlurCount += dp.BlurCount.Load() - preBlurC
-			decorPhaseAccum.fComposeNs += dp.ComposeNs.Load() - preComp
-			decorPhaseAccum.fFaceNs += dp.FaceNs.Load() - preFace
-		}
-	} else {
+	{
 		faceColor := pal.Surface()
 		t2 := time.Now()
-		dc.SetColor(faceColor)
-		dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
-		dc.Fill()
-		fillDur = time.Since(t2)
+		wmTheme.Style().DrawBox(pal, dc, depth, mancini.HeavyWeight,
+			x1, y1, x2, y2, r, faceColor)
+		if depth == mancini.Raised {
+			neuBoxDur = time.Since(t2)
+		} else {
+			fillDur = time.Since(t2)
+		}
 	}
 
 	// Title bar drawn AFTER face/shadows.

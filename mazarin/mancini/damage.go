@@ -167,6 +167,21 @@ func (lh *LayoutAttributes) HasDamage() bool {
 	return x0 != x1 || y0 != y1
 }
 
+// ChildHasDamage checks whether a child interactor has pending damage.
+// Returns true (safe default) if the child has no layout information.
+// Used by parent Draw methods to skip undamaged children.
+func ChildHasDamage(child Interactor) bool {
+	l, ok := child.(Layouter)
+	if !ok {
+		return true
+	}
+	lh := l.GetLayout()
+	if lh == nil {
+		return true
+	}
+	return lh.HasDamage()
+}
+
 // FullDamage sets this interactor's damage rectangle to its full Bounds,
 // forcing a complete repaint on the next draw pass. Creates the
 // DamageAttributes and DamageRect if they don't exist yet.
@@ -188,9 +203,11 @@ func (lh *LayoutAttributes) FullDamage() {
 	uri := LayoutURI(lh.name, DataTypeRect, LayoutDamageRect)
 	if lh.Damage.DamageRect == nil {
 		lh.Damage.DamageRect = attr.ValueRectangle(uri, bounds)
-	} else {
+	} else if !lh.Damage.DamageRect.IsConstraint() {
 		lh.Damage.DamageRect.Set(bounds)
 	}
+	// If DamageRect is a constraint (parent interactors), skip the Set —
+	// the constraint will re-evaluate from its children's damage rects.
 }
 
 // InitDefaultParentDamage creates a damage constraint for a parent

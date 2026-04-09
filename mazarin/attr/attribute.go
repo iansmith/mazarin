@@ -114,6 +114,28 @@ func (h *Attribute[T]) Set(v T) {
 	}
 }
 
+// ReadI64 reads an int64 attribute directly from the shared constraint page
+// by URI, using trie lookup + seqlock. This is a pure memory read — no
+// syscall, no constraint evaluation, no writeback. Returns (value, true)
+// on success or (0, false) if the URI is not found.
+func ReadI64(uri string) (int64, bool) {
+	slot, found := trieLookupShared(uri)
+	if !found {
+		return 0, false
+	}
+	node := sharedPR.Node(int16(slot))
+	for {
+		seq := node.SeqCounter
+		if seq&1 != 0 {
+			continue
+		}
+		val := node.CachedValue
+		if node.SeqCounter == seq {
+			return val.AsI64(), true
+		}
+	}
+}
+
 // seqlockRead performs a seqlock-protected read of the CachedValue from the
 // shared page. Spins until a consistent read is obtained.
 func (h *Attribute[T]) seqlockRead() flat.FlatValue {

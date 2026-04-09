@@ -17,7 +17,7 @@ import (
 )
 
 // MaxOrder is the number of orders supported (0 through MaxOrder-1).
-const MaxOrder = 13 // Orders 0-12 (4KB to 16MB)
+const MaxOrder = 15 // Orders 0-14 (4KB to 64MB)
 
 // kmazarinKernelBudgetMB is set by archauxv() from AT_KERNEL_BUDGET_MB.
 // 0 means "use default". Accessed via go:linkname from runtime package.

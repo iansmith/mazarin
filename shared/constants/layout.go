@@ -26,7 +26,7 @@ const (
 	// Allocation sizes for each component
 	DtbSize                = 0x100000  // 1 MB - Device Tree Blob
 	CardinalAllocationSize = 0xF00000  // 15 MB - Cardinal code+data+bss+heap
-	FramebufferSize        = 0x2000000 // 32 MB - VirtIO GPU framebuffer (supports up to 4K)
+	FramebufferSize        = 0x4000000 // 64 MB - VirtIO GPU framebuffer (supports Retina displays)
 	PageTableSize          = 0x800000  // 8 MB - ARM64 page tables (L0/L1/L2/L3)
 )
 
@@ -119,7 +119,7 @@ func MemoryLayoutSummary() string {
   RAM Start:       0x40000000
   DTB:             1 MB
   Cardinal:        15 MB
-  Framebuffer:     32 MB (VirtIO GPU)
+  Framebuffer:     64 MB (VirtIO GPU)
   Page Tables:     8 MB
   Kmazarin:        After page tables
   g0 Stack:        64 KB (SP_EL0)

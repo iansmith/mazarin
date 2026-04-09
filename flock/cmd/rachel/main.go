@@ -656,8 +656,13 @@ func wallPlaceWindow(placement, reqW, reqH int32) (appX, appY, appW, appH int32)
 	dw, dh := int(displayWidth), int(displayHeight)
 
 	if placement == wm.PlacementRightFull {
-		// Versai: right-anchored, full height, half screen width.
-		appW = int32(dw / 2)
+		// Right-anchored, full height. Use requested width if non-zero,
+		// otherwise default to half screen width.
+		if reqW > 0 {
+			appW = reqW
+		} else {
+			appW = int32(dw / 2)
+		}
 		appH = int32(dh - borderTop - borderBottom)
 		appX = int32(dw - int(appW) - borderRight)
 		appY = int32(borderTop)
@@ -1399,9 +1404,7 @@ func main() {
 
 	// Initialize WMTheme from palette — border vars derive from it.
 	wmTheme = mctheme.NewDefaultWMTheme(pal)
-	wmTheme.SetStyle(std.NewNeumorphicStyle(
-		mctheme.NewDefaultNeumorphicParams().Heavy(),
-		mctheme.NewDefaultNeumorphicParams().Light()))
+	wmTheme.SetStyle(std.NewFlatStyle(15, 1.0))
 	borderTop = wmTheme.BorderTop()
 	borderRight = wmTheme.BorderRight()
 	borderBottom = wmTheme.BorderBottom()

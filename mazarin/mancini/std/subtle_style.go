@@ -141,11 +141,21 @@ func drawBevel(dc mancini.DrawContext, x1, y1, x2, y2, r float64, hiColor, loCol
 	dc.Stroke()
 }
 
-// drawUniformEdge draws a uniform 1px edge on all sides.
+// drawUniformEdge draws a uniform edge on all sides. For r==0, uses four
+// lines to avoid expensive stroke expansion on large rectangles.
 func drawUniformEdge(dc mancini.DrawContext, x1, y1, x2, y2, r float64, c color.NRGBA, lineW float64) {
 	dc.SetColor(c)
 	dc.SetLineWidth(lineW)
-	dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
-	dc.Stroke()
+	if r == 0 {
+		hw := lineW / 2
+		dc.DrawLine(x1+hw, y1+hw, x2-hw, y1+hw) // top
+		dc.DrawLine(x2-hw, y1+hw, x2-hw, y2-hw) // right
+		dc.DrawLine(x2-hw, y2-hw, x1+hw, y2-hw) // bottom
+		dc.DrawLine(x1+hw, y2-hw, x1+hw, y1+hw) // left
+		dc.Stroke()
+	} else {
+		dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
+		dc.Stroke()
+	}
 }
 
