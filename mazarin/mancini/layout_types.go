@@ -45,6 +45,14 @@ const (
 	// Clock properties.
 	LayoutFaceName LayoutProp = "FaceName"
 
+	// MultiLineText properties.
+	LayoutText          LayoutProp = "Text"
+	LayoutLineCount     LayoutProp = "LineCount"
+	LayoutCursorLine    LayoutProp = "CursorLine"
+	LayoutCursorCol     LayoutProp = "CursorCol"
+	LayoutTopLine       LayoutProp = "TopLine"
+	LayoutMaxLineCount  LayoutProp = "MaxLineCount"
+
 	// Damage rectangle tracking.
 	LayoutDamageRect     LayoutProp = "DamageRect"
 	LayoutLPBounds       LayoutProp = "LPBounds"

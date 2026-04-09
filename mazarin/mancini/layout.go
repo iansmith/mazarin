@@ -98,6 +98,18 @@ func NewLayoutAttributes(myName, parent string) *LayoutAttributes {
 	return lh
 }
 
+// NewVerticalLineLayout creates layout attributes where Height is constrained
+// to equal the source int64 attribute at heightSourceURI. Width is a value
+// attribute (set by parent). X and Y are value attributes.
+func NewVerticalLineLayout(myName, parent, heightSourceURI string) *LayoutAttributes {
+	lh := NewLayoutAttributesBase(myName, parent)
+	lh.Width = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutWidth), 0)
+	heightURI := LayoutURI(myName, DataTypeInt64, LayoutHeight)
+	lh.Height = attr.ConstraintI64(heightURI, EqualI64(heightSourceURI))
+	lh.InitBounds(myName)
+	return lh
+}
+
 // InitBounds creates the Bounds constraint: rect(X, Y, X+Width, Y+Height),
 // plus a BoundsHash constraint for fast layout-change detection.
 func (lh *LayoutAttributes) InitBounds(myName string) {
