@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	goFont "github.com/go-text/typesetting/font"
@@ -120,7 +121,7 @@ type tier2Glyph struct {
 type directFont struct {
 	face     *goFont.Face
 	scale    float32
-	path     string
+	family   string
 	variant  int32
 	size     int32
 	fontData []byte                 // mmap'd font file (backing face)
@@ -132,14 +133,21 @@ type directFont struct {
 // rasterization via [RenderGlyph]. This is the provider used on darwin
 // where fonts are loaded and rasterized directly, without fontsvc IPC.
 type DirectGlyphProvider struct {
-	fontDir string
-	fonts   [maxFonts]*directFont
+	fontDir   string
+	fontIndex *FontIndex
+	fonts     [maxFonts]*directFont
 }
 
 // NewDirectGlyphProvider creates a DirectGlyphProvider that loads font
-// files from fontDir.
+// files from fontDir. If fontDir contains a fonts.csv file, it is parsed
+// to resolve (family, variant) pairs to filenames. Without fonts.csv,
+// Family values that look like filenames are used directly.
 func NewDirectGlyphProvider(fontDir string) *DirectGlyphProvider {
-	return &DirectGlyphProvider{fontDir: fontDir}
+	p := &DirectGlyphProvider{fontDir: fontDir}
+	if data, err := os.ReadFile(filepath.Join(fontDir, "fonts.csv")); err == nil {
+		p.fontIndex = ParseFontIndex(data)
+	}
+	return p
 }
 
 // OpenFont loads a font at the requested size and returns font-level
@@ -147,7 +155,7 @@ func NewDirectGlyphProvider(fontDir string) *DirectGlyphProvider {
 // result is returned.
 func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error) {
 	// Check cache hit.
-	if id := p.findCachedFont(req.Path, req.Variant, req.Size); id >= 0 {
+	if id := p.findCachedFont(req.Family, req.Variant, req.Size); id >= 0 {
 		return p.metricsFor(id), nil
 	}
 
@@ -157,14 +165,11 @@ func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error)
 		return FontMetrics{}, errors.New("no free font slots (max 32)")
 	}
 
-	// Resolve file path: use absolute paths directly, relative ones relative to fontDir.
-	resolved := req.Path
-	if !filepath.IsAbs(req.Path) {
-		resolved = filepath.Join(p.fontDir, req.Path)
-	}
+	// Resolve family+variant to a filesystem path.
+	resolved := p.resolveFamily(req.Family, req.Variant)
 
-	// Reuse an already-parsed face if same file was loaded at different size.
-	existing := p.findExistingFont(req.Path, req.Variant)
+	// Reuse an already-parsed face if same family was loaded at different size.
+	existing := p.findExistingFont(req.Family, req.Variant)
 	var face *goFont.Face
 	var fontData []byte
 	if existing != nil {
@@ -174,7 +179,7 @@ func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error)
 		// mmap the font file read-only.
 		f, err := os.Open(resolved)
 		if err != nil {
-			return FontMetrics{}, fmt.Errorf("open font file: %w", err)
+			return FontMetrics{}, fmt.Errorf("open font file %s: %w", resolved, err)
 		}
 		fi, err := f.Stat()
 		if err != nil {
@@ -200,7 +205,7 @@ func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error)
 	p.fonts[fontID] = &directFont{
 		face:     face,
 		scale:    scale,
-		path:     req.Path,
+		family:   req.Family,
 		variant:  req.Variant,
 		size:     req.Size,
 		fontData: fontData,
@@ -211,6 +216,28 @@ func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error)
 	p.fonts[fontID].cache = buildGlyphCache(face, scale, uint32(fontID), req.Size, m)
 
 	return m, nil
+}
+
+// resolveFamily converts a logical family name + variant to a filesystem path.
+// Uses the font index if available. Falls back to treating the family as a
+// filename or path (for web fonts and backward compatibility).
+func (p *DirectGlyphProvider) resolveFamily(family string, variant int32) string {
+	// Try font index first.
+	if p.fontIndex != nil {
+		if filename := p.fontIndex.ResolveVariant(family, variant); filename != "" {
+			return filepath.Join(p.fontDir, filename)
+		}
+	}
+	// Fallback: if it looks like a path or filename, use directly.
+	if strings.Contains(family, "/") || strings.Contains(family, ".ttf") ||
+		strings.Contains(family, ".otf") {
+		if filepath.IsAbs(family) {
+			return family
+		}
+		return filepath.Join(p.fontDir, family)
+	}
+	// Last resort: try family as-is relative to fontDir.
+	return filepath.Join(p.fontDir, family)
 }
 
 // Face returns the go-text Face for the given fontID.
@@ -255,9 +282,9 @@ func (p *DirectGlyphProvider) GlyphByGID(fontID int32, gid uint32) (*GlyphInfo, 
 
 // --- internal helpers ---
 
-func (p *DirectGlyphProvider) findCachedFont(path string, variant, size int32) int32 {
+func (p *DirectGlyphProvider) findCachedFont(family string, variant, size int32) int32 {
 	for i := int32(0); i < maxFonts; i++ {
-		if p.fonts[i] != nil && p.fonts[i].path == path &&
+		if p.fonts[i] != nil && p.fonts[i].family == family &&
 			p.fonts[i].variant == variant && p.fonts[i].size == size {
 			return i
 		}
@@ -265,9 +292,9 @@ func (p *DirectGlyphProvider) findCachedFont(path string, variant, size int32) i
 	return -1
 }
 
-func (p *DirectGlyphProvider) findExistingFont(path string, variant int32) *directFont {
+func (p *DirectGlyphProvider) findExistingFont(family string, variant int32) *directFont {
 	for i := int32(0); i < maxFonts; i++ {
-		if p.fonts[i] != nil && p.fonts[i].path == path &&
+		if p.fonts[i] != nil && p.fonts[i].family == family &&
 			p.fonts[i].variant == variant && p.fonts[i].face != nil {
 			return p.fonts[i]
 		}

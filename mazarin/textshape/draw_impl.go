@@ -894,9 +894,9 @@ func (dc *DrawContextImpl) FillRectangle(x, y, w, h float64) {
 // --- Text ---
 
 // OpenFont loads a font via the internal TextLayout and caches its metrics.
-func (dc *DrawContextImpl) OpenFont(path string, variant, size int32) (FontMetrics, error) {
+func (dc *DrawContextImpl) OpenFont(family string, variant, size int32) (FontMetrics, error) {
 	m, err := dc.tl.OpenFont(OpenFontRequest{
-		Path:    path,
+		Family:  family,
 		Variant: variant,
 		Size:    size,
 	})

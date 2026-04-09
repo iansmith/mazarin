@@ -35,7 +35,7 @@ type fontsvcFont struct {
 	cache    []byte              // shared V2 cache pages (unsafe.Slice)
 	tier2    map[uint32]*tier2Glyph
 	metrics  textshape.FontMetrics
-	path     string              // resolved path used to open this font
+	family   string              // logical font family name
 	variant  int32
 	size     int32
 }
@@ -59,18 +59,18 @@ func NewFontSvcGlyphProvider(fc *FontCache) *FontSvcGlyphProvider {
 func (p *FontSvcGlyphProvider) OpenFont(req textshape.OpenFontRequest) (textshape.FontMetrics, error) {
 	// Check if already opened with matching path/variant/size.
 	for i := int32(0); i < MaxFonts; i++ {
-		if p.fonts[i] != nil && p.fonts[i].path == req.Path && p.fonts[i].variant == req.Variant && p.fonts[i].size == req.Size {
+		if p.fonts[i] != nil && p.fonts[i].family == req.Family && p.fonts[i].variant == req.Variant && p.fonts[i].size == req.Size {
 			return p.fonts[i].metrics, nil
 		}
 	}
 
 	// Send family name to fontsvc — server resolves to filesystem path.
-	reply, err := p.fc.SendOpenFont(req.Path, req.Variant, int64(req.Size))
+	reply, err := p.fc.SendOpenFont(req.Family, req.Variant, int64(req.Size))
 	if err != nil {
 		return textshape.FontMetrics{}, fmt.Errorf("SendOpenFont: %w", err)
 	}
 	if reply == nil || reply.FontID < 0 {
-		return textshape.FontMetrics{}, fmt.Errorf("fontsvc: OpenFont failed for %s", req.Path)
+		return textshape.FontMetrics{}, fmt.Errorf("fontsvc: OpenFont failed for %s", req.Family)
 	}
 
 	fontID := reply.FontID
@@ -109,7 +109,7 @@ func (p *FontSvcGlyphProvider) OpenFont(req textshape.OpenFontRequest) (textshap
 		cache:    cache,
 		tier2:    make(map[uint32]*tier2Glyph),
 		metrics:  metrics,
-		path:     req.Path,
+		family:   req.Family,
 		variant:  req.Variant,
 		size:     req.Size,
 	}

@@ -83,7 +83,7 @@ type fontSlot struct {
 var fonts [fontcache.MaxFonts]fontSlot
 
 // fontIdx resolves family names to filesystem paths. Loaded lazily.
-var fontIdx *fontcache.FontIndex
+var fontIdx *textshape.FontIndex
 
 // Per-shepherd state for font IPC.
 type shepherdConn struct {
@@ -172,24 +172,6 @@ func handleRequestGlyphCallback(senderSID int, fontID, gid, codepoint int32) {
 	handleRequestGlyph(senderSID, rg)
 }
 
-// variantToStyle maps a numeric variant to a style name.
-func variantToStyle(variant int32) string {
-	switch variant {
-	case 1:
-		return "Bold"
-	case 2:
-		return "Italic"
-	case 3:
-		return "BoldItalic"
-	case 4:
-		return "Light"
-	case 5:
-		return "Condensed"
-	default:
-		return "Regular"
-	}
-}
-
 // ensureFontIndex loads the font index lazily.
 func ensureFontIndex() error {
 	if fontIdx != nil {
@@ -214,12 +196,13 @@ func loadOrCacheFont(family string, variant, size int32) int32 {
 		return -1
 	}
 
-	style := variantToStyle(variant)
-	path := fontIdx.Resolve(family, style)
-	if path == "" {
+	style := textshape.VariantToStyle(variant)
+	filename := fontIdx.Resolve(family, style)
+	if filename == "" {
 		rawPuts("[fontsvc] unknown font family: " + family + "/" + style + "\n")
 		return -1
 	}
+	path := "/fonts/" + filename
 
 	// Check cache.
 	fontID := findCachedFont(path, variant, size)

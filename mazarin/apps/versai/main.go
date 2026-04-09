@@ -1,10 +1,20 @@
+// versai is the primary text editor for mazzy. It occupies the right half
+// of the screen at full height and receives focus on launch.
+//
+// The core component is a Unit: MultiLineText + Scrollbar + VerticalLine + WebInteractor.
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"image"
-	"strconv"
+	"time"
 	"unsafe"
+
+	"github.com/yuin/goldmark"
+	"golang.org/x/image/font"
+
+	"louis14/pkg/resource"
 
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
@@ -16,27 +26,14 @@ import (
 	mfont "mazzy/shared/font"
 	"mazzy/shared/ipc"
 	"mazzy/shared/wm"
-
-	"golang.org/x/image/font"
 )
 
-var rachelSID int
-var app *std.AppWindow
+var (
+	rachelSID int
+	app       *std.AppWindow
+	wmCh      = make(chan any, 4)
+)
 
-// wmCh receives typed WM messages from the uring Dispatcher.
-var wmCh = make(chan any, 4)
-
-// announceToWM sends AppStart to rachel via uring.
-func announceToWM(x, y, w, h int32) {
-	app.AnnounceToWM(x, y, w, h)
-}
-
-// sendBlit tells rachel to copy our backing store to the framebuffer.
-func sendBlit() {
-	app.SendBlit()
-}
-
-// startUringDispatcher sets up the uring Dispatcher for WM and font messages.
 func startUringDispatcher(fc *fontcache.FontCache) {
 	d := uring.NewDispatcher()
 	d.On(ipc.ProtoShepherdNotify, wm.DecodeShepherdNotify, wmCh)
@@ -45,13 +42,15 @@ func startUringDispatcher(fc *fontcache.FontCache) {
 }
 
 func main() {
-	sys.UartWriteString("[versai] main() entered\n")
+	fmt.Printf("[versai] main() entered\n")
 
 	// 1. Initialize constraint system.
+	// NOTE: waits removed — the kernel now maps constraint pages using
+	// explicit L0PA without switching TTBR0, so pages are ready at launch.
 	attr.Init()
 	mancini.Init()
 
-	// 2. Wait for required shepherds.
+	// 2. Wait for dependencies.
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[versai] FATAL: fs: %v", err))
 	}
@@ -64,11 +63,10 @@ func main() {
 	rachelSID = sys.MustGetShepherdByName("rachel")
 	fc := fontcache.New(rachelSID)
 
+	// Start uring dispatcher so font responses are processed.
 	startUringDispatcher(fc)
 
-	// 3. Palette, fonts, theme.
-	pal := mctheme.NewDefaultPaletteSwapRB()
-
+	// 3. Theme and palette.
 	resolver := func(family string, feature mancini.Feature, size int64) font.Face {
 		style := mfont.Regular
 		if feature == mancini.Bold {
@@ -76,11 +74,12 @@ func main() {
 		}
 		return fc.OpenFaceByName(family, style, size)
 	}
-	theme := mctheme.NewTheme(pal, mctheme.NewDefaultNeumorphicParams(), mfont.DefaultMono, 18, resolver)
+	pal := mctheme.NewDefaultPaletteSwapRB()
+	neu := mctheme.NewDefaultNeumorphicParams()
+	theme := mctheme.NewTheme(pal, neu, mfont.DefaultSans, 14, resolver)
+	theme.SetStyle(std.NewNeumorphicStyle(neu.Heavy(), neu.Light()))
 
-	sys.UartWriteString("[versai] theme configured\n")
-
-	// 4. Screen dimensions.
+	// 4. Read screen dimensions.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/screen/width")
 	screenWAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
@@ -89,77 +88,57 @@ func main() {
 	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW := int(screenWAttr.Get())
 	screenH := int(screenHAttr.Get())
-	sys.UartWriteString(fmt.Sprintf("[versai] screen: %dx%d\n", screenW, screenH))
+	fmt.Printf("[versai] screen dimensions: %dx%d\n", screenW, screenH)
 
-	// 5. Build interactor tree: AppWindow > RowFillLastChild > [Scroller, Scrollbar]
+	// 5. Create AppWindow.
 	app = std.NewAppWindow(pal, "Versai")
 	app.RachelSID = rachelSID
 	app.Focused = false
 
-	// Window dimensions.
-	const winW, winH = 800, 600
+	// 6. Create the versai Unit as AppWindow's child.
+	provider := fontcache.NewFontSvcGlyphProvider(fc)
+	engine := resource.NewWebEngineWithProvider(provider)
+	unit := NewUnit("AppWindow", theme, pal, engine)
+	unit.Web.SetHTML([]byte(`<div><p>Hello world</p></div>`))
 
-	// RowFillLastChild with absorbing bridge: width has no max (last child absorbs),
-	// height clamped to [300, 800].
-	bridgeLH := mancini.NewBridgeLayout("main_row", 400, 9999, 300, 800)
-	row := std.NewRowFillLastChildWithLayout(bridgeLH, pal, 0)
+	// Wire up live markdown preview: on each edit, pipe the raw gap-buffer
+	// bytes through goldmark and push the resulting HTML to the web column.
+	var mdSrc, mdOut bytes.Buffer
+	unit.Editor.AfterEdit = func() {
+		mdSrc.Reset()
+		unit.Editor.WriteTo(&mdSrc)
+		mdOut.Reset()
+		if err := goldmark.Convert(mdSrc.Bytes(), &mdOut); err != nil {
+			return
+		}
+		unit.Web.SetHTML(mdOut.Bytes())
+	}
 
-	// Scroller: parent = main_row. Height = winH (fixed value attribute).
-	scrollerH := attr.ValueI64(std.ScrollerHeightURI("scroller"), int64(winH))
-	scroller := std.NewScroller("scroller", "main_row", pal, scrollerH)
-	scrollerLH := scroller.GetLayout()
-	scrollerLH.Width.Set(int64(float64(winW) * 0.95))
-
-	// Light scrollbar: parent = main_row. Vertical, height = winH, gets remaining width.
-	_ = std.NewLightScrollbarNamed("scrollbar", "main_row", theme,
-		true, float64(winH), 0.3, 0.0)
-
-	// Finish row layout after children are created.
-	row.FinishLayout()
-
-	sys.UartWriteString("[versai] interactor tree built\n")
-
-	// 6. Compute screen position.
+	// 7. Set initial window size — rachel will override for PlacementRightFull,
+	//    but we provide reasonable defaults.
+	winW := screenW / 2
+	winH := screenH
 	appLH := app.GetLayout()
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
-	var posXAttr, posYAttr *attr.Attribute[int64]
-	if rachelSID >= 0 {
-		rachelSIDStr := strconv.Itoa(rachelSID)
-		vaXURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/x"
-		vaYURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/y"
-		vaWURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/w"
+	appLH.Width.Set(int64(winW))
+	appLH.Height.Set(int64(winH))
 
-		xProg := mancini.BindStrings(mancini.ProgAddSubDeref,
-			"_a_", vaXURI, "_b_", vaWURI, "_c_", appLH.Width.URI())
-		posXAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
+	// Set the splitter's dimensions to match.
+	splitLH := unit.Split.GetLayout()
+	splitLH.Width.Set(int64(winW))
+	splitLH.Height.Set(int64(winH))
 
-		yProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaYURI)
-		posYAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
-
-		_ = posXAttr.Get()
-		_ = posYAttr.Get()
-	}
-
-	var winX, winY int
-	if posXAttr != nil {
-		winX = int(posXAttr.Get())
-		winY = int(posYAttr.Get())
-	} else {
-		winX = screenW/2 - winW/2
-		winY = screenH/2 - winH/2
-	}
-
-	// 7. Announce to rachel.
+	// 8. Publish Ready and announce to rachel with PlacementRightFull.
 	_ = appLH.Bounds.Get()
 	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = readyAttr
-	sys.UartWriteString("[versai] Ready=true\n")
+	fmt.Printf("[versai] Ready=true\n")
 
-	announceToWM(int32(winX), int32(winY), int32(winW), int32(winH))
+	app.AnnounceToWMWithPlacement(0, 0, int32(winW), int32(winH), wm.PlacementRightFull)
 
-	// 8. Wait for backing store.
-	sys.UartWriteString("[versai] waiting for BackingStoreReady...\n")
+	// 10. Wait for BackingStoreReady.
+	fmt.Printf("[versai] waiting for BackingStoreReady...\n")
 	var bsr wm.BackingStoreReady
 	for {
 		raw := <-wmCh
@@ -169,16 +148,26 @@ func main() {
 		}
 	}
 
-	// 9. Set up drawing — use actual dimensions from rachel.
+	// Update dimensions from rachel's actual allocation.
 	appLH.Width.Set(int64(bsr.AppWidth))
 	appLH.Height.Set(int64(bsr.AppHeight))
+	winW = int(bsr.AppWidth)
+	winH = int(bsr.AppHeight)
+	splitLH.Width.Set(int64(winW))
+	splitLH.Height.Set(int64(winH))
 
-	disp, _, _ := app.InitInput()
-	// Rachel converts screen→app-local coords before sending, so OriginX/Y = 0.
+	fmt.Printf("[versai] backing store ready: app=%dx%d at (%d,%d)\n",
+		winW, winH, bsr.AppX, bsr.AppY)
+
+	// 11. Initialize input dispatch pipeline.
+	disp, clickAgent, keyAgent := app.InitInput()
 	mancini.SetScreenOrigin(int64(bsr.AppX), int64(bsr.AppY))
-	disp.Debug = true
 	disp.Tag = "versai"
 
+	// Give keyboard focus to the editor.
+	keyAgent.SetFocus(unit.Editor)
+
+	// 12. Create DrawContext over the shared backing store.
 	totalW := int(bsr.TotalWidth)
 	totalH := int(bsr.TotalHeight)
 	totalStride := int(bsr.TotalStride)
@@ -189,60 +178,94 @@ func main() {
 		Stride: totalStride,
 		Rect:   image.Rect(0, 0, totalW, totalH),
 	}
-	provider := fontcache.NewFontSvcGlyphProvider(fc)
 	dc := mancini.NewDrawContextForImage(bsImg, provider)
 
-	leftInset := float64(bsr.LeftInset)
-	topInset := float64(bsr.TopInset)
+	// Translate origin so (0,0) is the app area, and clip to app bounds.
 	dc.Push()
-	dc.Translate(leftInset, topInset)
+	dc.Translate(float64(bsr.LeftInset), float64(bsr.TopInset))
 	dc.DrawRectangle(0, 0, float64(winW), float64(winH))
 	dc.Clip()
 
-	sys.UartWriteString(fmt.Sprintf("[versai] backing store ready: total=%dx%d inset=(%d,%d) app=%dx%d\n",
-		totalW, totalH, bsr.LeftInset, bsr.TopInset, winW, winH))
-
-	// 10. Initial draw.
+	// 13. Initial draw.
 	appLH.X.Set(0)
 	appLH.Y.Set(0)
 	dc.SetColor(pal.Surface())
 	dc.FillRectangle(0, 0, float64(winW), float64(winH))
 	app.SetDC(dc)
 	app.Draw(app, 0, 0, int64(winW), int64(winH))
-	sendBlit()
 
-	sys.UartWriteString("[versai] initial draw complete\n")
-
-	// 11. Event loop.
+	// 14. Main loop.
 	dirtyCh := attr.OnDirty()
+
 	redraw := func() {
 		app.Draw(app, 0, 0, int64(winW), int64(winH))
-		sendBlit()
+		app.SendBlit()
+	}
+
+	var clickTimer <-chan time.Time
+
+	var inRedraw bool
+	safeRedraw := func() {
+		if inRedraw {
+			return
+		}
+		inRedraw = true
+		redraw()
+		inRedraw = false
 	}
 
 	for {
+		// Drain any pending dirty events before blocking — avoids queueing
+		// multiple redraws when the constraint system fires dirtyCh rapidly
+		// (e.g., during LPBounds updates triggered by drawing itself).
+	drainDirty:
+		for {
+			select {
+			case <-dirtyCh:
+			default:
+				break drainDirty
+			}
+		}
+
 		select {
 		case msg := <-wmCh:
+			needsRedraw := true
 			switch msg.(type) {
-			case wm.YouHaveFocus:
-				app.Focus()
-			case wm.YouLostFocus:
-				app.Unfocus()
 			case wm.KeyboardFocusGained:
 				app.Focus()
+				unit.Editor.Focused = true
 			case wm.KeyboardFocusLost:
 				app.Unfocus()
+				unit.Editor.Focused = false
+			case wm.YouHaveFocus:
+				app.Focus()
+				unit.Editor.Focused = true
+			case wm.YouLostFocus:
+				app.Unfocus()
+				unit.Editor.Focused = false
 			case wm.MouseFocusGained, wm.MouseFocusLost:
-				// ignored
-			case wm.MousePress, wm.MouseRelease:
+				// Mouse focus changes don't affect versai's visual state.
+				needsRedraw = false
+			case wm.MouseRelease:
 				disp.DispatchWM(msg)
+				clickTimer = time.After(clickAgent.ClickTimeout + 10*time.Millisecond)
 			default:
 				disp.DispatchWM(msg)
 			}
-			redraw()
+			if clickAgent.CheckTimer() {
+				safeRedraw()
+			} else if needsRedraw {
+				safeRedraw()
+			}
+
+		case <-clickTimer:
+			clickTimer = nil
+			if clickAgent.CheckTimer() {
+				safeRedraw()
+			}
+
 		case <-dirtyCh:
-			scroller.MarkContentDirty()
-			redraw()
+			safeRedraw()
 		}
 	}
 }

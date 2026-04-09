@@ -16,14 +16,14 @@ func fontDir(t *testing.T) string {
 }
 
 const (
-	testFontLatin = "AtkinsonHyperlegible-Regular.ttf"
-	testFontCJK   = "NotoSansCJKsc-Regular.otf"
+	testFontLatin    = "AtkinsonHyperlegible" // resolved via fonts.csv
+	testFontCJK      = "NotoSansCJKsc-Regular.otf" // fallback: filename as family
 )
 
 func TestLayoutLatinHello(t *testing.T) {
 	tl := NewTextLayout(fontDir(t))
 	info, err := tl.OpenFont(OpenFontRequest{
-		Path: testFontLatin, Size: 18,
+		Family: testFontLatin, Size: 18,
 	})
 	if err != nil {
 		t.Fatalf("OpenFont: %v", err)
@@ -71,7 +71,7 @@ func TestLayoutLatinHello(t *testing.T) {
 func TestMeasureText(t *testing.T) {
 	tl := NewTextLayout(fontDir(t))
 	info, err := tl.OpenFont(OpenFontRequest{
-		Path: testFontLatin, Size: 18,
+		Family: testFontLatin, Size: 18,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestMeasureText(t *testing.T) {
 func TestLayoutCJK(t *testing.T) {
 	tl := NewTextLayout(fontDir(t))
 	info, err := tl.OpenFont(OpenFontRequest{
-		Path: testFontCJK, Size: 24,
+		Family: testFontCJK, Size: 24,
 	})
 	if err != nil {
 		t.Fatalf("OpenFont: %v", err)
@@ -142,7 +142,7 @@ func TestLayoutCJK(t *testing.T) {
 func TestShaperDirect(t *testing.T) {
 	tl := NewTextLayout(fontDir(t))
 	info, err := tl.OpenFont(OpenFontRequest{
-		Path: testFontLatin, Size: 18,
+		Family: testFontLatin, Size: 18,
 	})
 	if err != nil {
 		t.Fatal(err)

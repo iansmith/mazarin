@@ -39,9 +39,9 @@ func NewInternalGlyphProvider(
 
 // OpenFont implements textshape.GlyphProvider.
 func (p *InternalGlyphProvider) OpenFont(req textshape.OpenFontRequest) (textshape.FontMetrics, error) {
-	result, ok := p.openFontCb(req.Path, req.Variant, req.Size)
+	result, ok := p.openFontCb(req.Family, req.Variant, req.Size)
 	if !ok {
-		return textshape.FontMetrics{}, fmt.Errorf("internal OpenFont failed for %s", req.Path)
+		return textshape.FontMetrics{}, fmt.Errorf("internal OpenFont failed for %s", req.Family)
 	}
 
 	fontID := result.FontID

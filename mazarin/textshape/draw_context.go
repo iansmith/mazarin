@@ -40,7 +40,9 @@ type DrawContext interface {
 	// --- Text ---
 	// OpenFont loads a font and returns its metrics including a FontID
 	// for use in subsequent DrawText/MeasureText/FontMetrics calls.
-	OpenFont(path string, variant, size int32) (FontMetrics, error)
+	// The family parameter is a logical font family name (e.g.,
+	// "AtkinsonHyperlegible"), not a filesystem path.
+	OpenFont(family string, variant, size int32) (FontMetrics, error)
 
 	// DrawText shapes, rasterizes, and composites text at (x, y) baseline.
 	DrawText(text string, fontID int32, x, y float64)

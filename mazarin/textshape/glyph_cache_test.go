@@ -8,15 +8,10 @@ import (
 	"unsafe"
 )
 
-func testFontPath(t *testing.T, name string) string {
-	t.Helper()
-	return filepath.Join(fontDir(t), name)
-}
-
 func loadTestFace(t *testing.T, name string) *DirectGlyphProvider {
 	t.Helper()
 	p := NewDirectGlyphProvider(fontDir(t))
-	_, err := p.OpenFont(OpenFontRequest{Path: name, Size: 18})
+	_, err := p.OpenFont(OpenFontRequest{Family: name, Size: 18})
 	if err != nil {
 		t.Fatalf("OpenFont: %v", err)
 	}
@@ -211,7 +206,7 @@ func TestMmapFontFile(t *testing.T) {
 	}
 
 	// Verify same file loaded at different size shares the mmap.
-	_, err := p.OpenFont(OpenFontRequest{Path: testFontLatin, Size: 24})
+	_, err := p.OpenFont(OpenFontRequest{Family: testFontLatin, Size: 24})
 	if err != nil {
 		t.Fatalf("OpenFont size 24: %v", err)
 	}
@@ -246,7 +241,7 @@ func TestCacheCJK(t *testing.T) {
 	}
 
 	p := NewDirectGlyphProvider(fontDir(t))
-	_, err := p.OpenFont(OpenFontRequest{Path: testFontCJK, Size: 24})
+	_, err := p.OpenFont(OpenFontRequest{Family: testFontCJK, Size: 24})
 	if err != nil {
 		t.Fatalf("OpenFont CJK: %v", err)
 	}

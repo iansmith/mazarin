@@ -122,7 +122,7 @@ func TestGlyphAlphaForA(t *testing.T) {
 
 func TestCacheHit(t *testing.T) {
 	client := NewFontClient(fontDir(t))
-	req := OpenFontRequest{Path: testFont, Size: 18}
+	req := OpenFontRequest{Family: testFont, Size: 18}
 
 	info1, err := client.OpenFont(req)
 	if err != nil {
@@ -140,11 +140,11 @@ func TestCacheHit(t *testing.T) {
 func TestDifferentSizes(t *testing.T) {
 	client := NewFontClient(fontDir(t))
 
-	info12, err := client.OpenFont(OpenFontRequest{Path: testFont, Size: 12})
+	info12, err := client.OpenFont(OpenFontRequest{Family: testFont, Size: 12})
 	if err != nil {
 		t.Fatal(err)
 	}
-	info24, err := client.OpenFont(OpenFontRequest{Path: testFont, Size: 24})
+	info24, err := client.OpenFont(OpenFontRequest{Family: testFont, Size: 24})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestTier2TransparentFill(t *testing.T) {
 	const cjkFont = "NotoSansCJKsc-Regular.otf"
 
 	client := NewFontClient(fontDir(t))
-	info, err := client.OpenFont(OpenFontRequest{Path: cjkFont, Size: 18})
+	info, err := client.OpenFont(OpenFontRequest{Family: cjkFont, Size: 18})
 	if err != nil {
 		t.Fatalf("OpenFont: %v", err)
 	}

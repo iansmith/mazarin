@@ -10,10 +10,61 @@ package textshape
 
 import goFont "github.com/go-text/typesetting/font"
 
+// FontRef identifies a font by its logical family name and style variant.
+// Both [DirectGlyphProvider] and FontSvcGlyphProvider resolve a FontRef
+// to actual font data through their own mechanism (filesystem vs IPC).
+type FontRef struct {
+	Family  string // logical family name, e.g. "AtkinsonHyperlegible"
+	Variant int32  // style variant (see Variant* constants)
+}
+
+// Variant constants for [OpenFontRequest] and [FontRef].
+const (
+	VariantRegular    int32 = 0
+	VariantBold       int32 = 1
+	VariantItalic     int32 = 2
+	VariantBoldItalic int32 = 3
+	VariantLight      int32 = 4
+	VariantCondensed  int32 = 5
+)
+
+// VariantToStyle returns the style name for a variant constant.
+// The returned strings match the Style column in fonts.csv.
+func VariantToStyle(variant int32) string {
+	switch variant {
+	case VariantBold:
+		return "Bold"
+	case VariantItalic:
+		return "Italic"
+	case VariantBoldItalic:
+		return "BoldItalic"
+	case VariantLight:
+		return "Light"
+	case VariantCondensed:
+		return "Condensed"
+	default:
+		return "Regular"
+	}
+}
+
+// BoolsToVariant converts CSS-style bold/italic booleans to a variant constant.
+func BoolsToVariant(bold, italic bool) int32 {
+	switch {
+	case bold && italic:
+		return VariantBoldItalic
+	case bold:
+		return VariantBold
+	case italic:
+		return VariantItalic
+	default:
+		return VariantRegular
+	}
+}
+
 // OpenFontRequest describes a font to open at a specific size.
 type OpenFontRequest struct {
-	Path    string // font filename (e.g., "AtkinsonHyperlegible-Regular.ttf")
-	Variant int32  // 0=regular, 1=bold
+	Family  string // logical family name (e.g., "AtkinsonHyperlegible")
+	Variant int32  // style variant (see Variant* constants)
 	Size    int32  // point size (e.g., 18)
 }
 

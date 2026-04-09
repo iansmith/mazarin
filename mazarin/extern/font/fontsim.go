@@ -14,7 +14,7 @@ import (
 
 type fontSlot struct {
 	inUse   bool
-	path    string
+	family  string
 	variant int32
 	size    int32
 	cache   []byte // 2MB, same binary layout as fontsvc
@@ -41,7 +41,7 @@ func NewFontSvcSim(fontDir string) *FontSvcSim {
 // already opened, the cached result is returned.
 func (s *FontSvcSim) OpenFont(req OpenFontRequest) (FontInfo, error) {
 	// Check cache hit.
-	if id := s.findCachedFont(req.Path, req.Variant, req.Size); id >= 0 {
+	if id := s.findCachedFont(req.Family, req.Variant, req.Size); id >= 0 {
 		return s.fontInfoFromCache(id), nil
 	}
 
@@ -52,10 +52,10 @@ func (s *FontSvcSim) OpenFont(req OpenFontRequest) (FontInfo, error) {
 	}
 
 	// Resolve file path.
-	resolved := filepath.Join(s.fontDir, req.Path)
+	resolved := filepath.Join(s.fontDir, req.Family)
 
 	// Reuse an already-parsed font if same file was loaded at different size.
-	otFont := s.findParsedFont(req.Path, req.Variant)
+	otFont := s.findParsedFont(req.Family, req.Variant)
 	if otFont == nil {
 		data, err := os.ReadFile(resolved)
 		if err != nil {
@@ -86,7 +86,7 @@ func (s *FontSvcSim) OpenFont(req OpenFontRequest) (FontInfo, error) {
 	// Store slot.
 	s.fonts[fontID] = fontSlot{
 		inUse:   true,
-		path:    req.Path,
+		family:  req.Family,
 		variant: req.Variant,
 		size:    req.Size,
 		cache:   cache,
@@ -156,9 +156,9 @@ func (s *FontSvcSim) Cache(fontID int32) []byte {
 
 // --- internal helpers ---
 
-func (s *FontSvcSim) findCachedFont(path string, variant, size int32) int32 {
+func (s *FontSvcSim) findCachedFont(family string, variant, size int32) int32 {
 	for i := int32(0); i < maxFonts; i++ {
-		if s.fonts[i].inUse && s.fonts[i].path == path &&
+		if s.fonts[i].inUse && s.fonts[i].family == family &&
 			s.fonts[i].variant == variant && s.fonts[i].size == size {
 			return i
 		}
@@ -166,9 +166,9 @@ func (s *FontSvcSim) findCachedFont(path string, variant, size int32) int32 {
 	return -1
 }
 
-func (s *FontSvcSim) findParsedFont(path string, variant int32) *opentype.Font {
+func (s *FontSvcSim) findParsedFont(family string, variant int32) *opentype.Font {
 	for i := int32(0); i < maxFonts; i++ {
-		if s.fonts[i].inUse && s.fonts[i].path == path &&
+		if s.fonts[i].inUse && s.fonts[i].family == family &&
 			s.fonts[i].variant == variant && s.fonts[i].otFont != nil {
 			return s.fonts[i].otFont
 		}

@@ -1,6 +1,7 @@
 package std
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -397,7 +398,19 @@ func localRect(canvas *image.RGBA, dc mancini.DrawContext, x1, y1, x2, y2, pad f
 	if ey > float64(b.Max.Y) {
 		ey = float64(b.Max.Y)
 	}
-	return int(ex - ox), int(ey - oy), ox, oy
+	lw = int(ex - ox)
+	lh = int(ey - oy)
+	if lw < 0 || lh < 0 {
+		fmt.Printf("[localRect] NEGATIVE: lw=%d lh=%d ix1=%.1f iy1=%.1f ix2=%.1f iy2=%.1f pad=%.1f bounds=%v x1=%.1f y1=%.1f x2=%.1f y2=%.1f\n",
+			lw, lh, ix1, iy1, ix2, iy2, pad, b, x1, y1, x2, y2)
+		if lw < 0 {
+			lw = 0
+		}
+		if lh < 0 {
+			lh = 0
+		}
+	}
+	return lw, lh, ox, oy
 }
 
 // neuRaisedCacheKey identifies a cached neumorphic raised box by its
@@ -499,6 +512,9 @@ func neuInset(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r flo
 	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
 	pad := p.Off + math.Ceil(maxBlur*3) + 2
 	lw, lh, ox, oy := localRect(canvas, dc, x1, y1, x2, y2, pad)
+	if lw <= 0 || lh <= 0 {
+		return
+	}
 	ix1, iy1 := dc.TransformPoint(x1, y1)
 	ix2, iy2 := dc.TransformPoint(x2, y2)
 	lx1, ly1, lx2, ly2 := ix1-ox, iy1-oy, ix2-ox, iy2-oy
