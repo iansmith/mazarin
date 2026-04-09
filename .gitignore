@@ -88,6 +88,7 @@ helloworld
 /keymapper
 /calc
 /linux-ui
+/versai
 
 # Old directories (should be removed)
 src/
