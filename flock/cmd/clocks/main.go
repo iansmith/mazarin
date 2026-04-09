@@ -63,7 +63,6 @@ func main() {
 
 	// 1. Initialize constraint system.
 	attr.Init()
-
 	mancini.Init()
 
 	// 2. Wait for fs (file operations), rachel (window manager + fontsvc), and

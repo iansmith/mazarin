@@ -4,8 +4,10 @@ go 1.25.5
 
 require (
 	github.com/fogleman/gg v1.3.0
+	github.com/go-text/typesetting v0.3.4
 	github.com/pelletier/go-toml/v2 v2.3.0
-	golang.org/x/image v0.23.0
+	golang.org/x/image v0.24.0
+	louis14 v0.0.0-00010101000000-000000000000
 	mazarin/textshape v0.0.0-00010101000000-000000000000
 )
 
@@ -40,18 +42,20 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dominikbraun/graph v0.23.0 // indirect
+	github.com/dop251/goja v0.0.0-20260106131823-651366fbe6e3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/go-task/task/v3 v3.46.4 // indirect
 	github.com/go-task/template v0.2.0 // indirect
-	github.com/go-text/typesetting v0.3.4 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.2.3 // indirect
 	github.com/googleapis/gax-go/v2 v2.7.1 // indirect
@@ -72,11 +76,14 @@ require (
 	github.com/puzpuzpuz/xsync/v4 v4.2.0 // indirect
 	github.com/sajari/fuzzy v1.0.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c // indirect
+	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/u-root/u-root v0.15.1-0.20251014130006-62f7144b33da // indirect
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
+	github.com/yuin/goldmark v1.8.2 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.3 // indirect
@@ -100,6 +107,8 @@ require (
 replace github.com/fogleman/gg v1.3.0 => ./internal/gg
 
 replace mazarin/textshape => ./mazarin/textshape
+
+replace louis14 => /tmp/louis14-diag
 
 // Tool directives - these can be run with "go tool <name>"
 tool (
