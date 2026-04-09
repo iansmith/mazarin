@@ -1643,6 +1643,14 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 //
 //go:nosplit
 func MapUserDevicePage(va, pa uintptr) bool {
+	return MapUserDevicePageWithL0(va, pa, 0)
+}
+
+// MapUserDevicePageWithL0 maps a device page using an explicit L0 page table PA.
+// If l0PAParam is 0, reads from TTBR0.
+//
+//go:nosplit
+func MapUserDevicePageWithL0(va, pa uintptr, l0PAParam uintptr) bool {
 	// Lazy initialization
 	if !pagingInitialized {
 		InitPaging()
@@ -1659,9 +1667,11 @@ func MapUserDevicePage(va, pa uintptr) bool {
 		return false // User pages must be in low memory
 	}
 
-	// CRITICAL: Get the current process's L0PA from the hardware page table register,
-	// NOT from a global. Globals can be stale when multiple processes are running.
-	l0PA := readCurrentL0PA()
+	// Use explicit L0 if provided, otherwise read from hardware page table register.
+	l0PA := l0PAParam
+	if l0PA == 0 {
+		l0PA = readCurrentL0PA()
+	}
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA // Fallback to Cardinal's original page table
 	}
@@ -1787,8 +1797,14 @@ func MapUserDevicePage(va, pa uintptr) bool {
 // MapUserFramebuffer maps the framebuffer physical memory into userspace.
 // framebufferPA is the GPU's actual framebuffer physical address.
 // framebufferSize is the framebuffer size in bytes.
-// Returns true on success.
+// Returns true on success. Uses current TTBR0 to find the page table.
 func MapUserFramebuffer(framebufferPA uintptr, framebufferSize uintptr) bool {
+	return MapUserFramebufferWithL0(framebufferPA, framebufferSize, 0)
+}
+
+// MapUserFramebufferWithL0 maps the framebuffer using an explicit L0 page table PA.
+// If l0PA is 0, reads from TTBR0.
+func MapUserFramebufferWithL0(framebufferPA uintptr, framebufferSize uintptr, l0PA uintptr) bool {
 	if framebufferPA == 0 || framebufferSize == 0 {
 		return false
 	}
@@ -1802,7 +1818,7 @@ func MapUserFramebuffer(framebufferPA uintptr, framebufferSize uintptr) bool {
 	for i := uintptr(0); i < numPages; i++ {
 		va := uintptr(framebufferVA) + i*pageSize
 		pa := framebufferPA + i*pageSize
-		if !MapUserDevicePage(va, pa) {
+		if !MapUserDevicePageWithL0(va, pa, l0PA) {
 			return false
 		}
 	}

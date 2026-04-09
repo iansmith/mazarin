@@ -174,6 +174,14 @@ func GetConstraintPageKernelVA() uintptr {
 //
 //go:nosplit
 func MapUserConstraintPages() bool {
+	return MapUserConstraintPagesWithL0(0)
+}
+
+// MapUserConstraintPagesWithL0 maps the constraint shared pages read-only
+// using an explicit L0 page table PA. If l0PA is 0, reads from TTBR0.
+//
+//go:nosplit
+func MapUserConstraintPagesWithL0(l0PA uintptr) bool {
 	// Lazy init: allocate on first shepherd launch.
 	if !InitConstraintPages() {
 		return false
@@ -186,7 +194,7 @@ func MapUserConstraintPages() bool {
 		pageVA := uintptr(constraintVA) + i*PageSize
 		pagePA := pa + i*PageSize
 		// ELF_PF_R = read-only, normal cacheable memory.
-		if !mapUserPage(pageVA, pagePA, ELF_PF_R) {
+		if !mapUserPageWithL0(pageVA, pagePA, ELF_PF_R, l0PA) {
 			serial.RawUARTPuts("[kmem] MapUserConstraintPages: failed at page ")
 			serial.RawUARTHex64(uint64(i))
 			serial.RawUARTPuts("\r\n")
