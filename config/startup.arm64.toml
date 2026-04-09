@@ -26,6 +26,6 @@ path = "/versai.elf"
 name = "clocks"
 path = "/clocks.elf"
 
-[[shepherd]]
-name = "calc"
-path = "/calc.elf"
+#[[shepherd]]
+#name = "calc"
+#path = "/calc.elf"
