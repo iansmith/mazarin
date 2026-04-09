@@ -15,7 +15,6 @@ import (
 "mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazarin/textshape"
-	"strconv"
 	"time"
 )
 
@@ -286,11 +285,11 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 				nonZero++
 			}
 		}
-		sys.UartWriteString(fmt.Sprintf("[rachel:blit] SID=%d win=(%d,%d) bs=%dx%d stride=%d regions=%d bsLen=%d bsNonZero=%d/4rows focused=%v\n",
-			sid, winX, winY, ta.bsWidth, ta.bsHeight, bsStride, len(regions), len(bs), nonZero, focused))
+		fmt.Printf("[rachel:blit] SID=%d win=(%d,%d) bs=%dx%d stride=%d regions=%d bsLen=%d bsNonZero=%d/4rows focused=%v\n",
+			sid, winX, winY, ta.bsWidth, ta.bsHeight, bsStride, len(regions), len(bs), nonZero, focused)
 		for i, r := range regions {
 			if i < 4 {
-				sys.UartWriteString(fmt.Sprintf("[rachel:blit]   region[%d]: (%d,%d)-(%d,%d)\n", i, r.Min.X, r.Min.Y, r.Max.X, r.Max.Y))
+				fmt.Printf("[rachel:blit]   region[%d]: (%d,%d)-(%d,%d)\n", i, r.Min.X, r.Min.Y, r.Max.X, r.Max.Y)
 			}
 		}
 	}
@@ -722,8 +721,8 @@ func preRenderDecorations(ta *trackedApp) {
 		}
 	}
 
-	sys.UartWriteString(fmt.Sprintf("[rachel:decor] pre-rendered %dx%d title=%q render=%s apply=%s\n",
-		ta.bsWidth, ta.bsHeight, ta.title, renderDur, applyDur))
+	fmt.Printf("[rachel:decor] pre-rendered %dx%d title=%q render=%s apply=%s\n",
+		ta.bsWidth, ta.bsHeight, ta.title, renderDur, applyDur)
 }
 
 
@@ -849,7 +848,7 @@ func startDragComposite(sid int) {
 			dragActive = false
 			return
 		}
-		sys.UartWriteString(fmt.Sprintf("[rachel:drag] dragBG allocated: %d bytes (%d pages)\n", bufSize, pages))
+		fmt.Printf("[rachel:drag] dragBG allocated: %d bytes (%d pages)\n", bufSize, pages)
 	}
 	dragBGStride = stride
 
@@ -879,7 +878,7 @@ func startDragComposite(sid int) {
 	dragActive = true
 	dragSID = sid
 	dragPrevRect = windowVisibleRect(ta, true) // focused = face + light shadow pad
-	sys.UartWriteString(fmt.Sprintf("[rachel:drag] startDragComposite SID=%d prev=%v\n", sid, dragPrevRect))
+	fmt.Printf("[rachel:drag] startDragComposite SID=%d prev=%v\n", sid, dragPrevRect)
 }
 
 // endDragComposite cleans up after a titlebar drag ends.
@@ -1086,26 +1085,14 @@ func blitTimingReport() {
 	pctAvg := avgTotal * 100 / tickBudgetUs
 	pctMax := btMaxUs * 100 / tickBudgetUs
 
-	sys.UartWriteString("[blit:timing] n=" + strconv.FormatInt(btSamples, 10) +
-		" avg=" + strconv.FormatInt(avgTotal, 10) + "us" +
-		" (occ=" + strconv.FormatInt(avgOcc, 10) +
-		" copy=" + strconv.FormatInt(avgCopy, 10) +
-		" flush=" + strconv.FormatInt(avgFlush, 10) + ")" +
-		" max=" + strconv.FormatInt(btMaxUs, 10) + "us" +
-		" (occ=" + strconv.FormatInt(btMaxOccUs, 10) +
-		" copy=" + strconv.FormatInt(btMaxCopyUs, 10) +
-		" flush=" + strconv.FormatInt(btMaxFlshUs, 10) + ")" +
-		" tick=" + strconv.FormatInt(tickBudgetUs, 10) + "us" +
-		" avg%=" + strconv.FormatInt(pctAvg, 10) +
-		" max%=" + strconv.FormatInt(pctMax, 10) + "\n")
+	fmt.Printf("[blit:timing] n=%d avg=%dus (occ=%d copy=%d flush=%d) max=%dus (occ=%d copy=%d flush=%d) tick=%dus avg%%=%d max%%=%d\n",
+		btSamples, avgTotal, avgOcc, avgCopy, avgFlush, btMaxUs, btMaxOccUs, btMaxCopyUs, btMaxFlshUs, tickBudgetUs, pctAvg, pctMax)
 
 	if btAllCount > 0 {
 		avgAll := btAllTotalUs / btAllCount
 		pctAll := btAllMaxUs * 100 / tickBudgetUs
-		sys.UartWriteString("[blit:timing] blitAll n=" + strconv.FormatInt(btAllCount, 10) +
-			" avg=" + strconv.FormatInt(avgAll, 10) + "us" +
-			" max=" + strconv.FormatInt(btAllMaxUs, 10) + "us" +
-			" max%=" + strconv.FormatInt(pctAll, 10) + "\n")
+		fmt.Printf("[blit:timing] blitAll n=%d avg=%dus max=%dus max%%=%d\n",
+			btAllCount, avgAll, btAllMaxUs, pctAll)
 	}
 
 	// Reset.

@@ -427,19 +427,26 @@ func (w *AppWindow) SendBlit() {
 // AnnounceToWM sends an AppStart message to rachel with the desired
 // initial window position and size.
 func (w *AppWindow) AnnounceToWM(x, y, width, height int32) {
+	w.AnnounceToWMWithPlacement(x, y, width, height, wm.PlacementDefault)
+}
+
+// AnnounceToWMWithPlacement sends an AppStart with an explicit placement hint.
+func (w *AppWindow) AnnounceToWMWithPlacement(x, y, width, height, placement int32) {
 	if w.RachelSID <= 0 {
 		return
 	}
 	msg := wm.EncodeAppStart(&wm.AppStart{
-		SID:    int32(os.Getpid()),
-		X:      x,
-		Y:      y,
-		Width:  width,
-		Height: height,
+		SID:       int32(os.Getpid()),
+		X:         x,
+		Y:         y,
+		Width:     width,
+		Height:    height,
+		Placement: placement,
 	})
 	if err := uring.Send(w.RachelSID, &msg); err != nil {
 		sys.UartWriteString(fmt.Sprintf("[AppWindow] AnnounceToWM failed: %s\n", err.Error()))
 		return
 	}
-	sys.UartWriteString(fmt.Sprintf("[AppWindow] sent AppStart %dx%d at (%d,%d)\n", width, height, x, y))
+	sys.UartWriteString(fmt.Sprintf("[AppWindow] sent AppStart %dx%d at (%d,%d) placement=%d\n",
+		width, height, x, y, placement))
 }

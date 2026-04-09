@@ -56,13 +56,21 @@ const AnimationAlways int64 = 2366841600_000_000_000 // time.Date(2045,1,1,0,0,0
 
 // --- Typed message structs (WM protocol) ---
 
+// Placement hints for AppStart. A shepherd sets Placement to tell rachel
+// how to position its window. PlacementDefault (zero) uses the wall algorithm.
+const (
+	PlacementDefault    int32 = 0 // wall-tiled from left edge
+	PlacementRightFull  int32 = 1 // right-anchored, full screen height (versai)
+)
+
 // AppStart is sent by a shepherd to rachel when it starts up.
 type AppStart struct {
-	SID    int32
-	X      int32
-	Y      int32
-	Width  int32
-	Height int32
+	SID       int32
+	X         int32
+	Y         int32
+	Width     int32
+	Height    int32
+	Placement int32 // PlacementDefault or PlacementRightFull
 }
 
 // Blit is sent by a shepherd to rachel after completing a draw pass.

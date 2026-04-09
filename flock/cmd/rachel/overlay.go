@@ -115,8 +115,8 @@ func handleOverlayAllocate(senderSID int, msg wm.OverlayAllocate) {
 	if err := uring.Send(senderSID, &ready); err != nil {
 		sys.UartWriteString("[rachel:overlay] uring.Send OverlayReady failed\n")
 	}
-	sys.UartWriteString(fmt.Sprintf("[rachel:overlay] SID %d: overlay %d at (%d,%d) %dx%d\n",
-		senderSID, ovID, x1, y1, w, h))
+	fmt.Printf("[rachel:overlay] SID %d: overlay %d at (%d,%d) %dx%d\n",
+		senderSID, ovID, x1, y1, w, h)
 }
 
 // handleOverlayBlit composites the overlay buffer onto the framebuffer.
@@ -143,8 +143,8 @@ func handleOverlayBlit(senderSID int) {
 				nonZero++
 			}
 		}
-		sys.UartWriteString(fmt.Sprintf("[rachel:overlay] blit SID=%d at (%d,%d) %dx%d stride=%d nonZeroPx=%d fbStride=%d\n",
-			senderSID, ox, oy, ow, oh, oStride, nonZero, fbStride))
+		fmt.Printf("[rachel:overlay] blit SID=%d at (%d,%d) %dx%d stride=%d nonZeroPx=%d fbStride=%d\n",
+			senderSID, ox, oy, ow, oh, oStride, nonZero, fbStride)
 	}
 	overlayBlitCount++
 
@@ -201,8 +201,8 @@ func handleOverlayBlit(senderSID int) {
 // Repaints the covered area, clears overlay state, and sends OverlayReleased
 // to the shepherd.
 func teardownOverlay(sid int, ta *trackedApp) {
-	sys.UartWriteString(fmt.Sprintf("[rachel:overlay] SID %d: tearing down overlay %d\n",
-		sid, ta.overlayID))
+	fmt.Printf("[rachel:overlay] SID %d: tearing down overlay %d\n",
+		sid, ta.overlayID)
 
 	// Repaint the area that was under the overlay — blit all windows
 	// to restore correct content.

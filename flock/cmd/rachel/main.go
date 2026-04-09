@@ -134,8 +134,8 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 		// Debug: log button presses with pick result.
 		if ev.Code >= BTN_LEFT {
 			pw := pickWindow(int64(mouseX), int64(mouseY))
-			sys.UartWriteString(fmt.Sprintf("[rachel:btn] code=0x%x val=%d at (%d,%d) pick=%d\n",
-				ev.Code, ev.Value, mouseX, mouseY, pw))
+			fmt.Printf("[rachel:btn] code=0x%x val=%d at (%d,%d) pick=%d\n",
+				ev.Code, ev.Value, mouseX, mouseY, pw)
 		}
 		// Update modifier state; consume modifier key events (not forwarded).
 		if input.IsModifierKey(ev.Code) {
@@ -636,6 +636,80 @@ var (
 	shadowTop      = 30 // shadow margin above the NeuBox face
 )
 
+// ── Wall placement algorithm ──────────────────────────────────────────────
+//
+// Normal windows are tiled left-to-right in columns ("the wall"). Each
+// column fills top-to-bottom until a window doesn't fit vertically, then
+// the wall advances right past the widest window in the current column.
+// If the wall reaches the screen midpoint, give up and center in the left half.
+
+var (
+	wallX        int // left edge of the current column (app-area X)
+	wallY        int // next Y position in the current column (app-area Y)
+	wallMaxWidth int // widest window (including borders) in current column
+)
+
+// wallPlaceWindow computes (appX, appY, appW, appH) for a new window.
+// For PlacementRightFull (versai), it ignores the wall and anchors the
+// window to the right edge at full screen height, granting half the screen width.
+func wallPlaceWindow(placement, reqW, reqH int32) (appX, appY, appW, appH int32) {
+	dw, dh := int(displayWidth), int(displayHeight)
+
+	if placement == wm.PlacementRightFull {
+		// Versai: right-anchored, full height, half screen width.
+		appW = int32(dw / 2)
+		appH = int32(dh - borderTop - borderBottom)
+		appX = int32(dw - int(appW) - borderRight)
+		appY = int32(borderTop)
+		return
+	}
+
+	// Default: wall algorithm.
+	appW = reqW
+	appH = reqH
+	midpoint := dw / 2
+	totalH := int(reqH) + borderTop + borderBottom
+	totalW := int(reqW) + borderLeft + borderRight
+
+	// Initialize wall on first use.
+	if wallX == 0 && wallY == 0 {
+		wallX = borderLeft
+		wallY = borderTop
+	}
+
+	// Does this window fit vertically in the current column?
+	if wallY+int(reqH)+borderBottom > dh {
+		// Advance wall to next column.
+		wallX += wallMaxWidth
+		wallY = borderTop
+		wallMaxWidth = 0
+	}
+
+	// If we've passed the midpoint, give up and center in left half.
+	if wallX+totalW > midpoint {
+		appX = int32((midpoint - int(reqW)) / 2)
+		appY = int32((dh - int(reqH)) / 2)
+		// Clamp.
+		if appX < int32(borderLeft) {
+			appX = int32(borderLeft)
+		}
+		if appY < int32(borderTop) {
+			appY = int32(borderTop)
+		}
+		return
+	}
+
+	appX = int32(wallX)
+	appY = int32(wallY)
+
+	// Advance wall Y for next window.
+	wallY += totalH
+	if totalW > wallMaxWidth {
+		wallMaxWidth = totalW
+	}
+	return
+}
+
 // wmTheme provides decoration parameters for rachel. Initialized in main().
 var wmTheme *mctheme.DefaultWMTheme
 
@@ -1053,12 +1127,13 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 	intervalStart, intervalEndOpen *attr.Attribute[int64],
 	wmd *wmDispatch) {
 
-	sys.UartWriteString("[rachel:wm] event loop started\n")
+	fmt.Printf("[rachel:wm] event loop started\n")
 	var keyHeld [256]bool
 	var modState input.ModifierState
 	var rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents int64
 	var rachelNotifyCount int64
 	var prevNanos int64
+	droppedBlits := make(map[int]int64) // sid → count of dropped blits (loop detection)
 
 	for {
 		select {
@@ -1073,7 +1148,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 			switch msg := wmMsg.Msg.(type) {
 			case wm.AppStart:
 				rachelMsgAppStart++
-				sys.UartWriteString(fmt.Sprintf("[rachel:wm] AppStart sid=%d w=%d h=%d\n", senderSID, msg.Width, msg.Height))
+				fmt.Printf("[rachel:wm] AppStart sid=%d w=%d h=%d\n", senderSID, msg.Width, msg.Height)
 
 				// Track the shepherd's AppWindow Bounds in rachel's constraint space.
 				if trackAppBounds(senderSID) == nil {
@@ -1095,47 +1170,26 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 					continue
 				}
 
-				// HACK: cascade windows so they overlap for focus testing.
-				// Each window after the first is offset 80px down and left.
-				if windowCount := len(zOrder); windowCount > 0 {
-					msg.X -= int32(windowCount * 80)
-					msg.Y += int32(windowCount * 80)
-				}
+				// Compute placement based on hint.
+				appX, appY, appW, appH := wallPlaceWindow(msg.Placement, msg.Width, msg.Height)
 
 				// Rachel owns the backing store. Compute total size including borders.
-				ta.appWidth = msg.Width
-				ta.appHeight = msg.Height
-				ta.lastBlitAppW = msg.Width
-				ta.lastBlitAppH = msg.Height
-				totalW := int(msg.Width) + borderLeft + borderRight
-				totalH := int(msg.Height) + borderTop + borderBottom
+				ta.appWidth = appW
+				ta.appHeight = appH
+				ta.lastBlitAppW = appW
+				ta.lastBlitAppH = appH
+				totalW := int(appW) + borderLeft + borderRight
+				totalH := int(appH) + borderTop + borderBottom
 				ta.bsWidth = int32(totalW)
 				ta.bsHeight = int32(totalH)
 				ta.bsStride = int32(totalW * 4)
-
-				// Clamp position so all 4 borders fit within the framebuffer.
-				dw, dh := int(displayWidth), int(displayHeight)
-				appX := int(msg.X)
-				appY := int(msg.Y)
-				if appX < borderLeft {
-					appX = borderLeft
-				}
-				if appY < borderTop {
-					appY = borderTop
-				}
-				if appX+int(msg.Width)+borderRight > dw {
-					appX = dw - int(msg.Width) - borderRight
-				}
-				if appY+int(msg.Height)+borderBottom > dh {
-					appY = dh - int(msg.Height) - borderBottom
-				}
 				ta.x = int32(appX)
 				ta.y = int32(appY)
 
-				sys.UartWriteString(fmt.Sprintf("[rachel:wm] sid=%d pos=(%d,%d) bs=%dx%d pick-rect=(%d,%d)-(%d,%d)\n",
+				fmt.Printf("[rachel:wm] sid=%d pos=(%d,%d) bs=%dx%d pick-rect=(%d,%d)-(%d,%d)\n",
 					senderSID, ta.x, ta.y, ta.bsWidth, ta.bsHeight,
 					int32(appX)-int32(borderLeft), int32(appY)-int32(borderTop),
-					int32(appX)-int32(borderLeft)+ta.bsWidth, int32(appY)-int32(borderTop)+ta.bsHeight))
+					int32(appX)-int32(borderLeft)+ta.bsWidth, int32(appY)-int32(borderTop)+ta.bsHeight)
 
 				// Allocate backing store pages.
 				bsBytes := totalW * 4 * totalH
@@ -1170,16 +1224,16 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 					TotalStride:      int32(totalW * 4),
 					LeftInset:        int32(borderLeft),
 					TopInset:         int32(borderTop),
-					AppWidth:         msg.Width,
-					AppHeight:        msg.Height,
+					AppWidth:         appW,
+					AppHeight:        appH,
 					AppX:             ta.x,
 					AppY:             ta.y,
 				})
 				if err := uring.Send(senderSID, &bsr); err != nil {
 					sys.UartWriteString("[rachel:wm] uring.Send BackingStoreReady failed\n")
 				}
-				sys.UartWriteString(fmt.Sprintf("[rachel:wm] SID %d: backing store %dx%d at (%d,%d)\n",
-					senderSID, totalW, totalH, ta.x, ta.y))
+				fmt.Printf("[rachel:wm] SID %d: backing store %dx%d at (%d,%d)\n",
+					senderSID, totalW, totalH, ta.x, ta.y)
 
 				// Grant focus to this new shepherd.
 				grantFocus(senderSID)
@@ -1191,14 +1245,14 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 
 			case wm.Blit:
 				rachelMsgBlit++
-				if rachelMsgBlit%10 == 0 {
-					sys.UartWriteString(fmt.Sprintf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
-						rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents))
+				if rachelMsgBlit%500 == 0 {
+					fmt.Printf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
+						rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents)
 				}
-				if rachelMsgBlit%20 == 0 {
+				if rachelMsgBlit%500 == 0 {
 					blitTimingReport()
 				}
-				if rachelMsgBlit%50 == 0 && !blitRateStart.IsZero() {
+				if rachelMsgBlit%500 == 0 && !blitRateStart.IsZero() {
 					ms := time.Since(blitRateStart).Milliseconds()
 					if ms > 0 {
 						rateX10 := rachelMsgBlit * 10000 / ms
@@ -1206,14 +1260,20 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 						frac := rateX10 % 10
 						secs := ms / 1000
 						secFrac := (ms / 100) % 10
-						sys.UartWriteString("[rachel:rate] " + strconv.FormatInt(rachelMsgBlit, 10) +
-							" blits in " + strconv.FormatInt(secs, 10) + "." + strconv.FormatInt(secFrac, 10) + "s = " +
-							strconv.FormatInt(whole, 10) + "." + strconv.FormatInt(frac, 10) +
-							" blits/sec\n")
+						fmt.Printf("[rachel:rate] %d blits in %d.%ds = %d.%d blits/sec\n",
+							rachelMsgBlit, secs, secFrac, whole, frac)
 					}
 				}
 				ta, ok := trackedApps[senderSID]
 				if !ok || ta.backingStore == nil {
+					// Shepherd is sending blits but isn't registered or has no
+					// backing store — this indicates a loop cycle. Log every 50th
+					// dropped blit to avoid flooding the serial console.
+					droppedBlits[senderSID]++
+					if droppedBlits[senderSID]%50 == 1 {
+						fmt.Printf("[rachel:wm] dropped blit from untracked sid=%d (count=%d) — loop cycle?\n",
+							senderSID, droppedBlits[senderSID])
+					}
 					continue
 				}
 				// Update last-drawn dimensions from Blit message.
@@ -1320,8 +1380,8 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 			inputEventsProcessed += drained
 			inputWakeups++
 			if inputWakeups%100 == 0 {
-				sys.UartWriteString(fmt.Sprintf("[rachel:input] wakeups=%d events=%d\n",
-					inputWakeups, inputEventsProcessed))
+				fmt.Printf("[rachel:input] wakeups=%d events=%d\n",
+					inputWakeups, inputEventsProcessed)
 			}
 			postBatchInputUpdate(&posChanged, &modState, wmd)
 		}
@@ -1329,7 +1389,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 }
 
 func main() {
-	sys.UartWriteString("[rachel] Starting window manager\n")
+	fmt.Printf("[rachel] Starting window manager\n")
 
 	// Initialize palette and desktop background early — everything that
 	// fills or composites the framebuffer reads desktopBG.
@@ -1350,21 +1410,21 @@ func main() {
 	shadowTop = wmTheme.ShadowTop()
 
 	// Claim window manager role — rachel gets ALL input events automatically
-	sys.UartWriteString("[rachel] requesting WM role...\n")
+	fmt.Printf("[rachel] requesting WM role...\n")
 	if err := sys.RequestWindowManager(); err != nil {
 		fmt.Printf("[rachel] failed to become window manager: %v\n", err)
 		return
 	}
-	sys.UartWriteString("[rachel] WM role granted, attr.Init...\n")
+	fmt.Printf("[rachel] WM role granted, attr.Init...\n")
 	// Initialize constraint system early — mailbox handler creates constraints.
 	attr.Init()
-	sys.UartWriteString("[rachel] attr.Init done\n")
+	fmt.Printf("[rachel] attr.Init done\n")
 
 	// Set up the built-in US QWERTY keymap as fallback.
 	// When keymapper.maz is wired, this will be replaced with the
 	// configured layout from rachel.toml.
 	wmKeyMapper = &input.Keymap{}
-	sys.UartWriteString("[rachel] keyMapper: " + wmKeyMapper.Name() + "\n")
+	fmt.Printf("[rachel] keyMapper: %s\n", wmKeyMapper.Name())
 
 	// Publish default text font size as an attribute so shepherds can bind to it.
 	defaultFontSize := int64(24)
@@ -1429,13 +1489,13 @@ func main() {
 	var rachelCfg constants.RachelConfig
 	lf, lfErr := file.LoadFile("/rachel.toml")
 	if lfErr != nil {
-		sys.UartWriteString("[rachel] rachel.toml not found, using defaults\n")
+		fmt.Printf("[rachel] rachel.toml not found, using defaults\n")
 	} else {
 		tomlData := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(lf.StartVA))), lf.BytesRead)
 		if err := toml.Unmarshal(tomlData, &rachelCfg); err != nil {
 			sys.UartWriteString("[rachel] rachel.toml parse error: " + err.Error() + "\n")
 		} else {
-			sys.UartWriteString("[rachel] rachel.toml loaded: keymap=" + rachelCfg.Keymap + "\n")
+			fmt.Printf("[rachel] rachel.toml loaded: keymap=%s\n", rachelCfg.Keymap)
 		}
 		// Free the loaded pages.
 		syscall.RawSyscall6(syscall.SYS_MUNMAP, uintptr(lf.StartVA),
@@ -1445,8 +1505,8 @@ func main() {
 	// Apply config: update default font size if specified.
 	if rachelCfg.DefaultTextFontSize > 0 {
 		defaultTextFontSizeAttr.Set(rachelCfg.DefaultTextFontSize)
-		sys.UartWriteString(fmt.Sprintf("[rachel] defaultTextFontSize=%d (from toml)\n",
-			rachelCfg.DefaultTextFontSize))
+		fmt.Printf("[rachel] defaultTextFontSize=%d (from toml)\n",
+			rachelCfg.DefaultTextFontSize)
 	}
 
 	// Load keymapper.maz and set up the configured keyboard layout.
@@ -1465,7 +1525,7 @@ func main() {
 				sys.UartWriteString("[rachel] keymapper MazarinShepherd failed: " + err.Error() + "\n")
 			} else if kmInit.Mapper != nil {
 				wmKeyMapper = kmInit.Mapper
-				sys.UartWriteString("[rachel] keyMapper: " + wmKeyMapper.Name() + " (from keymapper.maz)\n")
+				fmt.Printf("[rachel] keyMapper: %s (from keymapper.maz)\n", wmKeyMapper.Name())
 			}
 		}
 		// keymapper.MazarinMain is a no-op, but run it for consistency.
@@ -1519,15 +1579,15 @@ func main() {
 				glyphCb(sid, msg.FontID, msg.GID, msg.Codepoint)
 			}
 		})
-		sys.UartWriteString("[rachel] font requests wired to fontsvc callbacks\n")
+		fmt.Printf("[rachel] font requests wired to fontsvc callbacks\n")
 	}
 	// Handle peer death — remove the dead shepherd from tracked state.
 	disp.OnDeath(func(deadSID int16) {
-		sys.UartWriteString(fmt.Sprintf("[rachel] shepherd %d died\n", deadSID))
+		fmt.Printf("[rachel] shepherd %d died\n", deadSID)
 	})
 
 	disp.Start()
-	sys.UartWriteString("[rachel] disp.Start() returned, building dispatcher...\n")
+	fmt.Printf("[rachel] disp.Start() returned, building dispatcher...\n")
 
 	// Create the window title bar used for all managed windows.
 	// Use the internal provider (direct in-process calls to fontsvc)
@@ -1536,7 +1596,7 @@ func main() {
 	// rachel's own font rendering.
 	if initData.InternalOpenFont != nil {
 		titleGlyphProvider = fontcache.NewInternalGlyphProvider(initData.InternalOpenFont, initData.InternalGlyphByGID)
-		sys.UartWriteString("[rachel] using internal font provider (no IPC)\n")
+		fmt.Printf("[rachel] using internal font provider (no IPC)\n")
 	} else {
 		titleGlyphProvider = fontcache.NewFontSvcGlyphProvider(rachelFC)
 		sys.UartWriteString("[rachel] WARNING: internal font provider not available, falling back to IPC\n")
@@ -1545,7 +1605,7 @@ func main() {
 		FontRegular: mfont.DefaultSans,
 		FontBold:    mfont.DefaultSans,
 	}, 22, true)
-	sys.UartWriteString("[rachel] StripedTitleBar created\n")
+	fmt.Printf("[rachel] StripedTitleBar created\n")
 
 	// Build the subArctic input dispatch pipeline.
 	wmd := buildDispatcher()
@@ -1566,7 +1626,7 @@ func main() {
 	intervalEndOpen := attr.ValueI64(attr.ShepherdURI("int64", "intervalEndOpen"), 0)
 	dirtyCh := attr.OnDirty()
 
-	sys.UartWriteString("[rachel] dispatcher built, starting wmEventLoop...\n")
+	fmt.Printf("[rachel] dispatcher built, starting wmEventLoop...\n")
 
 	// Start WM event loop — receives typed messages from uring Dispatcher,
 	// HID events from the InputAcquirer, and dirty ticks for animations.
@@ -1578,7 +1638,7 @@ func main() {
 	ready := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = ready
 	sys.SetReady(true)
-	sys.UartWriteString("[rachel] Ready=true\n")
+	fmt.Printf("[rachel] Ready=true\n")
 
 	// Record time at rachel ready for blit rate reporting.
 	blitRateStart = time.Now()

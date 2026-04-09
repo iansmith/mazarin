@@ -70,9 +70,8 @@ func kmDiagLog(code uint16, pressed bool, mods uint64, ch rune, action wm.Action
 		if kmDiagMapCalls > 0 {
 			avgUs = kmDiagMapNanos / kmDiagMapCalls / 1000
 		}
-		sys.UartWriteString(fmt.Sprintf(
-			"[keymap:stat] calls=%d chars=%d actions=%d MISS=%d avg=%dµs\n",
-			kmDiagMapCalls, kmDiagChars, kmDiagActions, kmDiagUntranslated, avgUs))
+		fmt.Printf("[keymap:stat] calls=%d chars=%d actions=%d MISS=%d avg=%dµs\n",
+			kmDiagMapCalls, kmDiagChars, kmDiagActions, kmDiagUntranslated, avgUs)
 	}
 }
 
@@ -360,8 +359,8 @@ func (a *DragAgent) StartTitlebarDrag(wi *WindowInteractor, buttonCode uint16, p
 	a.dragOffsetY = pressY - wi.ta.y
 	a.prevCursorX = pressX
 	a.prevCursorY = pressY
-	sys.UartWriteString(fmt.Sprintf("[rachel:drag] titlebar drag SID=%d offset=(%d,%d)\n",
-		wi.ta.sid, a.dragOffsetX, a.dragOffsetY))
+	fmt.Printf("[rachel:drag] titlebar drag SID=%d offset=(%d,%d)\n",
+		wi.ta.sid, a.dragOffsetX, a.dragOffsetY)
 	startDragComposite(wi.ta.sid)
 }
 
@@ -593,8 +592,8 @@ func (a *DragAgent) startDragResize(wi *WindowInteractor, pressX, pressY int32, 
 	// Pre-render fixed background for compositing.
 	startDragComposite(ta.sid)
 
-	sys.UartWriteString(fmt.Sprintf("[rachel:resize] start edge=%d SID=%d orig=%dx%d max=%dx%d\n",
-		edge, ta.sid, a.resizeOrigW, a.resizeOrigH, maxAppW, maxAppH))
+	fmt.Printf("[rachel:resize] start edge=%d SID=%d orig=%dx%d max=%dx%d\n",
+		edge, ta.sid, a.resizeOrigW, a.resizeOrigH, maxAppW, maxAppH)
 }
 
 // dragMoveResize handles mouse movement during a resize drag.
@@ -790,8 +789,8 @@ func (a *DragAgent) dragEndResize(wi *WindowInteractor) {
 		cursorIsInverse = false
 	}
 
-	sys.UartWriteString(fmt.Sprintf("[rachel:resize] end SID=%d final=%dx%d\n",
-		ta.sid, ta.appWidth, ta.appHeight))
+	fmt.Printf("[rachel:resize] end SID=%d final=%dx%d\n",
+		ta.sid, ta.appWidth, ta.appHeight)
 }
 
 // --- TitlebarDragAgent ---
@@ -821,7 +820,7 @@ func (a *TitlebarDragAgent) Deliver(ev *input.InputEvent, target input.Interacto
 	}
 	// Grant focus if not already focused.
 	if !hasFocus(wi.ta.sid) {
-		sys.UartWriteString(fmt.Sprintf("[rachel:titlebar] raise+focus SID %d\n", wi.ta.sid))
+		fmt.Printf("[rachel:titlebar] raise+focus SID %d\n", wi.ta.sid)
 		grantFocus(wi.ta.sid)
 		a.keyFwd.SetFocus(wi)
 	}
@@ -857,7 +856,7 @@ func (a *ResizeDragAgent) Deliver(ev *input.InputEvent, target input.Interactor)
 	}
 	// Grant focus if not already focused.
 	if !hasFocus(wi.ta.sid) {
-		sys.UartWriteString(fmt.Sprintf("[rachel:resize] raise+focus SID %d\n", wi.ta.sid))
+		fmt.Printf("[rachel:resize] raise+focus SID %d\n", wi.ta.sid)
 		grantFocus(wi.ta.sid)
 		a.keyFwd.SetFocus(wi)
 	}
@@ -887,7 +886,7 @@ func (a *PressAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool
 
 	// Grant focus if not already focused.
 	if !hasFocus(wi.ta.sid) {
-		sys.UartWriteString(fmt.Sprintf("[rachel:press] raise+focus SID %d\n", wi.ta.sid))
+		fmt.Printf("[rachel:press] raise+focus SID %d\n", wi.ta.sid)
 		grantFocus(wi.ta.sid)
 		a.keyFwd.SetFocus(wi)
 	}
@@ -895,8 +894,8 @@ func (a *PressAgent) Deliver(ev *input.InputEvent, target input.Interactor) bool
 	// Establish content drag so DragAgent forwards move/release to shepherd.
 	a.dragAgent.StartContentDrag(wi, ev.Code)
 
-	sys.UartWriteString(fmt.Sprintf("[rachel:input] mouse press %s at (%d,%d)\n",
-		buttonName(ev.Code), ev.X, ev.Y))
+	fmt.Printf("[rachel:input] mouse press %s at (%d,%d)\n",
+		buttonName(ev.Code), ev.X, ev.Y)
 
 	return wi.Press(ev)
 }
