@@ -34,7 +34,7 @@ func AttrCreate(uri string, valueType uint8, kind uint8, bytecode []byte) (uint1
 	return uint16(r1), nil
 }
 
-// AttrWrite writes a FlatValue (40 bytes) to an attribute by slot index.
+// AttrWrite writes a flat.Value (40 bytes) to an attribute by slot index.
 func AttrWrite(slot uint16, value *[40]byte) error {
 	_, _, errno := RawSyscall(mazzy.SysAttrWrite,
 		uintptr(slot),
@@ -46,7 +46,7 @@ func AttrWrite(slot uint16, value *[40]byte) error {
 	return nil
 }
 
-// AttrWriteURI writes a FlatValue (40 bytes) to an attribute by URI string.
+// AttrWriteURI writes a flat.Value (40 bytes) to an attribute by URI string.
 func AttrWriteURI(uri string, value *[40]byte) error {
 	uriPtr := unsafe.Pointer(unsafe.StringData(uri))
 	_, _, errno := RawSyscall(mazzy.SysAttrWriteURI,

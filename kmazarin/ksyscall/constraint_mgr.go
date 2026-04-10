@@ -126,12 +126,12 @@ func InitKernelAttrManager() bool {
 	return true
 }
 
-// node returns a writable pointer to the FlatAttrNode at the given slot index.
+// node returns a writable pointer to the AttrNode at the given slot index.
 //
 //go:nosplit
-func (mgr *KernelAttrManager) node(slot uint16) *flat.FlatAttrNode {
-	off := uintptr(mgr.nodeRegionOff) + uintptr(slot)*flat.FlatAttrNodeSize
-	return (*flat.FlatAttrNode)(unsafe.Pointer(mgr.baseVA + off))
+func (mgr *KernelAttrManager) node(slot uint16) *flat.AttrNode {
+	off := uintptr(mgr.nodeRegionOff) + uintptr(slot)*flat.AttrNodeSize
+	return (*flat.AttrNode)(unsafe.Pointer(mgr.baseVA + off))
 }
 
 // allocNode allocates a free node slot from the bitmap.
@@ -153,7 +153,7 @@ func (mgr *KernelAttrManager) allocNode() uint16 {
 				mgr.nodeBitmap[byteIdx] |= 1 << bit
 				// Zero the node
 				n := mgr.node(slot)
-				*n = flat.FlatAttrNode{}
+				*n = flat.AttrNode{}
 				return slot
 			}
 		}
@@ -187,7 +187,7 @@ func (mgr *KernelAttrManager) isNodeAllocated(slot uint16) bool {
 //
 //go:nosplit
 func (mgr *KernelAttrManager) allocString(s string) (uint32, bool) {
-	if len(s) > flat.FlatStringMaxLen {
+	if len(s) > flat.StringMaxLen {
 		return 0, false
 	}
 	for byteIdx := 0; byteIdx < len(mgr.stringBitmap); byteIdx++ {
@@ -202,7 +202,7 @@ func (mgr *KernelAttrManager) allocString(s string) (uint32, bool) {
 					return 0, false
 				}
 				mgr.stringBitmap[byteIdx] |= 1 << bit
-				off := uint32(slot) * flat.FlatStringSlotSize
+				off := uint32(slot) * flat.StringSlotSize
 				// Write string data into shared page
 				dst := mgr.baseVA + uintptr(mgr.stringRegionOff) + uintptr(off)
 				for i := 0; i < len(s); i++ {
@@ -218,11 +218,11 @@ func (mgr *KernelAttrManager) allocString(s string) (uint32, bool) {
 }
 
 // freeString releases a string slot back to the bitmap.
-// off is the byte offset from the string region start (same as FlatStrRef.RegionOffset).
+// off is the byte offset from the string region start (same as StrRef.RegionOffset).
 //
 //go:nosplit
 func (mgr *KernelAttrManager) freeString(off uint32) {
-	slot := uint16(off / flat.FlatStringSlotSize)
+	slot := uint16(off / flat.StringSlotSize)
 	if slot >= mgr.stringCap {
 		return
 	}

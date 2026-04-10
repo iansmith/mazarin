@@ -19,11 +19,10 @@ import (
 const DefaultMaxLineCount = 200
 
 // MultiLineText is a multi-line text editor interactor. It uses a gap buffer
-// internally for fast cursor-local edits and exposes the text to the
-// constraint system as a single string via a [attr.LazyAttribute].
+// internally for fast cursor-local edits. Text is accessed directly via
+// [MultiLineText.Text] rather than through the constraint system.
 //
 // The interactor publishes several attributes for scrollbar integration:
-//   - Text (lazy string): the full text content
 //   - LineCount (int64): total display lines after soft-wrap
 //   - CursorLine (int64): display line containing the cursor
 //   - CursorCol (int64): rune column of the cursor within its display line
@@ -55,7 +54,6 @@ type MultiLineText struct {
 	gap *gapBuffer
 
 	// Constraint-published attributes.
-	textAttr         *attr.LazyAttribute[string]
 	lineCountAttr    *attr.Attribute[int64]
 	cursorLineAttr   *attr.Attribute[int64]
 	cursorColAttr    *attr.Attribute[int64]
@@ -85,10 +83,6 @@ type MultiLineText struct {
 	lineHeight float64 // pixels per display line
 	visibleLines int   // number of display lines that fit in the viewport
 
-	// textDirty tracks whether the gap buffer content has changed since the
-	// last call to TextChanged(). Set by afterEdit (insertions/deletions),
-	// NOT by cursor movements.
-	textDirty bool
 }
 
 // logLine describes one logical line (terminated by '\n' or end-of-content).
@@ -119,12 +113,6 @@ func NewMultiLineText(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		selAnchor:   -1,
 		stickyCol:   -1,
 	}
-
-	// Text attribute: lazy — only materializes string when constraint system reads it.
-	textURI := mancini.LayoutURI(myName, mancini.DataTypeStr, mancini.LayoutText)
-	m.textAttr = attr.LazyStr(textURI, text, func() string {
-		return m.gap.String()
-	})
 
 	// Scrollbar integration attributes (all value attributes).
 	lineCountURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutLineCount)
@@ -167,9 +155,9 @@ func NewMultiLineTextNamed(myName, parent string, theme mancini.Theme,
 // Text access
 // ──────────────────────────────────────────────────────────────────────
 
-// Text returns the current text content (materializes from gap buffer).
+// Text returns the current text content directly from the gap buffer.
 func (m *MultiLineText) Text() string {
-	return m.textAttr.Get()
+	return m.gap.String()
 }
 
 // SetText replaces the entire text content, resets cursor to end, and rebuilds.
@@ -177,7 +165,6 @@ func (m *MultiLineText) SetText(s string) {
 	m.gap = newGapBuffer(s)
 	m.selAnchor = -1
 	m.stickyCol = -1
-	m.textAttr.MarkDirty()
 	m.wrapWidth = 0 // force rewrap
 	m.rebuildLineIndex()
 	m.FullDamage()
@@ -438,17 +425,7 @@ func (m *MultiLineText) scrollCursorIntoView() {
 // Editing operations
 // ──────────────────────────────────────────────────────────────────────
 
-// TextChanged returns true if the text content has been modified since
-// the last call to TextChanged. Resets the flag to false. Callers must
-// hold Mu.
-func (m *MultiLineText) TextChanged() bool {
-	v := m.textDirty
-	m.textDirty = false
-	return v
-}
-
-// afterEdit is called after any text modification. It marks the text
-// attribute dirty, rebuilds the line index, scrolls the cursor into view,
+// afterEdit is called after any text modification. Rebuilds the line index, scrolls the cursor into view,
 // and marks damage.
 //
 // Optimization: if the cursor is at the end of the text (the common
@@ -456,8 +433,16 @@ func (m *MultiLineText) TextChanged() bool {
 // Otherwise the entire interactor is damaged (edits in the middle can
 // reflow all subsequent lines).
 func (m *MultiLineText) afterEdit() {
-	m.textDirty = true
-	m.textAttr.MarkDirty()
+	m.afterEditNoCallback()
+	if m.AfterEdit != nil {
+		m.AfterEdit()
+	}
+}
+
+// afterEditNoCallback does all post-edit bookkeeping (line rebuild, rewrap,
+// scroll, damage) but does NOT invoke the AfterEdit callback. Use this when
+// the caller needs to release Mu before the callback runs.
+func (m *MultiLineText) afterEditNoCallback() {
 	m.stickyCol = -1
 	// Save wrapWidth before rebuildLineIndex clears it.
 	savedWrapWidth := m.wrapWidth
@@ -476,9 +461,6 @@ func (m *MultiLineText) afterEdit() {
 		m.damageCursorLine()
 	} else {
 		m.FullDamage()
-	}
-	if m.AfterEdit != nil {
-		m.AfterEdit()
 	}
 }
 
@@ -1084,11 +1066,16 @@ func (m *MultiLineText) KeyPress(ch rune, action string, ev *mancini.InputEvent)
 		return false
 	}
 	m.Mu.Lock()
-	defer m.Mu.Unlock()
 	mods := int64(ev.Mods)
 	shift := hid.Shift(mods)
 
+	// Suppress the AfterEdit callback while we hold Mu to avoid
+	// deadlock — checkCommand re-acquires Mu. We call it after unlock.
+	savedAfterEdit := m.AfterEdit
+	m.AfterEdit = nil
+
 	handled := true
+	edited := false
 	switch action {
 	case "backspace":
 		if hid.Alt(mods) {
@@ -1096,8 +1083,10 @@ func (m *MultiLineText) KeyPress(ch rune, action string, ev *mancini.InputEvent)
 		} else {
 			m.DeleteBackward()
 		}
+		edited = true
 	case "delete":
 		m.DeleteForward()
+		edited = true
 	case "left":
 		if hid.Meta(mods) {
 			m.CursorHome(shift)
@@ -1132,6 +1121,7 @@ func (m *MultiLineText) KeyPress(ch rune, action string, ev *mancini.InputEvent)
 		m.CursorEnd(shift)
 	case "enter":
 		m.InsertRune('\n')
+		edited = true
 	case "escape":
 		if m.HasSelection() {
 			m.ClearSelection()
@@ -1154,6 +1144,7 @@ func (m *MultiLineText) KeyPress(ch rune, action string, ev *mancini.InputEvent)
 			case 'w', 'W':
 				m.DeleteBackwardWord()
 				handled = true
+				edited = true
 			}
 		}
 		if !handled && hid.Meta(mods) {
@@ -1166,9 +1157,19 @@ func (m *MultiLineText) KeyPress(ch rune, action string, ev *mancini.InputEvent)
 		if !handled && ch != 0 {
 			m.InsertRune(ch)
 			handled = true
+			edited = true
 		}
 	default:
 		handled = false
+	}
+
+	m.AfterEdit = savedAfterEdit
+	m.Mu.Unlock()
+
+	// Fire AfterEdit callback outside the lock to avoid deadlock
+	// when the callback re-acquires Mu.
+	if edited && savedAfterEdit != nil {
+		savedAfterEdit()
 	}
 
 	return handled

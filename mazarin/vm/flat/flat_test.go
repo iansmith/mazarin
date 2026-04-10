@@ -7,9 +7,9 @@ import (
 	"mazzy/mazarin/vm"
 )
 
-// --- FlatValue scalar round-trips ---
+// --- Value scalar round-trips ---
 
-func TestFlatValueI64(t *testing.T) {
+func TestValueI64(t *testing.T) {
 	for _, v := range []int64{0, 1, -1, math.MaxInt64, math.MinInt64, 42} {
 		fv := NewI64(v)
 		if fv.Typ != TypeI64 {
@@ -21,7 +21,7 @@ func TestFlatValueI64(t *testing.T) {
 	}
 }
 
-func TestFlatValueF64(t *testing.T) {
+func TestValueF64(t *testing.T) {
 	for _, v := range []float64{0, 1.5, -3.14, math.MaxFloat64, math.SmallestNonzeroFloat64, math.Inf(1)} {
 		fv := NewF64(v)
 		if fv.Typ != TypeF64 {
@@ -33,7 +33,7 @@ func TestFlatValueF64(t *testing.T) {
 	}
 }
 
-func TestFlatValueBool(t *testing.T) {
+func TestValueBool(t *testing.T) {
 	for _, v := range []bool{true, false} {
 		fv := NewBool(v)
 		if fv.Typ != TypeBool {
@@ -45,7 +45,7 @@ func TestFlatValueBool(t *testing.T) {
 	}
 }
 
-func TestFlatValueTribool(t *testing.T) {
+func TestValueTribool(t *testing.T) {
 	for _, v := range []int64{0, 1, 2} {
 		fv := NewTribool(v)
 		if fv.Typ != TypeTribool {
@@ -57,8 +57,8 @@ func TestFlatValueTribool(t *testing.T) {
 	}
 }
 
-func TestFlatValueStr(t *testing.T) {
-	ref := FlatStrRef{RegionOffset: 512, Len: 11}
+func TestValueStr(t *testing.T) {
+	ref := StrRef{RegionOffset: 512, Len: 11}
 	fv := NewStr(ref)
 	if fv.Typ != TypeStr {
 		t.Errorf("type = %d, want %d", fv.Typ, TypeStr)
@@ -69,8 +69,8 @@ func TestFlatValueStr(t *testing.T) {
 	}
 }
 
-func TestFlatValueCollection(t *testing.T) {
-	ref := FlatCollRef{ElemType: TypeI64, RegionOffset: 1024, Count: 5}
+func TestValueCollection(t *testing.T) {
+	ref := CollRef{ElemType: TypeI64, RegionOffset: 1024, Count: 5}
 	fv := NewCollection(ref)
 	if fv.Typ != TypeCollection {
 		t.Errorf("type = %d, want %d", fv.Typ, TypeCollection)
@@ -243,9 +243,9 @@ func TestCompositeRectangle(t *testing.T) {
 	}
 }
 
-// --- FlatAttrNode ---
+// --- AttrNode ---
 
-func TestFlatAttrNode(t *testing.T) {
+func TestAttrNode(t *testing.T) {
 	pr := NewPageRegion(16, 64, 0, 0, 0)
 	idx, err := pr.AllocNode()
 	if err != nil {
@@ -359,7 +359,7 @@ func TestPageRegionStrings(t *testing.T) {
 	}
 
 	// Max-length string.
-	maxStr := make([]byte, FlatStringMaxLen)
+	maxStr := make([]byte, StringMaxLen)
 	for i := range maxStr {
 		maxStr[i] = 'A'
 	}
@@ -372,7 +372,7 @@ func TestPageRegionStrings(t *testing.T) {
 	}
 
 	// Too-long string.
-	tooLong := make([]byte, FlatStringMaxLen+1)
+	tooLong := make([]byte, StringMaxLen+1)
 	_, err = pr.WriteString(string(tooLong))
 	if err == nil {
 		t.Error("expected error for too-long string")
@@ -385,7 +385,7 @@ func TestPageRegionCollections(t *testing.T) {
 	pr := NewPageRegion(0, 0, 0, 4, 64)
 
 	// I64 collection.
-	elems := []FlatValue{NewI64(10), NewI64(20), NewI64(30)}
+	elems := []Value{NewI64(10), NewI64(20), NewI64(30)}
 	ref, err := pr.WriteCollection(TypeI64, elems)
 	if err != nil {
 		t.Fatal(err)
@@ -403,7 +403,7 @@ func TestPageRegionCollections(t *testing.T) {
 	// Str collection (references into string region).
 	sref1, _ := pr.WriteString("foo")
 	sref2, _ := pr.WriteString("bar")
-	strElems := []FlatValue{NewStr(sref1), NewStr(sref2)}
+	strElems := []Value{NewStr(sref1), NewStr(sref2)}
 	cref, err := pr.WriteCollection(TypeStr, strElems)
 	if err != nil {
 		t.Fatal(err)
@@ -482,7 +482,7 @@ func TestPageRegionNoOverlap(t *testing.T) {
 	_, _ = pr.WriteEdges([]uint16{0, 1, 2})
 
 	// Write a collection.
-	elems := []FlatValue{NewI64(999)}
+	elems := []Value{NewI64(999)}
 	_, _ = pr.WriteCollection(TypeI64, elems)
 
 	// Verify everything is intact.
@@ -495,7 +495,7 @@ func TestPageRegionNoOverlap(t *testing.T) {
 	}
 }
 
-// --- vm.Value ↔ FlatValue conversion ---
+// --- vm.Value ↔ Value conversion ---
 
 func TestConvertI64RoundTrip(t *testing.T) {
 	pr := NewDefaultPageRegion()
@@ -504,7 +504,7 @@ func TestConvertI64RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := FlatToValue(fv, pr)
+	got, err := ToValue(fv, pr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,7 +520,7 @@ func TestConvertF64RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := FlatToValue(fv, pr)
+	got, err := ToValue(fv, pr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +537,7 @@ func TestConvertBoolRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := FlatToValue(fv, pr)
+		got, err := ToValue(fv, pr)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -555,7 +555,7 @@ func TestConvertTriboolRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := FlatToValue(fv, pr)
+		got, err := ToValue(fv, pr)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -572,7 +572,7 @@ func TestConvertStrRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := FlatToValue(fv, pr)
+	got, err := ToValue(fv, pr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +588,7 @@ func TestConvertCollI64RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := FlatToValue(fv, pr)
+	got, err := ToValue(fv, pr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +610,7 @@ func TestConvertCollStrRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := FlatToValue(fv, pr)
+	got, err := ToValue(fv, pr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,11 +652,11 @@ func TestTypeInfo(t *testing.T) {
 	}
 }
 
-// --- FlatValue.String() ---
+// --- Value.String() ---
 
-func TestFlatValueString(t *testing.T) {
+func TestValueString(t *testing.T) {
 	cases := []struct {
-		fv   FlatValue
+		fv   Value
 		want string
 	}{
 		{NewI64(42), "i64(42)"},
@@ -687,7 +687,7 @@ func TestConvertRectangleRoundTrip(t *testing.T) {
 	if fv.Typ != TypeRectangle {
 		t.Fatalf("flat type = 0x%02x, want rectangle", fv.Typ)
 	}
-	back, err := FlatToValue(fv, pr)
+	back, err := ToValue(fv, pr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +710,7 @@ func TestConvertTimespecRoundTrip(t *testing.T) {
 	if fv.Typ != TypeTimespec {
 		t.Fatalf("flat type = 0x%02x, want timespec", fv.Typ)
 	}
-	back, err := FlatToValue(fv, pr)
+	back, err := ToValue(fv, pr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,7 +727,7 @@ func TestConvertPoint2DRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	back, err := FlatToValue(fv, pr)
+	back, err := ToValue(fv, pr)
 	if err != nil {
 		t.Fatal(err)
 	}

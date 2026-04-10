@@ -160,12 +160,12 @@ func (r *Reactor) WatchStr(h *Attribute[string], fn func(old, new string)) {
 }
 
 // WatchValue registers a callback for a composite attribute (Rectangle,
-// Point2D, Timespec, etc.) using FlatValue byte comparison for change
+// Point2D, Timespec, etc.) using flat.Value byte comparison for change
 // detection.
 func (r *Reactor) WatchValue(h *Attribute[vm.Value], fn func(old, new vm.Value)) {
 	h.SetEager(true)
 	lastFlat := h.seqlockRead()
-	var pendingFlat flat.FlatValue
+	var pendingFlat flat.Value
 	r.watches[h.slot] = &watchEntry{
 		slot: h.slot,
 		eval: func() bool {
@@ -176,9 +176,9 @@ func (r *Reactor) WatchValue(h *Attribute[vm.Value], fn func(old, new vm.Value))
 			return pendingFlat != lastFlat
 		},
 		notify: func() {
-			oldVal, _ := flat.FlatToValue(lastFlat, sharedPR)
+			oldVal, _ := flat.ToValue(lastFlat, sharedPR)
 			lastFlat = pendingFlat
-			newVal, _ := flat.FlatToValue(lastFlat, sharedPR)
+			newVal, _ := flat.ToValue(lastFlat, sharedPR)
 			fn(oldVal, newVal)
 		},
 	}

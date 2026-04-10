@@ -22,7 +22,7 @@ const (
 	TypeIPv6       uint8 = 0x11 // {Addr [16]byte}
 	TypeShepherdId   uint8 = 0x12 // {Id uint16, NameOffset uint32, NameLen uint16}
 	TypeMazId      uint8 = 0x13 // {Id uint16, PathOffset uint32, PathLen uint16}
-	TypeCollection uint8 = 0x14 // FlatCollRef: {ElemType uint8, RegionOffset uint32, Count uint16}
+	TypeCollection uint8 = 0x14 // CollRef: {ElemType uint8, RegionOffset uint32, Count uint16}
 	TypeRectangle  uint8 = 0x15 // {X0 int64, Y0 int64, X1 int64, Y1 int64}
 )
 
@@ -32,7 +32,7 @@ const MaxTypeTag = TypeRectangle
 // TypeInfo holds metadata about a flat type.
 type TypeInfo struct {
 	Name      string
-	DataSize  int  // bytes used in FlatValue.Data
+	DataSize  int  // bytes used in Value.Data
 	Composite bool // true for multi-field types
 	Scalar    bool // true if usable as a collection element
 }

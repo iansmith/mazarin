@@ -7,58 +7,58 @@ import (
 	"unsafe"
 )
 
-// FlatValue is a 32-byte, pointer-free tagged value.
+// Value is a 32-byte, pointer-free tagged value.
 // Strings and collections reference data in separate regions.
-type FlatValue struct {
+type Value struct {
 	Typ  uint8
 	_pad [7]byte
 	Data [32]byte
 }
 
 // Compile-time size assertion.
-const _flatValueSize = unsafe.Sizeof(FlatValue{})
+const _valueSize = unsafe.Sizeof(Value{})
 
-var _ [40 - _flatValueSize]byte
-var _ [_flatValueSize - 40]byte
+var _ [40 - _valueSize]byte
+var _ [_valueSize - 40]byte
 
-const FlatValueSize = 40
+const ValueSize = 40
 
-// FlatStrRef describes a string reference in FlatValue.Data.
-type FlatStrRef struct {
+// StrRef describes a string reference in Value.Data.
+type StrRef struct {
 	RegionOffset uint32 // byte offset into string data region
 	Len          uint16 // string length excluding NUL
 }
 
-// FlatCollRef describes a collection reference in FlatValue.Data.
-type FlatCollRef struct {
+// CollRef describes a collection reference in Value.Data.
+type CollRef struct {
 	ElemType     uint8  // scalar type tag of each element
 	RegionOffset uint32 // byte offset into collection data region
 	Count        uint16 // number of elements
 }
 
 const (
-	FlatStringMaxLen   = 255
-	FlatStringSlotSize = 256
+	StringMaxLen   = 255
+	StringSlotSize = 256
 )
 
 // --- Scalar constructors ---
 
-func NewI64(v int64) FlatValue {
-	var fv FlatValue
+func NewI64(v int64) Value {
+	var fv Value
 	fv.Typ = TypeI64
 	binary.LittleEndian.PutUint64(fv.Data[:8], uint64(v))
 	return fv
 }
 
-func NewF64(v float64) FlatValue {
-	var fv FlatValue
+func NewF64(v float64) Value {
+	var fv Value
 	fv.Typ = TypeF64
 	binary.LittleEndian.PutUint64(fv.Data[:8], math.Float64bits(v))
 	return fv
 }
 
-func NewBool(v bool) FlatValue {
-	var fv FlatValue
+func NewBool(v bool) Value {
+	var fv Value
 	fv.Typ = TypeBool
 	if v {
 		fv.Data[0] = 1
@@ -66,26 +66,26 @@ func NewBool(v bool) FlatValue {
 	return fv
 }
 
-func NewTribool(v int64) FlatValue {
+func NewTribool(v int64) Value {
 	if v < 0 || v > 2 {
 		panic("flat: tribool value must be 0, 1, or 2")
 	}
-	var fv FlatValue
+	var fv Value
 	fv.Typ = TypeTribool
 	fv.Data[0] = uint8(v)
 	return fv
 }
 
-func NewStr(ref FlatStrRef) FlatValue {
-	var fv FlatValue
+func NewStr(ref StrRef) Value {
+	var fv Value
 	fv.Typ = TypeStr
 	binary.LittleEndian.PutUint32(fv.Data[0:4], ref.RegionOffset)
 	binary.LittleEndian.PutUint16(fv.Data[4:6], ref.Len)
 	return fv
 }
 
-func NewCollection(ref FlatCollRef) FlatValue {
-	var fv FlatValue
+func NewCollection(ref CollRef) Value {
+	var fv Value
 	fv.Typ = TypeCollection
 	fv.Data[0] = ref.ElemType
 	binary.LittleEndian.PutUint32(fv.Data[4:8], ref.RegionOffset)
@@ -95,31 +95,31 @@ func NewCollection(ref FlatCollRef) FlatValue {
 
 // --- Scalar accessors ---
 
-func (fv FlatValue) AsI64() int64 {
+func (fv Value) AsI64() int64 {
 	return int64(binary.LittleEndian.Uint64(fv.Data[:8]))
 }
 
-func (fv FlatValue) AsF64() float64 {
+func (fv Value) AsF64() float64 {
 	return math.Float64frombits(binary.LittleEndian.Uint64(fv.Data[:8]))
 }
 
-func (fv FlatValue) AsBool() bool {
+func (fv Value) AsBool() bool {
 	return fv.Data[0] != 0
 }
 
-func (fv FlatValue) AsTribool() int64 {
+func (fv Value) AsTribool() int64 {
 	return int64(fv.Data[0])
 }
 
-func (fv FlatValue) AsStrRef() FlatStrRef {
-	return FlatStrRef{
+func (fv Value) AsStrRef() StrRef {
+	return StrRef{
 		RegionOffset: binary.LittleEndian.Uint32(fv.Data[0:4]),
 		Len:          binary.LittleEndian.Uint16(fv.Data[4:6]),
 	}
 }
 
-func (fv FlatValue) AsCollRef() FlatCollRef {
-	return FlatCollRef{
+func (fv Value) AsCollRef() CollRef {
+	return CollRef{
 		ElemType:     fv.Data[0],
 		RegionOffset: binary.LittleEndian.Uint32(fv.Data[4:8]),
 		Count:        binary.LittleEndian.Uint16(fv.Data[8:10]),
@@ -127,7 +127,7 @@ func (fv FlatValue) AsCollRef() FlatCollRef {
 }
 
 // String returns a human-readable representation.
-func (fv FlatValue) String() string {
+func (fv Value) String() string {
 	switch fv.Typ {
 	case TypeI64:
 		return fmt.Sprintf("i64(%d)", fv.AsI64())

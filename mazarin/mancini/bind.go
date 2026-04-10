@@ -112,6 +112,12 @@ func EqualI64(sourceURI string) *vm.Program {
 	return BindStrings(ProgIdentityI64, "_source_", sourceURI)
 }
 
+// EqualBool returns a constraint program that mirrors a bool source attribute.
+// The returned program reads sourceURI and returns its value unchanged.
+func EqualBool(sourceURI string) *vm.Program {
+	return BindStrings(ProgIdentityBool, "_source_", sourceURI)
+}
+
 // EqualStr returns a constraint program that mirrors a string source attribute.
 // The returned program reads sourceURI and returns its value unchanged.
 func EqualStr(sourceURI string) *vm.Program {

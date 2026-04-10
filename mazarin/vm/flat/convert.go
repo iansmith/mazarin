@@ -30,8 +30,8 @@ var flatToVMType = map[uint8]uint8{
 	TypeRectangle: vm.TypeRectangle,
 }
 
-// vmToFlatType maps vm composite type tags to flat.Type* constants.
-var vmToFlatType = map[uint8]uint8{
+// vmToType maps vm composite type tags to flat.Type* constants.
+var vmToType = map[uint8]uint8{
 	vm.TypeTimespec:  TypeTimespec,
 	vm.TypeTimezone:  TypeTimezone,
 	vm.TypeDuration:  TypeDuration,
@@ -49,19 +49,19 @@ var vmToFlatType = map[uint8]uint8{
 	vm.TypeRectangle: TypeRectangle,
 }
 
-// FlatTypeToVM converts a flat.Type* constant to the corresponding vm.Type* constant.
-func FlatTypeToVM(flatType uint8) uint8 {
+// TypeToVM converts a flat.Type* constant to the corresponding vm.Type* constant.
+func TypeToVM(flatType uint8) uint8 {
 	return flatToVMType[flatType]
 }
 
-// VMTypeToFlat converts a vm.Type* constant to the corresponding flat.Type* constant.
-func VMTypeToFlat(vmType uint8) uint8 {
-	return vmToFlatType[vmType]
+// VMToType converts a vm.Type* constant to the corresponding flat.Type* constant.
+func VMToType(vmType uint8) uint8 {
+	return vmToType[vmType]
 }
 
-// ValueToFlat converts a heap-based vm.Value to a FlatValue.
+// ValueToFlat converts a heap-based vm.Value to a Value.
 // Strings and collections are allocated in the provided PageRegion.
-func ValueToFlat(v vm.Value, pr *PageRegion) (FlatValue, error) {
+func ValueToFlat(v vm.Value, pr *PageRegion) (Value, error) {
 	switch v.Type() {
 	case vm.TypeI64:
 		return NewI64(v.AsI64()), nil
@@ -74,13 +74,13 @@ func ValueToFlat(v vm.Value, pr *PageRegion) (FlatValue, error) {
 	case vm.TypeStr:
 		ref, err := pr.WriteString(v.AsStr())
 		if err != nil {
-			return FlatValue{}, err
+			return Value{}, err
 		}
 		return NewStr(ref), nil
 
 	case vm.TypeCollI64, vm.TypeCollF64, vm.TypeCollBool, vm.TypeCollStr:
 		coll := v.AsColl()
-		elems := make([]FlatValue, len(coll))
+		elems := make([]Value, len(coll))
 		var elemType uint8
 		switch v.Type() {
 		case vm.TypeCollI64:
@@ -95,34 +95,34 @@ func ValueToFlat(v vm.Value, pr *PageRegion) (FlatValue, error) {
 		for i, elem := range coll {
 			fe, err := ValueToFlat(elem, pr)
 			if err != nil {
-				return FlatValue{}, err
+				return Value{}, err
 			}
 			elems[i] = fe
 		}
 		ref, err := pr.WriteCollection(elemType, elems)
 		if err != nil {
-			return FlatValue{}, err
+			return Value{}, err
 		}
 		return NewCollection(ref), nil
 
 	default:
 		if vm.IsCompositeType(v.Type()) {
-			flatType := VMTypeToFlat(v.Type())
+			flatType := VMToType(v.Type())
 			if flatType == 0 {
-				return FlatValue{}, fmt.Errorf("flat: unsupported composite vm type 0x%02x", v.Type())
+				return Value{}, fmt.Errorf("flat: unsupported composite vm type 0x%02x", v.Type())
 			}
-			var fv FlatValue
+			var fv Value
 			fv.Typ = flatType
 			copy(fv.Data[:], v.CompositeData())
 			return fv, nil
 		}
-		return FlatValue{}, fmt.Errorf("flat: unsupported vm type %d for conversion", v.Type())
+		return Value{}, fmt.Errorf("flat: unsupported vm type %d for conversion", v.Type())
 	}
 }
 
-// FlatToValue converts a FlatValue back to a heap-based vm.Value.
+// ToValue converts a Value back to a heap-based vm.Value.
 // Reads string/collection data from the provided PageRegion.
-func FlatToValue(fv FlatValue, pr *PageRegion) (vm.Value, error) {
+func ToValue(fv Value, pr *PageRegion) (vm.Value, error) {
 	switch fv.Typ {
 	case TypeI64:
 		return vm.I64(fv.AsI64()), nil
@@ -156,7 +156,7 @@ func FlatToValue(fv FlatValue, pr *PageRegion) (vm.Value, error) {
 		elems := make([]vm.Value, ref.Count)
 		for i := 0; i < int(ref.Count); i++ {
 			fe := pr.ReadCollectionElement(ref, i)
-			ve, err := FlatToValue(fe, pr)
+			ve, err := ToValue(fe, pr)
 			if err != nil {
 				return vm.Value{}, err
 			}
@@ -184,7 +184,7 @@ func FlatToValue(fv FlatValue, pr *PageRegion) (vm.Value, error) {
 
 	default:
 		if IsCompositeType(fv.Typ) {
-			vmType := FlatTypeToVM(fv.Typ)
+			vmType := TypeToVM(fv.Typ)
 			if vmType == 0 {
 				return vm.Value{}, fmt.Errorf("flat: type %s has no vm.Value equivalent", TypeName(fv.Typ))
 			}

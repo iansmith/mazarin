@@ -47,6 +47,9 @@ const (
 
 	// MultiLineText properties.
 	LayoutText          LayoutProp = "Text"
+	LayoutTextDirty     LayoutProp = "TextDirty"
+	LayoutTextLen       LayoutProp = "TextLen"
+	LayoutTextPageAddr  LayoutProp = "TextPageAddr"
 	LayoutLineCount     LayoutProp = "LineCount"
 	LayoutCursorLine    LayoutProp = "CursorLine"
 	LayoutCursorCol     LayoutProp = "CursorCol"

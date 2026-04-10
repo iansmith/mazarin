@@ -247,34 +247,11 @@ func (d *AppDispatcher) convertWMEvent(wmMsg any) *InputEvent {
 }
 
 func (d *AppDispatcher) dispatch(ev *InputEvent) bool {
-	if d.Debug {
-		kind := "?"
-		switch ev.Kind {
-		case EvPress:
-			kind = "Press"
-		case EvRelease:
-			kind = "Release"
-		case EvMove:
-			kind = "Move"
-		case EvKeyDown:
-			kind = "KeyDown"
-		case EvKeyUp:
-			kind = "KeyUp"
-		}
-		fmt.Printf("[%s:dispatch] %s code=%d local=(%d,%d)\n", d.Tag, kind, ev.Code, ev.X, ev.Y)
-	}
-
 	var pickList []Interactor
 	for _, p := range d.policies {
 		if d.dispatchPolicy(ev, p, &pickList) {
-			if d.Debug {
-				fmt.Printf("[%s:dispatch] consumed by policy %q\n", d.Tag, p.name)
-			}
 			return true
 		}
-	}
-	if d.Debug {
-		fmt.Printf("[%s:dispatch] not consumed\n", d.Tag)
 	}
 	return false
 }

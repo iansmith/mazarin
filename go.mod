@@ -3,9 +3,11 @@ module mazzy
 go 1.25.5
 
 require (
+	github.com/boxesandglue/boxesandglue v0.2.14
 	github.com/fogleman/gg v1.3.0
 	github.com/go-text/typesetting v0.3.4
 	github.com/pelletier/go-toml/v2 v2.3.0
+	github.com/yuin/goldmark v1.8.2
 	golang.org/x/image v0.24.0
 	louis14 v0.0.0-00010101000000-000000000000
 	mazarin/textshape v0.0.0-00010101000000-000000000000
@@ -38,6 +40,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.33.20 // indirect
 	github.com/aws/smithy-go v1.22.3 // indirect
 	github.com/bgentry/go-netrc v0.0.0-20140422174119-9fd32a8b3d3d // indirect
+	github.com/boxesandglue/baseline-pdf v1.1.9 // indirect
+	github.com/boxesandglue/gofpdi v1.0.22 // indirect
+	github.com/boxesandglue/textshape v0.0.10 // indirect
 	github.com/chainguard-dev/git-urls v1.0.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
@@ -75,6 +80,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/puzpuzpuz/xsync/v4 v4.2.0 // indirect
 	github.com/sajari/fuzzy v1.0.0 // indirect
+	github.com/speedata/hyphenation v1.0.1 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c // indirect
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
@@ -83,7 +89,6 @@ require (
 	github.com/u-root/u-root v0.15.1-0.20251014130006-62f7144b33da // indirect
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
-	github.com/yuin/goldmark v1.8.2 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.3 // indirect
@@ -108,7 +113,7 @@ replace github.com/fogleman/gg v1.3.0 => ./internal/gg
 
 replace mazarin/textshape => ./mazarin/textshape
 
-replace louis14 => /tmp/louis14-diag
+replace louis14 => /Users/iansmith/louis14
 
 // Tool directives - these can be run with "go tool <name>"
 tool (

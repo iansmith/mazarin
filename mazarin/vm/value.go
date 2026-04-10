@@ -49,7 +49,7 @@ const (
 // Value is a tagged value on the VM operand stack.
 // The active field is determined by typ.
 // Composite types (Rectangle, Timespec, etc.) store their data in the
-// data field using the same byte layout as FlatValue.Data.
+// data field using the same byte layout as flat.Value.Data.
 type Value struct {
 	typ  uint8
 	i64  int64    // I64, Bool (0/1), Tribool (0/1/2)
@@ -306,7 +306,7 @@ func (v Value) CompositeData() []byte {
 }
 
 // CompositeFromData constructs a Value of a composite type from raw data bytes.
-// The data layout must match the FlatValue.Data layout for the given type.
+// The data layout must match the flat.Value.Data layout for the given type.
 func CompositeFromData(typ uint8, data [32]byte) Value {
 	var v Value
 	v.typ = typ

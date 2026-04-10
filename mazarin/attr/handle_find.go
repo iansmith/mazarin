@@ -22,7 +22,7 @@ func Find(pattern string) []string {
 
 	// Read the collection from the query result slot using seqlock.
 	node := sharedPR.Node(int16(slot))
-	var fv flat.FlatValue
+	var fv flat.Value
 	for {
 		seq := node.SeqCounter
 		if seq&1 != 0 {

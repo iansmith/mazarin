@@ -37,8 +37,8 @@ func (pr *PageRegion) AllocNode() (int16, error) {
 		return -1, fmt.Errorf("flat: node slots full")
 	}
 	// Zero the node.
-	off := idx * FlatAttrNodeSize
-	for i := off; i < off+FlatAttrNodeSize; i++ {
+	off := idx * AttrNodeSize
+	for i := off; i < off+AttrNodeSize; i++ {
 		pr.Nodes[i] = 0
 	}
 	return int16(idx), nil
@@ -55,7 +55,7 @@ func (pr *PageRegion) IsNodeAllocated(idx int16) bool {
 }
 
 // FreeString frees a string slot given its region offset.
-func (pr *PageRegion) FreeString(ref FlatStrRef) {
-	slotIdx := int(ref.RegionOffset) / FlatStringSlotSize
+func (pr *PageRegion) FreeString(ref StrRef) {
+	slotIdx := int(ref.RegionOffset) / StringSlotSize
 	bitmapFree(pr.stringBitmap, slotIdx)
 }

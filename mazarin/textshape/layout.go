@@ -23,6 +23,11 @@ type TextLayout interface {
 	// in fixed.Int26_6 units. No rasterization is performed.
 	MeasureText(params ShapingParams) (int32, error)
 
+	// ShapeText shapes text and returns per-glyph IDs and advances
+	// without rasterization. Used by the paragraph layout adapter to
+	// build boxesandglue node lists from shaped glyph data.
+	ShapeText(params ShapingParams) (ShapedRun, error)
+
 	// CachedFontMetrics returns the FontMetrics for a previously
 	// opened font. Returns zero-value if fontID has not been opened.
 	CachedFontMetrics(fontID int32) FontMetrics
@@ -185,6 +190,13 @@ func (tl *HarfBuzzTextLayout) CachedFontMetrics(fontID int32) FontMetrics {
 		return FontMetrics{}
 	}
 	return tl.fonts[fontID].metrics
+}
+
+// ShapeText shapes text and returns per-glyph IDs and advances without
+// rasterization. This exposes the cached shaping results that MeasureText
+// and LayoutText use internally.
+func (tl *HarfBuzzTextLayout) ShapeText(params ShapingParams) (ShapedRun, error) {
+	return tl.shapeWithCache(params)
 }
 
 // MeasureText shapes the text and returns the total advance width

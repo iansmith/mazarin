@@ -20,8 +20,8 @@ func ConstraintI64(uri string, prog *vm.Program, deps ...AttributeAny) *Attribut
 		kind:  flat.AttrKindConstraint,
 		typ:   flat.TypeI64,
 		prog:  prog,
-		toT:   func(fv flat.FlatValue) int64 { return fv.AsI64() },
-		fromT: func(v int64) flat.FlatValue { return flat.NewI64(v) },
+		toT:   func(fv flat.Value) int64 { return fv.AsI64() },
+		fromT: func(v int64) flat.Value { return flat.NewI64(v) },
 	}
 	registerCascade(h)
 	return h
@@ -36,8 +36,8 @@ func ConstraintF64(uri string, prog *vm.Program, deps ...AttributeAny) *Attribut
 		kind:  flat.AttrKindConstraint,
 		typ:   flat.TypeF64,
 		prog:  prog,
-		toT:   func(fv flat.FlatValue) float64 { return fv.AsF64() },
-		fromT: func(v float64) flat.FlatValue { return flat.NewF64(v) },
+		toT:   func(fv flat.Value) float64 { return fv.AsF64() },
+		fromT: func(v float64) flat.Value { return flat.NewF64(v) },
 	}
 	registerCascade(h)
 	return h
@@ -52,8 +52,8 @@ func ConstraintBool(uri string, prog *vm.Program, deps ...AttributeAny) *Attribu
 		kind:  flat.AttrKindConstraint,
 		typ:   flat.TypeBool,
 		prog:  prog,
-		toT:   func(fv flat.FlatValue) bool { return fv.AsBool() },
-		fromT: func(v bool) flat.FlatValue { return flat.NewBool(v) },
+		toT:   func(fv flat.Value) bool { return fv.AsBool() },
+		fromT: func(v bool) flat.Value { return flat.NewBool(v) },
 	}
 	registerCascade(h)
 	return h
@@ -69,7 +69,7 @@ func ConstraintStr(uri string, prog *vm.Program, deps ...AttributeAny) *Attribut
 		typ:   flat.TypeStr,
 		prog:  prog,
 		isStr: true,
-		toT: func(fv flat.FlatValue) string {
+		toT: func(fv flat.Value) string {
 			ref := fv.AsStrRef()
 			return sharedPR.ReadString(ref)
 		},
@@ -87,8 +87,8 @@ func ConstraintComposite(uri string, flatType uint8, prog *vm.Program, deps ...A
 		kind: flat.AttrKindConstraint,
 		typ:  flatType,
 		prog: prog,
-		toT: func(fv flat.FlatValue) vm.Value {
-			v, err := flat.FlatToValue(fv, sharedPR)
+		toT: func(fv flat.Value) vm.Value {
+			v, err := flat.ToValue(fv, sharedPR)
 			if err != nil {
 				// Slot has no valid value yet (e.g., constraint returned unknown).
 				// Return tribool(unknown) so callers can detect this.
@@ -96,7 +96,7 @@ func ConstraintComposite(uri string, flatType uint8, prog *vm.Program, deps ...A
 			}
 			return v
 		},
-		fromT: func(v vm.Value) flat.FlatValue {
+		fromT: func(v vm.Value) flat.Value {
 			fv, err := flat.ValueToFlat(v, sharedPR)
 			if err != nil {
 				panic("attr: ValueToFlat failed: " + err.Error())

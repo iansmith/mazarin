@@ -32,8 +32,8 @@ type Attribute[T any] struct {
 	prog    *vm.Program // cached deserialized bytecode (constraints only)
 	lastRS  *vm.ReadSet // last read set from evaluation (constraints only)
 	eager   bool        // local eager flag (no kernel effect until Phase 6)
-	toT     func(flat.FlatValue) T // convert flat value to typed T
-	fromT   func(T) flat.FlatValue // convert typed T to flat value (nil for strings)
+	toT     func(flat.Value) T // convert flat value to typed T
+	fromT   func(T) flat.Value // convert typed T to flat value (nil for strings)
 	isStr   bool                   // true if this attribute manages string type
 }
 
@@ -138,7 +138,7 @@ func ReadI64(uri string) (int64, bool) {
 
 // seqlockRead performs a seqlock-protected read of the CachedValue from the
 // shared page. Spins until a consistent read is obtained.
-func (h *Attribute[T]) seqlockRead() flat.FlatValue {
+func (h *Attribute[T]) seqlockRead() flat.Value {
 	node := sharedPR.Node(int16(h.slot))
 	for {
 		seq := node.SeqCounter
@@ -211,7 +211,7 @@ func (h *Attribute[T]) evaluate() {
 			panic("attr: AttrWriteString (constraint result) failed: " + err.Error())
 		}
 	} else {
-		// Convert vm.Value to FlatValue and write via syscall.
+		// Convert vm.Value to flat.Value and write via syscall.
 		fv, err := flat.ValueToFlat(result, sharedPR)
 		if err != nil {
 			panic("attr: ValueToFlat failed: " + err.Error())

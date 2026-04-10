@@ -134,7 +134,7 @@ func KernelAttrWriteBool(slot uint16, val bool) {
 // Allocates a string slot in the shared region. Not change-gated (intended
 // for one-time writes like timezone).
 func KernelAttrWriteStr(slot uint16, val string) {
-	if len(val) > flat.FlatStringMaxLen {
+	if len(val) > flat.StringMaxLen {
 		return
 	}
 	node := attrMgr.node(slot)
@@ -145,7 +145,7 @@ func KernelAttrWriteStr(slot uint16, val string) {
 		return
 	}
 
-	ref := flat.FlatStrRef{
+	ref := flat.StrRef{
 		RegionOffset: nameOff,
 		Len:          uint16(len(val)),
 	}

@@ -22,8 +22,8 @@ func ValueI64(uri string, initial int64) *Attribute[int64] {
 		uri:   uri,
 		kind:  flat.AttrKindValue,
 		typ:   flat.TypeI64,
-		toT:   func(fv flat.FlatValue) int64 { return fv.AsI64() },
-		fromT: func(v int64) flat.FlatValue { return flat.NewI64(v) },
+		toT:   func(fv flat.Value) int64 { return fv.AsI64() },
+		fromT: func(v int64) flat.Value { return flat.NewI64(v) },
 	}
 }
 
@@ -37,8 +37,8 @@ func ValueF64(uri string, initial float64) *Attribute[float64] {
 		uri:   uri,
 		kind:  flat.AttrKindValue,
 		typ:   flat.TypeF64,
-		toT:   func(fv flat.FlatValue) float64 { return fv.AsF64() },
-		fromT: func(v float64) flat.FlatValue { return flat.NewF64(v) },
+		toT:   func(fv flat.Value) float64 { return fv.AsF64() },
+		fromT: func(v float64) flat.Value { return flat.NewF64(v) },
 	}
 }
 
@@ -52,14 +52,14 @@ func ValueBool(uri string, initial bool) *Attribute[bool] {
 		uri:   uri,
 		kind:  flat.AttrKindValue,
 		typ:   flat.TypeBool,
-		toT:   func(fv flat.FlatValue) bool { return fv.AsBool() },
-		fromT: func(v bool) flat.FlatValue { return flat.NewBool(v) },
+		toT:   func(fv flat.Value) bool { return fv.AsBool() },
+		fromT: func(v bool) flat.Value { return flat.NewBool(v) },
 	}
 }
 
 // ValueStr creates a value attribute of type string.
 // String writes go through SysAttrWriteString since the shepherd can't construct
-// FlatStrRefs (shared pages are read-only).
+// StrRefs (shared pages are read-only).
 func ValueStr(uri string, initial string) *Attribute[string] {
 	slot := createValueSlot(uri, flat.TypeStr)
 	// Write initial string via the string syscall.
@@ -72,7 +72,7 @@ func ValueStr(uri string, initial string) *Attribute[string] {
 		kind:  flat.AttrKindValue,
 		typ:   flat.TypeStr,
 		isStr: true,
-		toT: func(fv flat.FlatValue) string {
+		toT: func(fv flat.Value) string {
 			ref := fv.AsStrRef()
 			return sharedPR.ReadString(ref)
 		},
@@ -89,8 +89,8 @@ func ValueTribool(uri string, initial int64) *Attribute[int64] {
 		uri:   uri,
 		kind:  flat.AttrKindValue,
 		typ:   flat.TypeTribool,
-		toT:   func(fv flat.FlatValue) int64 { return fv.AsTribool() },
-		fromT: func(v int64) flat.FlatValue { return flat.NewTribool(v) },
+		toT:   func(fv flat.Value) int64 { return fv.AsTribool() },
+		fromT: func(v int64) flat.Value { return flat.NewTribool(v) },
 	}
 }
 
@@ -108,14 +108,14 @@ func ValueComposite(uri string, flatType uint8, initial vm.Value) *Attribute[vm.
 		uri:  uri,
 		kind: flat.AttrKindValue,
 		typ:  flatType,
-		toT: func(fv flat.FlatValue) vm.Value {
-			v, err := flat.FlatToValue(fv, sharedPR)
+		toT: func(fv flat.Value) vm.Value {
+			v, err := flat.ToValue(fv, sharedPR)
 			if err != nil {
-				panic("attr: FlatToValue failed: " + err.Error())
+				panic("attr: ToValue failed: " + err.Error())
 			}
 			return v
 		},
-		fromT: func(v vm.Value) flat.FlatValue {
+		fromT: func(v vm.Value) flat.Value {
 			fv, err := flat.ValueToFlat(v, sharedPR)
 			if err != nil {
 				panic("attr: ValueToFlat failed: " + err.Error())
@@ -150,7 +150,7 @@ func createValueSlot(uri string, valueType uint8) uint16 {
 	return slot
 }
 
-func writeInitialValue(slot uint16, fv *flat.FlatValue) {
+func writeInitialValue(slot uint16, fv *flat.Value) {
 	buf := (*[40]byte)(unsafe.Pointer(fv))
 	if err := sys.AttrWrite(slot, buf); err != nil {
 		panic("attr: AttrWrite initial value failed: " + err.Error())

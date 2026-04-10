@@ -40,7 +40,7 @@ func LazyStr(uri string, initial string, provider func() string) *LazyAttribute[
 			kind:  flat.AttrKindValue,
 			typ:   flat.TypeStr,
 			isStr: true,
-			toT: func(fv flat.FlatValue) string {
+			toT: func(fv flat.Value) string {
 				ref := fv.AsStrRef()
 				return sharedPR.ReadString(ref)
 			},

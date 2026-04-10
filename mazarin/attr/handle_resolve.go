@@ -45,13 +45,13 @@ func (r *sharedResolver) Deref(uri string, expectedType uint8) (vm.Value, uint16
 	node := r.pr.Node(int16(slot))
 
 	// Check type matches the expected flat type.
-	vmType := flat.FlatTypeToVM(expectedType)
+	vmType := flat.TypeToVM(expectedType)
 	if vmType == 0 {
 		vmType = expectedType // direct match for scalar types (1-5)
 	}
 
 	// Seqlock read.
-	var fv flat.FlatValue
+	var fv flat.Value
 	for {
 		seq := node.SeqCounter
 		if seq&1 != 0 {
@@ -64,7 +64,7 @@ func (r *sharedResolver) Deref(uri string, expectedType uint8) (vm.Value, uint16
 	}
 
 	// Convert to vm.Value.
-	val, err := flat.FlatToValue(fv, r.pr)
+	val, err := flat.ToValue(fv, r.pr)
 	if err != nil {
 		return vm.Value{}, 0, false
 	}
@@ -93,7 +93,7 @@ func (r *sharedResolver) Find(pattern string) ([]string, uint16) {
 
 	// Read the collection from the query result slot.
 	node := r.pr.Node(int16(slot))
-	var fv flat.FlatValue
+	var fv flat.Value
 	for {
 		seq := node.SeqCounter
 		if seq&1 != 0 {

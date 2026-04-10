@@ -8,16 +8,16 @@ const (
 	AttrKindConstraint uint8 = 1
 )
 
-// Attribute flags (bits in FlatAttrNode.Flags).
+// Attribute flags (bits in AttrNode.Flags).
 const (
 	FlagDirty       uint32 = 1 << 0
 	FlagEagerNotify uint32 = 1 << 1
 	FlagTombstoned  uint32 = 1 << 2
 )
 
-// FlatAttrNode is the per-attribute record in shared pages.
+// AttrNode is the per-attribute record in shared pages.
 // Fixed size (128 bytes), no Go pointers, cache-line aligned.
-type FlatAttrNode struct {
+type AttrNode struct {
 	// Identity and ownership (4 bytes)
 	Owner     uint16 // shepherd ID (0 = kernel)
 	Kind      uint8  // AttrKindValue or AttrKindConstraint
@@ -28,7 +28,7 @@ type FlatAttrNode struct {
 	SeqCounter uint32 // seqlock: odd = write in progress, even = stable
 
 	// Cached value (40 bytes)
-	CachedValue FlatValue
+	CachedValue Value
 
 	// Constraint program (6 bytes)
 	ProgramOffset uint32 // byte offset into bytecode region (0 = none)
@@ -55,21 +55,21 @@ type FlatAttrNode struct {
 	_pad2 [44]byte
 }
 
-const FlatAttrNodeSize = 128
+const AttrNodeSize = 128
 
 // Compile-time size assertion.
-const _flatAttrNodeSize = unsafe.Sizeof(FlatAttrNode{})
+const _attrNodeSize = unsafe.Sizeof(AttrNode{})
 
-var _ [FlatAttrNodeSize - _flatAttrNodeSize]byte
-var _ [_flatAttrNodeSize - FlatAttrNodeSize]byte
+var _ [AttrNodeSize - _attrNodeSize]byte
+var _ [_attrNodeSize - AttrNodeSize]byte
 
 // IsDirty returns true if the dirty flag is set.
-func (n *FlatAttrNode) IsDirty() bool {
+func (n *AttrNode) IsDirty() bool {
 	return n.Flags&FlagDirty != 0
 }
 
 // SetDirty sets or clears the dirty flag.
-func (n *FlatAttrNode) SetDirty(dirty bool) {
+func (n *AttrNode) SetDirty(dirty bool) {
 	if dirty {
 		n.Flags |= FlagDirty
 	} else {
@@ -78,6 +78,6 @@ func (n *FlatAttrNode) SetDirty(dirty bool) {
 }
 
 // IsTombstoned returns true if the node has been freed.
-func (n *FlatAttrNode) IsTombstoned() bool {
+func (n *AttrNode) IsTombstoned() bool {
 	return n.Flags&FlagTombstoned != 0
 }

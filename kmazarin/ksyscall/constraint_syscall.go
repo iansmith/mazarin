@@ -172,15 +172,15 @@ func SyscallAttrWrite(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) int64 {
 		return -1 // EPERM
 	}
 
-	// Copy FlatValue from user buffer (32 bytes).
-	if valueLen != flat.FlatValueSize {
+	// Copy flat.Value from user buffer (32 bytes).
+	if valueLen != flat.ValueSize {
 		return -22 // EINVAL
 	}
-	var valBuf [flat.FlatValueSize]byte
-	if !kmem.CopyFromUser(valBuf[:], uintptr(valueBufPtr), flat.FlatValueSize) {
+	var valBuf [flat.ValueSize]byte
+	if !kmem.CopyFromUser(valBuf[:], uintptr(valueBufPtr), flat.ValueSize) {
 		return -14 // EFAULT
 	}
-	newVal := *(*flat.FlatValue)(unsafe.Pointer(&valBuf[0]))
+	newVal := *(*flat.Value)(unsafe.Pointer(&valBuf[0]))
 
 	// Validate type matches.
 	if newVal.Typ != node.ValueType {
@@ -457,15 +457,15 @@ func SyscallAttrWriteResult(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) in
 		return -1 // EPERM
 	}
 
-	// Copy FlatValue from user buffer (32 bytes).
-	if valueLen != flat.FlatValueSize {
+	// Copy flat.Value from user buffer (32 bytes).
+	if valueLen != flat.ValueSize {
 		return -22 // EINVAL
 	}
-	var valBuf [flat.FlatValueSize]byte
-	if !kmem.CopyFromUser(valBuf[:], uintptr(valueBufPtr), flat.FlatValueSize) {
+	var valBuf [flat.ValueSize]byte
+	if !kmem.CopyFromUser(valBuf[:], uintptr(valueBufPtr), flat.ValueSize) {
 		return -14 // EFAULT
 	}
-	newVal := *(*flat.FlatValue)(unsafe.Pointer(&valBuf[0]))
+	newVal := *(*flat.Value)(unsafe.Pointer(&valBuf[0]))
 
 	// Validate type matches.
 	if newVal.Typ != node.ValueType {
@@ -488,7 +488,7 @@ func SyscallAttrWriteResult(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) in
 
 // SyscallAttrWriteString writes a string value to an attribute. The kernel copies
 // the string bytes from shepherd memory, allocates a string slot, and writes the
-// resulting FlatStrRef into the attribute's CachedValue.
+// resulting flat.StrRef into the attribute's CachedValue.
 //
 // Args: slotIndex, strBufPtr, strLen, isConstraintResult, _, _
 //   - isConstraintResult=1: clears dirty, no propagation (constraint result path)
@@ -531,17 +531,17 @@ func SyscallAttrWriteString(slotIndex, strBufPtr, strLen, isConstraintResult, _,
 	}
 
 	// Copy string from user.
-	if strLen > flat.FlatStringMaxLen {
+	if strLen > flat.StringMaxLen {
 		return -22 // EINVAL — string too long
 	}
-	var strBuf [flat.FlatStringMaxLen]byte
+	var strBuf [flat.StringMaxLen]byte
 	copyLen := int(strLen)
 	if !kmem.CopyFromUser(strBuf[:copyLen], uintptr(strBufPtr), copyLen) {
 		return -14 // EFAULT
 	}
 
 	// Change-gating for strings: compare new content against existing value.
-	// Unlike scalar FlatValues, string FlatValues can't be compared bitwise
+	// Unlike scalar flat.Values, string flat.Values can't be compared bitwise
 	// because each write allocates a new string slot (different RegionOffset).
 	// Compare the actual string bytes instead.
 	if isConstraintResult == 0 && node.CachedValue.Typ == flat.TypeStr {
@@ -577,8 +577,8 @@ func SyscallAttrWriteString(slotIndex, strBufPtr, strLen, isConstraintResult, _,
 		return -12 // ENOMEM
 	}
 
-	// Build FlatStrRef and write to CachedValue via seqlock.
-	ref := flat.FlatStrRef{
+	// Build flat.StrRef and write to CachedValue via seqlock.
+	ref := flat.StrRef{
 		RegionOffset: nameOff,
 		Len:          uint16(copyLen),
 	}
@@ -693,7 +693,7 @@ func (mgr *KernelAttrManager) writeQueryCollection(q *queryPattern, uris []strin
 	if count == 0 {
 		// Empty result: write an empty collection.
 		node.SeqCounter++
-		node.CachedValue = flat.NewCollection(flat.FlatCollRef{
+		node.CachedValue = flat.NewCollection(flat.CollRef{
 			ElemType: flat.TypeStr,
 			Count:    0,
 		})
@@ -727,36 +727,36 @@ func (mgr *KernelAttrManager) writeQueryCollection(q *queryPattern, uris []strin
 
 	if count == 0 {
 		node.SeqCounter++
-		node.CachedValue = flat.NewCollection(flat.FlatCollRef{ElemType: flat.TypeStr})
+		node.CachedValue = flat.NewCollection(flat.CollRef{ElemType: flat.TypeStr})
 		node.SeqCounter++
 		return
 	}
 
 	// Bump-allocate collection entries in the collection region.
-	needed := uint32(count) * flat.FlatValueSize
-	collCapBytes := uint32(kmem.RegionCollCap) * flat.FlatValueSize
+	needed := uint32(count) * flat.ValueSize
+	collCapBytes := uint32(kmem.RegionCollCap) * flat.ValueSize
 	if mgr.collectionBumpOff+needed > collCapBytes {
 		// No room: write empty.
 		node.SeqCounter++
-		node.CachedValue = flat.NewCollection(flat.FlatCollRef{ElemType: flat.TypeStr})
+		node.CachedValue = flat.NewCollection(flat.CollRef{ElemType: flat.TypeStr})
 		node.SeqCounter++
 		return
 	}
 
 	collOff := mgr.collectionBumpOff
 	for i := 0; i < count; i++ {
-		fv := flat.NewStr(flat.FlatStrRef{
+		fv := flat.NewStr(flat.StrRef{
 			RegionOffset: strBuf[i].off,
 			Len:          strBuf[i].len,
 		})
-		dst := mgr.baseVA + uintptr(mgr.collRegionOff) + uintptr(collOff) + uintptr(i)*flat.FlatValueSize
-		*(*flat.FlatValue)(unsafe.Pointer(dst)) = fv
+		dst := mgr.baseVA + uintptr(mgr.collRegionOff) + uintptr(collOff) + uintptr(i)*flat.ValueSize
+		*(*flat.Value)(unsafe.Pointer(dst)) = fv
 	}
 	mgr.collectionBumpOff += needed
 
 	// Write the collection ref to the result node.
 	node.SeqCounter++
-	node.CachedValue = flat.NewCollection(flat.FlatCollRef{
+	node.CachedValue = flat.NewCollection(flat.CollRef{
 		ElemType:     flat.TypeStr,
 		RegionOffset: collOff,
 		Count:        uint16(count),

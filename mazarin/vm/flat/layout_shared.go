@@ -67,11 +67,11 @@ func NewPageRegionFromSharedMapping(base uintptr) *PageRegion {
 	_ = off // trieOff/trieCap read separately by trie walker
 
 	// Create sub-slices using unsafe.Slice into the mapped memory.
-	nodeBytes := int(nodeCap) * FlatAttrNodeSize
+	nodeBytes := int(nodeCap) * AttrNodeSize
 	edgeBytes := int(edgeCap) * 2
 	bcBytes := int(bcCap) * 16
-	strBytes := int(strCap) * FlatStringSlotSize
-	collBytes := int(collCap) * FlatValueSize
+	strBytes := int(strCap) * StringSlotSize
+	collBytes := int(collCap) * ValueSize
 
 	pr := &PageRegion{
 		Nodes:          unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(nodeOff))), nodeBytes),

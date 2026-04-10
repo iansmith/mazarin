@@ -27,7 +27,7 @@ func DerefStr(uri string) (string, bool) {
 	node := sharedPR.Node(int16(slot))
 
 	// Seqlock read.
-	var fv flat.FlatValue
+	var fv flat.Value
 	for {
 		seq := node.SeqCounter
 		if seq&1 != 0 {
@@ -63,7 +63,7 @@ func DerefI64(uri string) (int64, bool) {
 	node := sharedPR.Node(int16(slot))
 
 	// Seqlock read.
-	var fv flat.FlatValue
+	var fv flat.Value
 	for {
 		seq := node.SeqCounter
 		if seq&1 != 0 {

@@ -236,7 +236,7 @@ func (w *WindowInteractor) KeyDown(ev *input.InputEvent) bool {
 	}
 	msg := wm.EncodeKeyPress(&kp)
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		sys.UartWriteString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
+		sys.UartWriteString(fmt.Sprintf("[rachel:key] uring.Send KeyDown to SID %d FAILED: %v\n", w.ta.sid, err))
 	}
 	// Start key-repeat animation for this key.
 	startKeyRepeat(w.ta.sid, time.Now().UnixNano(), kp)
@@ -262,7 +262,7 @@ func (w *WindowInteractor) KeyUp(ev *input.InputEvent) bool {
 		Char: uint32(ch), Action: action,
 	})
 	if err := uring.Send(w.ta.sid, &msg); err != nil {
-		sys.UartWriteString(fmt.Sprintf("[rachel:key] uring.Send to SID %d: %v\n", w.ta.sid, err))
+		sys.UartWriteString(fmt.Sprintf("[rachel:key] uring.Send KeyUp to SID %d FAILED: %v\n", w.ta.sid, err))
 	}
 	return true
 }
