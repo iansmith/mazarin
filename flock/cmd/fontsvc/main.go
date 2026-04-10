@@ -197,7 +197,7 @@ func loadOrCacheFont(family string, variant, size int32) int32 {
 	}
 
 	style := textshape.VariantToStyle(variant)
-	filename := fontIdx.Resolve(family, style)
+	filename := fontIdx.ResolveOptical(family, style, int(size))
 	if filename == "" {
 		rawPuts("[fontsvc] unknown font family: " + family + "/" + style + "\n")
 		return -1

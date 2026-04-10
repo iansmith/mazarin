@@ -12,6 +12,7 @@ package std
 
 import (
 	"fmt"
+	"time"
 	"unsafe"
 
 	"mazzy/mazarin/attr"
@@ -33,14 +34,16 @@ type BoxesAndGlueInteractor struct {
 	textPageAddr uintptr
 	textLenAttr  *attr.Attribute[int64] // eager constraint on source's textLen
 
-	fontID   int32
-	fontSize int32
+	fontFamily string // font family name (overrides theme if set)
+	fontID     int32
+	fontSize   int32
 
 	// Cached layout result. Recomputed when text, dimensions, or font change.
 	lines     []bagLine
 	layoutW   float64 // width used for last layout
 	lastText  string  // text used for last layout
 	drawCount int64
+	drawTotal int64 // cumulative draw time in microseconds
 
 	// Font metrics cached after first OpenFont.
 	ascent  float64 // pixels
@@ -123,11 +126,20 @@ func (b *BoxesAndGlueInteractor) SetLeading(px float64) {
 }
 
 // ensureFont opens the font via DrawContext if not already done.
+// SetFontFamily overrides the theme's font family for this interactor.
+func (b *BoxesAndGlueInteractor) SetFontFamily(family string) {
+	b.fontFamily = family
+	b.fontID = -1 // force re-open
+}
+
 func (b *BoxesAndGlueInteractor) ensureFont(dc mancini.DrawContext) {
 	if b.fontID >= 0 {
 		return
 	}
-	family := b.Theme().FontFamily()
+	family := b.fontFamily
+	if family == "" {
+		family = b.Theme().FontFamily()
+	}
 	m, err := dc.OpenFont(family, 0, b.fontSize)
 	if err != nil {
 		return
@@ -141,6 +153,16 @@ func (b *BoxesAndGlueInteractor) ensureFont(dc mancini.DrawContext) {
 // from the shared page, runs layout if needed, and renders each glyph.
 func (b *BoxesAndGlueInteractor) Draw(self mancini.Interactor,
 	x, y, w, h int64) {
+
+	t0 := time.Now()
+	defer func() {
+		elapsed := time.Since(t0).Microseconds()
+		b.drawTotal += elapsed
+		if b.drawCount > 0 && b.drawCount%10 == 0 {
+			fmt.Printf("[BAG:perf] n=%d avg=%dµs last=%dµs lines=%d\n",
+				b.drawCount, b.drawTotal/b.drawCount, elapsed, len(b.lines))
+		}
+	}()
 
 	if !self.Visible() {
 		return

@@ -14,6 +14,8 @@ const (
 	NotoSerifCondensed      = "NotoSerifCondensed"
 	NotoSerifExtraCondensed = "NotoSerifExtraCondensed"
 	NotoSerifSemiCondensed  = "NotoSerifSemiCondensed"
+	CrimsonPro              = "CrimsonPro"
+	LatinModernRoman        = "LatinModernRoman"
 )
 
 // Default font families by category.

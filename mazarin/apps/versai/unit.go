@@ -8,6 +8,7 @@ package main
 import (
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
+	mfont "mazzy/shared/font"
 	"mazzy/mazarin/mancini/std"
 )
 
@@ -59,7 +60,8 @@ func NewUnit(parentName string, theme mancini.Theme,
 		mancini.LayoutURI("versai_bag", mancini.DataTypeInt64, mancini.LayoutHeight),
 		mancini.EqualI64(editorHeightURI))
 	bagLH.InitBounds("versai_bag")
-	u.BAG = std.NewBoxesAndGlueInteractorWithLayout("versai_bag", bagLH, theme, 20)
+	u.BAG = std.NewBoxesAndGlueInteractorWithLayout("versai_bag", bagLH, theme, 10)
+	u.BAG.SetFontFamily(mfont.LatinModernRoman)
 
 	// Text length constraint: eager, equal to the editor's text length.
 	// When the editor updates its shared page and sets textLen, this
