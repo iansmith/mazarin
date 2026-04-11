@@ -101,7 +101,7 @@ func NewScroller(myName, parent string, pal mancini.Palette,
 		mancini.LayoutURI(myName, mancini.DataTypeBool, "ScrollNeededY"), false)
 
 	s.Interactor.Initialize(s, lh)
-	s.Parent.Initialize(false, &s.Interactor)
+	s.Parent.Initialize(true, &s.Interactor)
 	return s
 }
 
@@ -181,6 +181,7 @@ func (s *Scroller) Draw(self mancini.Interactor, x, y, w, h int64, damage image.
 	if dc == nil {
 		return
 	}
+	defer s.SnapshotDamage()
 
 	children := s.GetChildren()
 	if len(children) == 0 {
@@ -299,8 +300,10 @@ func (s *Scroller) Draw(self mancini.Interactor, x, y, w, h int64, damage image.
 			cs.SetDC(s.offDC)
 		}
 
-		// Force full damage on the child since we cleared the buffer.
-		forceFullDamageRecursive(child)
+		// Pass a full-viewport damage rect so all children redraw on
+		// the cleared buffer. We avoid forceFullDamageRecursive because
+		// writing to DamageRect attributes triggers constraint cascades.
+		fullDamage := image.Rect(0, 0, bw, bh)
 
 		// Push graphics state, set clip to the visible portion, draw, pop.
 		s.offDC.Push()
@@ -308,7 +311,7 @@ func (s *Scroller) Draw(self mancini.Interactor, x, y, w, h int64, damage image.
 		s.offDC.Clip()
 
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, 0, bufChildY, cw, childH, damage)
+			d.Draw(child, 0, bufChildY, cw, childH, fullDamage)
 		}
 
 		s.offDC.Pop()

@@ -158,38 +158,35 @@ func (sv *ScrollerVertical) ScrollerWidthURI() string {
 	return sv.Scroller.GetLayout().Width.URI()
 }
 
-// Draw implements mancini.NewDrawer. Draws the Scroller and Scrollbar
-// side by side.
+// Draw implements mancini.NewDrawer. Positions Scroller and Scrollbar,
+// then delegates to DrawChildren.
 func (sv *ScrollerVertical) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}
-	dc := self.DC()
-	if dc == nil {
+	if !sv.Damaged(damage) {
 		return
 	}
 
-	// Position and draw scroller.
+	// Position scroller.
 	scrollLH := sv.Scroller.GetLayout()
 	if scrollLH != nil {
 		scrollLH.X.Set(x)
 		scrollLH.Y.Set(y)
+		if !scrollLH.Width.IsConstraint() {
+			scrollLH.Width.Set(w - sv.trackWidth)
+		}
+		if !scrollLH.Height.IsConstraint() {
+			scrollLH.Height.Set(h)
+		}
 	}
-	sv.Scroller.SetDC(dc)
-	sv.Scroller.Draw(sv.Scroller, x, y, w-sv.trackWidth, h, damage)
 
-	// Position and draw scrollbar to the right.
+	// Position scrollbar to the right.
 	sbLH := sv.scrollbar.(mancini.Layouter).GetLayout()
 	if sbLH != nil {
 		sbLH.X.Set(x + w - sv.trackWidth)
 		sbLH.Y.Set(y)
 	}
-	if cs, ok := sv.scrollbar.(interface{ SetDC(mancini.DrawContext) }); ok {
-		cs.SetDC(dc)
-	}
-	if sv.scrollbar.Visible() {
-		if d, ok := sv.scrollbar.(mancini.NewDrawer); ok {
-			d.Draw(sv.scrollbar, x+w-sv.trackWidth, y, sv.trackWidth, h, damage)
-		}
-	}
+
+	sv.Parent.DrawChildren(self, x, y, w, h, damage)
 }

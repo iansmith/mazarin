@@ -125,7 +125,7 @@ func main() {
 	timeProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/time/utc_seconds")
 	timeSec := attr.ConstraintI64(attr.ShepherdURI("int64", "time_sec"), timeProg)
-	timeSec.SetEager(true) // fire dirtyCh once per second, not per nanosecond
+	timeSec.SetEager(true) // fire eagerCh once per second, not per nanosecond
 	_ = timeSec.Get()
 	nanosProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/time/utc_nanos")
@@ -404,7 +404,7 @@ func main() {
 	}
 
 	// 12. Main loop: select on WM messages and dirty attributes.
-	dirtyCh := attr.OnDirty()
+	eagerCh := attr.OnEager()
 	redraw := func() {
 		app.Draw(app, 0, 0, int64(winW), int64(winH), image.Rect(0, 0, int(winW), int(winH)))
 		sendBlit()
@@ -446,7 +446,7 @@ func main() {
 			if clickAgent.CheckTimer() {
 				redraw()
 			}
-		case <-dirtyCh:
+		case <-eagerCh:
 			scroller.MarkContentDirty()
 			redraw()
 		}

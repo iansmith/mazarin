@@ -2,7 +2,7 @@
 //
 // Throbber is a small filled circle that smoothly pulses through
 // orange brightness levels over a 6-second cycle (3s up, 3s down).
-// It is driven by the 10Hz kernel time attribute via attr.OnDirty().
+// It is driven by the 10Hz kernel time attribute via attr.OnEager().
 package main
 
 import (

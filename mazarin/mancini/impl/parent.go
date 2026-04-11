@@ -94,6 +94,7 @@ func (p *Parent) DrawChildren(self mancini.Interactor, x, y, w, h int64, damage 
 		if d, ok := child.(mancini.NewDrawer); ok {
 			d.Draw(child, child.X(), child.Y(), child.W(), child.H(), damage)
 		}
+		p.interactor.SnapshotDamage()
 		return
 	}
 
@@ -110,9 +111,11 @@ func (p *Parent) DrawChildren(self mancini.Interactor, x, y, w, h int64, damage 
 			cs.SetDC(dc)
 		}
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, x, y, w, h, damage)
+			d.Draw(child, child.X(), child.Y(), child.W(), child.H(), damage)
 		}
 	}
+
+	p.interactor.SnapshotDamage()
 }
 
 // DrawSelf is the default no-op implementation for [mancini.SimpleParentDraw].

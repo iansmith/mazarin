@@ -159,7 +159,7 @@ func (r *sharedResolver) Exists(prefix string) (bool, uint16) {
 	}
 
 	node := trieNode(current)
-	return node.ChildCount > 0, current
+	return node.ChildCount > 0 || node.AttrSlot != constants.TrieNone, current
 }
 
 // IncrementI64 atomically increments an int64 value attribute by URI.

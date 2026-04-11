@@ -143,7 +143,6 @@ func main() {
 	scrollerParent := col.ScrollerName()
 	units := NewUnitList()
 	labels := [4]string{"Unit A", "Unit B", "Unit C", "Unit D"}
-	scroller := col.SV.Scroller
 	for i := range labels {
 		unitName := fmt.Sprintf("versai_u%d", i)
 		u := NewUnit(unitName, scrollerParent, theme, pal, rachelSID, nil, labels[i])
@@ -256,14 +255,38 @@ func main() {
 	fmt.Printf("[versai:timing] TOTAL startup: %v\n", time.Since(t0))
 
 	// 14. Main loop.
-	dirtyCh := attr.OnDirty()
+	eagerCh := attr.OnEager()
 
 	var redrawCount int64
+	var drawTotal time.Duration
+	// Steady-state counters start after warmup (first 50 draws).
+	const warmup = 50
+	var ssCount int64
+	var ssTotal time.Duration
+	// redraw reads the AppWindow's DamageRect and draws only the damaged
+	// region. If damage is empty, no drawing occurs.
 	redraw := func(reason string) {
+		x0, y0, x1, y1 := appLH.GetDamageRect()
+		damage := image.Rect(int(x0), int(y0), int(x1), int(y1))
+		if damage.Empty() {
+			return
+		}
 		redrawCount++
-		fmt.Printf("[redraw #%d] %s\n", redrawCount, reason)
-		scroller.MarkContentDirty()
-		app.Draw(app, 0, 0, int64(winW), int64(winH), image.Rect(0, 0, int(winW), int(winH)))
+		t0 := time.Now()
+		app.Draw(app, 0, 0, int64(winW), int64(winH), damage)
+		dt := time.Since(t0)
+		drawTotal += dt
+		avg := drawTotal / time.Duration(redrawCount)
+		if redrawCount > warmup {
+			ssCount++
+			ssTotal += dt
+			ssAvg := ssTotal / time.Duration(ssCount)
+			fmt.Printf("[redraw #%d] %s damage=(%d,%d)-(%d,%d) draw=%v avg=%v ss_avg=%v\n",
+				redrawCount, reason, x0, y0, x1, y1, dt, avg, ssAvg)
+		} else {
+			fmt.Printf("[redraw #%d] %s damage=(%d,%d)-(%d,%d) draw=%v avg=%v\n",
+				redrawCount, reason, x0, y0, x1, y1, dt, avg)
+		}
 		app.SendBlit()
 	}
 
@@ -276,7 +299,7 @@ func main() {
 		drainDirty:
 		for {
 			select {
-			case <-dirtyCh:
+			case <-eagerCh:
 			default:
 				break drainDirty
 			}
@@ -356,22 +379,16 @@ func main() {
 				redraw("click-expire")
 			}
 
-		case <-dirtyCh:
-			redraw("dirtyCh")
+		case <-eagerCh:
+			redraw("eagerCh")
 
 		case <-throbTicker.C:
-			var throbDamage image.Rectangle
 			for n := units.Front(); n != nil; n = n.Next() {
 				t := n.Value.Unit.Throbber
 				t.Tick()
 				t.FullDamage()
-				tl := t.GetLayout()
-				tr := image.Rect(int(tl.X.Get()), int(tl.Y.Get()),
-					int(tl.X.Get()+tl.Width.Get()), int(tl.Y.Get()+tl.Height.Get()))
-				throbDamage = throbDamage.Union(tr)
 			}
-			app.Draw(app, 0, 0, int64(winW), int64(winH), throbDamage)
-			app.SendBlit()
+			redraw("throbber-tick")
 
 		case <-time.After(500 * time.Millisecond):
 		}

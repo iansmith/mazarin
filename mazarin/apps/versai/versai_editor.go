@@ -85,7 +85,7 @@ func (ve *VersaiEditor) TextPageAddr() uintptr {
 
 // updateSharedPage copies the renderable text to the shared page and
 // sets the length attribute. The length Set() triggers eager propagation
-// synchronously, so the BAG's dirtyCh fires before this returns.
+// synchronously, so the BAG's eagerCh fires before this returns.
 func (ve *VersaiEditor) updateSharedPage() {
 	ve.Mu.Lock()
 	rt := ve.renderableTextLocked()

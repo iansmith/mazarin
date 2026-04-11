@@ -1127,7 +1127,7 @@ func forceFontSvcItab(v interface{}) {
 // and HID events from the InputAcquirer (inputCh). Input is dispatched
 // through the subArctic-style policy/agent pipeline built by buildDispatcher.
 func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
-	dirtyCh <-chan []uint16,
+	eagerCh <-chan []uint16,
 	timeSeconds, timeNanos *attr.Attribute[int64],
 	intervalStart, intervalEndOpen *attr.Attribute[int64],
 	wmd *wmDispatch) {
@@ -1356,7 +1356,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				rachelMsgOther++
 			}
 
-		case <-dirtyCh:
+		case <-eagerCh:
 			nowNanos := timeSeconds.Get()*1_000_000_000 + timeNanos.Get()
 			if prevNanos != 0 {
 				intervalStart.Set(prevNanos)
@@ -1627,13 +1627,13 @@ func main() {
 	_ = timeNanos.Get()
 	intervalStart := attr.ValueI64(attr.ShepherdURI("int64", "intervalStart"), 0)
 	intervalEndOpen := attr.ValueI64(attr.ShepherdURI("int64", "intervalEndOpen"), 0)
-	dirtyCh := attr.OnDirty()
+	eagerCh := attr.OnEager()
 
 	fmt.Printf("[rachel] dispatcher built, starting wmEventLoop...\n")
 
 	// Start WM event loop — receives typed messages from uring Dispatcher,
 	// HID events from the InputAcquirer, and dirty ticks for animations.
-	go wmEventLoop(wmCh, inputAcq.Events(), dirtyCh, timeSeconds, timeNanos, intervalStart, intervalEndOpen, wmd)
+	go wmEventLoop(wmCh, inputAcq.Events(), eagerCh, timeSeconds, timeNanos, intervalStart, intervalEndOpen, wmd)
 
 	// Publish ready status to constraint network using the well-known URI.
 	// This must happen BEFORE LaunchMaz("prefs") because prefs uses fmt.Printf

@@ -1029,14 +1029,14 @@ func main() {
 	timeNanos := attr.ConstraintI64(attr.ShepherdURI("int64", "time_nanos"), nanosProg)
 	timeNanos.SetEager(true)
 	_ = timeNanos.Get()
-	dirtyCh := attr.OnDirty()
+	eagerCh := attr.OnEager()
 
 	// 14. Event loop.
 	for {
 		var msg any
 		select {
 		case msg = <-wmCh:
-		case <-dirtyCh:
+		case <-eagerCh:
 			msgStatsLog("TimerTick")
 			if throb != nil && throb.Tick() {
 				syncDisplay()

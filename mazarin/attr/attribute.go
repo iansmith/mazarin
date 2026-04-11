@@ -93,6 +93,7 @@ func (h *Attribute[T]) IsConstraint() bool {
 }
 
 // Set writes a new value to a value attribute. Panics on constraint attributes.
+// Skips the kernel write (and dirty propagation) if the value is unchanged.
 func (h *Attribute[T]) Set(v T) {
 	if h.kind == flat.AttrKindConstraint {
 		panic("attr: cannot Set() on a constraint attribute")
@@ -100,7 +101,6 @@ func (h *Attribute[T]) Set(v T) {
 	if h.isStr {
 		// String values go through the special string syscall.
 		var s string
-		// Use unsafe to extract string from T (we know T is string for isStr attributes).
 		s = *(*string)(unsafe.Pointer(&v))
 		if err := sys.AttrWriteString(h.slot, s, false); err != nil {
 			panic("attr: AttrWriteString failed: " + err.Error())
@@ -108,6 +108,11 @@ func (h *Attribute[T]) Set(v T) {
 		return
 	}
 	fv := h.fromT(v)
+	// Skip write if value is unchanged — avoids unnecessary dirty propagation.
+	cur := h.seqlockRead()
+	if fv == cur {
+		return
+	}
 	buf := (*[40]byte)(unsafe.Pointer(&fv))
 	if err := sys.AttrWrite(h.slot, buf); err != nil {
 		panic("attr: AttrWrite failed: " + err.Error())

@@ -65,6 +65,9 @@ func (uc *UnitContainer) HeightURI() string {
 // Draw implements mancini.NewDrawer. Positions VE and BAG, computes
 // VE height from font metrics on first draw.
 func (uc *UnitContainer) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
+	if !uc.Damaged(damage) {
+		return
+	}
 	dc := self.DC()
 	if dc == nil {
 		return
@@ -151,47 +154,39 @@ func (uc *UnitContainer) Draw(self mancini.Interactor, x, y, w, h int64, damage 
 		uc.OnHeightChanged(containerH)
 	}
 
-	// Draw VE row (Row handles drawing its own children: label + VE).
-	if cs, ok := veRow.(interface{ SetDC(mancini.DrawContext) }); ok {
-		cs.SetDC(dc)
-	}
-	if d, ok := veRow.(mancini.NewDrawer); ok {
-		d.Draw(veRow, x, y, veRowW, veRowH, damage)
-	}
-
-	// Draw BAG.
-	if cs, ok := bag.(interface{ SetDC(mancini.DrawContext) }); ok {
-		cs.SetDC(dc)
-	}
-	if d, ok := bag.(mancini.NewDrawer); ok {
-		d.Draw(bag, bagX, bagY, bagW, bagH, damage)
-	}
-
-	// Draw additional children (Throbber, etc.) pinned to lower-left of container.
+	// Position additional children (Throbber, etc.) pinned to lower-left.
 	for i := 2; i < len(children); i++ {
 		extra := children[i]
 		if el, ok := extra.(mancini.Layouter); ok {
 			if elh := el.GetLayout(); elh != nil {
 				extraH := elh.Height.Get()
-				ex := x + 4
-				ey := y + containerH - extraH - 4
-				elh.X.Set(ex)
-				elh.Y.Set(ey)
+				elh.X.Set(x + 4)
+				elh.Y.Set(y + containerH - extraH - 4)
 			}
-		}
-		if cs, ok := extra.(interface{ SetDC(mancini.DrawContext) }); ok {
-			cs.SetDC(dc)
-		}
-		if d, ok := extra.(mancini.NewDrawer); ok {
-			eW := int64(0)
-			eH := int64(0)
-			if el, ok := extra.(mancini.Layouter); ok {
-				if elh := el.GetLayout(); elh != nil {
-					eW = elh.Width.Get()
-					eH = elh.Height.Get()
-				}
-			}
-			d.Draw(extra, extra.X(), extra.Y(), eW, eH, damage)
 		}
 	}
+
+	// Fast path: if damage fits in a single child, forward directly.
+	if child := uc.IsRectSingleChild(damage); child != nil {
+		if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
+			cs.SetDC(dc)
+		}
+		if d, ok := child.(mancini.NewDrawer); ok {
+			d.Draw(child, child.X(), child.Y(), child.W(), child.H(), damage)
+		}
+		uc.SnapshotDamage()
+		return
+	}
+
+	// Slow path: draw all children.
+	for _, child := range children {
+		if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
+			cs.SetDC(dc)
+		}
+		if d, ok := child.(mancini.NewDrawer); ok {
+			d.Draw(child, child.X(), child.Y(), child.W(), child.H(), damage)
+		}
+	}
+
+	uc.SnapshotDamage()
 }

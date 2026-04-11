@@ -113,16 +113,13 @@ func (c *ColumnEdgeToEdge) LayoutChildren() {
 	}
 }
 
-// Draw implements mancini.NewDrawer. Delegates to the ScrollerVertical.
+// Draw implements mancini.NewDrawer. Delegates to DrawChildren.
 func (c *ColumnEdgeToEdge) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}
-	dc := self.DC()
-	if dc == nil {
+	if !c.Damaged(damage) {
 		return
 	}
-
-	c.SV.SetDC(dc)
-	c.SV.Draw(c.SV, x, y, w, h, damage)
+	c.Parent.DrawChildren(self, x, y, w, h, damage)
 }

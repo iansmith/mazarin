@@ -1,7 +1,7 @@
 // notify.go — Client-side dirty notification API.
 //
 // WaitDirty blocks until one or more eager-notify attributes become dirty.
-// OnDirty returns a channel that receives batches of dirty slot numbers.
+// OnEager returns a channel that receives batches of dirty slot numbers.
 
 package attr
 
@@ -24,10 +24,10 @@ func WaitDirty() []uint16 {
 	return result
 }
 
-// OnDirty returns a channel that receives a batch of dirty slot numbers
+// OnEager returns a channel that receives a batch of dirty slot numbers
 // whenever eager-notify attributes change. Spawns a background goroutine.
 // The channel has a buffer of 4 to absorb burst notifications.
-func OnDirty() <-chan []uint16 {
+func OnEager() <-chan []uint16 {
 	ch := make(chan []uint16, 4)
 	go func() {
 		for {

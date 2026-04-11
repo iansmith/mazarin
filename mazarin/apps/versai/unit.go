@@ -138,7 +138,8 @@ func NewUnit(myName, parentName string, theme mancini.Theme,
 	u.BagTextLen = attr.ConstraintI64(
 		mancini.LayoutURI(bagName, mancini.DataTypeInt64, mancini.LayoutTextLen),
 		mancini.EqualI64(u.Editor.TextLenURI()))
-	u.BagTextLen.SetEager(true)
+	// BagTextLen is NOT eager — damage propagates up to AppWindow's
+	// DamageRect which is the single eager attribute driving redraws.
 
 	// Wire the shared page to the BAG.
 	u.BAG.SetTextSource(u.Editor.TextPageAddr(), u.BagTextLen)

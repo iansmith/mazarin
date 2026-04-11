@@ -149,6 +149,9 @@ func (trc *ThrobberRadialChooser) throbColor() color.NRGBA {
 
 // Draw renders the throbber as a filled circle at the current brightness.
 func (trc *ThrobberRadialChooser) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
+	if !trc.Damaged(damage) {
+		return
+	}
 	dc := self.DC()
 	if dc == nil {
 		return
@@ -170,6 +173,8 @@ func (trc *ThrobberRadialChooser) Draw(self mancini.Interactor, x, y, w, h int64
 	dc.SetColor(trc.throbColor())
 	dc.DrawCircle(cx, cy, rad)
 	dc.Fill()
+
+	trc.ClearDamage()
 }
 
 // --- Overlay lifecycle ---

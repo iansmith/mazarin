@@ -150,9 +150,49 @@ func (mp *MarginParent) cornerRadius() float64 {
 // controls interactor is positioned in the top margin and the border
 // draws a hump around it.
 func (mp *MarginParent) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
+	if !mp.Damaged(damage) {
+		return
+	}
 	dc := self.DC()
 	if dc == nil {
 		return
+	}
+
+	// Fast path: if damage fits entirely inside the child area, skip
+	// border drawing and forward directly.
+	childX := x + mp.Left
+	childY := y + mp.Top
+	childW := w - mp.Left - mp.Right
+	childH := h - mp.Top - mp.Bottom
+	if childW > 0 && childH > 0 {
+		childRect := image.Rect(int(childX), int(childY), int(childX+childW), int(childY+childH))
+		if damage.In(childRect) {
+			children := mp.GetChildren()
+			if len(children) > 0 {
+				child := children[0]
+				if l, ok := child.(mancini.Layouter); ok {
+					clh := l.GetLayout()
+					if clh != nil {
+						clh.X.Set(childX)
+						clh.Y.Set(childY)
+						if !clh.Width.IsConstraint() {
+							clh.Width.Set(childW)
+						}
+						if !clh.Height.IsConstraint() {
+							clh.Height.Set(childH)
+						}
+					}
+				}
+				if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
+					cs.SetDC(dc)
+				}
+				if d, ok := child.(mancini.NewDrawer); ok {
+					d.Draw(child, childX, childY, childW, childH, damage)
+				}
+				mp.SnapshotDamage()
+				return
+			}
+		}
 	}
 
 	fx, fy := float64(x), float64(y)
@@ -247,10 +287,10 @@ func (mp *MarginParent) Draw(self mancini.Interactor, x, y, w, h int64, damage i
 	}
 
 	child := children[0]
-	childX := x + mp.Left
-	childY := y + mp.Top
-	childW := w - mp.Left - mp.Right
-	childH := h - mp.Top - mp.Bottom
+	childX = x + mp.Left
+	childY = y + mp.Top
+	childW = w - mp.Left - mp.Right
+	childH = h - mp.Top - mp.Bottom
 	if childW < 0 {
 		childW = 0
 	}
@@ -280,6 +320,8 @@ func (mp *MarginParent) Draw(self mancini.Interactor, x, y, w, h int64, damage i
 	if d, ok := child.(mancini.NewDrawer); ok {
 		d.Draw(child, childX, childY, childW, childH, damage)
 	}
+
+	mp.SnapshotDamage()
 }
 
 // drawBorder renders the rounded-rectangle border with an optional

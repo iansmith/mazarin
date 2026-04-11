@@ -93,44 +93,60 @@ func (lh *LayoutAttributes) InitParentDamage(bgColorURI, fgColorURI, childDamage
 }
 
 // SnapshotDamage copies current visual state into last-painted attributes.
-// Called by the draw loop after painting an interactor.
+// Called by the draw loop after painting an interactor. Only writes when
+// the value has actually changed, to avoid triggering spurious constraint
+// re-evaluations and eager notifications.
 func (lh *LayoutAttributes) SnapshotDamage() {
 	if lh == nil || lh.Damage == nil {
 		return
 	}
 	d := lh.Damage
-	if lh.Bounds != nil && d.LPBounds != nil {
-		d.LPBounds.Set(lh.Bounds.Get())
+	if lh.BoundsHash != nil && d.LPBoundsHash != nil {
+		bh := lh.BoundsHash.Get()
+		if d.LPBoundsHash.Get() != bh {
+			d.LPBoundsHash.Set(bh)
+		}
 	}
 	if lh.Visible != nil && d.LPVisible != nil {
-		d.LPVisible.Set(lh.Visible.Get())
+		vis := lh.Visible.Get()
+		if d.LPVisible.Get() != vis {
+			d.LPVisible.Set(vis)
+		}
 	}
-	if lh.BoundsHash != nil && d.LPBoundsHash != nil {
-		d.LPBoundsHash.Set(lh.BoundsHash.Get())
+	if lh.Bounds != nil && d.LPBounds != nil {
+		cur := lh.Bounds.Get()
+		old := d.LPBounds.Get()
+		cx0, cy0, cx1, cy1 := cur.AsRectangle()
+		ox0, oy0, ox1, oy1 := old.AsRectangle()
+		if cx0 != ox0 || cy0 != oy0 || cx1 != ox1 || cy1 != oy1 {
+			d.LPBounds.Set(cur)
+		}
 	}
 }
 
 // SnapshotDamageColors copies current color values into last-painted attributes.
-// bgColor and fgColor are the current values to snapshot.
+// bgColor and fgColor are the current values to snapshot. Only writes when
+// the value has actually changed.
 func (lh *LayoutAttributes) SnapshotDamageColors(bgColor, fgColor int64) {
 	if lh == nil || lh.Damage == nil {
 		return
 	}
 	d := lh.Damage
-	if d.LPBgColor != nil {
+	if d.LPBgColor != nil && d.LPBgColor.Get() != bgColor {
 		d.LPBgColor.Set(bgColor)
 	}
-	if d.LPFgColor != nil {
+	if d.LPFgColor != nil && d.LPFgColor.Get() != fgColor {
 		d.LPFgColor.Set(fgColor)
 	}
 }
 
 // SnapshotDamageContentHash copies a content hash into the last-painted attribute.
+// Only writes when the value has actually changed.
 func (lh *LayoutAttributes) SnapshotDamageContentHash(hash int64) {
 	if lh == nil || lh.Damage == nil {
 		return
 	}
-	if lh.Damage.LPContentHash != nil {
+	if lh.Damage.LPContentHash != nil && lh.Damage.LPContentHash.Get() != hash {
 		lh.Damage.LPContentHash.Set(hash)
 	}
 }

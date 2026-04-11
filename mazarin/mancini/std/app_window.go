@@ -144,6 +144,15 @@ func NewAppWindow(pal mancini.Palette, title string) *AppWindow {
 
 	// Zero insets on all sides — no decoration.
 	w.Decorator.Initialize(w, layout, 0, 0, 0, 0)
+
+	// Make DamageRect eager — this is the single attribute that drives
+	// redraws via eagerCh. When any child's damage changes, it propagates
+	// up through parent damage constraints to this root, waking the
+	// event loop with the exact damaged region.
+	if layout.Damage != nil && layout.Damage.DamageRect != nil {
+		layout.Damage.DamageRect.SetEager(true)
+	}
+
 	return w
 }
 
@@ -288,6 +297,9 @@ func (w *AppWindow) DispatchAnimation(wmMsg any) bool {
 // drawing is clipped to the damaged region so unchanged pixels
 // are not overwritten.
 func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64, damage image.Rectangle) {
+	if !w.Damaged(damage) {
+		return
+	}
 	dc := self.DC()
 	if dc == nil {
 		return
@@ -370,6 +382,8 @@ func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64, damage ima
 	if clipped {
 		mancini.PopDamageClip(dc)
 	}
+
+	w.SnapshotDamage()
 }
 
 // PublishThemeAttributes publishes theme geometry and font configuration

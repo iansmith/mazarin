@@ -114,6 +114,10 @@ func (r *Row) SetSpacing(v float64) {
 // Draw implements mancini.NewDrawer. Arranges children left-to-right
 // with spacing, cross-axis alignment, and overflow clipping.
 func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
+	if !r.Damaged(damage) {
+		return
+	}
+
 	lh := r.GetLayout()
 	dc := self.DC()
 
@@ -265,4 +269,6 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Recta
 		curX += childW
 		visIndex++
 	}
+
+	r.SnapshotDamage()
 }

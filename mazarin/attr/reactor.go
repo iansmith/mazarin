@@ -1,6 +1,6 @@
 // reactor.go — Reactor dispatches dirty notifications to typed callbacks.
 //
-// A Reactor wraps OnDirty() and maintains a dispatch table mapping attribute
+// A Reactor wraps OnEager() and maintains a dispatch table mapping attribute
 // slots to watch entries. When dirty slots arrive, it evaluates constraints
 // (phase 1) and fires callbacks only for attributes whose output actually
 // changed (phase 2). Exposes a channel C for use in select loops.
@@ -31,10 +31,10 @@ type Reactor struct {
 	watches map[uint16]*watchEntry
 }
 
-// NewReactor creates a Reactor backed by OnDirty().
+// NewReactor creates a Reactor backed by OnEager().
 func NewReactor() *Reactor {
 	return &Reactor{
-		C:       OnDirty(),
+		C:       OnEager(),
 		watches: make(map[uint16]*watchEntry),
 	}
 }

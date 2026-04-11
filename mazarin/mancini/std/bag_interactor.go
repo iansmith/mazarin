@@ -11,7 +11,6 @@
 package std
 
 import (
-	"fmt"
 	"image"
 	"time"
 	"unsafe"
@@ -168,12 +167,7 @@ func (b *BoxesAndGlueInteractor) Draw(self mancini.Interactor,
 
 	t0 := time.Now()
 	defer func() {
-		elapsed := time.Since(t0).Microseconds()
-		b.drawTotal += elapsed
-		if b.drawCount > 0 && b.drawCount%10 == 0 {
-			fmt.Printf("[BAG:perf] n=%d avg=%dµs last=%dµs lines=%d\n",
-				b.drawCount, b.drawTotal/b.drawCount, elapsed, len(b.lines))
-		}
+		b.drawTotal += time.Since(t0).Microseconds()
 	}()
 
 	if !self.Visible() {
@@ -200,14 +194,11 @@ func (b *BoxesAndGlueInteractor) Draw(self mancini.Interactor,
 	text := b.readText()
 
 	b.drawCount++
-	if b.drawCount <= 10 || b.drawCount%50 == 0 {
-		fmt.Printf("[BAG] Draw #%d textLen=%d lines=%d\n",
-			b.drawCount, len(text), len(b.lines))
-	}
 
 	if b.fontID < 0 || len(text) == 0 {
 		b.lines = nil
 		b.lastText = ""
+		b.SnapshotDamage()
 		b.ClearDamage()
 		return
 	}

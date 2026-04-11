@@ -103,6 +103,19 @@ func (i *Interactor) ClearDamage() {
 	lh.ClearDamage()
 }
 
+// SnapshotDamage copies current Bounds, Visible, and BoundsHash into
+// "last-painted" mirror attributes. The parent damage constraint
+// compares current state to LP state — when they match, ownDamage
+// stays empty and child damage passes through untouched. Call this
+// after drawing an interactor so the next evaluation sees no change.
+func (i *Interactor) SnapshotDamage() {
+	lh := i.layout
+	if lh == nil {
+		return
+	}
+	lh.SnapshotDamage()
+}
+
 // BoundsRect returns the interactor's bounds as an image.Rectangle
 // computed from layout X, Y, Width, Height. Returns empty rect if
 // no layout is available.

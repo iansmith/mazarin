@@ -332,7 +332,7 @@ func MazarinMain() {
 	sendBlit(rachelSID)
 
 	// Event loop.
-	dirtyCh := attr.OnDirty()
+	eagerCh := attr.OnEager()
 	writeCh := io.WriteChannel()
 
 	rawPuts("[linux-ui] entering event loop\n")
@@ -400,7 +400,7 @@ func MazarinMain() {
 				}
 			}
 
-		case <-dirtyCh:
+		case <-eagerCh:
 			dirtyTicks++
 			drainWrites()
 			if textDirty {

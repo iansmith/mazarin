@@ -448,11 +448,6 @@ func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 	defer func() {
 		singleReadCount++
 		singleReadTotal += time.Since(t0)
-		if singleReadCount%100 == 0 {
-			sys.UartWriteString(fmt.Sprintf("[dma] single: %d reads, avg=%dms total=%dms\n",
-				singleReadCount, singleReadTotal.Milliseconds()/int64(singleReadCount),
-				singleReadTotal.Milliseconds()))
-		}
 	}()
 
 	sectorLBA := lba * sectorsPerBlock
@@ -507,11 +502,6 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 		tSubmit := time.Now()
 		submitted := uint32(0)
 		sqTail := atomic.LoadUint32(&d.ioRing.SQTail)
-		sqHead := atomic.LoadUint32(&d.ioRing.SQHead)
-		if batchCount == 0 || (batchCount+1)%50 == 0 {
-			sys.UartWriteString(fmt.Sprintf("[dma:sub] batch=%d/%d sqH=%d sqT=%d blk[0]=%d\n",
-				batchCount, (total+scratchPages-1)/scratchPages, sqHead, sqTail, blocks[blockIdx]))
-		}
 		for i, bn := range batchBlocks {
 			if bn == 0 {
 				// Sparse block — zero-fill.

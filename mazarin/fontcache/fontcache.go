@@ -118,14 +118,9 @@ func StyleToVariant(style string) int32 {
 // resolves the family name to a filesystem path server-side. Clients never
 // read font files or the font index from disk.
 func (fc *FontCache) OpenFaceByName(family, style string, size int64) font.Face {
-	sys.UartWriteString("[fontcache] OpenFaceByName " + family + "/" + style + " size=" + itoa(size) + "...\n")
-	t0 := nanotime()
 	face := fc.OpenFace(family, StyleToVariant(style), size)
-	dt := (nanotime() - t0) / 1e6
 	if face == nil {
-		sys.UartWriteString("[fontcache] OpenFace RETURNED NIL after " + itoa(dt) + "ms\n")
-	} else {
-		sys.UartWriteString("[fontcache] OpenFace OK in " + itoa(dt) + "ms\n")
+		sys.UartWriteString("[fontcache] OpenFace RETURNED NIL: " + family + "/" + style + "\n")
 	}
 	return face
 }
@@ -139,18 +134,13 @@ func (fc *FontCache) SendOpenFont(family string, variant int32, size int64) (*wm
 	of.Size = int32(size)
 	copy(of.Path[:], family)
 
-	sys.UartWriteString("[fontcache] SendOpenFont: sending via uring...\n")
 	msg := wm.EncodeOpenFont(&of)
 	if err := uring.Send(fc.rachelSID, &msg); err != nil {
-		sys.UartWriteString("[fontcache] SendOpenFont: uring.Send FAILED: " + err.Error() + "\n")
+		sys.UartWriteString("[fontcache] SendOpenFont FAILED: " + err.Error() + "\n")
 		return nil, err
 	}
 
-	sys.UartWriteString("[fontcache] SendOpenFont: waiting on ReplyCh...\n")
-	t0 := nanotime()
 	raw := <-fc.ReplyCh
-	dt := (nanotime() - t0) / 1e6
-	sys.UartWriteString("[fontcache] SendOpenFont: reply received after " + itoa(dt) + "ms\n")
 	reply, ok := raw.(wm.OpenFontReply)
 	if !ok {
 		sys.UartWriteString("[fontcache] SendOpenFont: unexpected msg type\n")
@@ -201,28 +191,4 @@ func (fc *FontCache) requestGlyphByCodepoint(fontID int32, cp rune) *wm.GlyphRep
 	return &reply
 }
 
-//go:linkname nanotime runtime.nanotime
-func nanotime() int64
 
-// itoa converts an int64 to a decimal string without importing strconv.
-func itoa(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	neg := v < 0
-	if neg {
-		v = -v
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
-}

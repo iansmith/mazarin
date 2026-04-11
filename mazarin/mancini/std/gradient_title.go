@@ -35,7 +35,7 @@ type GradientTitleBar struct {
 	front *image.RGBA // current completed frame for blitting
 	w, h  int         // buffer dimensions (logical pixels)
 
-	// Writing frameAttr triggers attr.OnDirty() in the event loop.
+	// Writing frameAttr triggers attr.OnEager() in the event loop.
 	frameAttr *attr.Attribute[int64]
 	frame     int64
 
