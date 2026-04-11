@@ -2,6 +2,7 @@ package std
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 	"math"
 	"os"
@@ -110,7 +111,7 @@ func (s *FourteenSeg) SetOnColor(c color.NRGBA) {
 }
 
 // Draw renders the 14-segment display. No background is painted.
-func (s *FourteenSeg) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (s *FourteenSeg) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return

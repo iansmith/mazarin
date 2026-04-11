@@ -2,6 +2,7 @@ package std
 
 import (
 	"fmt"
+	"image"
 	"math"
 	"time"
 
@@ -95,7 +96,7 @@ func NewClock(myName, parent string, pal mancini.Palette, fonts *mancini.FontCon
 }
 
 // Draw implements mancini.NewDrawer.
-func (c *Clock) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (c *Clock) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return

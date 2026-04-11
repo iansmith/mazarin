@@ -71,7 +71,7 @@ func NewRadialMenuNamed(myName, parent string, theme mancini.Theme,
 // Draw implements mancini.NewDrawer. It renders the full-circle radial menu:
 // a raised annulus base, selected segment inset+tint, groove separators,
 // and per-segment face content.
-func (m *RadialMenu) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (m *RadialMenu) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

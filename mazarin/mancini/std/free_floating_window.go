@@ -1,6 +1,8 @@
 package std
 
 import (
+	"image"
+
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -77,7 +79,7 @@ func NewFreeFloatingWindow(name string, parent mancini.Interactor,
 }
 
 // Draw implements mancini.NewDrawer.
-func (w *FreeFloatingWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
+func (w *FreeFloatingWindow) Draw(self mancini.Interactor, x, y, ww, hh int64, damage image.Rectangle) {
 	if !w.Visible {
 		return
 	}
@@ -106,7 +108,7 @@ func (w *FreeFloatingWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 		cs.SetDC(dc)
 	}
 	if d, ok := child.(mancini.NewDrawer); ok {
-		d.Draw(child, contentX, contentY, contentW, contentH)
+		d.Draw(child, contentX, contentY, contentW, contentH, damage)
 	}
 }
 

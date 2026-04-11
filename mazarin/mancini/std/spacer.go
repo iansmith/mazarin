@@ -1,6 +1,8 @@
 package std
 
 import (
+	"image"
+
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -33,6 +35,6 @@ func NewSpacer(myName, parent string, w, h int64) *Spacer {
 }
 
 // Draw implements mancini.NewDrawer. Spacer draws nothing.
-func (s *Spacer) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (s *Spacer) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	// intentionally empty
 }

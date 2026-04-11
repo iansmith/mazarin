@@ -99,7 +99,7 @@ func NewScrollbarNamed(myName, parent string, theme mancini.Theme,
 //
 // When ValueAttr and MaxAttr are set, ThumbPos and ThumbFrac are computed
 // automatically from Value/Max before rendering.
-func (s *Scrollbar) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (s *Scrollbar) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

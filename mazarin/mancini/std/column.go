@@ -1,6 +1,8 @@
 package std
 
 import (
+	"image"
+
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
@@ -174,7 +176,7 @@ func (c *Column) SetSpacing(v float64) {
 // with spacing, cross-axis alignment, and overflow clipping.
 // If PaintBg is true and Pal is set, the column fills its background
 // with the theme's Surface color before drawing children.
-func (c *Column) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (c *Column) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	lh := c.GetLayout()
 	dc := self.DC()
 
@@ -290,7 +292,7 @@ func (c *Column) Draw(self mancini.Interactor, x, y, w, h int64) {
 				pad := overflowH + shadowPad
 				cc := mancini.WithClip(dc, float64(childX), float64(curY), float64(childW), float64(visibleH), float64(pad), mancini.ClipBottom)
 				if d, ok := child.(mancini.NewDrawer); ok {
-					d.Draw(child, childX, curY, childW, childH)
+					d.Draw(child, childX, curY, childW, childH, damage)
 				}
 				cc.Flush()
 				curY += childH
@@ -301,7 +303,7 @@ func (c *Column) Draw(self mancini.Interactor, x, y, w, h int64) {
 
 		tcc := nanotime()
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, childX, curY, childW, childH)
+			d.Draw(child, childX, curY, childW, childH, damage)
 		}
 		drawPerf.ColChildNs.Add(nanotime() - tcc)
 		curY += childH

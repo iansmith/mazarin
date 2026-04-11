@@ -1,6 +1,7 @@
 package std
 
 import (
+	"image"
 	"image/color"
 
 	"mazzy/mazarin/attr"
@@ -64,7 +65,7 @@ func NewColumnOutsideIn(myName, parent string, bgColor color.NRGBA, minH, maxH i
 
 // Draw implements mancini.NewDrawer. Fills background, lays out children
 // top-to-bottom with 1px spacing, and hides any that overflow.
-func (c *ColumnOutsideIn) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (c *ColumnOutsideIn) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 
 	// Fill background.
@@ -125,7 +126,7 @@ func (c *ColumnOutsideIn) Draw(self mancini.Interactor, x, y, w, h int64) {
 		}
 
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, x, curY, w, childH)
+			d.Draw(child, x, curY, w, childH, damage)
 		}
 		curY += childH
 		drawnCount++

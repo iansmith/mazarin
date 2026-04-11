@@ -741,6 +741,12 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	// Allocate a physical frame from userspace pool
 	framePA := AllocUserFrame()
 	if framePA == 0 {
+		SerialPuts("[kmem] user page fault OOM va=")
+		SerialHex16(uint64(faultAddr))
+		SerialPuts(" sid=")
+		SerialHex16(uint64(pfContextShepherdID))
+		serial.PollWrite('\r')
+		serial.PollWrite('\n')
 		return false
 	}
 

@@ -447,7 +447,7 @@ func handleOverlayReady(m wm.OverlayReady) {
 	// Show the radial menu and draw it into the overlay buffer.
 	radialMenu.SetVisible(true)
 	radialMenu.SetDC(overlayDC)
-	radialMenu.Draw(radialMenu, 0, 0, int64(m.Width), int64(m.Height))
+	radialMenu.Draw(radialMenu, 0, 0, int64(m.Width), int64(m.Height), image.Rect(0, 0, int(m.Width), int(m.Height)))
 
 	fmt.Fprintf(os.Stdout, "[calc] overlay drawn: id=%d %dx%d\n",
 		m.OverlayID, m.Width, m.Height)
@@ -1017,7 +1017,7 @@ func main() {
 	syncDisplay()
 	t0 := nanotime()
 	app.SetDC(dc)
-	app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
+	app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get(), image.Rect(0, 0, int(appLH.Width.Get()), int(appLH.Height.Get())))
 	dt := nanotime() - t0
 	fmt.Fprintf(os.Stdout, "[calc] initial draw: %dms\n", dt/1_000_000)
 	sendBlit()
@@ -1041,7 +1041,7 @@ func main() {
 			if throb != nil && throb.Tick() {
 				syncDisplay()
 				app.SetDC(dc)
-				app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
+				app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get(), image.Rect(0, 0, int(appLH.Width.Get()), int(appLH.Height.Get())))
 				sendBlit()
 			}
 			continue
@@ -1084,7 +1084,7 @@ func main() {
 			if radialMenu.SetHovered(seg) {
 				// Hovered segment changed — redraw and reblit.
 				radialMenu.SetDC(overlayDC)
-				radialMenu.Draw(radialMenu, 0, 0, int64(overlayW), int64(overlayH))
+				radialMenu.Draw(radialMenu, 0, 0, int64(overlayW), int64(overlayH), image.Rect(0, 0, int(overlayW), int(overlayH)))
 				overlayMu.Lock()
 				id := overlayID
 				overlayMu.Unlock()
@@ -1122,7 +1122,7 @@ func main() {
 
 				// Redraw overlay with updated selection, then dismiss.
 				radialMenu.SetDC(overlayDC)
-				radialMenu.Draw(radialMenu, 0, 0, int64(overlayW), int64(overlayH))
+				radialMenu.Draw(radialMenu, 0, 0, int64(overlayW), int64(overlayH), image.Rect(0, 0, int(overlayW), int(overlayH)))
 				blit := wm.EncodeOverlayBlit(&wm.OverlayBlit{OverlayID: id})
 				_ = uring.Send(rachelSID, &blit)
 			}
@@ -1272,7 +1272,7 @@ func main() {
 			syncDisplay()
 			drawT0 := nanotime()
 			app.SetDC(dc)
-			app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
+			app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get(), image.Rect(0, 0, int(appLH.Width.Get()), int(appLH.Height.Get())))
 			drawNanos := nanotime() - drawT0
 
 			blitT0 := nanotime()
@@ -1293,7 +1293,7 @@ func main() {
 		syncDisplay()
 		t0 := nanotime()
 		app.SetDC(dc)
-		app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get())
+		app.Draw(app, 0, 0, appLH.Width.Get(), appLH.Height.Get(), image.Rect(0, 0, int(appLH.Width.Get()), int(appLH.Height.Get())))
 		dt := nanotime() - t0
 		sys.UartWriteString(fmt.Sprintf("[calc] draw: %dms\n", dt/1_000_000))
 		sendBlit()

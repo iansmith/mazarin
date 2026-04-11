@@ -7,6 +7,7 @@
 package main
 
 import (
+	"image"
 	"image/color"
 
 	"mazzy/mazarin/mancini"
@@ -93,7 +94,7 @@ func (b *HP15CShiftButton) TurnOff() {
 }
 
 // Draw renders the shift button with bright or muted fill.
-func (b *HP15CShiftButton) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (b *HP15CShiftButton) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}
@@ -236,7 +237,7 @@ func (b *HP15CFunctionButton) activeLabel() (string, int32, color.NRGBA) {
 }
 
 // Draw renders the function button with the appropriate label for shift state.
-func (b *HP15CFunctionButton) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (b *HP15CFunctionButton) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}
@@ -370,7 +371,7 @@ func NewHP15CButton(myName, parent string, theme mancini.Theme,
 }
 
 // Draw renders the HP 15C button: neumorphic box with face content.
-func (b *HP15CButton) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (b *HP15CButton) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

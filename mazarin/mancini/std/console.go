@@ -11,6 +11,7 @@
 package std
 
 import (
+	"image"
 	"image/color"
 
 	"mazzy/mazarin/attr"
@@ -214,7 +215,7 @@ func (c *Console) StderrColor() color.NRGBA {
 // Draw implements mancini.NewDrawer. Fills the console background and
 // draws each consoleLine child at the correct Y position. The most
 // recent content lines are shown (auto-scroll to bottom).
-func (c *Console) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (c *Console) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return

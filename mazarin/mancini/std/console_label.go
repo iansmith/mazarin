@@ -1,6 +1,7 @@
 package std
 
 import (
+	"image"
 	"image/color"
 
 	"mazzy/mazarin/mancini"
@@ -73,7 +74,7 @@ func NewConsoleLabel(myName, parent string, theme mancini.Theme,
 // Draw implements mancini.NewDrawer. Fills BgColor background, then
 // renders left-aligned text via LatinTextFace using ColorFunc for the
 // text color.
-func (l *ConsoleLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (l *ConsoleLabel) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

@@ -2,6 +2,7 @@ package std
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 	"math"
 
@@ -97,7 +98,7 @@ func filledLine(dc mancini.DrawContext, c color.NRGBA, ax, ay, bx, by, halfW flo
 
 // Draw implements mancini.NewDrawer. Renders track, groove border,
 // X-pattern face lines, and rotating thumb — all using Fill.
-func (s *LightScrollbar) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (s *LightScrollbar) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

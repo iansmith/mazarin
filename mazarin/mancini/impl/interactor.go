@@ -2,6 +2,8 @@ package impl
 
 import (
 	"fmt"
+	"image"
+	"image/color"
 	"strings"
 
 	"mazzy/mazarin/mancini"
@@ -99,6 +101,60 @@ func (i *Interactor) ClearDamage() {
 		return
 	}
 	lh.ClearDamage()
+}
+
+// BoundsRect returns the interactor's bounds as an image.Rectangle
+// computed from layout X, Y, Width, Height. Returns empty rect if
+// no layout is available.
+func (i *Interactor) BoundsRect() image.Rectangle {
+	lh := i.layout
+	if lh == nil {
+		return image.Rectangle{}
+	}
+	x, y := int(lh.X.Get()), int(lh.Y.Get())
+	return image.Rect(x, y, x+int(lh.Width.Get()), y+int(lh.Height.Get()))
+}
+
+// Damaged intersects the damage rectangle with this interactor's bounds
+// (from layout X, Y, Width, Height). Returns true if the intersection
+// is non-empty — meaning this interactor overlaps the damaged region
+// and should repaint.
+func (i *Interactor) Damaged(damage image.Rectangle) bool {
+	lh := i.layout
+	if lh == nil {
+		return true // no layout → always draw (safe default)
+	}
+	return !damage.Intersect(i.BoundsRect()).Empty()
+}
+
+// UnionDamage returns the union of prev (the interactor's bounds before
+// a size/position change) and the interactor's current bounds. Use this
+// when a child moves or resizes: save BoundsRect() before the change,
+// perform the change, then call UnionDamage(saved) to get the damage
+// rect that covers both old and new positions.
+func (i *Interactor) UnionDamage(prev image.Rectangle) image.Rectangle {
+	return prev.Union(i.BoundsRect())
+}
+
+// DrawSelfOpaque intersects the damage rectangle with this interactor's
+// bounds and fills the intersection with the given color. Designed for
+// interactors that always show a painted background (themed controls,
+// opaque containers).
+func (i *Interactor) DrawSelfOpaque(damage image.Rectangle, c color.NRGBA) {
+	if c.A == 0 {
+		return
+	}
+	r := damage.Intersect(i.BoundsRect())
+	if r.Empty() {
+		return
+	}
+	dc := i.dc
+	if dc == nil {
+		return
+	}
+	dc.SetColor(c)
+	dc.FillRectangle(float64(r.Min.X), float64(r.Min.Y),
+		float64(r.Dx()), float64(r.Dy()))
 }
 
 func (i *Interactor) X() int64       { return i.layout.X.Get() }

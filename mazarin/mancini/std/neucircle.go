@@ -75,7 +75,7 @@ func NewNeuCircleNamed(myName, parent string, pal mancini.Palette,
 // bevel amount so the neumorphic shadow ring between the face edge and
 // the shadow circle remains visible. The full decorator margins are for
 // shadow overflow; the bevel is the visible 3D ring.
-func (n *NeuCircle) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (n *NeuCircle) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	tnd := nanotime()
 	n.Decorator.DecorateIfNeeded(self, x, y, w, h)
 	drawPerf.NeuDecorNs.Add(nanotime() - tnd)
@@ -110,7 +110,7 @@ func (n *NeuCircle) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 	tnc := nanotime()
 	if drawer, ok := child.(mancini.NewDrawer); ok {
-		drawer.Draw(child, childX, childY, childW, childH)
+		drawer.Draw(child, childX, childY, childW, childH, damage)
 	}
 	drawPerf.NeuChildNs.Add(nanotime() - tnc)
 }

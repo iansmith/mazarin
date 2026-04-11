@@ -7,8 +7,8 @@ import "sync/atomic"
 // ============================================================================
 
 // SpansPerProcess is the number of spans tracked per process.
-// 256 entries × 24 bytes = 6KB per process.
-const SpansPerProcess = 256
+// 1024 entries × 24 bytes = 24KB per process.
+const SpansPerProcess = 1024
 
 // spanImpl is a reserved virtual address range.
 type spanImpl struct {

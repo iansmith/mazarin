@@ -12,6 +12,7 @@ package std
 
 import (
 	"fmt"
+	"image"
 	"time"
 	"unsafe"
 
@@ -163,7 +164,7 @@ func (b *BoxesAndGlueInteractor) ensureFont(dc mancini.DrawContext) {
 // Draw implements mancini.NewDrawer. Clears background, reads text
 // from the shared page, runs layout if needed, and renders each glyph.
 func (b *BoxesAndGlueInteractor) Draw(self mancini.Interactor,
-	x, y, w, h int64) {
+	x, y, w, h int64, damage image.Rectangle) {
 
 	t0 := time.Now()
 	defer func() {
@@ -176,6 +177,9 @@ func (b *BoxesAndGlueInteractor) Draw(self mancini.Interactor,
 	}()
 
 	if !self.Visible() {
+		return
+	}
+	if !b.Damaged(damage) {
 		return
 	}
 	dc := self.DC()

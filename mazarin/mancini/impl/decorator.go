@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"image"
 	"image/color"
 
 	"mazzy/mazarin/mancini"
@@ -120,7 +121,7 @@ func (d *Decorator) DecorateIfNeeded(self mancini.Interactor, x, y, w, h int64) 
 // Note: the child's Width and Height are NOT set here. They are owned by
 // the child (inside-out sizing). The Decorator's own Width/Height come
 // from constraint programs that read child.Width + Left + Right, etc.
-func (d *Decorator) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (d *Decorator) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	// 1. Skip decoration if bounds unchanged.
 	d.DecorateIfNeeded(self, x, y, w, h)
 
@@ -155,7 +156,7 @@ func (d *Decorator) Draw(self mancini.Interactor, x, y, w, h int64) {
 		cs.SetDC(self.DC())
 	}
 	if drawer, ok := child.(mancini.NewDrawer); ok {
-		drawer.Draw(child, childX, childY, childW, childH)
+		drawer.Draw(child, childX, childY, childW, childH, damage)
 	}
 }
 

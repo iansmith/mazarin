@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"image"
 	"image/color"
 
 	"mazzy/mazarin/mancini"
@@ -77,7 +78,7 @@ func (t *ThemedInteractor) DefaultSize() int64               { return t.theme.De
 //
 // Interactors whose neumorphic rendering already fills the background
 // (via [std.NeuBoxWith] or similar) skip this call entirely.
-func (t *ThemedInteractor) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (t *ThemedInteractor) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	bg := t.theme.Palette().Surface()
 	if bg.A == 0 {
 		t.ClearDamage()
@@ -87,4 +88,10 @@ func (t *ThemedInteractor) Draw(self mancini.Interactor, x, y, w, h int64) {
 	dc.SetColor(bg)
 	dc.FillRectangle(float64(x), float64(y), float64(w), float64(h))
 	t.ClearDamage()
+}
+
+// DrawSelf implements [mancini.SimpleParentDraw]. Fills the intersection
+// of rect with this interactor's bounds using the theme's Surface color.
+func (t *ThemedInteractor) DrawSelf(dc mancini.DrawContext, rect image.Rectangle) {
+	t.DrawSelfOpaque(rect, t.theme.Palette().Surface())
 }

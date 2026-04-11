@@ -373,7 +373,7 @@ func main() {
 	dc.SetColor(pal.Surface())
 	dc.FillRectangle(0, 0, float64(winW), float64(winH))
 	app.SetDC(dc)
-	app.Draw(app, 0, 0, int64(winW), int64(winH))
+	app.Draw(app, 0, 0, int64(winW), int64(winH), image.Rect(0, 0, int(winW), int(winH)))
 
 	// Debug: verify interactor tree dimensions after first draw.
 	{
@@ -406,7 +406,7 @@ func main() {
 	// 12. Main loop: select on WM messages and dirty attributes.
 	dirtyCh := attr.OnDirty()
 	redraw := func() {
-		app.Draw(app, 0, 0, int64(winW), int64(winH))
+		app.Draw(app, 0, 0, int64(winW), int64(winH), image.Rect(0, 0, int(winW), int(winH)))
 		sendBlit()
 	}
 

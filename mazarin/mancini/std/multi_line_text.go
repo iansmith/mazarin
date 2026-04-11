@@ -41,6 +41,7 @@ type MultiLineText struct {
 	BorderWidth float64
 	Focused     bool
 	TextColor   color.NRGBA
+	BgColor     *color.NRGBA // if non-nil, overrides pal.Base() for background
 	Disabled    bool
 	AppWindow   *AppWindow
 	AfterEdit   func() // optional; called after each text modification

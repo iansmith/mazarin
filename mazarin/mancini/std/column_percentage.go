@@ -1,6 +1,8 @@
 package std
 
 import (
+	"image"
+
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
@@ -59,7 +61,7 @@ func NewColumnPercentage(myName, parent string, pal mancini.Palette,
 // Draw positions children vertically according to the percentage sequence.
 // Each child is centered horizontally and given a height proportional to
 // its percentage of the parent's total height.
-func (cp *ColumnPercentage) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (cp *ColumnPercentage) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return
@@ -135,7 +137,7 @@ func (cp *ColumnPercentage) Draw(self mancini.Interactor, x, y, w, h int64) {
 			cs.SetDC(dc)
 		}
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, childX, curY, drawW, childH)
+			d.Draw(child, childX, curY, drawW, childH, damage)
 		}
 
 		curY += childH

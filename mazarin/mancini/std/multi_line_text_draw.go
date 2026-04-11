@@ -1,6 +1,7 @@
 package std
 
 import (
+	"image"
 	"image/color"
 	"unicode/utf8"
 
@@ -9,8 +10,11 @@ import (
 
 // Draw implements mancini.NewDrawer. Renders the multi-line text field:
 // inset background, visible text lines, selection highlight, and cursor.
-func (m *MultiLineText) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (m *MultiLineText) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
+		return
+	}
+	if !m.Damaged(damage) {
 		return
 	}
 	dc := self.DC()
@@ -36,8 +40,12 @@ func (m *MultiLineText) Draw(self mancini.Interactor, x, y, w, h int64) {
 	// 2. Inset field background.
 	ix, iy := fx+bw, fy+bw
 	iw, ih := fw-2*bw, fh-2*bw
+	bgCol := pal.Base()
+	if m.BgColor != nil {
+		bgCol = *m.BgColor
+	}
 	m.Theme().Style().DrawBox(pal, dc, mancini.Inset, mancini.LightWeight,
-		ix, iy, ix+iw, iy+ih, m.Radius, pal.Base())
+		ix, iy, ix+iw, iy+ih, m.Radius, bgCol)
 
 	// 3. Content area.
 	pad := m.Padding

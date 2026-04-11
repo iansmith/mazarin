@@ -1,6 +1,8 @@
 package std
 
 import (
+	"image"
+
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -70,7 +72,7 @@ func NewButtonNamed(myName, parent string, theme mancini.Theme,
 // [mancini.Palette]'s Surface color and decorated with shadows according
 // to Depth. If Face is non-nil, it is called to draw content (text,
 // icon, etc.) on top of the box.
-func (b *Button) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (b *Button) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

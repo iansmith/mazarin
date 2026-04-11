@@ -1,6 +1,7 @@
 package std
 
 import (
+	"image"
 	"math"
 
 	"mazzy/mazarin/attr"
@@ -96,6 +97,38 @@ func newMarginParent(lh *mancini.LayoutAttributes,
 	return mp
 }
 
+// ControlsInteractor returns the interactor to draw in the top-right
+// margin area. The default implementation returns nil (no controls).
+// Subclasses that embed *MarginParent can override this by defining
+// their own ControlsInteractor method on the concrete type; the Draw
+// method resolves the override through the self parameter.
+func (mp *MarginParent) ControlsInteractor() mancini.Interactor {
+	return nil
+}
+
+// labelMetrics computes the label gap boundaries for the top border edge.
+// Returns hasLabel=false if no label or no text face.
+func (mp *MarginParent) labelMetrics(x, w, rectX, rectW, r float64) (hasLabel bool, labelLeft, labelRight, labelTextW float64) {
+	if mp.Label == "" || mp.textFace == nil {
+		return false, 0, 0, 0
+	}
+	labelTextW = mp.textFace.MeasureText(mp.Label)
+	if labelTextW <= 0 {
+		return false, 0, 0, 0
+	}
+	hasLabel = true
+	labelCenterX := x + w/2.0
+	labelLeft = labelCenterX - labelTextW/2.0 - 4
+	labelRight = labelCenterX + labelTextW/2.0 + 4
+	if labelLeft < rectX+r {
+		labelLeft = rectX + r
+	}
+	if labelRight > rectX+rectW-r {
+		labelRight = rectX + rectW - r
+	}
+	return
+}
+
 // cornerRadius derives the corner radius from the margins.
 func (mp *MarginParent) cornerRadius() float64 {
 	m := mp.Top
@@ -113,7 +146,10 @@ func (mp *MarginParent) cornerRadius() float64 {
 
 // Draw implements mancini.NewDrawer. Draws the optional border and
 // label, then positions and draws the single child inside the margins.
-func (mp *MarginParent) Draw(self mancini.Interactor, x, y, w, h int64) {
+// If self implements ControlsInteractor() returning non-nil, the
+// controls interactor is positioned in the top margin and the border
+// draws a hump around it.
+func (mp *MarginParent) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return
@@ -122,9 +158,86 @@ func (mp *MarginParent) Draw(self mancini.Interactor, x, y, w, h int64) {
 	fx, fy := float64(x), float64(y)
 	fw, fh := float64(w), float64(h)
 
+	// Resolve controls interactor through self (virtual dispatch).
+	type controlsProvider interface {
+		ControlsInteractor() mancini.Interactor
+	}
+	var ctrl mancini.Interactor
+	if cp, ok := self.(controlsProvider); ok {
+		ctrl = cp.ControlsInteractor()
+	}
+
+	// Position controls interactor in the top margin if present.
+	var ctrlBounds [4]float64 // x, y, w, h — only valid when ctrl != nil
+	if ctrl != nil {
+		r := mp.cornerRadius()
+		leftCenter := fx + float64(mp.Left)/2.0
+		rightCenter := fx + fw - float64(mp.Right)/2.0
+		rectX := leftCenter
+		rectW := rightCenter - leftCenter
+
+		// Measure label to find labelRight.
+		_, _, labelRight, _ := mp.labelMetrics(fx, fw, rectX, rectW, r)
+
+		// Read the control's current width.
+		var ctrlW float64
+		if cl, ok := ctrl.(mancini.Layouter); ok {
+			if clh := cl.GetLayout(); clh != nil {
+				ctrlW = float64(clh.Width.Get())
+			}
+		}
+
+		// Center between labelRight (or left of available area) and the
+		// right edge of the border rect.
+		availLeft := labelRight
+		if availLeft < rectX+r {
+			availLeft = rectX + r
+		}
+		availRight := rectX + rectW - r
+		ctrlX := (availLeft+availRight)/2.0 - ctrlW/2.0
+		ctrlY := fy
+		ctrlH := float64(mp.Top)
+
+		// Clamp so the control stays inside the border rect.
+		if ctrlX < availLeft {
+			ctrlX = availLeft
+		}
+		if ctrlX+ctrlW > availRight {
+			ctrlX = availRight - ctrlW
+		}
+
+		ctrlBounds = [4]float64{ctrlX, ctrlY, ctrlW, ctrlH}
+
+		// Publish position to the controls interactor's layout.
+		if cl, ok := ctrl.(mancini.Layouter); ok {
+			if clh := cl.GetLayout(); clh != nil {
+				clh.X.Set(int64(ctrlX))
+				clh.Y.Set(int64(ctrlY))
+				if !clh.Height.IsConstraint() {
+					clh.Height.Set(int64(ctrlH))
+				}
+			}
+		}
+	}
+
 	// Draw border if configured.
 	if mp.BorderWidth > 0 {
-		mp.drawBorder(dc, fx, fy, fw, fh)
+		if ctrl != nil {
+			mp.drawBorder(dc, fx, fy, fw, fh, ctrlBounds)
+		} else {
+			mp.drawBorder(dc, fx, fy, fw, fh, [4]float64{})
+		}
+	}
+
+	// Draw controls interactor after border (on top).
+	if ctrl != nil {
+		if cs, ok := ctrl.(interface{ SetDC(mancini.DrawContext) }); ok {
+			cs.SetDC(dc)
+		}
+		if d, ok := ctrl.(mancini.NewDrawer); ok {
+			d.Draw(ctrl, int64(ctrlBounds[0]), int64(ctrlBounds[1]),
+				int64(ctrlBounds[2]), int64(ctrlBounds[3]), damage)
+		}
 	}
 
 	// Child area inside the margins.
@@ -165,13 +278,15 @@ func (mp *MarginParent) Draw(self mancini.Interactor, x, y, w, h int64) {
 		cs.SetDC(dc)
 	}
 	if d, ok := child.(mancini.NewDrawer); ok {
-		d.Draw(child, childX, childY, childW, childH)
+		d.Draw(child, childX, childY, childW, childH, damage)
 	}
 }
 
 // drawBorder renders the rounded-rectangle border with an optional
-// label gap in the top edge.
-func (mp *MarginParent) drawBorder(dc mancini.DrawContext, x, y, w, h float64) {
+// label gap in the top edge and an optional hump around a controls
+// interactor. ctrlBounds is [x,y,w,h] of the controls interactor;
+// if ctrlBounds[2] (width) is 0, no hump is drawn.
+func (mp *MarginParent) drawBorder(dc mancini.DrawContext, x, y, w, h float64, ctrlBounds [4]float64) {
 	bw := float64(mp.BorderWidth)
 	r := mp.cornerRadius()
 
@@ -199,80 +314,103 @@ func (mp *MarginParent) drawBorder(dc mancini.DrawContext, x, y, w, h float64) {
 	dc.SetColor(mp.pal.Mid())
 	dc.SetLineWidth(bw)
 
-	// Measure label gap if we have a label.
-	var hasLabel bool
-	var labelLeft, labelRight float64
-	var labelTextW float64
+	// Measure label gap.
+	hasLabel, labelLeft, labelRight, labelTextW := mp.labelMetrics(x, w, rectX, rectW, r)
 
-	if mp.Label != "" && mp.textFace != nil {
-		labelTextW = mp.textFace.MeasureText(mp.Label)
-		if labelTextW > 0 {
-			hasLabel = true
-			labelCenterX := x + w/2.0
-			labelLeft = labelCenterX - labelTextW/2.0 - 4
-			labelRight = labelCenterX + labelTextW/2.0 + 4
-			// Clamp to border rect bounds.
-			if labelLeft < rectX+r {
-				labelLeft = rectX + r
-			}
-			if labelRight > rectX+rectW-r {
-				labelRight = rectX + rectW - r
-			}
+	// Hump geometry for controls interactor.
+	hasHump := ctrlBounds[2] > 0
+	var humpLeft, humpRight, humpTop float64
+	if hasHump {
+		humpLeft = ctrlBounds[0] - 1
+		humpRight = ctrlBounds[0] + ctrlBounds[2] + 1
+		humpTop = rectY - ctrlBounds[3]
+		if humpTop < y {
+			humpTop = y
 		}
 	}
 
-	if !hasLabel {
-		// Simple case: full rounded rectangle.
+	// We need a manual path if we have a label gap or a hump.
+	needsManualPath := hasLabel || hasHump
+
+	if !needsManualPath {
+		// Simple case: full rounded rectangle, no gaps.
 		dc.DrawRoundedRectangle(rectX, rectY, rectW, rectH, r)
 		dc.Stroke()
-	} else {
-		// Draw the rounded rectangle with a gap in the top edge.
-		// We draw the path manually: start after the gap, go clockwise.
+		return
+	}
 
-		// Top-right corner arc center.
-		trCx := rectX + rectW - r
-		trCy := rectY + r
-		// Bottom-right corner arc center.
-		brCx := rectX + rectW - r
-		brCy := rectY + rectH - r
-		// Bottom-left corner arc center.
-		blCx := rectX + r
-		blCy := rectY + rectH - r
-		// Top-left corner arc center.
-		tlCx := rectX + r
-		tlCy := rectY + r
+	// Corner arc centers.
+	trCx := rectX + rectW - r
+	trCy := rectY + r
+	brCx := rectX + rectW - r
+	brCy := rectY + rectH - r
+	blCx := rectX + r
+	blCy := rectY + rectH - r
+	tlCx := rectX + r
+	tlCy := rectY + r
 
-		// Segment 1: from label gap right edge along top to top-right corner.
+	// drawTopSegment draws the top edge from startX to endX at rectY,
+	// inserting the hump if it falls within this segment.
+	drawTopSegment := func(startX, endX float64) {
+		if !hasHump || humpRight <= startX || humpLeft >= endX {
+			// No hump in this segment — straight line.
+			dc.LineTo(endX, rectY)
+			return
+		}
+		// Draw to hump start, up, across, down, then continue.
+		if humpLeft > startX {
+			dc.LineTo(humpLeft, rectY)
+		}
+		dc.LineTo(humpLeft, humpTop)
+		dc.LineTo(humpRight, humpTop)
+		dc.LineTo(humpRight, rectY)
+		if humpRight < endX {
+			dc.LineTo(endX, rectY)
+		}
+	}
+
+	if hasLabel {
+		// Top edge with label gap: two segments separated by the gap.
+		// Segment 1: labelRight → top-right corner.
 		dc.MoveTo(labelRight, rectY)
-		dc.LineTo(trCx, rectY)
+		drawTopSegment(labelRight, trCx)
+	} else {
+		// Top edge without label gap: single segment from top-left to top-right.
+		dc.MoveTo(rectX+r, rectY)
+		drawTopSegment(rectX+r, trCx)
+	}
 
-		// Top-right corner arc (quarter circle, -π/2 to 0).
-		drawArc(dc, trCx, trCy, r, -math.Pi/2, 0)
+	// Top-right corner arc (-π/2 to 0).
+	drawArc(dc, trCx, trCy, r, -math.Pi/2, 0)
 
-		// Right edge.
-		dc.LineTo(rectX+rectW, brCy)
+	// Right edge.
+	dc.LineTo(rectX+rectW, brCy)
 
-		// Bottom-right corner arc (0 to π/2).
-		drawArc(dc, brCx, brCy, r, 0, math.Pi/2)
+	// Bottom-right corner arc (0 to π/2).
+	drawArc(dc, brCx, brCy, r, 0, math.Pi/2)
 
-		// Bottom edge.
-		dc.LineTo(blCx, rectY+rectH)
+	// Bottom edge.
+	dc.LineTo(blCx, rectY+rectH)
 
-		// Bottom-left corner arc (π/2 to π).
-		drawArc(dc, blCx, blCy, r, math.Pi/2, math.Pi)
+	// Bottom-left corner arc (π/2 to π).
+	drawArc(dc, blCx, blCy, r, math.Pi/2, math.Pi)
 
-		// Left edge.
-		dc.LineTo(rectX, tlCy)
+	// Left edge.
+	dc.LineTo(rectX, tlCy)
 
-		// Top-left corner arc (π to 3π/2).
-		drawArc(dc, tlCx, tlCy, r, math.Pi, 3*math.Pi/2)
+	// Top-left corner arc (π to 3π/2).
+	drawArc(dc, tlCx, tlCy, r, math.Pi, 3*math.Pi/2)
 
-		// Segment 2: from top-left corner to label gap left edge.
+	if hasLabel {
+		// Segment 2: top-left corner → labelLeft.
 		dc.LineTo(labelLeft, rectY)
+	}
+	// If no label, path closes back to the MoveTo point.
 
-		dc.Stroke()
+	dc.Stroke()
 
-		// Draw the label text.
+	// Draw the label text if present.
+	if hasLabel {
 		dc.SetColor(mp.pal.Mid())
 		mp.textFace.SetText(mp.Label)
 		labelX := x + (w-labelTextW)/2.0

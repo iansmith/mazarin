@@ -328,7 +328,7 @@ func MazarinMain() {
 	dc.SetColor(pal.Surface())
 	dc.FillRectangle(0, 0, float64(winW), float64(winH))
 
-	app.Draw(app, 0, 0, int64(winW), int64(winH))
+	app.Draw(app, 0, 0, int64(winW), int64(winH), image.Rect(0, 0, int(winW), int(winH)))
 	sendBlit(rachelSID)
 
 	// Event loop.
@@ -341,7 +341,7 @@ func MazarinMain() {
 	var draws, dirtyTicks, writeEvts int64
 
 	redraw := func() {
-		app.Draw(app, 0, 0, int64(winW), int64(winH))
+		app.Draw(app, 0, 0, int64(winW), int64(winH), image.Rect(0, 0, int(winW), int(winH)))
 		sendBlit(rachelSID)
 		draws++
 	}

@@ -1,6 +1,7 @@
 package std
 
 import (
+	"image"
 	"image/color"
 	"unicode/utf8"
 
@@ -720,7 +721,7 @@ func (t *SingleLineText) ensureFonts(dc mancini.DrawContext) {
 
 // Draw implements mancini.NewDrawer. It renders the inset field background,
 // text (or hint), and cursor.
-func (t *SingleLineText) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (t *SingleLineText) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

@@ -170,8 +170,11 @@ func (s *Scroller) DeleteChild(child mancini.Interactor) {
 //     the viewport, set a clip rectangle, translate Y, and draw.
 //
 // No virtual-sized buffer is ever allocated.
-func (s *Scroller) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (s *Scroller) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
+		return
+	}
+	if !s.Damaged(damage) {
 		return
 	}
 	dc := self.DC()
@@ -213,7 +216,7 @@ func (s *Scroller) Draw(self mancini.Interactor, x, y, w, h int64) {
 			if d, ok := child.(mancini.NewDrawer); ok {
 				if cl, ok := child.(mancini.Layouter); ok {
 					clh := cl.GetLayout()
-					d.Draw(child, x+clh.X.Get(), y+clh.Y.Get(), cw, ch)
+					d.Draw(child, x+clh.X.Get(), y+clh.Y.Get(), cw, ch, damage)
 				}
 			}
 		}
@@ -305,7 +308,7 @@ func (s *Scroller) Draw(self mancini.Interactor, x, y, w, h int64) {
 		s.offDC.Clip()
 
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, 0, bufChildY, cw, childH)
+			d.Draw(child, 0, bufChildY, cw, childH, damage)
 		}
 
 		s.offDC.Pop()

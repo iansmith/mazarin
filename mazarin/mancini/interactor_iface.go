@@ -1,6 +1,9 @@
 package mancini
 
-import "image/color"
+import (
+	"image"
+	"image/color"
+)
 
 // Interactor is the base interface for all UI elements in the tree.
 // Every concrete interactor type satisfies this interface via struct
@@ -51,7 +54,31 @@ type ThemedInteractor interface {
 // child directly in their own Draw method.
 type Parent interface {
 	GetChildren() []Interactor
-	DrawChildren(self Interactor, x, y, w, h int64)
+	DrawChildren(self Interactor, x, y, w, h int64, damage image.Rectangle)
+
+	// IsRectSingleChild returns the child that completely contains rect,
+	// or nil if no single child does. When non-nil, the parent can skip
+	// its own drawing and forward Draw directly to that child.
+	IsRectSingleChild(rect image.Rectangle) Interactor
+
+	// SmallestDraw returns the parts of rect not covered by any child.
+	// These are the background strips the parent must repaint.
+	SmallestDraw(rect image.Rectangle) []image.Rectangle
+}
+
+// SimpleParentDraw is the draw protocol for parent interactors that
+// want damage-aware drawing. DrawChildren orchestrates the draw pass:
+// it uses [Parent.IsRectSingleChild] and [Parent.SmallestDraw] to
+// minimize work. DrawSelf paints the parent's own content (typically
+// background fill) for a single rectangle.
+//
+// [impl.Parent] provides a default implementation where DrawSelf is a
+// no-op. [impl.ThemedInteractor] implements DrawSelf to fill with the
+// theme's Surface color. Concrete parent types can override DrawSelf
+// for custom background rendering.
+type SimpleParentDraw interface {
+	DrawChildren(self Interactor, x, y, w, h int64, damage image.Rectangle)
+	DrawSelf(dc DrawContext, rect image.Rectangle)
 }
 
 // Picker performs hit testing on an interactor and its children.
@@ -66,6 +93,13 @@ type Parent interface {
 // (e.g., adding a scroll offset before recursing into the child).
 type Picker interface {
 	Pick(localX, localY int64) []Interactor
+}
+
+// FocusClaimer is implemented by interactors that can claim in-app
+// keyboard focus. Children call FocusClaimer.SetFocusToSelf() on
+// their parent to request focus when clicked or otherwise activated.
+type FocusClaimer interface {
+	SetFocusToSelf()
 }
 
 // Decoratable is implemented by types that customize the visual

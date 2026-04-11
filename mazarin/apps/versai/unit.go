@@ -1,11 +1,13 @@
 // Package main implements versai, the primary text editor for mazzy.
 //
-// A versai.Unit is the core editing component: a VSplitter containing
-// a MultiLineText (left, 48%), a VerticalLine separator (center, 4%),
-// and a BoxesAndGlueInteractor (right, remainder).
+// A versai.Unit is the core editing component: a MarginParent containing
+// a UnitContainer with a VersaiEditor (top, 2/3 width, 3 lines) and a
+// BoxesAndGlueInteractor (below, offset 20% from left, 400px tall).
 package main
 
 import (
+	"fmt"
+
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
@@ -13,11 +15,9 @@ import (
 	mfont "mazzy/shared/font"
 )
 
-// UnitEntry pairs a Unit with its MarginParent wrapper and a dlist
-// node handle for O(1) removal.
+// UnitEntry pairs a Unit with a dlist node handle for O(1) removal.
 type UnitEntry struct {
 	Unit *Unit
-	MP   *std.MarginParent
 	Node *dlist.Node[*UnitEntry] // set after PushBack
 }
 
@@ -30,22 +30,21 @@ func NewUnitList() *UnitList {
 	return dlist.New[*UnitEntry]()
 }
 
-// Unit is the core editing component of versai. It is a VSplitter
-// that arranges its three children horizontally:
+// Unit is the core editing component of versai. It embeds MarginParent
+// to provide margins, border, and label around a UnitContainer that
+// arranges its children vertically:
 //
-//	[MultiLineText 48%]  [VerticalLine 4%]  [BoxesAndGlueInteractor 48%]
+//	[VersaiEditor]                — (0,0), 2/3 width, 3 text lines
+//	[BoxesAndGlueInteractor]     — (20% width, VE.bottom+2), 400px
 //
-// The MultiLineText sets its own height to 400px. The
-// BoxesAndGlueInteractor's height is constrained to match the
-// MultiLineText's height. The VerticalLine's height is constrained
-// to the VSplitter's height.
-//
-// A ThrobberRadialChooser is pinned to the lower-right corner of the
-// VSplitter, providing a "Small"/"Large" mode chooser overlay.
+// A ThrobberRadialChooser is pinned to the lower-right corner of the BAG.
 type Unit struct {
-	Split     *std.VSplitter
+	*std.MarginParent // Unit IS a MarginParent
+
+	Container *UnitContainer
+	VERow     *std.Row
+	VELabel   *std.Label
 	Editor    *VersaiEditor
-	Separator *std.VerticalLine
 	BAG       *std.BoxesAndGlueInteractor
 	Throbber  *std.ThrobberRadialChooser
 
@@ -56,61 +55,86 @@ type Unit struct {
 	// BagTextLen is the eager constraint that mirrors editor text length
 	// into the BAG. Stored here so CleanConstraints can delete it.
 	BagTextLen *attr.Attribute[int64]
+
+	// In-app focus: set by the application after construction.
+	KeyFocusAgent  *mancini.KeyAgent
+	KeyFocusTarget mancini.Interactor
+	FocusPeers     []*Unit
 }
 
 // NewUnit creates a versai Unit wired to the constraint system.
 // myName may be empty, in which case a unique name is generated
 // automatically. parentName is the constraint-system name of the
-// parent interactor. rachelSID is the shepherd ID for rachel (overlay IPC).
+// parent interactor. label is the text drawn in the top margin border.
+// rachelSID is the shepherd ID for rachel (overlay IPC).
 // mainDC may be nil initially and set later via Unit.Throbber.SetMainDC.
 func NewUnit(myName, parentName string, theme mancini.Theme,
-	pal mancini.Palette, rachelSID int, mainDC mancini.DrawContext) *Unit {
+	pal mancini.Palette, rachelSID int, mainDC mancini.DrawContext,
+	label string) *Unit {
 
 	if myName == "" {
 		myName = mancini.DefaultName("unit")
 	}
-	splitName := myName + "_split"
+	contName := myName + "_cont"
 	editorName := myName + "_editor"
-	sepName := myName + "_sep"
 	bagName := myName + "_bag"
 
-	u := &Unit{}
+	// Create the MarginParent that Unit embeds.
+	mp := std.NewMarginParent(myName, parentName,
+		16, 6, 6, 6, // top, right, bottom, left
+		1,            // border width
+		label,
+		theme, pal)
+
+	u := &Unit{MarginParent: mp}
+
+	// Re-register so dispatch sees Unit, not MarginParent.
+	u.ReInitializeOwner(u)
 
 	// Focused attribute — initially false.
 	u.Focused = attr.ValueBool(
 		mancini.LayoutURI(myName, mancini.DataTypeBool, "Focused"), false)
 
-	// VSplitter: three children at 48/4/48.
-	u.Split = std.NewVSplitter(splitName, parentName, pal)
+	// UnitContainer: parent is this Unit.
+	const veFontSize = 20
+	const veLines = 1
+	rowName := myName + "_verow"
+	labelName := myName + "_velbl"
+	u.Container = NewUnitContainer(contName, myName, theme, pal, veFontSize, veLines)
 
-	// Left child: MultiLineText wrapped in VersaiEditor.
+	// When the container computes its final height, update the
+	// MarginParent's height = containerHeight + top + bottom margins.
+	u.Container.OnHeightChanged = func(containerH int64) {
+		u.GetLayout().Height.Set(containerH + mp.Top + mp.Bottom)
+	}
+
+	// VE row: label "[1]" + VE, top-aligned.
+	u.VERow = std.NewRow(rowName, contName, pal, 0, mancini.AxisMinimum, 0)
+	u.VELabel = std.NewLabelNamed(labelName, rowName, theme, "[1]", veFontSize)
+	u.VELabel.Transparent = true
+
+	// VE: parent is the VE row.
 	mte := std.NewMultiLineTextNamed(
-		editorName, splitName, theme,
-		"", 20, 0, 400)
+		editorName, rowName, theme,
+		"", veFontSize, 0, 100) // height=100 placeholder, recomputed at first draw
+	tint := pal.SurfaceTint()
+	mte.BgColor = &tint
 	u.Editor = NewVersaiEditor(editorName, mte)
 
-	// Editor's height URI — used to constrain BAG height.
-	editorHeightURI := u.Editor.GetLayout().Height.URI()
+	// Wire VE reference so UnitContainer can compute VE height from font metrics.
+	u.Container.VE = u.Editor
 
-	// Center child: VerticalLine with height constrained to VSplitter height.
-	u.Separator = std.NewVerticalLineConstrained(
-		sepName, splitName, theme,
-		u.Split.HeightURI())
-
-	// Right child: BoxesAndGlueInteractor with height constrained to editor.
-	bagLH := mancini.NewLayoutAttributesBase(bagName, splitName)
+	// BAG: parent is the container.
+	bagLH := mancini.NewLayoutAttributesBase(bagName, contName)
 	bagLH.Width = attr.ValueI64(
 		mancini.LayoutURI(bagName, mancini.DataTypeInt64, mancini.LayoutWidth), 0)
-	bagLH.Height = attr.ConstraintI64(
-		mancini.LayoutURI(bagName, mancini.DataTypeInt64, mancini.LayoutHeight),
-		mancini.EqualI64(editorHeightURI))
+	bagLH.Height = attr.ValueI64(
+		mancini.LayoutURI(bagName, mancini.DataTypeInt64, mancini.LayoutHeight), 200)
 	bagLH.InitBounds(bagName)
 	u.BAG = std.NewBoxesAndGlueInteractorWithLayout(bagName, bagLH, theme, 10)
 	u.BAG.SetFontFamily(mfont.LatinModernRoman)
 
 	// Text length constraint: eager, equal to the editor's text length.
-	// When the editor updates its shared page and sets textLen, this
-	// constraint fires dirtyCh, causing a redraw that reads the new text.
 	u.BagTextLen = attr.ConstraintI64(
 		mancini.LayoutURI(bagName, mancini.DataTypeInt64, mancini.LayoutTextLen),
 		mancini.EqualI64(u.Editor.TextLenURI()))
@@ -119,24 +143,20 @@ func NewUnit(myName, parentName string, theme mancini.Theme,
 	// Wire the shared page to the BAG.
 	u.BAG.SetTextSource(u.Editor.TextPageAddr(), u.BagTextLen)
 
-	// When the VE updates the shared page, damage the BAG so the
-	// vsplitter includes it in the next redraw.
+	// When the VE updates the shared page, damage the BAG.
 	u.Editor.OnPageUpdate = func() {
 		u.BAG.FullDamage()
 	}
 
-	// ThrobberRadialChooser pinned to lower-right corner of the VSplitter.
+	// ThrobberRadialChooser: parent is the container (drawn after BAG).
 	throbName := myName + "_throb"
 	u.Throbber = std.NewThrobberRadialChooser(
-		throbName, splitName, theme, pal,
+		throbName, contName, theme, pal,
 		rachelSID, mainDC,
 		[]string{"Small", "Medium", "Large"}, 0,
 	)
-	// Throbber position is set by VSplitter.Draw to the lower-left
-	// of the BAG pane. X/Y are plain value attributes, updated each frame.
 
 	// Wire radial chooser selections to the BAG font size.
-	// "Small" (index 0) = 10pt, "Medium" (index 1) = 16pt, "Large" (index 2) = 20pt.
 	u.Throbber.OnSelect = func(seg int) {
 		switch seg {
 		case 0:
@@ -151,24 +171,50 @@ func NewUnit(myName, parentName string, theme mancini.Theme,
 	return u
 }
 
+// SetFocusToSelf claims in-app keyboard focus for this Unit.
+// It walks FocusPeers, setting each peer's Focused to false except
+// this one (true), and directs the KeyAgent to deliver keyboard events
+// to the editor.
+func (u *Unit) SetFocusToSelf() {
+	if u.KeyFocusAgent == nil || u.KeyFocusTarget == nil {
+		return
+	}
+	for _, peer := range u.FocusPeers {
+		isSelf := peer == u
+		if peer.Focused != nil {
+			peer.Focused.Set(isSelf)
+		}
+		if peer.KeyFocusTarget != nil {
+			if f, ok := peer.KeyFocusTarget.(interface{ SetFocused(bool) }); ok {
+				f.SetFocused(isSelf)
+			}
+		}
+	}
+	u.KeyFocusAgent.SetFocus(u.KeyFocusTarget)
+	fmt.Printf("[unit] SetFocusToSelf\n")
+}
+
+// Click implements mancini.Clickable. Catches clicks that fall through
+// from non-interactive children and claims focus.
+func (u *Unit) Click(ev *mancini.InputEvent) bool {
+	u.SetFocusToSelf()
+	return true
+}
+
 // DeleteUnitEntry removes a UnitEntry from the unit list, detaches the
-// MarginParent from its parent container, and tears down all constraint
-// attributes for both the Unit and MarginParent. After this call the
-// entry and its Unit should not be used.
+// Unit from its parent container, and tears down all constraint
+// attributes. After this call the entry and its Unit should not be used.
 func DeleteUnitEntry(entry *UnitEntry, units *UnitList, col *ColumnEdgeToEdge) {
 	// 1. Remove from the linked list.
 	units.Remove(entry.Node)
 
-	// 2. Detach the MarginParent from the scroller.
-	col.SV.Scroller.DeleteChild(entry.MP)
+	// 2. Detach the Unit from the scroller.
+	col.SV.Scroller.DeleteChild(entry.Unit)
 
-	// 3. Tear down the Unit's constraint subgraph.
+	// 3. Tear down all constraints.
 	entry.Unit.CleanConstraints()
 
-	// 4. Tear down the MarginParent's constraint attrs.
-	entry.MP.GetLayout().CleanConstraints()
-
-	// 5. Re-layout remaining children.
+	// 4. Re-layout remaining children.
 	col.LayoutChildren()
 }
 
@@ -179,22 +225,24 @@ func (u *Unit) CleanConstraints() {
 	attr.Delete(u.Focused)
 	u.Focused = nil
 
-	// Phase 1: Cross-child constraints that read from sibling attrs.
-	// BagTextLen depends on Editor.TextLen.
+	// Phase 1: Cross-child constraints.
 	attr.Delete(u.BagTextLen)
 	u.BagTextLen = nil
 
 	// Phase 2: Throbber.
 	u.Throbber.GetLayout().CleanConstraints()
 
-	// Phase 3: Each child's layout, leaves first.
-	// BAG and Separator have constraint Heights that depend on
-	// Editor.Height and Split.Height respectively — their
-	// LayoutAttributes.CleanConstraints handles internal ordering.
+	// Phase 3: Leaf children.
 	u.BAG.GetLayout().CleanConstraints()
-	u.Separator.GetLayout().CleanConstraints()
 	u.Editor.GetLayout().CleanConstraints()
+	u.VELabel.GetLayout().CleanConstraints()
 
-	// Phase 4: VSplitter (parent of the above children).
-	u.Split.GetLayout().CleanConstraints()
+	// Phase 3.5: VE Row.
+	u.VERow.GetLayout().CleanConstraints()
+
+	// Phase 4: UnitContainer.
+	u.Container.GetLayout().CleanConstraints()
+
+	// Phase 5: MarginParent (self).
+	u.MarginParent.GetLayout().CleanConstraints()
 }

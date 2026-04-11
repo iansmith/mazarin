@@ -1,6 +1,7 @@
 package std
 
 import (
+	"image"
 	"image/color"
 	"os"
 	"sync"
@@ -286,7 +287,7 @@ func (w *AppWindow) DispatchAnimation(wmMsg any) bool {
 // If the AppWindow's DamageRect is smaller than its full bounds,
 // drawing is clipped to the damaged region so unchanged pixels
 // are not overwritten.
-func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
+func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return
@@ -357,7 +358,7 @@ func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 
 	tc1 := nanotime()
 	if d, ok := child.(mancini.NewDrawer); ok {
-		d.Draw(child, x, y, childW, childH)
+		d.Draw(child, x, y, childW, childH, damage)
 	}
 	drawPerf.AppChildNs.Add(nanotime() - tc1)
 

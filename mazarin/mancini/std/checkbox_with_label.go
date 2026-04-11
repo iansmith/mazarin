@@ -1,6 +1,7 @@
 package std
 
 import (
+	"image"
 	"math"
 
 	"mazzy/mazarin/mancini"
@@ -109,7 +110,7 @@ func drawCheckmark(dc mancini.DrawContext, pal mancini.Palette, fx, fy, fw, fh f
 // Draw implements mancini.NewDrawer. It renders a neumorphic checkbox
 // (Inset when unchecked, Raised + checkmark when checked) and a label
 // positioned according to Side.
-func (c *CheckboxWithLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (c *CheckboxWithLabel) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

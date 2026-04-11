@@ -2,6 +2,7 @@ package std
 
 import (
 	"fmt"
+	"image"
 	"time"
 
 	"mazzy/mazarin/attr"
@@ -94,7 +95,7 @@ func (vs *VSplitter) HeightURI() string {
 // Draw positions the three children horizontally according to the
 // percentage split. Only three children are expected. Layout is always
 // propagated to all children, but Draw is skipped for undamaged children.
-func (vs *VSplitter) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (vs *VSplitter) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return
@@ -125,11 +126,11 @@ func (vs *VSplitter) Draw(self mancini.Interactor, x, y, w, h int64) {
 		propagateChildLayout(children[2], dc, x+w-rightW, y, rightW)
 
 		t0 = time.Now()
-		drewLeft = drawChildIfDamaged(children[0], x, y, leftW, parentDmg)
+		drewLeft = drawChildIfDamaged(children[0], x, y, leftW, parentDmg, damage)
 		t1 = time.Now()
-		drewCenter = drawChildIfDamaged(children[1], x+leftW+1, y, centerW, parentDmg)
+		drewCenter = drawChildIfDamaged(children[1], x+leftW+1, y, centerW, parentDmg, damage)
 		t2 = time.Now()
-		drewRight = drawChildIfDamaged(children[2], x+w-rightW, y, rightW, parentDmg)
+		drewRight = drawChildIfDamaged(children[2], x+w-rightW, y, rightW, parentDmg, damage)
 		t3 = time.Now()
 	}
 
@@ -163,7 +164,7 @@ func (vs *VSplitter) Draw(self mancini.Interactor, x, y, w, h int64) {
 				elh := l.GetLayout()
 				if elh != nil {
 					d.Draw(extra, elh.X.Get(), elh.Y.Get(),
-						elh.Width.Get(), elh.Height.Get())
+						elh.Width.Get(), elh.Height.Get(), damage)
 				}
 			}
 		}
@@ -313,7 +314,7 @@ func propagateChildLayout(child mancini.Interactor, dc mancini.DrawContext, cx, 
 // drawChildIfDamaged calls Draw on the child only if it has pending damage
 // or the parent's damage rect overlaps the child's area (meaning the parent's
 // background fill may have overwritten the child's pixels).
-func drawChildIfDamaged(child mancini.Interactor, cx, cy, cw int64, parentDamage [4]int64) bool {
+func drawChildIfDamaged(child mancini.Interactor, cx, cy, cw int64, parentDamage [4]int64, damage image.Rectangle) bool {
 	ch := int64(0)
 	if l, ok := child.(mancini.Layouter); ok {
 		clh := l.GetLayout()
@@ -334,7 +335,7 @@ func drawChildIfDamaged(child mancini.Interactor, cx, cy, cw int64, parentDamage
 		}
 	}
 	if d, ok := child.(mancini.NewDrawer); ok {
-		d.Draw(child, cx, cy, cw, ch)
+		d.Draw(child, cx, cy, cw, ch, damage)
 	}
 	return true
 }

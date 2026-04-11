@@ -1,6 +1,8 @@
 package std
 
 import (
+	"image"
+
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
@@ -128,7 +130,7 @@ func (r *RowFillLastChild) SetSpacing(v float64) {
 
 // Draw implements mancini.NewDrawer. Arranges children left-to-right;
 // the last visible child receives remaining width.
-func (r *RowFillLastChild) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (r *RowFillLastChild) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 
 	children := r.GetChildren()
@@ -205,7 +207,7 @@ func (r *RowFillLastChild) Draw(self mancini.Interactor, x, y, w, h int64) {
 		}
 
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, curX, childY, childW, childH)
+			d.Draw(child, curX, childY, childW, childH, damage)
 		}
 		curX += childW
 	}

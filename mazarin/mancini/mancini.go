@@ -1,6 +1,7 @@
 package mancini
 
 import (
+	"image"
 	"image/color"
 )
 
@@ -15,13 +16,15 @@ type Drawer interface {
 // passes authoritative x, y, w, h — these override any stale layout
 // handle values. The self parameter is the backpointer to the concrete
 // type, enabling virtual dispatch for DC(), Visible(), and other
-// interface methods. See the package documentation for details on the
+// interface methods. The damage parameter is the region that needs
+// repainting; interactors whose bounds do not intersect it can skip
+// drawing. See the package documentation for details on the
 // backpointer pattern.
 //
 // All concrete interactors in [mazzy/mazarin/mancini/std] implement this
 // interface.
 type NewDrawer interface {
-	Draw(self Interactor, x, y, w, h int64)
+	Draw(self Interactor, x, y, w, h int64, damage image.Rectangle)
 }
 
 // Layouter is implemented by interactors that have [LayoutAttributes].

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"image"
 	"image/color"
 
 	"mazzy/mazarin/mancini"
@@ -68,7 +69,7 @@ func (t *Throbber) color() color.NRGBA {
 
 // Draw renders the throbber as a filled circle at the current brightness.
 // The radius scales from 70% at dimmest to 100% at brightest.
-func (t *Throbber) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (t *Throbber) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return

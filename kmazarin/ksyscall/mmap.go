@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
 	"unsafe"
@@ -95,6 +96,7 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 			// Remove any existing spans that overlap, then add new span
 			removeSpan(addr, alignedLength)
 			if !addSpan(addr, alignedLength) {
+				mmapENOMEM('A', addr, length)
 				return -12 // ENOMEM
 			}
 			result = addr
@@ -106,9 +108,11 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 			if addr >= heapStart && addr+alignedLength <= heapEnd {
 				result = addr
 			} else {
+				mmapENOMEM('B', addr, length)
 				return -12 // ENOMEM - can't honor MAP_FIXED at this address
 			}
 		} else {
+			mmapENOMEM('C', addr, length)
 			return -12 // ENOMEM - can't honor MAP_FIXED at this address
 		}
 	} else if isUserspace && addr < 0x0000800000000000 {
@@ -147,12 +151,46 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 
 	// Return result (or error)
 	if result == 0 {
+		mmapENOMEM('D', addr, length)
 		return -12 // ENOMEM
 	}
 
 	return int64(result)
 }
 
+
+// mmapENOMEM logs an mmap ENOMEM via direct UART. path identifies which
+// branch failed (A=addSpan, B=kernel fixed, C=user fixed, D=bump alloc).
+//
+//go:nosplit
+func mmapENOMEM(path byte, addr, length uint64) {
+	serial.PollWrite('[')
+	serial.PollWrite('m')
+	serial.PollWrite('m')
+	serial.PollWrite('a')
+	serial.PollWrite('p')
+	serial.PollWrite(':')
+	serial.PollWrite(path)
+	serial.PollWrite(']')
+	serial.PollWrite(' ')
+	serial.PollWrite('E')
+	serial.PollWrite('N')
+	serial.PollWrite('O')
+	serial.PollWrite('M')
+	serial.PollWrite('E')
+	serial.PollWrite('M')
+	serial.PollWrite(' ')
+	serial.PollWrite('a')
+	serial.PollWrite('=')
+	kmem.SerialHex16(addr)
+	serial.PollWrite(' ')
+	serial.PollWrite('l')
+	serial.PollWrite('=')
+	kmem.SerialHex16(length)
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
+	kmem.LogPageBreakdown()
+}
 
 // GetUserMmapAllocEnd returns the current end of userspace mmap allocations
 // for the calling process. Any address >= this value has NOT been allocated.

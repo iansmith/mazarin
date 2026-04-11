@@ -2,6 +2,7 @@ package std
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 	"time"
 
@@ -84,7 +85,7 @@ func (w *WebInteractor) SetHTML(html []byte) {
 
 // Draw implements mancini.NewDrawer. Renders the HTML content directly
 // into the DrawContext at (x, y) using the WebRenderEngine.
-func (w *WebInteractor) Draw(self mancini.Interactor, x, y, width, height int64) {
+func (w *WebInteractor) Draw(self mancini.Interactor, x, y, width, height int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

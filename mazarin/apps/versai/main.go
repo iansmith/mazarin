@@ -137,24 +137,21 @@ func main() {
 		theme, pal, appWidthURI, appHeightURI,
 		20, std.ScrollbarStandard)
 
-	// Create 4 Units, each wrapped in a MarginParent inside the scroller.
-	// Editor height is 400; MarginParent adds top(16) + bottom(6) = 422 total.
-	const unitEditorHeight = 400
+	// Create 4 Units inside the scroller. Each Unit is a MarginParent
+	// containing a UnitContainer (VE + BAG). Margins add top(16)
+	// + bottom(6) to the container height.
 	scrollerParent := col.ScrollerName()
 	units := NewUnitList()
 	labels := [4]string{"Unit A", "Unit B", "Unit C", "Unit D"}
 	scroller := col.SV.Scroller
 	for i := range labels {
-		mpName := fmt.Sprintf("versai_u%d_mp", i)
-		mp := std.NewMarginParent(mpName, scrollerParent,
-			16, 6, 6, 6, // top, right, bottom, left
-			1,            // border width
-			labels[i],
-			theme, pal)
-		mpLH := mp.GetLayout()
-		mpLH.Height.Set(unitEditorHeight + 16 + 6) // editor + top + bottom margin
-		u := NewUnit("", mpName, theme, pal, rachelSID, nil)
-		entry := &UnitEntry{Unit: u, MP: mp}
+		unitName := fmt.Sprintf("versai_u%d", i)
+		u := NewUnit(unitName, scrollerParent, theme, pal, rachelSID, nil, labels[i])
+		uLH := u.GetLayout()
+		// Initial height placeholder; updated at first draw when
+		// UnitContainer computes VE height from font metrics.
+		uLH.Height.Set(500)
+		entry := &UnitEntry{Unit: u}
 		entry.Node = units.PushBack(entry)
 	}
 	col.LayoutChildren()
@@ -198,27 +195,25 @@ func main() {
 	disp.Tag = "versai"
 	disp.Debug = true
 
-	// Collect all VSplitters for focus peer wiring.
-	var allSplits []*std.VSplitter
+	// Collect all Units for focus peer wiring.
+	var allUnits []*Unit
 	for n := units.Front(); n != nil; n = n.Next() {
-		allSplits = append(allSplits, n.Value.Unit.Split)
+		allUnits = append(allUnits, n.Value.Unit)
 	}
 
-	// Wire in-app focus on each VSplitter via the Clickable protocol.
-	// Children (VE, Throbber) get FocusParent back-references so they
-	// can call SetFocusToSelf() at the start of their interactions.
+	// Wire in-app focus on each Unit. Children (VE, Throbber) get
+	// FocusParent back-references so they can call SetFocusToSelf().
 	for n := units.Front(); n != nil; n = n.Next() {
 		u := n.Value.Unit
-		u.Split.KeyFocusAgent = keyAgent
-		u.Split.KeyFocusTarget = u.Editor
-		u.Split.FocusAttr = u.Focused
-		u.Split.FocusPeers = allSplits
-		u.Editor.FocusParent = u.Split
-		u.Throbber.FocusParent = u.Split
+		u.KeyFocusAgent = keyAgent
+		u.KeyFocusTarget = u.Editor
+		u.FocusPeers = allUnits
+		u.Editor.FocusParent = u
+		u.Throbber.FocusParent = u
 	}
 
 	// Give keyboard focus to the first unit.
-	units.Front().Value.Unit.Split.SetFocusToSelf()
+	units.Front().Value.Unit.SetFocusToSelf()
 
 	// 12. Create DrawContext over the shared backing store.
 	totalW := int(bsr.TotalWidth)
@@ -255,7 +250,7 @@ func main() {
 	dc.SetColor(pal.Surface())
 	dc.FillRectangle(0, 0, float64(winW), float64(winH))
 	app.SetDC(dc)
-	app.Draw(app, 0, 0, int64(winW), int64(winH))
+	app.Draw(app, 0, 0, int64(winW), int64(winH), image.Rect(0, 0, int(winW), int(winH)))
 	app.SendBlit()
 	fmt.Printf("[versai:timing] initial draw: %v\n", time.Since(tDraw))
 	fmt.Printf("[versai:timing] TOTAL startup: %v\n", time.Since(t0))
@@ -268,7 +263,7 @@ func main() {
 		redrawCount++
 		fmt.Printf("[redraw #%d] %s\n", redrawCount, reason)
 		scroller.MarkContentDirty()
-		app.Draw(app, 0, 0, int64(winW), int64(winH))
+		app.Draw(app, 0, 0, int64(winW), int64(winH), image.Rect(0, 0, int(winW), int(winH)))
 		app.SendBlit()
 	}
 
@@ -365,11 +360,18 @@ func main() {
 			redraw("dirtyCh")
 
 		case <-throbTicker.C:
+			var throbDamage image.Rectangle
 			for n := units.Front(); n != nil; n = n.Next() {
-				n.Value.Unit.Throbber.Tick()
-				n.Value.Unit.Throbber.FullDamage()
+				t := n.Value.Unit.Throbber
+				t.Tick()
+				t.FullDamage()
+				tl := t.GetLayout()
+				tr := image.Rect(int(tl.X.Get()), int(tl.Y.Get()),
+					int(tl.X.Get()+tl.Width.Get()), int(tl.Y.Get()+tl.Height.Get()))
+				throbDamage = throbDamage.Union(tr)
 			}
-			redraw("throb-tick")
+			app.Draw(app, 0, 0, int64(winW), int64(winH), throbDamage)
+			app.SendBlit()
 
 		case <-time.After(500 * time.Millisecond):
 		}

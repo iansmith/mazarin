@@ -38,8 +38,8 @@ type graphicsState struct {
 	lineJoin      LineJoin
 	fillRule      FillRule
 	dashes        []float64
-	clipMask      *image.Alpha          // nil means no clipping
-	clipRect      image.Rectangle       // bounding box of clip (valid when clipMask != nil)
+	clipMask      *image.Alpha          // deprecated — kept for Push/Pop compat, always nil
+	clipRect      image.Rectangle       // axis-aligned clip rectangle
 	hasClipRect   bool
 }
 
@@ -191,78 +191,62 @@ func (dc *DrawContextImpl) Pop() {
 	dc.gsStack = dc.gsStack[:n-1]
 }
 
-// Clip rasterizes the current path into a clip mask and intersects it with
-// any existing clip mask, then clears the path.
+// Clip sets the clip region to the current path. Only axis-aligned
+// rectangles are supported (all current callers use DrawRectangle).
+// If a clip is already active, the new clip is intersected with it.
 func (dc *DrawContextImpl) Clip() {
 	if len(dc.path) == 0 {
 		return
 	}
-	r := vector.NewRasterizer(dc.width, dc.height)
-	for _, seg := range dc.path {
-		switch seg.op {
-		case pathMoveTo:
-			r.MoveTo(float32(seg.args[0]), float32(seg.args[1]))
-		case pathLineTo:
-			r.LineTo(float32(seg.args[0]), float32(seg.args[1]))
-		case pathQuadTo:
-			r.QuadTo(float32(seg.args[0]), float32(seg.args[1]),
-				float32(seg.args[2]), float32(seg.args[3]))
-		case pathCubicTo:
-			r.CubeTo(float32(seg.args[0]), float32(seg.args[1]),
-				float32(seg.args[2]), float32(seg.args[3]),
-				float32(seg.args[4]), float32(seg.args[5]))
-		case pathClose:
-			r.ClosePath()
-		}
+	rect, ok := dc.pathIsAxisAlignedRect()
+	if !ok {
+		panic("non-rectangular Clip() not supported")
 	}
-	if dc.hasCurrent {
-		r.ClosePath()
+	r := image.Rect(int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+	if dc.gs.hasClipRect {
+		r = r.Intersect(dc.gs.clipRect)
 	}
-	newMask := image.NewAlpha(image.Rect(0, 0, dc.width, dc.height))
-	r.Draw(newMask, newMask.Bounds(), image.Opaque, image.Point{})
-
-	// Intersect with existing clip mask if present.
-	if dc.gs.clipMask != nil {
-		b := newMask.Bounds()
-		for py := b.Min.Y; py < b.Max.Y; py++ {
-			for px := b.Min.X; px < b.Max.X; px++ {
-				a := newMask.AlphaAt(px, py).A
-				if a == 0 {
-					continue
-				}
-				existing := dc.gs.clipMask.AlphaAt(px, py).A
-				newMask.SetAlpha(px, py, color.Alpha{A: uint8(uint32(a) * uint32(existing) / 255)})
-			}
-		}
-	}
-	dc.gs.clipMask = newMask
-
-	// Compute axis-aligned bounding box of non-zero alpha pixels.
-	// For common rectangular clips this gives an exact tight rect.
-	b := newMask.Bounds()
-	minX, minY, maxX, maxY := b.Max.X, b.Max.Y, b.Min.X, b.Min.Y
-	for py := b.Min.Y; py < b.Max.Y; py++ {
-		for px := b.Min.X; px < b.Max.X; px++ {
-			if newMask.AlphaAt(px, py).A > 0 {
-				if px < minX {
-					minX = px
-				}
-				if px+1 > maxX {
-					maxX = px + 1
-				}
-				if py < minY {
-					minY = py
-				}
-				if py+1 > maxY {
-					maxY = py + 1
-				}
-			}
-		}
-	}
-	dc.gs.clipRect = image.Rect(minX, minY, maxX, maxY)
-	dc.gs.hasClipRect = minX < maxX && minY < maxY
-
+	dc.gs.clipRect = r
+	dc.gs.hasClipRect = true
+	dc.gs.clipMask = nil
 	dc.ClearPath()
+}
+
+// pathIsAxisAlignedRect returns the bounding rectangle if the current
+// path is a simple axis-aligned rectangle (MoveTo + 3 LineTo + Close),
+// as produced by DrawRectangle. The returned array is [minX, minY, maxX, maxY].
+func (dc *DrawContextImpl) pathIsAxisAlignedRect() ([4]float64, bool) {
+	n := len(dc.path)
+	// DrawRectangle produces: MoveTo, LineTo, LineTo, LineTo, Close = 5 segments.
+	if n != 5 {
+		return [4]float64{}, false
+	}
+	if dc.path[0].op != pathMoveTo ||
+		dc.path[1].op != pathLineTo ||
+		dc.path[2].op != pathLineTo ||
+		dc.path[3].op != pathLineTo ||
+		dc.path[4].op != pathClose {
+		return [4]float64{}, false
+	}
+
+	// Extract the 4 corners.
+	x0, y0 := dc.path[0].args[0], dc.path[0].args[1]
+	x1, y1 := dc.path[1].args[0], dc.path[1].args[1]
+	x2, y2 := dc.path[2].args[0], dc.path[2].args[1]
+	x3, y3 := dc.path[3].args[0], dc.path[3].args[1]
+
+	// Check axis-aligned: edges must be horizontal or vertical.
+	// DrawRectangle produces: (x,y)→(x+w,y)→(x+w,y+h)→(x,y+h)→close
+	// So: edge 0→1 horizontal, 1→2 vertical, 2→3 horizontal, 3→0 vertical.
+	if y0 != y1 || x1 != x2 || y2 != y3 || x3 != x0 {
+		return [4]float64{}, false
+	}
+
+	minX := math.Min(x0, x1)
+	maxX := math.Max(x0, x1)
+	minY := math.Min(y0, y2)
+	maxY := math.Max(y0, y2)
+	return [4]float64{minX, minY, maxX, maxY}, true
 }
 
 // ResetClip removes the active clip mask.
@@ -533,19 +517,16 @@ func (dc *DrawContextImpl) fillWithPattern(pat Pattern) {
 	alpha := image.NewAlpha(image.Rect(0, 0, bw, bh))
 	r.Draw(alpha, alpha.Bounds(), image.Opaque, image.Point{})
 
-	// Apply clip mask: zero out coverage outside the clip region.
-	if dc.gs.clipMask != nil {
+	// Apply clip rect: zero out coverage outside the clip region.
+	if dc.gs.hasClipRect {
+		cr := dc.gs.clipRect
 		for py := 0; py < bh; py++ {
 			for px := 0; px < bw; px++ {
-				ca := alpha.Pix[py*alpha.Stride+px]
-				if ca == 0 {
-					continue
-				}
-				cm := dc.gs.clipMask.AlphaAt(px+bbox.Min.X, py+bbox.Min.Y).A
-				if cm == 0 {
+				canvasX := px + bbox.Min.X
+				canvasY := py + bbox.Min.Y
+				if canvasX < cr.Min.X || canvasX >= cr.Max.X ||
+					canvasY < cr.Min.Y || canvasY >= cr.Max.Y {
 					alpha.Pix[py*alpha.Stride+px] = 0
-				} else if cm < 255 {
-					alpha.Pix[py*alpha.Stride+px] = uint8(uint32(ca) * uint32(cm) / 255)
 				}
 			}
 		}
@@ -969,13 +950,12 @@ func (dc *DrawContextImpl) DrawText(text string, fontID int32, x, y float64) {
 					continue
 				}
 
-				// Apply clip mask.
-				if dc.gs.clipMask != nil {
-					cm := dc.gs.clipMask.AlphaAt(dstX, dstY).A
-					if cm == 0 {
+				// Apply clip rect.
+				if dc.gs.hasClipRect {
+					if dstX < dc.gs.clipRect.Min.X || dstX >= dc.gs.clipRect.Max.X ||
+						dstY < dc.gs.clipRect.Min.Y || dstY >= dc.gs.clipRect.Max.Y {
 						continue
 					}
-					mask = uint8(uint32(mask) * uint32(cm) / 255)
 				}
 
 				// Blend: src = foreground color * (mask/255) * (fA/255)
@@ -1086,12 +1066,11 @@ func (dc *DrawContextImpl) DrawTextWithFeatures(text string, fontID int32, x, y 
 					continue
 				}
 
-				if dc.gs.clipMask != nil {
-					cm := dc.gs.clipMask.AlphaAt(dstX, dstY).A
-					if cm == 0 {
+				if dc.gs.hasClipRect {
+					if dstX < dc.gs.clipRect.Min.X || dstX >= dc.gs.clipRect.Max.X ||
+						dstY < dc.gs.clipRect.Min.Y || dstY >= dc.gs.clipRect.Max.Y {
 						continue
 					}
-					mask = uint8(uint32(mask) * uint32(cm) / 255)
 				}
 
 				off := (dstY-bounds.Min.Y)*dc.im.Stride + (dstX-bounds.Min.X)*4

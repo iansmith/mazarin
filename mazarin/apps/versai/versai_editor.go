@@ -42,10 +42,10 @@ type VersaiEditor struct {
 	// the BAG needs redrawing.
 	OnPageUpdate func()
 
-	// FocusParent is the VSplitter that owns this editor. When the
+	// FocusParent is the interactor that owns this editor. When the
 	// editor is clicked, it calls FocusParent.SetFocusToSelf() before
 	// delegating to MultiLineText.Click().
-	FocusParent *std.VSplitter
+	FocusParent mancini.FocusClaimer
 }
 
 // NewVersaiEditor creates a VersaiEditor wrapping an existing MultiLineText.

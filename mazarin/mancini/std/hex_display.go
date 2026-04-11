@@ -2,6 +2,7 @@ package std
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 
 	"mazzy/mazarin/attr"
@@ -200,7 +201,7 @@ func (hd *HexDisplay) SetText(text string) {
 // Draw paints the background and arranges FourteenSeg children left-to-right.
 // If the width has changed since the last draw, the digit children are
 // rebuilt to match the new available space.
-func (hd *HexDisplay) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (hd *HexDisplay) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return
@@ -236,7 +237,7 @@ func (hd *HexDisplay) Draw(self mancini.Interactor, x, y, w, h int64) {
 				segLH.Height.Set(int64(hd.cellH))
 			}
 		}
-		seg.Draw(seg, int64(cx), digitY, int64(hd.cellW), int64(hd.cellH))
+		seg.Draw(seg, int64(cx), digitY, int64(hd.cellW), int64(hd.cellH), damage)
 		cx += hd.cellW + hd.gap
 	}
 }

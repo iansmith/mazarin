@@ -277,7 +277,7 @@ func arcBoundingBox(cx, cy, r, startRad, endRad float64) (w, h float64) {
 // an annular arc shape with per-segment fill (SurfaceTint for selected,
 // Surface for unselected), flush edge outlines, radial groove separators
 // between segments, and per-segment face content.
-func (c *RadialNOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (c *RadialNOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

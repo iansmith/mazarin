@@ -1,6 +1,8 @@
 package std
 
 import (
+	"image"
+
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
@@ -158,7 +160,7 @@ func (sv *ScrollerVertical) ScrollerWidthURI() string {
 
 // Draw implements mancini.NewDrawer. Draws the Scroller and Scrollbar
 // side by side.
-func (sv *ScrollerVertical) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (sv *ScrollerVertical) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}
@@ -174,7 +176,7 @@ func (sv *ScrollerVertical) Draw(self mancini.Interactor, x, y, w, h int64) {
 		scrollLH.Y.Set(y)
 	}
 	sv.Scroller.SetDC(dc)
-	sv.Scroller.Draw(sv.Scroller, x, y, w-sv.trackWidth, h)
+	sv.Scroller.Draw(sv.Scroller, x, y, w-sv.trackWidth, h, damage)
 
 	// Position and draw scrollbar to the right.
 	sbLH := sv.scrollbar.(mancini.Layouter).GetLayout()
@@ -187,7 +189,7 @@ func (sv *ScrollerVertical) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 	if sv.scrollbar.Visible() {
 		if d, ok := sv.scrollbar.(mancini.NewDrawer); ok {
-			d.Draw(sv.scrollbar, x+w-sv.trackWidth, y, sv.trackWidth, h)
+			d.Draw(sv.scrollbar, x+w-sv.trackWidth, y, sv.trackWidth, h, damage)
 		}
 	}
 }

@@ -51,10 +51,10 @@ type ThrobberRadialChooser struct {
 	// The argument is the segment index.
 	OnSelect func(int)
 
-	// FocusParent is the VSplitter that owns this throbber. When the
+	// FocusParent is the interactor that owns this throbber. When the
 	// throbber is clicked, it calls FocusParent.SetFocusToSelf() to
 	// claim in-app keyboard focus for the containing Unit.
-	FocusParent *VSplitter
+	FocusParent mancini.FocusClaimer
 
 	theme      mancini.Theme
 	pal        mancini.Palette
@@ -89,8 +89,8 @@ func NewThrobberRadialChooser(myName, parent string,
 		myName = mancini.DefaultName("throbradial")
 	}
 	lh := mancini.NewLayoutAttributes(myName, parent)
-	lh.Width.Set(10)
-	lh.Height.Set(10)
+	lh.Width.Set(20)
+	lh.Height.Set(20)
 
 	trc := &ThrobberRadialChooser{
 		theme:     theme,
@@ -148,7 +148,7 @@ func (trc *ThrobberRadialChooser) throbColor() color.NRGBA {
 }
 
 // Draw renders the throbber as a filled circle at the current brightness.
-func (trc *ThrobberRadialChooser) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (trc *ThrobberRadialChooser) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return
@@ -237,7 +237,7 @@ func (trc *ThrobberRadialChooser) HandleOverlayReady(m wm.OverlayReady) {
 
 	trc.radialMenu.SetVisible(true)
 	trc.radialMenu.SetDC(trc.overlayDC)
-	trc.radialMenu.Draw(trc.radialMenu, 0, 0, int64(m.Width), int64(m.Height))
+	trc.radialMenu.Draw(trc.radialMenu, 0, 0, int64(m.Width), int64(m.Height), image.Rect(0, 0, int(m.Width), int(m.Height)))
 
 	trc.mu.Lock()
 	trc.overlayID = m.OverlayID
@@ -279,7 +279,7 @@ func (trc *ThrobberRadialChooser) HandleMouseMove(m wm.MouseMove, appScreenX, ap
 	seg := trc.radialMenu.HitTestSegment(olx, oly)
 	if trc.radialMenu.SetHovered(seg) {
 		trc.radialMenu.SetDC(trc.overlayDC)
-		trc.radialMenu.Draw(trc.radialMenu, 0, 0, int64(trc.overlayW), int64(trc.overlayH))
+		trc.radialMenu.Draw(trc.radialMenu, 0, 0, int64(trc.overlayW), int64(trc.overlayH), image.Rect(0, 0, int(trc.overlayW), int(trc.overlayH)))
 		trc.mu.Lock()
 		id := trc.overlayID
 		trc.mu.Unlock()
@@ -315,7 +315,7 @@ func (trc *ThrobberRadialChooser) HandleMouseRelease(m wm.MouseRelease, appScree
 
 		// Redraw overlay with updated selection, then dismiss.
 		trc.radialMenu.SetDC(trc.overlayDC)
-		trc.radialMenu.Draw(trc.radialMenu, 0, 0, int64(trc.overlayW), int64(trc.overlayH))
+		trc.radialMenu.Draw(trc.radialMenu, 0, 0, int64(trc.overlayW), int64(trc.overlayH), image.Rect(0, 0, int(trc.overlayW), int(trc.overlayH)))
 		blit := wm.EncodeOverlayBlit(&wm.OverlayBlit{OverlayID: id})
 		_ = uring.Send(trc.rachelSID, &blit)
 	}

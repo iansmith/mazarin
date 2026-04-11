@@ -1,6 +1,8 @@
 package main
 
 import (
+	"image"
+
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
@@ -112,7 +114,7 @@ func (c *ColumnEdgeToEdge) LayoutChildren() {
 }
 
 // Draw implements mancini.NewDrawer. Delegates to the ScrollerVertical.
-func (c *ColumnEdgeToEdge) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (c *ColumnEdgeToEdge) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}
@@ -122,5 +124,5 @@ func (c *ColumnEdgeToEdge) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 
 	c.SV.SetDC(dc)
-	c.SV.Draw(c.SV, x, y, w, h)
+	c.SV.Draw(c.SV, x, y, w, h, damage)
 }

@@ -1,6 +1,8 @@
 package std
 
 import (
+	"image"
+
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
@@ -111,7 +113,7 @@ func (r *Row) SetSpacing(v float64) {
 
 // Draw implements mancini.NewDrawer. Arranges children left-to-right
 // with spacing, cross-axis alignment, and overflow clipping.
-func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	lh := r.GetLayout()
 	dc := self.DC()
 
@@ -242,7 +244,7 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 				pad := overflowW + shadowPad
 				cc := mancini.WithClip(dc, float64(curX), float64(childY), float64(visibleW), float64(h), float64(pad), mancini.ClipRight)
 				if d, ok := child.(mancini.NewDrawer); ok {
-					d.Draw(child, curX, childY, childW, drawH)
+					d.Draw(child, curX, childY, childW, drawH, damage)
 				}
 				cc.Flush()
 			}
@@ -253,7 +255,7 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 
 		trc := nanotime()
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, curX, childY, childW, drawH)
+			d.Draw(child, curX, childY, childW, drawH, damage)
 		}
 		dt := nanotime() - trc
 		idx := drawPerf.RowChildCount.Add(1) - 1

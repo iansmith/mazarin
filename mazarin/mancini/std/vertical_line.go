@@ -1,6 +1,7 @@
 package std
 
 import (
+	"image"
 	"image/color"
 
 	"mazzy/mazarin/mancini"
@@ -47,7 +48,7 @@ func NewVerticalLineConstrained(myName, parent string, theme mancini.Theme,
 }
 
 // Draw implements mancini.NewDrawer.
-func (v *VerticalLine) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (v *VerticalLine) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

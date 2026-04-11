@@ -12,6 +12,7 @@ package kmem
 
 import (
 	"mazzy/kmazarin/klog"
+	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
 )
@@ -270,10 +271,81 @@ func BuddyAllocTyped(order int, pageType PageType, owner int16) uintptr {
 	return pa
 }
 
-// buddyWarnOOM prints an OOM warning.
+// buddyWarnOOM prints an OOM warning with a per-type page breakdown.
+// Uses direct UART output to avoid allocations when memory is exhausted.
 // NOT nosplit — breaks the nosplit chain from exception handlers.
+// Caller must NOT hold the buddy lock (it is re-acquired by PagesByType).
 func buddyWarnOOM(order int) {
-	klog.Errf("[kmem] Buddy OOM for order %d\n", order)
+	SerialPuts("[kmem] Buddy OOM order=")
+	SerialHex16(uint64(order))
+	logPageBreakdownUART()
+}
+
+// LogPageBreakdown logs the current page allocation breakdown via direct
+// UART. Safe to call from normal (non-IRQ) context. Uses no heap allocation.
+func LogPageBreakdown() {
+	logPageBreakdownUART()
+}
+
+// logPageBreakdownUART dumps pool stats and per-type page counts via UART.
+// No heap allocation — safe to call when OOM.
+func logPageBreakdownUART() {
+	stats := GetBuddyStats()
+	byType := PagesByType()
+
+	SerialPuts(" total=")
+	SerialHex16(stats.TotalPages)
+	SerialPuts(" alloc=")
+	SerialHex16(stats.AllocatedPages)
+	SerialPuts(" free=")
+	SerialHex16(stats.FreePages)
+	SerialPuts(" peak=")
+	SerialHex16(stats.PeakAllocated)
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
+
+	for i := 0; i < int(PageTypeCount); i++ {
+		if byType[i] > 0 {
+			SerialPuts("[kmem]   ")
+			SerialPuts(pageTypeNames[i])
+			SerialPuts(": ")
+			SerialHex16(byType[i])
+			SerialPuts(" pages (")
+			SerialHex16(byType[i] * 4)
+			SerialPuts(" KB)\r\n")
+		}
+	}
+}
+
+// SerialPuts writes a string to UART character by character.
+//
+//go:nosplit
+func SerialPuts(s string) {
+	for i := 0; i < len(s); i++ {
+		serial.PollWrite(s[i])
+	}
+}
+
+// SerialHex16 writes a uint64 as hex to UART, suppressing leading zeros.
+//
+//go:nosplit
+func SerialHex16(v uint64) {
+	if v == 0 {
+		serial.PollWrite('0')
+		return
+	}
+	started := false
+	for i := 60; i >= 0; i -= 4 {
+		d := (v >> uint(i)) & 0xF
+		if d != 0 || started {
+			started = true
+			if d < 10 {
+				serial.PollWrite(byte('0' + d))
+			} else {
+				serial.PollWrite(byte('a' + d - 10))
+			}
+		}
+	}
 }
 
 // BuddyFree returns a block of 2^order pages starting at pa to the allocator.

@@ -1,6 +1,7 @@
 package std
 
 import (
+	"image"
 	"image/color"
 
 	"mazzy/mazarin/mancini"
@@ -132,7 +133,7 @@ func (l *Label) resolveText() string {
 
 // Draw implements mancini.NewDrawer. Clears background via super,
 // then renders centered text via LatinTextFace.
-func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}
@@ -140,7 +141,7 @@ func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
 
 	// Super — clear background to theme BgColor (skip if transparent).
 	if !l.Transparent {
-		l.ThemedInteractor.Draw(self, x, y, w, h)
+		l.ThemedInteractor.Draw(self, x, y, w, h, damage)
 	}
 
 	if l.textFace == nil {

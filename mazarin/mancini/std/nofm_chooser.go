@@ -78,7 +78,7 @@ func NewNOfMChooserNamed(myName, parent string, theme mancini.Theme,
 // an overall shape with flat top and rounded bottom, flush edge
 // outlines, vertical groove separators between strips, selected-strip
 // tint+inset treatment, and per-strip face content.
-func (c *NOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (c *NOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

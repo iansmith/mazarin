@@ -1,6 +1,8 @@
 package std
 
 import (
+	"image"
+
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -56,7 +58,7 @@ func NewCheckboxNamed(myName, parent string, theme mancini.Theme,
 // Draw implements [mancini.NewDrawer]. It renders a neumorphic square box
 // centered within the given bounds. Unchecked = [mancini.Inset],
 // Checked = [mancini.Raised] with a proportional checkmark.
-func (c *Checkbox) Draw(self mancini.Interactor, x, y, w, h int64) {
+func (c *Checkbox) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	if !self.Visible() {
 		return
 	}

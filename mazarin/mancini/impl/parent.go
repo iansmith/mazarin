@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"image"
 	"math"
 
 	"mazzy/mazarin/mancini"
@@ -82,16 +83,159 @@ func (p *Parent) GetChildren() []mancini.Interactor {
 // with custom layout logic that computes per-child positions.
 // [Decorator] does not use DrawChildren at all — it handles its single
 // child directly in [Decorator.Draw].
-func (p *Parent) DrawChildren(self mancini.Interactor, x, y, w, h int64) {
+func (p *Parent) DrawChildren(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
+
+	// Fast path: damage is entirely within one child — skip self-drawing.
+	if child := p.IsRectSingleChild(damage); child != nil {
+		if cs, ok := child.(dcSetter); ok {
+			cs.SetDC(dc)
+		}
+		if d, ok := child.(mancini.NewDrawer); ok {
+			d.Draw(child, child.X(), child.Y(), child.W(), child.H(), damage)
+		}
+		return
+	}
+
+	// Paint background strips not covered by children.
+	if spd, ok := self.(mancini.SimpleParentDraw); ok {
+		for _, strip := range p.SmallestDraw(damage) {
+			spd.DrawSelf(dc, strip)
+		}
+	}
+
+	// Draw children that intersect the damage rect.
 	for _, child := range p.GetChildren() {
 		if cs, ok := child.(dcSetter); ok {
 			cs.SetDC(dc)
 		}
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, x, y, w, h)
+			d.Draw(child, x, y, w, h, damage)
 		}
 	}
+}
+
+// DrawSelf is the default no-op implementation for [mancini.SimpleParentDraw].
+// Parent interactors that need background clearing (themed parents, etc.)
+// should override this method.
+func (p *Parent) DrawSelf(dc mancini.DrawContext, rect image.Rectangle) {}
+
+// IsRectSingleChild tests whether any single child of this parent
+// completely contains the given rectangle. If so, that child is
+// returned — the parent can skip its own drawing and forward Draw
+// directly to that child. Returns nil if no single child contains rect
+// or if the parent has no children.
+func (p *Parent) IsRectSingleChild(rect image.Rectangle) mancini.Interactor {
+	for _, child := range p.GetChildren() {
+		cl, ok := child.(mancini.Layouter)
+		if !ok {
+			continue
+		}
+		clh := cl.GetLayout()
+		if clh == nil {
+			continue
+		}
+		cx, cy := int(clh.X.Get()), int(clh.Y.Get())
+		cb := image.Rect(cx, cy, cx+int(clh.Width.Get()), cy+int(clh.Height.Get()))
+		if rect.In(cb) {
+			return child
+		}
+	}
+	return nil
+}
+
+// SmallestDraw computes the set of rectangles that cover the damaged
+// region (rect) but do NOT overlap with any child. These are the
+// "background strips" the parent needs to repaint — gaps between
+// children, margins, etc.
+//
+// The algorithm:
+//  1. Compute the minimal bounding rectangle of all children.
+//  2. Intersect rect with that bounding box as the starting area.
+//  3. Subtract each child's bounds, collecting the remaining strips.
+//  4. Add back any parts of rect outside the children bounding box.
+func (p *Parent) SmallestDraw(rect image.Rectangle) []image.Rectangle {
+	children := p.GetChildren()
+	if len(children) == 0 {
+		return []image.Rectangle{rect}
+	}
+
+	// Compute minimal bounding rect of all children.
+	var childrenBBox image.Rectangle
+	first := true
+	var childRects []image.Rectangle
+	for _, child := range children {
+		cl, ok := child.(mancini.Layouter)
+		if !ok {
+			continue
+		}
+		clh := cl.GetLayout()
+		if clh == nil {
+			continue
+		}
+		cx, cy := int(clh.X.Get()), int(clh.Y.Get())
+		cr := image.Rect(cx, cy, cx+int(clh.Width.Get()), cy+int(clh.Height.Get()))
+		childRects = append(childRects, cr)
+		if first {
+			childrenBBox = cr
+			first = false
+		}
+		childrenBBox = childrenBBox.Union(cr)
+	}
+
+	// Start with the damage rect. Subtract each child.
+	rects := []image.Rectangle{rect}
+	for _, cr := range childRects {
+		var next []image.Rectangle
+		for _, r := range rects {
+			next = append(next, rectSubtract(r, cr)...)
+		}
+		rects = next
+	}
+
+	// Filter out empty rectangles.
+	result := rects[:0]
+	for _, r := range rects {
+		if !r.Empty() {
+			result = append(result, r)
+		}
+	}
+	return result
+}
+
+// rectSubtract returns the parts of a that are NOT covered by b.
+// Returns up to 4 rectangles (top, bottom, left, right strips).
+// If b does not intersect a, returns a unchanged.
+func rectSubtract(a, b image.Rectangle) []image.Rectangle {
+	isect := a.Intersect(b)
+	if isect.Empty() {
+		return []image.Rectangle{a}
+	}
+
+	var result []image.Rectangle
+
+	// Top strip: above the intersection.
+	if isect.Min.Y > a.Min.Y {
+		result = append(result, image.Rect(a.Min.X, a.Min.Y, a.Max.X, isect.Min.Y))
+	}
+	// Bottom strip: below the intersection.
+	if isect.Max.Y < a.Max.Y {
+		result = append(result, image.Rect(a.Min.X, isect.Max.Y, a.Max.X, a.Max.Y))
+	}
+	// Left strip: between top and bottom, left of intersection.
+	if isect.Min.X > a.Min.X {
+		result = append(result, image.Rect(a.Min.X, isect.Min.Y, isect.Min.X, isect.Max.Y))
+	}
+	// Right strip: between top and bottom, right of intersection.
+	if isect.Max.X < a.Max.X {
+		result = append(result, image.Rect(isect.Max.X, isect.Min.Y, a.Max.X, isect.Max.Y))
+	}
+
+	if len(result) == 0 {
+		// b completely covers a — nothing to draw.
+		return nil
+	}
+	return result
 }
 
 // parentName returns this parent's constraint-system name.
