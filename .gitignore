@@ -19,6 +19,9 @@ aarch64-none-elf/
 # Local binaries
 bin/
 
+# Generated constraint bytecode
+*.vbc.go
+
 # IDE/editor
 .idea/
 .vscode/
