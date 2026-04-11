@@ -483,16 +483,18 @@ func (dc *DrawContextImpl) fillWithPattern(pat Pattern) {
 	if bw <= 0 || bh <= 0 {
 		return
 	}
-	// Guard against rasterizer allocation overflow — if pathBounds
-	// returned a rect larger than the canvas (e.g., due to float→int
-	// conversion overflow), clamp to canvas dimensions.
+	// Clamp rasterizer size to the effective drawing area — the
+	// intersection of the canvas bounds with the active clip rect.
+	// This prevents huge rasterizer allocations when a clip restricts
+	// the visible area to a small portion of the canvas.
 	cb := dc.im.Bounds()
-	if bw > cb.Dx() {
-		bw = cb.Dx()
+	if dc.gs.hasClipRect {
+		cb = cb.Intersect(dc.gs.clipRect)
 	}
-	if bh > cb.Dy() {
-		bh = cb.Dy()
-	}
+	// Further intersect with the path bounding box itself.
+	bbox = bbox.Intersect(cb)
+	bw = bbox.Dx()
+	bh = bbox.Dy()
 	if bw <= 0 || bh <= 0 {
 		return
 	}

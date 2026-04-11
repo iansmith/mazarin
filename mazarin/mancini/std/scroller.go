@@ -12,73 +12,89 @@ import (
 )
 
 // Scroller is a single-child parent that provides a scrollable viewport
-// over a larger virtual surface. The child draws into a virtual-sized
-// offscreen buffer, and Scroller blits only the visible portion to the
-// screen.
+// over a larger virtual surface. Children declare virtual Y positions
+// (set by LayoutChildren or constraints); Scroller renders only the
+// children that intersect the current viewport.
 //
-// The offscreen buffer is the full virtual size so that content can be
-// rendered once and scrolling only changes the blit source offset.
-// Content is re-rendered only when MarkContentDirty is called (typically
-// on time ticks or other content changes). Scroll position changes
-// (ScrollTo, ScrollBy) do NOT trigger content re-rendering — they only
-// change which portion of the buffer is blitted.
+// The offscreen buffer is viewport-sized (Width × Height), NOT
+// virtual-sized. On each draw the scroller walks children in Y order,
+// skips those entirely outside the viewport, and clips partially
+// visible children to the viewport intersection. This keeps memory
+// proportional to the visible area regardless of virtual content size.
 //
 // True size (Width, Height) comes from external constraints — typically
 // bound to the available viewport space. Virtual size (VirtualWidth,
-// VirtualHeight) is the size the child thinks it has.
+// VirtualHeight) is the total content extent.
 //
 // ScrollNeededX / ScrollNeededY are boolean attributes updated each
 // frame, useful for driving scrollbar visibility via constraints.
+//
+// MaxScrollY is a constrained attribute: VirtualHeight - Height. It
+// represents the maximum scroll range. When a scrollbar is wired,
+// VirtualY can be constrained to the scrollbar's value attribute.
 type Scroller struct {
 	impl.Interactor
 	impl.Parent
 
 	Pal mancini.Palette // background fill color (Surface)
 
-	VirtualWidth  int64 // child's virtual surface width
-	VirtualHeight int64 // child's virtual surface height
-	VirtualX      int64 // scroll position X (0 = left edge visible)
-	VirtualY      int64 // scroll position Y (0 = top edge visible)
+	VirtualWidth  *attr.Attribute[int64]
+	VirtualHeight *attr.Attribute[int64]
+	VirtualX      *attr.Attribute[int64]
+	VirtualY      *attr.Attribute[int64]
+
+	MaxScrollY *attr.Attribute[int64] // constrained: VirtualHeight - Height
 
 	ScrollNeededX *attr.Attribute[bool]
 	ScrollNeededY *attr.Attribute[bool]
 
-	offBuf       *image.RGBA
-	offDC        mancini.DrawContext
-	offW, offH   int  // current offscreen buffer dimensions (virtual size)
-	contentDirty bool // true = need to re-render children into offBuf
+	offBuf     *image.RGBA
+	offDC      mancini.DrawContext
+	offW, offH int // current offscreen buffer dimensions (viewport size)
 
-	// SnapX, SnapY: when non-zero, ClickDragEnd snaps the scroll
-	// position to a multiple of this value based on drag direction.
-	SnapX int64
-	SnapY int64
-
-	// SnapThreshold: fraction of SnapX/Y the mouse must travel to
-	// commit to the next snap position (0.0–1.0). Default 0.25 (25%).
-	SnapThreshold float64
-
-	// ClickDraggable state: drag-to-scroll.
-	dragStartX, dragStartY int64 // mouse position at drag start
-	dragOrigVX, dragOrigVY int64 // scroll position at drag start
+	// ScrollValueY is the upstream value attribute that drives VirtualY
+	// when VirtualY is a constraint. ScrollTo writes here instead of
+	// directly to VirtualY. nil when VirtualY is a plain value.
+	ScrollValueY *attr.Attribute[int64]
 }
 
 // NewScroller creates a Scroller wired to the constraint system.
-// Width is created as a value attribute (set imperatively by the caller).
-// Height must be provided by the caller — typically a constraint bound
-// to the child's height so the viewport tracks the content height.
+// Width and Height must be provided by the caller — typically
+// constraints bound to the parent's dimensions. virtualY is optional:
+// if non-nil, it is used as the VirtualY attribute (e.g., a constraint
+// wired to a scrollbar's value); if nil, a value attribute is created.
 // The child is not passed here; it declares the Scroller as its parent
 // via its own layout attributes.
-func NewScroller(myName, parent string, pal mancini.Palette, height *attr.Attribute[int64]) *Scroller {
+func NewScroller(myName, parent string, pal mancini.Palette,
+	width, height *attr.Attribute[int64],
+	virtualY *attr.Attribute[int64]) *Scroller {
 	if myName == "" {
 		myName = mancini.DefaultName("scroller")
 	}
 	lh := mancini.NewLayoutAttributesBase(myName, parent)
-	lh.Width = attr.ValueI64(
-		mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutWidth), 0)
+	lh.Width = width
 	lh.Height = height
 	lh.InitBounds(myName)
 
-	s := &Scroller{Pal: pal, contentDirty: true}
+	s := &Scroller{Pal: pal}
+
+	s.VirtualX = attr.ValueI64(
+		mancini.LayoutURI(myName, mancini.DataTypeInt64, "VirtualX"), 0)
+	if virtualY != nil {
+		s.VirtualY = virtualY
+	} else {
+		s.VirtualY = attr.ValueI64(
+			mancini.LayoutURI(myName, mancini.DataTypeInt64, "VirtualY"), 0)
+	}
+	s.VirtualWidth = attr.ValueI64(
+		mancini.LayoutURI(myName, mancini.DataTypeInt64, "VirtualWidth"), 0)
+	s.VirtualHeight = attr.ValueI64(
+		mancini.LayoutURI(myName, mancini.DataTypeInt64, "VirtualHeight"), 0)
+
+	s.MaxScrollY = attr.ConstraintI64(
+		mancini.LayoutURI(myName, mancini.DataTypeInt64, "MaxScrollY"),
+		mancini.SubI64(s.VirtualHeight.URI(), lh.Height.URI()))
+
 	s.ScrollNeededX = attr.ValueBool(
 		mancini.LayoutURI(myName, mancini.DataTypeBool, "ScrollNeededX"), false)
 	s.ScrollNeededY = attr.ValueBool(
@@ -96,44 +112,64 @@ func ScrollerHeightURI(myName string) string {
 	return mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHeight)
 }
 
+// MaxScrollYURI returns the URI of the MaxScrollY attribute.
+func (s *Scroller) MaxScrollYURI() string {
+	return s.MaxScrollY.URI()
+}
+
 // ScrollTo sets the scroll position to absolute virtual coordinates.
 // Values are clamped to the valid range on the next Draw.
 // Does NOT mark content dirty — only changes the blit offset.
+// When VirtualY is a constraint (wired to a scrollbar), writes to
+// ScrollValueY instead, which flows through the constraint.
 func (s *Scroller) ScrollTo(vx, vy int64) {
-	if vx != s.VirtualX || vy != s.VirtualY {
-		s.VirtualX = vx
-		s.VirtualY = vy
+	if vx != s.VirtualX.Get() || vy != s.VirtualY.Get() {
+		s.VirtualX.Set(vx)
+		if s.ScrollValueY != nil {
+			s.ScrollValueY.Set(vy)
+		} else {
+			s.VirtualY.Set(vy)
+		}
 		s.FullDamage()
 	}
 }
 
 // ScrollBy adds a delta to the current scroll position.
 func (s *Scroller) ScrollBy(dx, dy int64) {
-	s.ScrollTo(s.VirtualX+dx, s.VirtualY+dy)
+	s.ScrollTo(s.VirtualX.Get()+dx, s.VirtualY.Get()+dy)
 }
 
 // SetVirtualSize changes the virtual surface dimensions.
-// Forces buffer reallocation and content re-render on the next Draw.
+// Forces buffer reallocation on the next Draw.
 func (s *Scroller) SetVirtualSize(vw, vh int64) {
-	if vw != s.VirtualWidth || vh != s.VirtualHeight {
-		s.VirtualWidth = vw
-		s.VirtualHeight = vh
-		s.offBuf = nil // force reallocation
-		s.offDC = nil
-		s.contentDirty = true
+	if vw != s.VirtualWidth.Get() || vh != s.VirtualHeight.Get() {
+		s.VirtualWidth.Set(vw)
+		s.VirtualHeight.Set(vh)
 		s.FullDamage()
 	}
 }
 
 // MarkContentDirty signals that the child content has changed and needs
-// to be re-rendered into the offscreen buffer on the next Draw.
-// Call this when time ticks, data updates, or any other non-scroll
-// content change occurs.
+// to be re-rendered on the next Draw.
 func (s *Scroller) MarkContentDirty() {
-	s.contentDirty = true
+	s.FullDamage()
+}
+
+// DeleteChild removes a child from this Scroller's child list.
+func (s *Scroller) DeleteChild(child mancini.Interactor) {
+	s.Parent.DeleteChild(child)
 }
 
 // Draw implements mancini.NewDrawer.
+//
+// The offscreen buffer is viewport-sized (w × h). On each draw:
+//  1. Walk children in Y order.
+//  2. Skip children whose bottom (childY + childH) <= scrollY (above viewport).
+//  3. Skip children whose top (childY) >= scrollY + viewportH (below viewport).
+//  4. For visible children, compute the intersection of the child rect with
+//     the viewport, set a clip rectangle, translate Y, and draw.
+//
+// No virtual-sized buffer is ever allocated.
 func (s *Scroller) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if !self.Visible() {
 		return
@@ -147,101 +183,139 @@ func (s *Scroller) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if len(children) == 0 {
 		return
 	}
-	child := children[0]
 
-	// Effective virtual size is at least the true size.
-	effW := s.VirtualWidth
-	if effW < w {
-		effW = w
-	}
-	effH := s.VirtualHeight
-	if effH < h {
-		effH = h
-	}
+	vw := s.VirtualWidth.Get()
+	vh := s.VirtualHeight.Get()
+	vy := s.VirtualY.Get()
 
-	needScrollX := s.VirtualWidth > w
-	needScrollY := s.VirtualHeight > h
+	needScrollX := vw > w
+	needScrollY := vh > h
 	s.ScrollNeededX.Set(needScrollX)
 	s.ScrollNeededY.Set(needScrollY)
 
-	// Fast path: no scrolling needed — pass through directly.
+	// Fast path: no scrolling needed — draw children directly to parent DC.
 	if !needScrollX && !needScrollY {
-		if l, ok := child.(mancini.Layouter); ok {
-			lh := l.GetLayout()
-			if lh != nil {
-				lh.X.Set(x)
-				lh.Y.Set(y)
+		for _, child := range children {
+			var cw, ch int64
+			if l, ok := child.(mancini.Layouter); ok {
+				clh := l.GetLayout()
+				if clh != nil {
+					if !clh.Width.IsConstraint() {
+						clh.Width.Set(w)
+					}
+					cw = clh.Width.Get()
+					ch = clh.Height.Get()
+				}
 			}
-		}
-		if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
-			cs.SetDC(dc)
-		}
-		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, x, y, w, h)
+			if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
+				cs.SetDC(dc)
+			}
+			if d, ok := child.(mancini.NewDrawer); ok {
+				if cl, ok := child.(mancini.Layouter); ok {
+					clh := cl.GetLayout()
+					d.Draw(child, x+clh.X.Get(), y+clh.Y.Get(), cw, ch)
+				}
+			}
 		}
 		return
 	}
 
-	// Scroll path: clamp position.
-	if s.VirtualX < 0 {
-		s.VirtualX = 0
+	// Scroll path: clamp scroll position.
+	if vy < 0 {
+		vy = 0
 	}
-	if maxX := effW - w; s.VirtualX > maxX {
-		s.VirtualX = maxX
-	}
-	if s.VirtualY < 0 {
-		s.VirtualY = 0
-	}
-	if maxY := effH - h; s.VirtualY > maxY {
-		s.VirtualY = maxY
+	if maxY := vh - h; vy > maxY {
+		vy = maxY
 	}
 
-	// Manage virtual-sized offscreen buffer.
-	bw, bh := int(effW), int(effH)
+	// Manage viewport-sized offscreen buffer.
+	bw, bh := int(w), int(h)
 	if s.offBuf == nil || s.offW != bw || s.offH != bh {
 		s.offBuf = image.NewRGBA(image.Rect(0, 0, bw, bh))
 		s.offDC = dc.NewChildContext(s.offBuf)
 		s.offW = bw
 		s.offH = bh
-		s.contentDirty = true
-		fmt.Printf("[scroller] buffer alloc %dx%d (virtual)\n", bw, bh)
+		fmt.Printf("[scroller] viewport buffer alloc %dx%d\n", bw, bh)
 	}
 
-	// Re-render content only when dirty.
-	if s.contentDirty {
-		fillRGBA(s.offBuf, s.Pal.Surface())
+	// Clear the viewport buffer.
+	fillRGBA(s.offBuf, s.Pal.Surface())
 
-		// Position child at virtual origin and set virtual dimensions
-		// so that pick/hit-testing uses correct bounds.
-		// No clip/translate needed — buffer IS virtual-sized.
-		if l, ok := child.(mancini.Layouter); ok {
-			lh := l.GetLayout()
-			if lh != nil {
-				lh.X.Set(0)
-				lh.Y.Set(0)
-				if !lh.Width.IsConstraint() {
-					lh.Width.Set(effW)
-				}
-				if !lh.Height.IsConstraint() {
-					lh.Height.Set(effH)
-				}
-			}
+	// Viewport in virtual coordinates: [vy, vy+h).
+	vpTop := vy
+	vpBot := vy + h
+
+	// Walk children, drawing only those that intersect the viewport.
+	for _, child := range children {
+		cl, cok := child.(mancini.Layouter)
+		if !cok {
+			continue
 		}
+		clh := cl.GetLayout()
+		if clh == nil {
+			continue
+		}
+
+		childY := clh.Y.Get()
+		childH := clh.Height.Get()
+		childBot := childY + childH
+
+		// Skip children entirely above the viewport.
+		if childBot <= vpTop {
+			continue
+		}
+		// Stop once we reach children entirely below the viewport.
+		if childY >= vpBot {
+			break
+		}
+
+		// Child intersects the viewport. Compute the visible portion
+		// in virtual coordinates.
+		visTop := childY
+		if visTop < vpTop {
+			visTop = vpTop
+		}
+		visBot := childBot
+		if visBot > vpBot {
+			visBot = vpBot
+		}
+
+		// Map to buffer coordinates (buffer Y=0 corresponds to virtual Y=vy).
+		bufChildY := childY - vy
+		bufVisTop := visTop - vy
+		bufVisBot := visBot - vy
+
+		// Set child width.
+		if !clh.Width.IsConstraint() {
+			clh.Width.Set(w)
+		}
+		cw := clh.Width.Get()
+
+		// Set DC and clip to the visible intersection.
 		if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
 			cs.SetDC(s.offDC)
 		}
+
+		// Force full damage on the child since we cleared the buffer.
+		forceFullDamageRecursive(child)
+
+		// Push graphics state, set clip to the visible portion, draw, pop.
+		s.offDC.Push()
+		s.offDC.DrawRectangle(0, float64(bufVisTop), float64(cw), float64(bufVisBot-bufVisTop))
+		s.offDC.Clip()
+
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, 0, 0, effW, effH)
+			d.Draw(child, 0, bufChildY, cw, childH)
 		}
-		s.contentDirty = false
+
+		s.offDC.Pop()
 	}
 
-	// Blit viewport-sized portion from (VX, VY) to the parent DC at (x, y).
+	// Blit viewport buffer to the parent DC at (x, y).
 	canvas := dc.Image().(*image.RGBA)
 	tx, ty := dc.TransformPoint(float64(x), float64(y))
-	vw, vh := int(w), int(h)
-	dstRect := image.Rect(int(tx), int(ty), int(tx)+vw, int(ty)+vh)
-	srcPt := image.Point{X: int(s.VirtualX), Y: int(s.VirtualY)}
+	dstRect := image.Rect(int(tx), int(ty), int(tx)+bw, int(ty)+bh)
+	srcPt := image.Point{X: 0, Y: 0}
 	draw.Draw(canvas, dstRect, s.offBuf, srcPt, draw.Src)
 }
 
@@ -261,20 +335,34 @@ func (s *Scroller) Pick(localX, localY int64) []mancini.Interactor {
 		return nil
 	}
 
+	vw := s.VirtualWidth.Get()
+	vh := s.VirtualHeight.Get()
+
 	// Fast path: no scrolling — use default pick.
-	needScrollX := s.VirtualWidth > iw
-	needScrollY := s.VirtualHeight > ih
-	if !needScrollX && !needScrollY {
+	if vw <= iw && vh <= ih {
 		return s.Interactor.Pick(localX, localY)
 	}
 
-	// Scroll path: translate to virtual coords before recursing.
+	// Scroll path: translate viewport-local coords to virtual-space
+	// coords, then subtract each child's position to get child-local.
 	var result []mancini.Interactor
 	children := s.GetChildren()
-	if len(children) > 0 {
-		child := children[0]
-		childLocalX := localX + s.VirtualX
-		childLocalY := localY + s.VirtualY
+	virtualX := s.VirtualX.Get()
+	virtualY := s.VirtualY.Get()
+	// virtualCoord = localCoord + scrollOffset
+	vx := localX + virtualX
+	vy := localY + virtualY
+	for _, child := range children {
+		cl, cok := child.(mancini.Layouter)
+		if !cok {
+			continue
+		}
+		clh := cl.GetLayout()
+		if clh == nil {
+			continue
+		}
+		childLocalX := vx - clh.X.Get()
+		childLocalY := vy - clh.Y.Get()
 		if picker, ok := child.(mancini.Picker); ok {
 			result = append(result, picker.Pick(childLocalX, childLocalY)...)
 		}
@@ -284,110 +372,18 @@ func (s *Scroller) Pick(localX, localY int64) []mancini.Interactor {
 	return result
 }
 
-// ClickDragStart implements mancini.ClickDraggable.
-// Declines the drag if a Clickable, DoubleClickable, or TripleClickable
-// child is under the cursor, letting the click reach that child instead.
-func (s *Scroller) ClickDragStart(ev *mancini.InputEvent) bool {
-	// Check if a clickable child is under the cursor.
-	lh := s.GetLayout()
-	if lh != nil {
-		localX := ev.X - lh.X.Get()
-		localY := ev.Y - lh.Y.Get()
-		children := s.GetChildren()
-		if len(children) > 0 {
-			child := children[0]
-			childLocalX := localX + s.VirtualX
-			childLocalY := localY + s.VirtualY
-			if picker, ok := child.(mancini.Picker); ok {
-				for _, hit := range picker.Pick(childLocalX, childLocalY) {
-					if _, ok := hit.(mancini.Clickable); ok {
-						return false
-					}
-					if _, ok := hit.(mancini.DoubleClickable); ok {
-						return false
-					}
-					if _, ok := hit.(mancini.TripleClickable); ok {
-						return false
-					}
-				}
-			}
+// forceFullDamageRecursive marks an interactor and all its descendants
+// as fully damaged. Used when a parent buffer wipe invalidates all
+// descendant pixels.
+func forceFullDamageRecursive(i mancini.Interactor) {
+	if fd, ok := i.(interface{ FullDamage() }); ok {
+		fd.FullDamage()
+	}
+	if p, ok := i.(interface{ GetChildren() []mancini.Interactor }); ok {
+		for _, child := range p.GetChildren() {
+			forceFullDamageRecursive(child)
 		}
 	}
-
-	s.dragStartX = ev.X
-	s.dragStartY = ev.Y
-	s.dragOrigVX = s.VirtualX
-	s.dragOrigVY = s.VirtualY
-	fmt.Printf("[scroller] ClickDragStart at (%d,%d) origScroll=(%d,%d)\n",
-		ev.X, ev.Y, s.VirtualX, s.VirtualY)
-	return true
-}
-
-// ClickDragMove implements mancini.ClickDraggable.
-func (s *Scroller) ClickDragMove(ev *mancini.InputEvent, _ *mancini.InputEvent, outsideBounds bool) bool {
-	dx := ev.X - s.dragStartX
-	dy := ev.Y - s.dragStartY
-	fmt.Printf("[scroller] ClickDragMove delta=(%d,%d) → scroll=(%d,%d)\n",
-		dx, dy, s.dragOrigVX-dx, s.dragOrigVY-dy)
-	s.ScrollTo(s.dragOrigVX-dx, s.dragOrigVY-dy)
-	return true
-}
-
-// ClickDragEnd implements mancini.ClickDraggable.
-// When SnapX/SnapY are set, measures the distance the mouse traveled
-// (in virtual pixels). If the travel exceeds SnapThreshold (fraction
-// of SnapX/Y, default 0.25), snaps one step in the drag direction.
-// Otherwise snaps back to the starting boundary.
-func (s *Scroller) ClickDragEnd(ev *mancini.InputEvent, outsideBounds bool) bool {
-	thresh := s.SnapThreshold
-	if thresh <= 0 {
-		thresh = 0.25
-	}
-	if s.SnapX > 0 {
-		s.VirtualX = snapByTravel(s.dragOrigVX, s.VirtualX, s.SnapX, thresh)
-	}
-	if s.SnapY > 0 {
-		s.VirtualY = snapByTravel(s.dragOrigVY, s.VirtualY, s.SnapY, thresh)
-	}
-	s.ScrollTo(s.VirtualX, s.VirtualY)
-	return true
-}
-
-// snapByTravel snaps based on distance traveled, not absolute position.
-// travel = endV - startV (positive = scrolled right, negative = left).
-// If |travel| >= step * threshold, snap one step in that direction
-// from the nearest boundary to startV. Otherwise snap back to startV's
-// nearest boundary.
-func snapByTravel(startV, endV, step int64, threshold float64) int64 {
-	if step <= 0 {
-		return endV
-	}
-	// Find the boundary nearest to where the drag started.
-	low := (startV / step) * step
-	high := low + step
-	origin := low
-	if startV-low >= high-startV {
-		origin = high
-	}
-
-	travel := endV - startV
-	minTravel := int64(float64(step) * threshold)
-
-	if travel > 0 && travel >= minTravel {
-		// Scrolled right enough: advance one step.
-		fmt.Printf("[scroller] snapEnd: travel=%d threshold=%d → forward to %d\n",
-			travel, minTravel, origin+step)
-		return origin + step
-	} else if travel < 0 && -travel >= minTravel {
-		// Scrolled left enough: go back one step.
-		fmt.Printf("[scroller] snapEnd: travel=%d threshold=%d → back to %d\n",
-			travel, minTravel, origin-step)
-		return origin - step
-	}
-	// Didn't travel far enough: snap back to origin.
-	fmt.Printf("[scroller] snapEnd: travel=%d threshold=%d → stay at %d\n",
-		travel, minTravel, origin)
-	return origin
 }
 
 // fillRGBA fills an RGBA image with a solid color.

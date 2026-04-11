@@ -166,6 +166,31 @@ func AttrWaitDirty(buf []uint16) int {
 	return int(int64(r1))
 }
 
+// AttrSwap atomically replaces the implementation behind targetSlot with the
+// implementation from replacementSlot. The target keeps its URI and forward
+// edges (dependents). It receives the replacement's kind, bytecode, cached
+// value, and backward edges (dependencies). The replacement is freed.
+func AttrSwap(targetSlot, replacementSlot uint16) error {
+	_, _, errno := RawSyscall(mazzy.SysAttrSwap,
+		uintptr(targetSlot), uintptr(replacementSlot),
+		0, 0, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+// AttrDelete deletes an attribute. Returns EBUSY if the attribute has
+// dependents — the caller must unwire all dependents before deleting.
+func AttrDelete(slot uint16) error {
+	_, _, errno := RawSyscall(mazzy.SysAttrDelete,
+		uintptr(slot), 0, 0, 0, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 // AttrIncrementI64 atomically increments an int64 value attribute.
 // Returns the new value on success, or an error.
 // No dirty propagation — intended for side-effect counters.

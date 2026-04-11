@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"math"
 
+	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -26,6 +27,13 @@ type LightScrollbar struct {
 	ThumbAngle float64 // thumb rotation in radians (0 = vertical for horiz sb)
 
 	Disabled bool // when true, renders dimmed and ignores input
+
+	// Value/Max: when set, ThumbPos and ThumbFrac are computed from
+	// these in Draw. Value is the current scroll position (pixels),
+	// Max is the maximum scroll range. Value is the source of truth —
+	// the scroller's VirtualY is constrained to it.
+	ValueAttr *attr.Attribute[int64]
+	MaxAttr   *attr.Attribute[int64]
 
 	// Drag state — active during ClickDraggable interaction.
 	dragOrigPos float64 // ThumbPos at drag start
@@ -96,6 +104,28 @@ func (s *LightScrollbar) Draw(self mancini.Interactor, x, y, w, h int64) {
 	dc := self.DC()
 	if dc == nil {
 		return
+	}
+
+	// Compute ThumbPos and ThumbFrac from Value/Max if available.
+	if s.ValueAttr != nil && s.MaxAttr != nil {
+		maxVal := s.MaxAttr.Get()
+		if maxVal > 0 {
+			val := s.ValueAttr.Get()
+			if val < 0 {
+				val = 0
+			}
+			if val > maxVal {
+				val = maxVal
+			}
+			var mainAxis float64
+			if s.IsVertical {
+				mainAxis = float64(h)
+			} else {
+				mainAxis = float64(w)
+			}
+			s.ThumbPos = float64(val) / float64(maxVal)
+			s.ThumbFrac = mainAxis / (mainAxis + float64(maxVal))
+		}
 	}
 
 	pal := s.Theme().Palette()
@@ -221,6 +251,10 @@ func (s *LightScrollbar) ClickDragStart(ev *mancini.InputEvent) bool {
 			newPos = 1
 		}
 		s.ThumbPos = newPos
+		if s.ValueAttr != nil && s.MaxAttr != nil {
+			maxVal := s.MaxAttr.Get()
+			s.ValueAttr.Set(int64(newPos * float64(maxVal)))
+		}
 		s.FullDamage()
 		fmt.Printf("[lightscrollbar] ClickDragStart jumped to %.3f\n", newPos)
 	}
@@ -252,6 +286,10 @@ func (s *LightScrollbar) ClickDragMove(ev *mancini.InputEvent, _ *mancini.InputE
 		newPos = 1
 	}
 	s.ThumbPos = newPos
+	if s.ValueAttr != nil && s.MaxAttr != nil {
+		maxVal := s.MaxAttr.Get()
+		s.ValueAttr.Set(int64(newPos * float64(maxVal)))
+	}
 	s.FullDamage()
 	return true
 }

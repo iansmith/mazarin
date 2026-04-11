@@ -128,3 +128,23 @@ func createConstraintSlot(uri string, valueType uint8, prog *vm.Program, deps []
 
 	return slot
 }
+
+// createSwapConstraintSlot creates a constraint slot with no URI and no trie
+// entry. Used as the replacement argument to Swap.
+func createSwapConstraintSlot(valueType uint8, prog *vm.Program, deps []AttributeAny) uint16 {
+	bytecode := prog.Marshal()
+
+	kind := sys.AttrKindConstraint | flat.AttrFlagNoTrie
+	slot, err := sys.AttrCreate("", valueType, kind, bytecode)
+	if err != nil {
+		panic("attr: AttrCreate swap constraint failed: " + err.Error())
+	}
+
+	for _, dep := range deps {
+		if err := sys.AttrAddDep(slot, dep.Slot()); err != nil {
+			panic("attr: AttrAddDep failed: " + err.Error())
+		}
+	}
+
+	return slot
+}

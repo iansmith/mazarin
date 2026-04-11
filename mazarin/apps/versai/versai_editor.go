@@ -41,6 +41,11 @@ type VersaiEditor struct {
 	// Unit wires this to BAG.FullDamage so the vsplitter knows
 	// the BAG needs redrawing.
 	OnPageUpdate func()
+
+	// FocusParent is the VSplitter that owns this editor. When the
+	// editor is clicked, it calls FocusParent.SetFocusToSelf() before
+	// delegating to MultiLineText.Click().
+	FocusParent *std.VSplitter
 }
 
 // NewVersaiEditor creates a VersaiEditor wrapping an existing MultiLineText.
@@ -59,6 +64,12 @@ func NewVersaiEditor(myName string, mte *std.MultiLineText) *VersaiEditor {
 		ve.checkCommand()
 		ve.updateSharedPage()
 	}
+
+	// Re-register so dispatch sees VersaiEditor (not MultiLineText)
+	// as the interactor — VE's Click/DoubleClick/TripleClick/ClickDragStart
+	// overrides get called.
+	ve.ReInitializeOwner(ve)
+
 	return ve
 }
 
@@ -327,6 +338,43 @@ func (ve *VersaiEditor) commandTextEntryLineClearLocked() string {
 	prefix := text[:offset]
 	ve.MultiLineText.SetText(prefix)
 	return removed
+}
+
+// Click overrides MultiLineText.Click to claim in-app focus for the
+// containing Unit before processing the click for cursor placement.
+func (ve *VersaiEditor) Click(ev *mancini.InputEvent) bool {
+	fmt.Printf("[VE] Click at (%d,%d)\n", ev.X, ev.Y)
+	if ve.FocusParent != nil {
+		ve.FocusParent.SetFocusToSelf()
+	}
+	return ve.MultiLineText.Click(ev)
+}
+
+// DoubleClick overrides MultiLineText.DoubleClick to claim focus first.
+func (ve *VersaiEditor) DoubleClick(ev *mancini.InputEvent) bool {
+	fmt.Printf("[VE] DoubleClick at (%d,%d)\n", ev.X, ev.Y)
+	if ve.FocusParent != nil {
+		ve.FocusParent.SetFocusToSelf()
+	}
+	return ve.MultiLineText.DoubleClick(ev)
+}
+
+// TripleClick overrides MultiLineText.TripleClick to claim focus first.
+func (ve *VersaiEditor) TripleClick(ev *mancini.InputEvent) bool {
+	fmt.Printf("[VE] TripleClick at (%d,%d)\n", ev.X, ev.Y)
+	if ve.FocusParent != nil {
+		ve.FocusParent.SetFocusToSelf()
+	}
+	return ve.MultiLineText.TripleClick(ev)
+}
+
+// ClickDragStart overrides MultiLineText.ClickDragStart to claim focus first.
+func (ve *VersaiEditor) ClickDragStart(ev *mancini.InputEvent) bool {
+	fmt.Printf("[VE] ClickDragStart at (%d,%d)\n", ev.X, ev.Y)
+	if ve.FocusParent != nil {
+		ve.FocusParent.SetFocusToSelf()
+	}
+	return ve.MultiLineText.ClickDragStart(ev)
 }
 
 // commandTextEntryLineInsertLocked is the lock-held version of

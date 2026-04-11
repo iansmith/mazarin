@@ -8,6 +8,11 @@ const (
 	AttrKindConstraint uint8 = 1
 )
 
+// AttrFlagNoTrie is OR'd into the attrKind argument of SysAttrCreate to skip
+// trie insertion and URI storage. The node is allocated but invisible in the
+// namespace. Used for swap temporaries.
+const AttrFlagNoTrie uint8 = 0x80
+
 // Attribute flags (bits in AttrNode.Flags).
 const (
 	FlagDirty       uint32 = 1 << 0

@@ -150,6 +150,17 @@ func createValueSlot(uri string, valueType uint8) uint16 {
 	return slot
 }
 
+// createSwapValueSlot creates a value slot with no URI and no trie entry.
+// Used as the replacement argument to Swap.
+func createSwapValueSlot(valueType uint8) uint16 {
+	kind := sys.AttrKindValue | flat.AttrFlagNoTrie
+	slot, err := sys.AttrCreate("", valueType, kind, nil)
+	if err != nil {
+		panic("attr: AttrCreate swap value failed: " + err.Error())
+	}
+	return slot
+}
+
 func writeInitialValue(slot uint16, fv *flat.Value) {
 	buf := (*[40]byte)(unsafe.Pointer(fv))
 	if err := sys.AttrWrite(slot, buf); err != nil {

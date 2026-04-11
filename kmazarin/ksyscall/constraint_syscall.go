@@ -22,31 +22,47 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 		return -12 // ENOMEM — not initialized
 	}
 
-	// Validate URI length.
-	if uriLen == 0 || uriLen > maxURILen {
-		return -22 // EINVAL
-	}
+	// Extract the no-trie flag from attrKind. When set, the node is allocated
+	// but not inserted into the namespace trie and no URI string is stored.
+	// Used for swap temporaries.
+	noTrie := (attrKind & uint64(flat.AttrFlagNoTrie)) != 0
+	attrKind &^= uint64(flat.AttrFlagNoTrie) // mask off flag, keep kind bits
 
-	// Copy URI from user buffer.
-	var uriBuf [maxURILen]byte
-	if !kmem.CopyFromUser(uriBuf[:uriLen], uintptr(uriBufPtr), int(uriLen)) {
-		return -14 // EFAULT
-	}
-	uri := unsafeStringFromBytes(uriBuf[:uriLen])
+	var uri string
+	if noTrie {
+		// No-trie mode: URI is optional. Skip validation, trie, and string alloc.
+	} else {
+		// Validate URI length.
+		if uriLen == 0 || uriLen > maxURILen {
+			return -22 // EINVAL
+		}
 
-	// Validate URI format.
-	var segments [maxURISegments]string
-	nSeg := parseURI(uri, &segments)
-	if nSeg < 2 {
-		return -22 // EINVAL — need at least "shepherd/<name>" or "kernel/<name>"
-	}
+		// Copy URI from user buffer.
+		var uriBuf [maxURILen]byte
+		if !kmem.CopyFromUser(uriBuf[:uriLen], uintptr(uriBufPtr), int(uriLen)) {
+			return -14 // EFAULT
+		}
+		uri = unsafeStringFromBytes(uriBuf[:uriLen])
 
-	// Validate ownership: shepherds can only create under "shepherd/<shepherdName>/..."
-	if segments[0] == "kernel" {
-		return -1 // EPERM — kernel namespace not accessible via syscall
-	}
-	if segments[0] != "shepherd" {
-		return -22 // EINVAL — must be under "shepherd" or "kernel"
+		// Validate URI format.
+		var segments [maxURISegments]string
+		nSeg := parseURI(uri, &segments)
+		if nSeg < 2 {
+			return -22 // EINVAL — need at least "shepherd/<name>" or "kernel/<name>"
+		}
+
+		// Validate ownership: shepherds can only create under "shepherd/<shepherdName>/..."
+		if segments[0] == "kernel" {
+			return -1 // EPERM — kernel namespace not accessible via syscall
+		}
+		if segments[0] != "shepherd" {
+			return -22 // EINVAL — must be under "shepherd" or "kernel"
+		}
+
+		// Check for duplicate URI.
+		if _, exists := attrMgr.trieLookup(uri); exists {
+			return -17 // EEXIST
+		}
 	}
 
 	// Validate value type.
@@ -57,11 +73,6 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 	// Validate attr kind.
 	if attrKind != uint64(flat.AttrKindValue) && attrKind != uint64(flat.AttrKindConstraint) {
 		return -22 // EINVAL
-	}
-
-	// Check for duplicate URI.
-	if _, exists := attrMgr.trieLookup(uri); exists {
-		return -17 // EEXIST
 	}
 
 	// Allocate a node slot.
@@ -110,6 +121,11 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 		attrMgr.bytecodeBumpOff += needed
 		node.ProgramOffset = bcOff
 		node.ProgramLen = uint16(bytecodeLen) // total byte length of serialized MZBC blob
+	}
+
+	if noTrie {
+		// No URI storage, no trie insertion, no query updates.
+		return int64(slot)
 	}
 
 	// Allocate string slot for the URI name.
@@ -843,6 +859,188 @@ func SyscallAttrIncrementI64(slotIndex, _, _, _, _, _ uint64) int64 {
 
 	// No dirty propagation — counters are read-only side effects.
 	return cur + 1
+}
+
+// SyscallAttrSwap atomically replaces the implementation behind targetSlot with
+// the implementation from replacementSlot. The target keeps its URI, forward
+// edges (dependents), and owner. It receives the replacement's kind, bytecode,
+// cached value, and backward edges (dependencies). The replacement is tombstoned.
+//
+// Args: targetSlot, replacementSlot, _, _, _, _
+// Returns: 0 on success, negative errno on failure.
+//
+func SyscallAttrSwap(targetSlotArg, replacementSlotArg, _, _, _, _ uint64) int64 {
+	if !attrMgr.initialized {
+		return -12
+	}
+
+	tSlot := uint16(targetSlotArg)
+	rSlot := uint16(replacementSlotArg)
+
+	if tSlot == rSlot {
+		return -22 // EINVAL
+	}
+
+	if !attrMgr.isNodeAllocated(tSlot) || !attrMgr.isNodeAllocated(rSlot) {
+		return -22 // EINVAL
+	}
+
+	tNode := attrMgr.node(tSlot)
+	rNode := attrMgr.node(rSlot)
+	if tNode.IsTombstoned() || rNode.IsTombstoned() {
+		return -22 // EINVAL
+	}
+
+	// Ownership check — both must belong to the caller.
+	pid, _ := getCurrentThreadSIDAndTID()
+	if tNode.Owner != uint16(pid) || rNode.Owner != uint16(pid) {
+		return -1 // EPERM
+	}
+
+	// Type must match.
+	if tNode.ValueType != rNode.ValueType {
+		return -22 // EINVAL
+	}
+
+	// Step 1: Remove target's backward edges.
+	// For each of target's dependencies, remove target from their dependents list.
+	oldDepCount := int(tNode.DepsCount)
+	for i := 0; i < oldDepCount; i++ {
+		depSlot := attrMgr.readEdge(tNode.DepsOffset, i)
+		attrMgr.removeReverseEdge(depSlot, tSlot)
+	}
+
+	// Step 2: Copy replacement's implementation to target.
+	tNode.Kind = rNode.Kind
+	tNode.ProgramOffset = rNode.ProgramOffset
+	tNode.ProgramLen = rNode.ProgramLen
+
+	// Seqlock write for the cached value.
+	tNode.SeqCounter++
+	tNode.CachedValue = rNode.CachedValue
+	tNode.SeqCounter++
+
+	// Step 3: Transfer replacement's backward edges to target.
+	tNode.DepsOffset = rNode.DepsOffset
+	tNode.DepsCount = rNode.DepsCount
+
+	// Update reverse edges: replacement's dependencies now have target as a dependent
+	// instead of replacement.
+	newDepCount := int(rNode.DepsCount)
+	for i := 0; i < newDepCount; i++ {
+		depSlot := attrMgr.readEdge(rNode.DepsOffset, i)
+		attrMgr.replaceReverseEdge(depSlot, rSlot, tSlot)
+	}
+
+	// Step 4: Dirty-propagate from target through its forward edges (dependents).
+	tNode.SetDirty(true)
+	attrMgr.dirtyPropagate(tSlot)
+	flushPendingDirtyWakes()
+
+	// Step 5: Free replacement. If it has a URI in the trie, remove it.
+	// Swap temps created with AttrFlagNoTrie have NameOffset=0 and no trie entry.
+	if rNode.NameOffset != 0 {
+		rURI := attrMgr.readNodeURI(rSlot)
+		if rURI != "" {
+			attrMgr.trieRemove(rURI)
+			attrMgr.freeString(rNode.NameOffset)
+		}
+	}
+	rNode.DepsOffset = 0
+	rNode.DepsCount = 0
+	rNode.DependentsOffset = 0
+	rNode.DependentsCount = 0
+	attrMgr.freeNode(rSlot)
+
+	return 0
+}
+
+// replaceReverseEdge replaces oldSlot with newSlot in depSlot's Dependents list.
+// If oldSlot is not found, does nothing.
+func (mgr *KernelAttrManager) replaceReverseEdge(depSlot, oldSlot, newSlot uint16) {
+	node := mgr.node(depSlot)
+	count := int(node.DependentsCount)
+	for i := 0; i < count; i++ {
+		if mgr.readEdge(node.DependentsOffset, i) == oldSlot {
+			mgr.writeEdge(node.DependentsOffset, i, newSlot)
+			return
+		}
+	}
+}
+
+// SyscallAttrDelete deletes an attribute. Returns EBUSY (-16) if the attribute
+// has dependents (DependentsCount > 0). The caller must unwire all dependents
+// before deleting.
+//
+// Args: slotIndex, _, _, _, _, _
+// Returns: 0 on success, negative errno on failure.
+//
+func SyscallAttrDelete(slotArg, _, _, _, _, _ uint64) int64 {
+	if !attrMgr.initialized {
+		return -12
+	}
+
+	slot := uint16(slotArg)
+	if !attrMgr.isNodeAllocated(slot) {
+		return -22 // EINVAL
+	}
+
+	node := attrMgr.node(slot)
+
+	// Ownership check.
+	pid, _ := getCurrentThreadSIDAndTID()
+	if node.Owner != uint16(pid) {
+		return -1 // EPERM
+	}
+
+	// Refuse deletion if anything depends on this attribute.
+	if node.DependentsCount > 0 {
+		uri := attrMgr.readNodeURI(slot)
+		serial.RawUARTPuts("[attr] EBUSY: AttrDelete slot=")
+		serial.RawUARTDecimal(uint64(slot))
+		serial.RawUARTPuts(" uri=")
+		serial.RawUARTPuts(uri)
+		serial.RawUARTPuts(" has ")
+		serial.RawUARTDecimal(uint64(node.DependentsCount))
+		serial.RawUARTPuts(" dependents: [")
+		for i := 0; i < int(node.DependentsCount); i++ {
+			depSlot := attrMgr.readEdge(node.DependentsOffset, i)
+			if i > 0 {
+				serial.RawUARTPuts(", ")
+			}
+			serial.RawUARTDecimal(uint64(depSlot))
+			depURI := attrMgr.readNodeURI(depSlot)
+			if depURI != "" {
+				serial.RawUARTPuts("(")
+				serial.RawUARTPuts(depURI)
+				serial.RawUARTPuts(")")
+			}
+		}
+		serial.RawUARTPuts("]\r\n")
+		return -16 // EBUSY
+	}
+
+	// Remove this node from its dependencies' dependents lists.
+	depCount := int(node.DepsCount)
+	for i := 0; i < depCount; i++ {
+		depSlot := attrMgr.readEdge(node.DepsOffset, i)
+		attrMgr.removeReverseEdge(depSlot, slot)
+	}
+
+	// Remove from trie and free string slot.
+	if node.NameOffset != 0 {
+		uri := attrMgr.readNodeURI(slot)
+		if uri != "" {
+			attrMgr.trieRemove(uri)
+			attrMgr.updateQueryResultsForURI(uri)
+		}
+		attrMgr.freeString(node.NameOffset)
+	}
+
+	// Free the node.
+	attrMgr.freeNode(slot)
+
+	return 0
 }
 
 // unsafeStringFromBytes creates a string from a byte slice without allocation.

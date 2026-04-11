@@ -132,6 +132,17 @@ func (b *BoxesAndGlueInteractor) SetFontFamily(family string) {
 	b.fontID = -1 // force re-open
 }
 
+// SetFontSize changes the font size and forces re-layout on next Draw.
+func (b *BoxesAndGlueInteractor) SetFontSize(size int32) {
+	if size == b.fontSize {
+		return
+	}
+	b.fontSize = size
+	b.fontID = -1 // force re-open
+	b.lastText = ""  // force re-layout
+	b.FullDamage()
+}
+
 func (b *BoxesAndGlueInteractor) ensureFont(dc mancini.DrawContext) {
 	if b.fontID >= 0 {
 		return

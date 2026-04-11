@@ -124,6 +124,75 @@ func (lh *LayoutAttributes) InitBounds(myName string) {
 	lh.BoundsHash = attr.ConstraintI64(LayoutURI(myName, DataTypeInt64, LayoutBoundsHash), hashProg)
 }
 
+// CleanConstraints deletes all constraint attributes owned by this
+// LayoutAttributes in dependency order. Constraints that read from
+// other attributes are deleted first, then the leaf value attributes.
+// After this call the LayoutAttributes should not be used.
+func (lh *LayoutAttributes) CleanConstraints() {
+	if lh == nil {
+		return
+	}
+
+	// Phase 1: Damage constraint (depends on Bounds, LP* values, etc.)
+	if lh.Damage != nil {
+		deleteAttr(lh.Damage.DamageRect)
+		lh.Damage.DamageRect = nil
+	}
+
+	// Phase 2: Bounds and BoundsHash (constraints depending on X, Y, W, H).
+	deleteAttr(lh.Bounds)
+	lh.Bounds = nil
+	deleteAttr(lh.BoundsHash)
+	lh.BoundsHash = nil
+
+	// Phase 3: Damage LP* value attrs (no dependents now that DamageRect is gone).
+	if lh.Damage != nil {
+		deleteAttr(lh.Damage.LPBounds)
+		deleteAttr(lh.Damage.LPVisible)
+		deleteAttr(lh.Damage.LPBoundsHash)
+		deleteAttr(lh.Damage.LPBgColor)
+		deleteAttr(lh.Damage.LPFgColor)
+		deleteAttr(lh.Damage.LPContentHash)
+		lh.Damage = nil
+	}
+
+	// Phase 4: Optional container attrs.
+	deleteAttr(lh.SpacingAttr)
+	lh.SpacingAttr = nil
+	deleteAttr(lh.CrossAlignAttr)
+	lh.CrossAlignAttr = nil
+	deleteAttr(lh.MaxWidthAttr)
+	lh.MaxWidthAttr = nil
+	deleteAttr(lh.MaxHeightAttr)
+	lh.MaxHeightAttr = nil
+	deleteAttr(lh.LastChildDrawnAttr)
+	lh.LastChildDrawnAttr = nil
+
+	// Phase 5: Core value attrs (X, Y, Width, Height, Visible, Parent).
+	// Width and Height may be constraints — that's fine, their deps
+	// (if any) are external and were already unwired by the caller.
+	deleteAttr(lh.Width)
+	lh.Width = nil
+	deleteAttr(lh.Height)
+	lh.Height = nil
+	deleteAttr(lh.X)
+	lh.X = nil
+	deleteAttr(lh.Y)
+	lh.Y = nil
+	deleteAttr(lh.Visible)
+	lh.Visible = nil
+	deleteAttr(lh.Parent)
+	lh.Parent = nil
+}
+
+// deleteAttr is a helper that deletes a typed attribute, ignoring nil.
+func deleteAttr[T any](a *attr.Attribute[T]) {
+	if a == nil {
+		return
+	}
+	attr.Delete(a)
+}
+
 // setVisibleAttr sets the Visible attribute value.
 func setVisibleAttr(lh *LayoutAttributes, v bool) {
 	if lh != nil && lh.Visible != nil {

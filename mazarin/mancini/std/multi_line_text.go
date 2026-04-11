@@ -1175,6 +1175,9 @@ func (m *MultiLineText) KeyPress(ch rune, action string, ev *mancini.InputEvent)
 	return handled
 }
 
+// SetFocused sets the Focused flag, which controls cursor rendering.
+func (m *MultiLineText) SetFocused(v bool) { m.Focused = v }
+
 // ──────────────────────────────────────────────────────────────────────
 // Mouse interaction
 // ──────────────────────────────────────────────────────────────────────

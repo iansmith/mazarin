@@ -9,6 +9,7 @@ import (
 
 	"github.com/fogleman/gg"
 
+	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -37,6 +38,14 @@ type Scrollbar struct {
 	ShowArrows bool    // draw arrow triangles at each end
 
 	Disabled bool // when true, renders dimmed and ignores input
+
+	// Value/Max: when set, ThumbPos and ThumbFrac are computed from
+	// these in Draw. Value is the current scroll position (pixels),
+	// Max is the maximum scroll range (constrained to MaxScrollY).
+	// Value is the source of truth — the scroller's VirtualY is
+	// constrained to it.
+	ValueAttr *attr.Attribute[int64]
+	MaxAttr   *attr.Attribute[int64]
 
 	// Drag state — active during ClickDraggable interaction.
 	dragOffset  float64 // offset within thumb where press occurred
@@ -87,6 +96,9 @@ func NewScrollbarNamed(myName, parent string, theme mancini.Theme,
 
 // Draw implements mancini.NewDrawer. It renders the scrollbar: inset track,
 // raised thumb, grip dot, and optional arrow buttons.
+//
+// When ValueAttr and MaxAttr are set, ThumbPos and ThumbFrac are computed
+// automatically from Value/Max before rendering.
 func (s *Scrollbar) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if !self.Visible() {
 		return
@@ -94,6 +106,32 @@ func (s *Scrollbar) Draw(self mancini.Interactor, x, y, w, h int64) {
 	dc := self.DC()
 	if dc == nil {
 		return
+	}
+
+	// Compute ThumbPos and ThumbFrac from Value/Max if available.
+	if s.ValueAttr != nil && s.MaxAttr != nil {
+		maxVal := s.MaxAttr.Get()
+		if maxVal > 0 {
+			val := s.ValueAttr.Get()
+			if val < 0 {
+				val = 0
+			}
+			if val > maxVal {
+				val = maxVal
+			}
+			s.ThumbPos = float64(val) / float64(maxVal)
+			// ThumbFrac = viewportHeight / virtualHeight
+			// maxVal = virtualHeight - viewportHeight
+			// so viewportHeight = h, virtualHeight = h + maxVal
+			mainAxis := h
+			if !s.IsVertical {
+				mainAxis = w
+			}
+			s.ThumbFrac = float64(mainAxis) / float64(int64(mainAxis) + maxVal)
+		} else {
+			s.ThumbPos = 0
+			s.ThumbFrac = 1.0
+		}
 	}
 
 	pal := s.Theme().Palette()
@@ -278,6 +316,9 @@ func (s *Scrollbar) ClickDragStart(ev *mancini.InputEvent) bool {
 			newPos = 1
 		}
 		s.ThumbPos = newPos
+		if s.ValueAttr != nil && s.MaxAttr != nil {
+			s.ValueAttr.Set(int64(newPos * float64(s.MaxAttr.Get())))
+		}
 		s.dragOffset = thumbLen / 2
 		s.FullDamage()
 		fmt.Printf("[scrollbar] ClickDragStart on track, jumped to %.3f\n", newPos)
@@ -312,6 +353,11 @@ func (s *Scrollbar) ClickDragMove(ev *mancini.InputEvent, _ *mancini.InputEvent,
 		newPos = 1
 	}
 	s.ThumbPos = newPos
+	// When Value/Max attributes are wired, update Value from ThumbPos.
+	if s.ValueAttr != nil && s.MaxAttr != nil {
+		maxVal := s.MaxAttr.Get()
+		s.ValueAttr.Set(int64(newPos * float64(maxVal)))
+	}
 	s.FullDamage()
 	return true
 }

@@ -65,6 +65,8 @@ var mazzySyscallTable = [64]SyscallHandler{
 	58: SyscallIOUringSetup,           // IOUringSetup = 0x103A
 	59: SyscallIOUringEnter,           // IOUringEnter = 0x103B
 	60: SyscallSharePagesWithTarget,  // SharePagesWithTarget = 0x103C
+	61: SyscallAttrSwap,              // AttrSwap = 0x103D
+	62: SyscallAttrDelete,            // AttrDelete = 0x103E
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

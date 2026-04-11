@@ -2,6 +2,7 @@ package impl
 
 import (
 	"fmt"
+	"strings"
 
 	"mazzy/mazarin/mancini"
 )
@@ -62,6 +63,16 @@ func (i *Interactor) Initialize(owner mancini.Interactor, layout *mancini.Layout
 	i.layout = layout
 	if layout != nil {
 		mancini.RegisterInteractor(layout.Name(), owner)
+	}
+}
+
+// ReInitializeOwner replaces the backpointer and re-registers with the
+// new owner. Used when a subclass wraps an already-initialized interactor
+// and needs dispatch to resolve to the subclass's methods.
+func (i *Interactor) ReInitializeOwner(newOwner mancini.Interactor) {
+	i.owner = newOwner
+	if i.layout != nil {
+		mancini.RegisterInteractor(i.layout.Name(), newOwner)
 	}
 }
 
@@ -177,6 +188,13 @@ func (i *Interactor) Pick(localX, localY int64) []mancini.Interactor {
 			childRelY := clh.Y.Get() - iy
 			childLocalX := localX - childRelX
 			childLocalY := localY - childRelY
+			if mancini.PickDebugEnabled() {
+				if strings.Contains(clh.Name(), "throb") {
+					fmt.Printf("[pick:detail] %s: childX=%d parentX=%d relX=%d localX=%d → childLocalX=%d | childY=%d parentY=%d relY=%d localY=%d → childLocalY=%d\n",
+						clh.Name(), clh.X.Get(), ix, childRelX, localX, childLocalX,
+						clh.Y.Get(), iy, childRelY, localY, childLocalY)
+				}
+			}
 			if picker, ok := child.(mancini.Picker); ok {
 				result = append(result, picker.Pick(childLocalX, childLocalY)...)
 			}

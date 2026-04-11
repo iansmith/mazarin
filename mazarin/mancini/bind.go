@@ -123,3 +123,8 @@ func EqualBool(sourceURI string) *vm.Program {
 func EqualStr(sourceURI string) *vm.Program {
 	return BindStrings(ProgIdentityStr, "_source_", sourceURI)
 }
+
+// SubI64 returns a constraint program that computes aURI - bURI.
+func SubI64(aURI, bURI string) *vm.Program {
+	return BindStrings(ProgSubDeref, "_a_", aURI, "_b_", bURI)
+}

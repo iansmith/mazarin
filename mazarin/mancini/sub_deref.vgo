@@ -1,0 +1,3 @@
+func subDeref() int64 {
+	return derefI64("_a_") - derefI64("_b_")
+}

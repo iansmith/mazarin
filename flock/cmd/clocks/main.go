@@ -168,13 +168,17 @@ func main() {
 	app.RachelSID = rachelSID
 	app.Focused = false // wait for rachel to grant focus
 
-	// Scroller height = AppWindow height (viewport matches window).
+	// Scroller width/height = AppWindow width/height (viewport matches window).
+	appWidthURI := mancini.LayoutURI("AppWindow", mancini.DataTypeInt64, mancini.LayoutWidth)
 	appHeightURI := mancini.LayoutURI("AppWindow", mancini.DataTypeInt64, mancini.LayoutHeight)
+	scrollerWidth := attr.ConstraintI64(
+		mancini.LayoutURI("scroller", mancini.DataTypeInt64, mancini.LayoutWidth),
+		mancini.EqualI64(appWidthURI))
 	scrollerHeightProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", appHeightURI)
 	scrollerHeight := attr.ConstraintI64(
 		std.ScrollerHeightURI("scroller"), scrollerHeightProg)
-	scroller := std.NewScroller("scroller", "AppWindow", pal, scrollerHeight)
+	scroller := std.NewScroller("scroller", "AppWindow", pal, scrollerWidth, scrollerHeight, nil)
 
 	// Row: inside-out sizing. Natural width = sum of children.
 	// Scroller handles horizontal scrolling to show one city at a time.
@@ -262,20 +266,19 @@ func main() {
 	appLH.Y.Set(0)
 
 	// Window size: show 1 city at a time, scroll horizontally to see others.
-	scrollerLH := scroller.GetLayout()
 	winW := int(cityColW)
-	virtualW := cityColW * int64(nCities)
-	scrollerLH.Width.Set(int64(winW))
-	scroller.SetVirtualSize(virtualW, 0)
-	scroller.SnapX = cityColW // snap to city boundaries on drag end
-
 	winH := 210
-	sys.UartWriteString(fmt.Sprintf("[clocks] winW=%d winH=%d virtualW=%d\n",
-		winW, winH, virtualW))
-	// Set AppWindow dimensions — preferred size for AppStart.
-	// Will be updated from BSR response below.
+	virtualW := cityColW * int64(nCities)
+
+	// Set AppWindow dimensions first — scroller width/height are
+	// constrained to these, so they pick up the values automatically.
 	appLH.Width.Set(int64(winW))
 	appLH.Height.Set(int64(winH))
+
+	scroller.SetVirtualSize(virtualW, 0)
+	_ = cityColW // snap support removed from Scroller
+	sys.UartWriteString(fmt.Sprintf("[clocks] winW=%d winH=%d virtualW=%d\n",
+		winW, winH, virtualW))
 
 	// 8. Compute screen position via rachel's visibleArea constraints.
 	var posXAttr, posYAttr *attr.Attribute[int64]

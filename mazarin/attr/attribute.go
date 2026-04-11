@@ -114,6 +114,63 @@ func (h *Attribute[T]) Set(v T) {
 	}
 }
 
+// SwapToConstraint atomically replaces the implementation behind target with
+// a new constraint. Target keeps its URI and dependents. This is the mechanism
+// for converting a value to a constraint (or replacing one constraint with
+// another) at a given URI without breaking existing forward edges.
+func SwapToConstraint[T any](target *Attribute[T], prog *vm.Program, deps ...AttributeAny) {
+	tempSlot := createSwapConstraintSlot(target.typ, prog, deps)
+
+	if err := sys.AttrSwap(target.slot, tempSlot); err != nil {
+		panic("attr: AttrSwap failed: " + err.Error())
+	}
+
+	target.kind = flat.AttrKindConstraint
+	target.prog = prog
+	target.lastRS = nil
+	registerCascade(target)
+}
+
+// SwapToValue atomically replaces the implementation behind target with a
+// plain value. Target keeps its URI and dependents.
+func SwapToValue[T any](target *Attribute[T], initial T) {
+	tempSlot := createSwapValueSlot(target.typ)
+
+	// Write the initial value to the temp slot before swapping.
+	if target.isStr {
+		s := *(*string)(unsafe.Pointer(&initial))
+		if err := sys.AttrWriteString(tempSlot, s, false); err != nil {
+			panic("attr: AttrWriteString swap failed: " + err.Error())
+		}
+	} else {
+		fv := target.fromT(initial)
+		buf := (*[40]byte)(unsafe.Pointer(&fv))
+		if err := sys.AttrWrite(tempSlot, buf); err != nil {
+			panic("attr: AttrWrite swap failed: " + err.Error())
+		}
+	}
+
+	if err := sys.AttrSwap(target.slot, tempSlot); err != nil {
+		panic("attr: AttrSwap failed: " + err.Error())
+	}
+
+	target.kind = flat.AttrKindValue
+	target.prog = nil
+	target.lastRS = nil
+	delete(constraintEvaluators, target.slot)
+}
+
+// Delete removes an attribute from the namespace. Returns an error if the
+// attribute still has dependents (EBUSY) — the caller must unwire them first.
+func Delete[T any](a *Attribute[T]) error {
+	if err := sys.AttrDelete(a.slot); err != nil {
+		return err
+	}
+	delete(constraintEvaluators, a.slot)
+	a.slot = 0xFFFF
+	return nil
+}
+
 // ReadI64 reads an int64 attribute directly from the shared constraint page
 // by URI, using trie lookup + seqlock. This is a pure memory read — no
 // syscall, no constraint evaluation, no writeback. Returns (value, true)

@@ -65,4 +65,6 @@ const (
 	SysIOUringSetup           = MazzySyscallBase + 58 // 0x103A - Create io_uring instance (pin ring page)
 	SysIOUringEnter           = MazzySyscallBase + 59 // 0x103B - Submit SQEs + wait for CQEs
 	SysSharePagesWithTarget   = MazzySyscallBase + 60 // 0x103C - Share caller's pages into target shepherd
+	SysAttrSwap               = MazzySyscallBase + 61 // 0x103D - Atomically swap attribute implementation
+	SysAttrDelete             = MazzySyscallBase + 62 // 0x103E - Delete attribute (EBUSY if has dependents)
 )

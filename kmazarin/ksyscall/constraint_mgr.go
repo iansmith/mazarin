@@ -276,6 +276,31 @@ func (mgr *KernelAttrManager) writeEdgeBlock(slots []uint16) (uint32, bool) {
 	return off, true
 }
 
+// readNodeURI reads the URI string for a node from the string region.
+// Returns "" if the node has no name or the slot is invalid.
+//
+//go:nosplit
+func (mgr *KernelAttrManager) readNodeURI(slot uint16) string {
+	if !mgr.isNodeAllocated(slot) {
+		return ""
+	}
+	node := mgr.node(slot)
+	nameOff := node.NameOffset
+	base := mgr.baseVA + uintptr(mgr.stringRegionOff) + uintptr(nameOff)
+	// Scan for NUL terminator, capped at StringMaxLen.
+	n := 0
+	for n < flat.StringMaxLen {
+		if *(*byte)(unsafe.Pointer(base + uintptr(n))) == 0 {
+			break
+		}
+		n++
+	}
+	if n == 0 {
+		return ""
+	}
+	return unsafeStringFromBytes(unsafe.Slice((*byte)(unsafe.Pointer(base)), n))
+}
+
 // bumpGeneration increments the shared page generation counter.
 //
 //go:nosplit

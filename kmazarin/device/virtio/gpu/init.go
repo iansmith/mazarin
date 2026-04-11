@@ -9,8 +9,8 @@ import (
 
 // Display resolution constants. Change these to resize the QEMU display window.
 const (
-	DisplayWidth  = 1728
-	DisplayHeight = 1117
+	DisplayWidth  = 1800
+	DisplayHeight = 1200
 )
 
 // gpuLock protects all GPU command queue operations. Without this,
@@ -36,9 +36,13 @@ func Init() bool {
 	}
 
 	// Query host display dimensions. Use them if available, fall back to constants.
+	// On macOS Cocoa, GET_DISPLAY_INFO may return the initial window size (e.g.
+	// 640x414) rather than the requested xres/yres, so reject values smaller
+	// than the compiled-in defaults.
 	dispW, dispH, dispOK := virtioGPUGetDisplayInfo()
-	if !dispOK || dispW == 0 || dispH == 0 {
-		klog.Logf("[VirtIO GPU] No display info, using default %dx%d\n", DisplayWidth, DisplayHeight)
+	if !dispOK || dispW < DisplayWidth || dispH < DisplayHeight {
+		klog.Logf("[VirtIO GPU] Display info %dx%d too small or unavailable, using default %dx%d\n",
+			dispW, dispH, DisplayWidth, DisplayHeight)
 		dispW = DisplayWidth
 		dispH = DisplayHeight
 	}

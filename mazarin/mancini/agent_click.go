@@ -62,10 +62,14 @@ func (a *ClickAgent) Deliver(ev *InputEvent, target Interactor) bool {
 		return false
 	}
 
-	// Skip targets that implement ClickDraggable — the ClickDragAgent
-	// handles those.
+	// Skip targets that implement ClickDraggable but NOT Clickable —
+	// the ClickDragAgent handles those exclusively. If a target is
+	// both ClickDraggable and Clickable, clicks that the ClickDragAgent
+	// declined (ClickDragStart returned false) fall through here.
 	if _, ok := target.(ClickDraggable); ok {
-		return false
+		if _, alsoClickable := target.(Clickable); !alsoClickable {
+			return false
+		}
 	}
 
 	// Skip targets that don't implement any click protocol.

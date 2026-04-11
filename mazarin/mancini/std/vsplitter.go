@@ -41,10 +41,22 @@ type VSplitter struct {
 	// Draw performance tracking.
 	drawCount   int64
 	drawTotalNs int64
+
+	// In-app focus: set by the application after construction.
+	// KeyFocusAgent is the KeyAgent that routes keyboard events.
+	// KeyFocusTarget is the interactor that should receive keyboard input
+	// when this VSplitter is clicked (e.g., the editor inside a unit).
+	// FocusAttr is this VSplitter's focused attribute (true = has focus).
+	// FocusPeers are all VSplitters in the same focus group (including self).
+	KeyFocusAgent  *mancini.KeyAgent
+	KeyFocusTarget mancini.Interactor
+	FocusAttr      *attr.Attribute[bool]
+	FocusPeers     []*VSplitter
 }
 
-// Compile-time check.
+// Compile-time checks.
 var _ mancini.ClickDraggable = (*VSplitter)(nil)
+var _ mancini.Clickable = (*VSplitter)(nil)
 
 // NewVSplitter creates a VSplitter. The width comes from the parent;
 // height is a value attribute. The VLine child should be created with
@@ -89,18 +101,6 @@ func (vs *VSplitter) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 
 	children := vs.GetChildren()
-	if len(children) < 3 {
-		return
-	}
-
-	leftW := int64(float64(w) * vs.Percents[0] / 100.0)
-	centerW := int64(float64(w) * vs.Percents[1] / 100.0)
-	rightW := w - leftW - centerW
-
-	// Phase 1: always propagate layout to all children.
-	propagateChildLayout(children[0], dc, x, y, leftW)
-	propagateChildLayout(children[1], dc, x+leftW+1, y, centerW)
-	propagateChildLayout(children[2], dc, x+w-rightW, y, rightW)
 
 	// Get parent's damage rect to detect children whose pixels were
 	// overwritten by a parent background fill.
@@ -112,14 +112,62 @@ func (vs *VSplitter) Draw(self mancini.Interactor, x, y, w, h int64) {
 		}
 	}
 
-	// Phase 2: only draw children with damage or parent overlap.
-	t0 := time.Now()
-	drewLeft := drawChildIfDamaged(children[0], x, y, leftW, parentDmg)
-	t1 := time.Now()
-	drewCenter := drawChildIfDamaged(children[1], x+leftW+1, y, centerW, parentDmg)
-	t2 := time.Now()
-	drewRight := drawChildIfDamaged(children[2], x+w-rightW, y, rightW, parentDmg)
-	t3 := time.Now()
+	// Phase 1: lay out and draw the three percentage-based panes if present.
+	var t0, t1, t2, t3 time.Time
+	var drewLeft, drewCenter, drewRight bool
+	if len(children) >= 3 {
+		leftW := int64(float64(w) * vs.Percents[0] / 100.0)
+		centerW := int64(float64(w) * vs.Percents[1] / 100.0)
+		rightW := w - leftW - centerW
+
+		propagateChildLayout(children[0], dc, x, y, leftW)
+		propagateChildLayout(children[1], dc, x+leftW+1, y, centerW)
+		propagateChildLayout(children[2], dc, x+w-rightW, y, rightW)
+
+		t0 = time.Now()
+		drewLeft = drawChildIfDamaged(children[0], x, y, leftW, parentDmg)
+		t1 = time.Now()
+		drewCenter = drawChildIfDamaged(children[1], x+leftW+1, y, centerW, parentDmg)
+		t2 = time.Now()
+		drewRight = drawChildIfDamaged(children[2], x+w-rightW, y, rightW, parentDmg)
+		t3 = time.Now()
+	}
+
+	// Phase 2: draw all additional children (e.g., throbber).
+	// Position each extra child at the lower-left corner of the
+	// right (BAG) pane. X/Y are set to absolute screen coordinates
+	// so Pick sees consistent values.
+	rightX := x // fallback
+	if len(children) >= 3 {
+		rightW := w - int64(float64(w)*vs.Percents[0]/100.0) - int64(float64(w)*vs.Percents[1]/100.0)
+		rightX = x + w - rightW
+	}
+	for i := 3; i < len(children); i++ {
+		extra := children[i]
+		if l, ok := extra.(mancini.Layouter); ok {
+			elh := l.GetLayout()
+			if elh != nil {
+				eh := elh.Height.Get()
+				// Pin to lower-left of right pane with 4px padding.
+				ex := rightX + 4
+				ey := y + h - eh - 4
+				elh.X.Set(ex)
+				elh.Y.Set(ey)
+			}
+		}
+		if cs, ok := extra.(interface{ SetDC(mancini.DrawContext) }); ok {
+			cs.SetDC(dc)
+		}
+		if d, ok := extra.(mancini.NewDrawer); ok {
+			if l, ok := extra.(mancini.Layouter); ok {
+				elh := l.GetLayout()
+				if elh != nil {
+					d.Draw(extra, elh.X.Get(), elh.Y.Get(),
+						elh.Width.Get(), elh.Height.Get())
+				}
+			}
+		}
+	}
 
 	// Snapshot damage so the parent constraint settles.
 	if l, ok := self.(mancini.Layouter); ok {
@@ -129,18 +177,21 @@ func (vs *VSplitter) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 
 	// Track running average for periodic reporting.
-	vs.drawCount++
-	vs.drawTotalNs += t3.Sub(t0).Nanoseconds()
-	if vs.drawCount%10 == 0 {
-		avgUs := vs.drawTotalNs / vs.drawCount / 1000
-		fmt.Printf("[vsplitter:perf] n=%d avg=%dµs last: left=%v(%t) center=%v(%t) right=%v(%t)\n",
-			vs.drawCount, avgUs,
-			t1.Sub(t0), drewLeft, t2.Sub(t1), drewCenter, t3.Sub(t2), drewRight)
+	if !t0.IsZero() {
+		vs.drawCount++
+		vs.drawTotalNs += t3.Sub(t0).Nanoseconds()
+		if vs.drawCount%10 == 0 {
+			avgUs := vs.drawTotalNs / vs.drawCount / 1000
+			fmt.Printf("[vsplitter:perf] n=%d avg=%dµs last: left=%v(%t) center=%v(%t) right=%v(%t)\n",
+				vs.drawCount, avgUs,
+				t1.Sub(t0), drewLeft, t2.Sub(t1), drewCenter, t3.Sub(t2), drewRight)
+		}
 	}
 }
 
 // ClickDragStart implements mancini.ClickDraggable.
 // Accepts the drag if the press is in the center (VLine) region.
+// Also claims in-app focus at the start of the drag.
 func (vs *VSplitter) ClickDragStart(ev *mancini.InputEvent) bool {
 	w := vs.W()
 	if w <= 0 {
@@ -156,6 +207,7 @@ func (vs *VSplitter) ClickDragStart(ev *mancini.InputEvent) bool {
 		return false
 	}
 
+	vs.SetFocusToSelf()
 	vs.dragging = true
 	vs.dragStartX = ev.X
 	vs.dragStartPc = vs.Percents[0]
@@ -203,6 +255,40 @@ func (vs *VSplitter) ClickDragEnd(ev *mancini.InputEvent, outsideBounds bool) bo
 	vs.dragging = false
 	fmt.Printf("[vsplitter] drag end, left=%.1f%%\n", vs.Percents[0])
 	vs.FullDamage()
+	return true
+}
+
+// SetFocusToSelf claims in-app keyboard focus for this VSplitter.
+// It walks FocusPeers, setting each peer's FocusAttr to false except
+// this one (true), and directs the KeyAgent to deliver keyboard events
+// to KeyFocusTarget. Called from this VSplitter's own Click handler
+// and from child interactors (VE, Throbber) at the start of their
+// interactions.
+func (vs *VSplitter) SetFocusToSelf() {
+	if vs.KeyFocusAgent == nil || vs.KeyFocusTarget == nil {
+		return
+	}
+	for _, peer := range vs.FocusPeers {
+		isSelf := peer == vs
+		if peer.FocusAttr != nil {
+			peer.FocusAttr.Set(isSelf)
+		}
+		// Toggle the Focused bool on each peer's focus target (e.g.,
+		// MultiLineText.Focused controls cursor rendering).
+		if peer.KeyFocusTarget != nil {
+			if f, ok := peer.KeyFocusTarget.(interface{ SetFocused(bool) }); ok {
+				f.SetFocused(isSelf)
+			}
+		}
+	}
+	vs.KeyFocusAgent.SetFocus(vs.KeyFocusTarget)
+	fmt.Printf("[vsplitter] SetFocusToSelf\n")
+}
+
+// Click implements mancini.Clickable. Catches clicks that fall through
+// from non-interactive children (e.g., BAG) and claims focus.
+func (vs *VSplitter) Click(ev *mancini.InputEvent) bool {
+	vs.SetFocusToSelf()
 	return true
 }
 

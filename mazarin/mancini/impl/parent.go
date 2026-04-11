@@ -226,6 +226,32 @@ func (p *Parent) AddChildLast(child mancini.Interactor) {
 	mancini.SwapSequence(childName, lastName)
 }
 
+// DeleteChild removes a specific child from this parent by clearing its
+// Parent attribute. Returns the child, or nil if the child was not found
+// among this parent's children.
+func (p *Parent) DeleteChild(child mancini.Interactor) mancini.Interactor {
+	children := p.GetChildren()
+	for _, c := range children {
+		if c == child {
+			clearParent(c)
+			return c
+		}
+	}
+	return nil
+}
+
+// DeleteIthChild removes the i-th child (0-based, in sequence order)
+// from this parent. Returns the removed child, or nil if i is out of range.
+func (p *Parent) DeleteIthChild(i int) mancini.Interactor {
+	children := p.GetChildren()
+	if i < 0 || i >= len(children) {
+		return nil
+	}
+	child := children[i]
+	clearParent(child)
+	return child
+}
+
 // DeleteAllChildren removes all children from this parent by clearing
 // each child's Parent attribute. Returns the removed children in
 // sequence order. Returns an empty (non-nil) slice if no children exist.

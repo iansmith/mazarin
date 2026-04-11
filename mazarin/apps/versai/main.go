@@ -88,6 +88,14 @@ func main() {
 	theme.SetStyle(std.NewFlatStyle(15, 1.0))
 	fmt.Printf("[versai:timing] theme setup: %v\n", time.Since(tTheme))
 
+	// Pre-open BAG fonts at all three chooser sizes so they're cached
+	// before the first draw.
+	tFonts := time.Now()
+	for _, sz := range []int64{10, 16, 20} {
+		fc.OpenFaceByName(mfont.LatinModernRoman, mfont.Regular, sz)
+	}
+	fmt.Printf("[versai:timing] BAG font pre-open: %v\n", time.Since(tFonts))
+
 	// 4. Read screen dimensions.
 	tScreen := time.Now()
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
@@ -108,14 +116,12 @@ func main() {
 	app.Focused = false
 	fmt.Printf("[versai:timing] AppWindow create: %v\n", time.Since(tApp))
 
-	// 6. Create the versai Unit as AppWindow's child.
+	// 6. Create interactor hierarchy:
+	//   AppWindow → MarginParent(16,6,6,6) → ColumnEdgeToEdge → ScrollerVertical → 4 Units
 	tUnit := time.Now()
 	provider := fontcache.NewFontSvcGlyphProvider(fc)
-	unit := NewUnit("AppWindow", theme, pal)
-	fmt.Printf("[versai:timing] NewUnit: %v\n", time.Since(tUnit))
 
 	// 7. Set initial window size — request 70% of screen width.
-	// Rachel respects the requested width for PlacementRightFull.
 	winW := screenW * 70 / 100
 	winH := screenH
 	appLH := app.GetLayout()
@@ -124,10 +130,35 @@ func main() {
 	appLH.Width.Set(int64(winW))
 	appLH.Height.Set(int64(winH))
 
-	// Set the splitter's dimensions to match.
-	splitLH := unit.Split.GetLayout()
-	splitLH.Width.Set(int64(winW))
-	splitLH.Height.Set(int64(winH))
+	appWidthURI := appLH.Width.URI()
+	appHeightURI := appLH.Height.URI()
+
+	col := NewColumnEdgeToEdge("versai_col", "AppWindow",
+		theme, pal, appWidthURI, appHeightURI,
+		20, std.ScrollbarStandard)
+
+	// Create 4 Units, each wrapped in a MarginParent inside the scroller.
+	// Editor height is 400; MarginParent adds top(16) + bottom(6) = 422 total.
+	const unitEditorHeight = 400
+	scrollerParent := col.ScrollerName()
+	units := NewUnitList()
+	labels := [4]string{"Unit A", "Unit B", "Unit C", "Unit D"}
+	scroller := col.SV.Scroller
+	for i := range labels {
+		mpName := fmt.Sprintf("versai_u%d_mp", i)
+		mp := std.NewMarginParent(mpName, scrollerParent,
+			16, 6, 6, 6, // top, right, bottom, left
+			1,            // border width
+			labels[i],
+			theme, pal)
+		mpLH := mp.GetLayout()
+		mpLH.Height.Set(unitEditorHeight + 16 + 6) // editor + top + bottom margin
+		u := NewUnit("", mpName, theme, pal, rachelSID, nil)
+		entry := &UnitEntry{Unit: u, MP: mp}
+		entry.Node = units.PushBack(entry)
+	}
+	col.LayoutChildren()
+	fmt.Printf("[versai:timing] col + 4 margin+units: %v\n", time.Since(tUnit))
 
 	// 8. Publish Ready and announce to rachel with PlacementRightFull.
 	tAnnounce := time.Now()
@@ -157,8 +188,6 @@ func main() {
 	appLH.Height.Set(int64(bsr.AppHeight))
 	winW = int(bsr.AppWidth)
 	winH = int(bsr.AppHeight)
-	splitLH.Width.Set(int64(winW))
-	splitLH.Height.Set(int64(winH))
 
 	fmt.Printf("[versai] backing store ready: app=%dx%d at (%d,%d)\n",
 		winW, winH, bsr.AppX, bsr.AppY)
@@ -167,9 +196,29 @@ func main() {
 	disp, clickAgent, keyAgent := app.InitInput()
 	mancini.SetScreenOrigin(int64(bsr.AppX), int64(bsr.AppY))
 	disp.Tag = "versai"
+	disp.Debug = true
 
-	// Give keyboard focus to the editor.
-	keyAgent.SetFocus(unit.Editor)
+	// Collect all VSplitters for focus peer wiring.
+	var allSplits []*std.VSplitter
+	for n := units.Front(); n != nil; n = n.Next() {
+		allSplits = append(allSplits, n.Value.Unit.Split)
+	}
+
+	// Wire in-app focus on each VSplitter via the Clickable protocol.
+	// Children (VE, Throbber) get FocusParent back-references so they
+	// can call SetFocusToSelf() at the start of their interactions.
+	for n := units.Front(); n != nil; n = n.Next() {
+		u := n.Value.Unit
+		u.Split.KeyFocusAgent = keyAgent
+		u.Split.KeyFocusTarget = u.Editor
+		u.Split.FocusAttr = u.Focused
+		u.Split.FocusPeers = allSplits
+		u.Editor.FocusParent = u.Split
+		u.Throbber.FocusParent = u.Split
+	}
+
+	// Give keyboard focus to the first unit.
+	units.Front().Value.Unit.Split.SetFocusToSelf()
 
 	// 12. Create DrawContext over the shared backing store.
 	totalW := int(bsr.TotalWidth)
@@ -190,6 +239,15 @@ func main() {
 	dc.DrawRectangle(0, 0, float64(winW), float64(winH))
 	dc.Clip()
 
+	// Set mainDC on all throbbers now that the DrawContext exists.
+	for n := units.Front(); n != nil; n = n.Next() {
+		n.Value.Unit.Throbber.SetMainDC(dc)
+	}
+
+	// Track app screen position for overlay coordinate conversion.
+	appScreenX := int32(bsr.AppX)
+	appScreenY := int32(bsr.AppY)
+
 	// 13. Initial draw.
 	tDraw := time.Now()
 	appLH.X.Set(0)
@@ -198,6 +256,7 @@ func main() {
 	dc.FillRectangle(0, 0, float64(winW), float64(winH))
 	app.SetDC(dc)
 	app.Draw(app, 0, 0, int64(winW), int64(winH))
+	app.SendBlit()
 	fmt.Printf("[versai:timing] initial draw: %v\n", time.Since(tDraw))
 	fmt.Printf("[versai:timing] TOTAL startup: %v\n", time.Since(t0))
 
@@ -208,11 +267,14 @@ func main() {
 	redraw := func(reason string) {
 		redrawCount++
 		fmt.Printf("[redraw #%d] %s\n", redrawCount, reason)
+		scroller.MarkContentDirty()
 		app.Draw(app, 0, 0, int64(winW), int64(winH))
 		app.SendBlit()
 	}
 
 	var clickTimer <-chan time.Time
+	throbTicker := time.NewTicker(100 * time.Millisecond) // 10Hz throbber animation
+	defer throbTicker.Stop()
 
 	for {
 		// Drain any pending dirty events before blocking.
@@ -231,21 +293,56 @@ func main() {
 			switch m := msg.(type) {
 			case wm.KeyboardFocusGained:
 				app.Focus()
-				unit.Editor.Focused = true
 			case wm.KeyboardFocusLost:
 				app.Unfocus()
-				unit.Editor.Focused = false
 			case wm.YouHaveFocus:
 				app.Focus()
-				unit.Editor.Focused = true
 			case wm.YouLostFocus:
 				app.Unfocus()
-				unit.Editor.Focused = false
 			case wm.MouseFocusGained, wm.MouseFocusLost:
 				needsRedraw = false
+			case wm.MouseMove:
+				// Route to overlay if active.
+				for n := units.Front(); n != nil; n = n.Next() {
+					if n.Value.Unit.Throbber.HandleMouseMove(m, appScreenX, appScreenY) {
+						needsRedraw = false
+						break
+					}
+				}
+				if needsRedraw {
+					disp.DispatchWM(msg)
+				}
 			case wm.MouseRelease:
-				disp.DispatchWM(msg)
-				clickTimer = time.After(clickAgent.ClickTimeout + 10*time.Millisecond)
+				// Route to overlay if active.
+				overlayHandled := false
+				for n := units.Front(); n != nil; n = n.Next() {
+					if n.Value.Unit.Throbber.HandleMouseRelease(m, appScreenX, appScreenY) {
+						overlayHandled = true
+						needsRedraw = false
+						break
+					}
+				}
+				if !overlayHandled {
+					disp.DispatchWM(msg)
+					clickTimer = time.After(clickAgent.ClickTimeout + 10*time.Millisecond)
+				}
+			case wm.OverlayReady:
+				for n := units.Front(); n != nil; n = n.Next() {
+					if n.Value.Unit.Throbber.OverlayActive() {
+						continue // skip throbbers that already have an overlay
+					}
+					n.Value.Unit.Throbber.HandleOverlayReady(m)
+					break
+				}
+				needsRedraw = false
+			case wm.OverlayReleased:
+				for n := units.Front(); n != nil; n = n.Next() {
+					n.Value.Unit.Throbber.HandleOverlayReleased(m)
+				}
+				needsRedraw = false
+			case wm.WindowMoved:
+				appScreenX = m.AppX
+				appScreenY = m.AppY
 			case wm.KeyPress:
 				disp.DispatchWM(msg)
 				fmt.Printf("[versai] key char=%c\n", rune(m.Char))
@@ -266,6 +363,13 @@ func main() {
 
 		case <-dirtyCh:
 			redraw("dirtyCh")
+
+		case <-throbTicker.C:
+			for n := units.Front(); n != nil; n = n.Next() {
+				n.Value.Unit.Throbber.Tick()
+				n.Value.Unit.Throbber.FullDamage()
+			}
+			redraw("throb-tick")
 
 		case <-time.After(500 * time.Millisecond):
 		}
