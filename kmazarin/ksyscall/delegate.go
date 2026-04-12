@@ -221,15 +221,17 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 
 	case sysid.Fstatat:
 		// fstatat: arg1 = pathname, arg2 = statbuf (output).
-		// Copy pathname string in; reply path copies stat data back.
+		// Copy pathname string in; handler reuses page for stat output.
+		// dataLen must cover the full page so the handler can write 128
+		// bytes of struct stat back into DataBuf().
 		if arg1 != 0 {
-			pa, va, n := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg1))
+			pa, va, _ := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg1))
 			if pa == 0 {
 				return -12 // ENOMEM
 			}
 			dataPagePA = pa
 			handlerDataVA = va
-			dataLen = uint32(n)
+			dataLen = 4096
 		}
 
 	case sysid.Fstat, sysid.Getdents64, sysid.Getcwd,
@@ -251,7 +253,7 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		}
 
 	default:
-		// Lseek, Close, Fchdir, Ioctl, Ftruncate, Fsync, Fdatasync, etc:
+		// Lseek, Close, Fchdir, Ioctl, Ftruncate, Fsync, Fdatasync, Flock, etc:
 		// no data page, just args and return value.
 	}
 
@@ -700,3 +702,82 @@ func CleanupDelegateForDeadShepherd(pid int16) int {
 // Written by CleanupDelegateForDeadShepherd, read by TerminateShepherd.
 var DelegateOrphanedCallerTIDs [MaxDelegateThreads]int16
 var DelegateOrphanedCallerSIDs [MaxDelegateThreads]int16
+
+// HasInFlightDelegateCallsAsCaller returns true if any delegateCallInfos entry
+// is in use with CallerSID == pid. Used by TerminateShepherd to decide whether
+// to defer page cleanup (two-phase death protocol).
+func HasInFlightDelegateCallsAsCaller(pid int16) bool {
+	for i := 0; i < MaxDelegateThreads; i++ {
+		info := &delegateCallInfos[i]
+		if info.InUse && info.CallerSID == pid {
+			return true
+		}
+	}
+	return false
+}
+
+// CleanupDelegateForDeadShepherdHandlerOnly runs Parts 2+3 of delegate cleanup
+// (dying shepherd as HANDLER) but skips Part 1 (dying shepherd as CALLER).
+// This is used in the two-phase death protocol: the linux shepherd still needs
+// the caller's data pages to complete in-flight reads/writes. Those pages are
+// reclaimed later when SyscallReply runs normally, or as a safety net in
+// completeDeferredCleanup.
+func CleanupDelegateForDeadShepherdHandlerOnly(pid int16) int {
+	orphanCount := 0
+
+	// Part 2: Dying shepherd was a HANDLER — unregister all SysIDs.
+	for sid := sysid.ID(0); sid < sysid.NumIDs; sid++ {
+		if int16(atomic.LoadInt32(&syscallDelegates[sid].pid)) == pid {
+			atomic.StoreInt32(&syscallDelegates[sid].pid, -1)
+		}
+	}
+
+	// Part 3: Dying shepherd was a HANDLER — find orphaned callers.
+	for i := 0; i < MaxDelegateThreads; i++ {
+		info := &delegateCallInfos[i]
+		if !info.InUse || info.HandlerSID != pid {
+			continue
+		}
+		info.DataPagePA = 0
+		info.DataPageVA = 0
+		info.InUse = false
+		if orphanCount < len(DelegateOrphanedCallerTIDs) {
+			DelegateOrphanedCallerTIDs[orphanCount] = int16(i)
+			DelegateOrphanedCallerSIDs[orphanCount] = info.CallerSID
+			orphanCount++
+		}
+	}
+
+	return orphanCount
+}
+
+// CleanupRemainingDelegateCallsForCaller is a safety net called from
+// completeDeferredCleanup. It reclaims any delegateCallInfos entries where
+// CallerSID == pid that were not already cleared by normal SyscallReply.
+func CleanupRemainingDelegateCallsForCaller(pid int16) {
+	for i := 0; i < MaxDelegateThreads; i++ {
+		info := &delegateCallInfos[i]
+		if !info.InUse || info.CallerSID != pid {
+			continue
+		}
+		if info.DataPagePA != 0 {
+			handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
+			reclaimDataPage(info.DataPagePA, info.DataPageVA, info.HandlerSID, handlerShepherd)
+		}
+		info.InUse = false
+	}
+}
+
+// SyscallDeathAck is the kernel handler for SysDeathAck. The linux shepherd
+// calls this after all in-flight I/O for the dead shepherd has drained.
+// arg0 = dead shepherd's SID.
+//
+//go:noinline
+func SyscallDeathAck(arg0, _, _, _, _, _ uint64) int64 {
+	deadSID := int16(arg0)
+	completeDeferredCleanup(deadSID)
+	return 0
+}
+
+//go:linkname completeDeferredCleanup main.CompleteDeferredCleanup
+func completeDeferredCleanup(deadSID int16)

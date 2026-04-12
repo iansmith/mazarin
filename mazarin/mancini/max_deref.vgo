@@ -1,0 +1,13 @@
+// max_deref.vgo — max(source, floor) constraint.
+//
+// Returns the larger of a source attribute value and a floor attribute value.
+//
+// Required placeholders:
+//   _source_ — URI of the attribute to read
+//   _floor_  — URI of the minimum value attribute
+
+func maxDeref() int64 {
+	a := derefI64("_source_")
+	b := derefI64("_floor_")
+	return max(a, b)
+}

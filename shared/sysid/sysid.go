@@ -75,6 +75,7 @@ const (
 	Fstatfs    // fstatfs
 	Fsync      // fsync
 	Fdatasync  // fdatasync
+	Flock      // flock
 
 	NumIDs // sentinel — array size
 )

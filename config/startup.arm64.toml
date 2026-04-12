@@ -18,14 +18,18 @@
 #name = "clocktest"
 #path = "/clocktest.elf"
 
-[[shepherd]]
-name = "versai"
-path = "/versai.elf"
+#[[shepherd]]
+#name = "versai"
+#path = "/versai.elf"
 
-[[shepherd]]
-name = "clocks"
-path = "/clocks.elf"
+#[[shepherd]]
+#name = "clocks"
+#path = "/clocks.elf"
 
 #[[shepherd]]
 #name = "calc"
 #path = "/calc.elf"
+
+[[shepherd]]
+name = "maildb"
+path = "/maildb.elf"

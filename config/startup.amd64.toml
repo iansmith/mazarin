@@ -18,6 +18,10 @@
 #name = "clocktest"
 #path = "/clocktest.elf"
 
+#[[shepherd]]
+#name = "clocks"
+#path = "/clocks.elf"
+
 [[shepherd]]
-name = "clocks"
-path = "/clocks.elf"
+name = "maildb"
+path = "/maildb.elf"

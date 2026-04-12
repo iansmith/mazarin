@@ -1,6 +1,12 @@
 package mancini
 
-import "mazzy/mazarin/vm"
+import (
+	"fmt"
+	"sync/atomic"
+
+	"mazzy/mazarin/attr"
+	"mazzy/mazarin/vm"
+)
 
 // BindStrings returns a copy of prog with placeholder strings replaced by the
 // given bindings. Bindings are alternating name-value pairs:
@@ -127,4 +133,36 @@ func EqualStr(sourceURI string) *vm.Program {
 // SubI64 returns a constraint program that computes aURI - bURI.
 func SubI64(aURI, bURI string) *vm.Program {
 	return BindStrings(ProgSubDeref, "_a_", aURI, "_b_", bURI)
+}
+
+// MaxI64 returns a constraint program that computes max(sourceURI, floor).
+func MaxI64(sourceURI string, floor int64) *vm.Program {
+	floorURI := constI64(floor)
+	return BindStrings(ProgMaxDeref, "_source_", sourceURI, "_floor_", floorURI)
+}
+
+// MinI64 returns a constraint program that computes min(sourceURI, ceiling).
+func MinI64(sourceURI string, ceiling int64) *vm.Program {
+	ceilingURI := constI64(ceiling)
+	return BindStrings(ProgMinDeref, "_source_", sourceURI, "_ceiling_", ceilingURI)
+}
+
+// BetweenI64 returns a constraint program that clamps sourceURI to [lo, hi].
+func BetweenI64(sourceURI string, lo, hi int64) *vm.Program {
+	loURI := constI64(lo)
+	hiURI := constI64(hi)
+	return BindStrings(ProgBetweenDeref, "_source_", sourceURI, "_min_", loURI, "_max_", hiURI)
+}
+
+// bindConstSeq generates unique URIs for internal constant attributes.
+var bindConstSeq atomic.Uint64
+
+// constI64 creates an internal value attribute with the given constant
+// and returns its URI. Used by MaxI64, MinI64, BetweenI64 so callers
+// can pass plain int64 values instead of creating attributes manually.
+func constI64(v int64) string {
+	id := bindConstSeq.Add(1)
+	uri := fmt.Sprintf("attr:///shepherd/%s/int64/bind_const_%d", manciniSID, id)
+	attr.ValueI64(uri, v)
+	return uri
 }

@@ -1,0 +1,13 @@
+// min_deref.vgo — min(source, ceiling) constraint.
+//
+// Returns the smaller of a source attribute value and a ceiling attribute value.
+//
+// Required placeholders:
+//   _source_  — URI of the attribute to read
+//   _ceiling_ — URI of the maximum value attribute
+
+func minDeref() int64 {
+	a := derefI64("_source_")
+	b := derefI64("_ceiling_")
+	return min(a, b)
+}

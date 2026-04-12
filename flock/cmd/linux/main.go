@@ -31,45 +31,170 @@ type delegateMsg struct {
 
 // readDataResponse is a pending read(0) request waiting for stdin input.
 type readDataResponse struct {
-	req sys.SyscallRequest
+	req       sys.SyscallRequest
+	callerSID int16 // tracked for death-cleanup refcounting
 }
+
+// deathNotification is a sentinel type sent through delegateCh when a shepherd
+// dies. Routing through the delegate channel ensures all state access
+// (sidStates map) happens on a single goroutine.
+type deathNotification struct {
+	deadSID int16
+}
+
+// stdinDecRefNotification is sent through delegateCh when fulfillRead completes
+// a stdin read. Routes the sidDecRef call to the delegate handler goroutine.
+type stdinDecRefNotification struct {
+	sid int16
+}
+
+// shepherdState tracks per-SID refcount for the two-phase death protocol.
+// refcount starts at 1 ("alive" baseline). Each in-flight read/write: +1.
+// Each completed read/write: -1. When dying && refcount<=1: ACK to kernel.
+type shepherdState struct {
+	refcount int32
+	dying    bool
+}
+
+// sidStates maps shepherd SIDs to their refcount state.
+// Only accessed from the delegate handler goroutine (single-goroutine safety).
+var sidStates = make(map[int16]*shepherdState)
+
+// globalHandler is the syscall handler, set during main() startup.
+// Accessed from the delegate handler goroutine for per-SID cleanup on death.
+var globalHandler *syscallHandler
 
 // reqQueue holds outstanding read(0) delegate requests.
 // The delegate handler enqueues; the drainer (main goroutine) dequeues.
 var reqQueue = queue.New[*readDataResponse]()
 
+// getOrCreateSIDState returns the shepherdState for the given SID, creating one
+// with refcount=1 if it doesn't exist.
+func getOrCreateSIDState(sid int16) *shepherdState {
+	st := sidStates[sid]
+	if st == nil {
+		st = &shepherdState{refcount: 1}
+		sidStates[sid] = st
+	}
+	return st
+}
+
+// sidIncRef increments the refcount for the given SID.
+func sidIncRef(sid int16) {
+	st := getOrCreateSIDState(sid)
+	st.refcount++
+}
+
+// sidDecRef decrements the refcount for the given SID. If the shepherd is
+// dying and refcount has reached 1 (baseline), all I/O has drained — clean
+// up per-SID state and ACK to the kernel.
+func sidDecRef(sid int16) {
+	st := sidStates[sid]
+	if st == nil {
+		return
+	}
+	st.refcount--
+	if st.dying && st.refcount <= 1 {
+		if globalHandler != nil {
+			globalHandler.cleanupShepherd(sid)
+		}
+		delete(sidStates, sid)
+		sys.DeathAck(sid)
+		sys.UartWriteString(fmt.Sprintf("[linux] DeathAck sent for SID %d\n", sid))
+	}
+}
+
+// handleDeathNotification processes a death notification for a shepherd.
+// Drains any queued stdin reads for the dead SID (they'll never be fulfilled),
+// then checks if all I/O has drained. ACKs immediately if refcount<=1.
+func handleDeathNotification(deadSID int16) {
+	st := getOrCreateSIDState(deadSID)
+	st.dying = true
+
+	// Drain queued stdin reads for the dead SID. These will never be
+	// fulfilled since the shepherd is gone. Reply with 0 (EOF) and
+	// decrement the refcount for each.
+	staleReads := reqQueue.RemoveWhere(func(rdr *readDataResponse) bool {
+		return rdr.callerSID == deadSID
+	})
+	for _, rdr := range staleReads {
+		rdr.req.Reply(0) // SyscallReply no-ops the wake for dead threads
+		st.refcount--    // paired with sidIncRef in sysRead stdin branch
+	}
+	if len(staleReads) > 0 {
+		sys.UartWriteString(fmt.Sprintf("[linux] drained %d stale stdin reads for SID %d\n", len(staleReads), deadSID))
+	}
+
+	sys.UartWriteString(fmt.Sprintf("[linux] death notification for SID %d, refcount=%d\n", deadSID, st.refcount))
+	if st.refcount <= 1 {
+		// All I/O drained — clean up per-shepherd filesystem state (FDs, flocks).
+		if globalHandler != nil {
+			globalHandler.cleanupShepherd(deadSID)
+		}
+		delete(sidStates, deadSID)
+		sys.DeathAck(deadSID)
+		sys.UartWriteString(fmt.Sprintf("[linux] DeathAck sent immediately for SID %d\n", deadSID))
+	}
+}
+
 // startUringDelegateHandler runs a goroutine that processes delegated syscalls
 // received via uring Dispatcher. Write to fd 1/2 is echoed to UART and
 // forwarded to the line accumulator. All other syscalls go to syscallHandler.
-func startUringDelegateHandler(delegateCh <-chan any, handler *syscallHandler, suppressSerialCopy bool) <-chan delegateMsg {
+// Death notifications are also processed here for single-goroutine safety.
+func startUringDelegateHandler(delegateCh chan any, handler *syscallHandler, suppressSerialCopy bool) <-chan delegateMsg {
 	dataCh := make(chan delegateMsg, 32)
+	// Forward stdin decRef completions to the delegate channel.
+	go func() {
+		for sid := range stdinDecRefCh {
+			delegateCh <- stdinDecRefNotification{sid: sid}
+		}
+	}()
 	go func() {
 		for raw := range delegateCh {
-			req, ok := raw.(sys.SyscallRequest)
-			if !ok {
-				continue
-			}
-			if req.SysID == sysid.Write {
-				fd := byte(req.Arg0())
-				if fd <= 2 {
-					data := req.Data()
-					if data == nil {
-						req.Reply(0)
+			switch v := raw.(type) {
+			case deathNotification:
+				handleDeathNotification(v.deadSID)
+
+			case stdinDecRefNotification:
+				sidDecRef(v.sid)
+
+			case sys.SyscallRequest:
+				sid := v.CallerPID
+				if v.SysID == sysid.Write {
+					fd := byte(v.Arg0())
+					if fd <= 2 {
+						sidIncRef(sid)
+						data := v.Data()
+						if data == nil {
+							v.Reply(0)
+							sidDecRef(sid)
+							continue
+						}
+						dataCopy := make([]byte, len(data))
+						copy(dataCopy, data)
+						// Kernel already pushed bytes to PL011 TX ring before
+						// delegating — no need to echo to UART here.
+						v.Reply(int64(len(data)))
+						sidDecRef(sid)
+						select {
+						case dataCh <- delegateMsg{fd: fd, data: dataCopy}:
+						default:
+						}
 						continue
 					}
-					dataCopy := make([]byte, len(data))
-					copy(dataCopy, data)
-					// Kernel already pushed bytes to PL011 TX ring before
-					// delegating — no need to echo to UART here.
-					req.Reply(int64(len(data)))
-					select {
-					case dataCh <- delegateMsg{fd: fd, data: dataCopy}:
-					default:
-					}
-					continue
+				}
+				// For stdin reads, sidIncRef happens at enqueue time in sysRead,
+				// and sidDecRef happens in fulfillRead. For all other syscalls,
+				// the request completes synchronously here.
+				if v.SysID == sysid.Read && handler.isStdinRead(v) {
+					// Don't wrap with inc/dec — sysRead handles it.
+					handler.handle(v)
+				} else {
+					sidIncRef(sid)
+					handler.handle(v)
+					sidDecRef(sid)
 				}
 			}
-			handler.handle(req)
 		}
 	}()
 	return dataCh
@@ -111,6 +236,8 @@ func startUringDispatcher(fsClient *fsclient.Client, delegateCh chan any, wmCh c
 	d.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
 	d.OnDeath(func(deadSID int16) {
 		sys.UartWriteString(fmt.Sprintf("[linux] shepherd %d died\n", deadSID))
+		// Route through delegateCh so all sidStates access is single-goroutine.
+		delegateCh <- deathNotification{deadSID: deadSID}
 	})
 	d.Start()
 }
@@ -278,7 +405,8 @@ func main() {
 
 	// 6. Register syscall delegates.
 	suppressSerialCopy = os.Getenv("SUPPRESS_SERIAL_STDIO_COPY") == "1"
-	handler := newSyscallHandler(fsClient)
+	globalHandler = newSyscallHandler(fsClient)
+	handler := globalHandler
 	delegateErr := sys.RegisterSyscallHandlers(
 		sysid.Write, sysid.Read, sysid.Openat, sysid.Close,
 		sysid.Lseek, sysid.Fstat, sysid.Fstatat,
@@ -288,6 +416,7 @@ func main() {
 		sysid.Getcwd, sysid.Chdir, sysid.Fchdir,
 		sysid.Ioctl, sysid.Writev, sysid.Readv,
 		sysid.Statfs, sysid.Fstatfs, sysid.Fsync, sysid.Fdatasync,
+		sysid.Flock,
 	)
 	if delegateErr != nil {
 		sys.UartWriteString(fmt.Sprintf("[linux] RegisterSyscallHandlers failed: %v\n", delegateErr))
@@ -353,13 +482,21 @@ func main() {
 	}
 }
 
+// stdinDecRefCh carries SIDs back to the delegate handler goroutine for decRef.
+// fulfillRead runs on the main goroutine but sidDecRef must run on the delegate
+// handler goroutine for single-goroutine safety of sidStates.
+var stdinDecRefCh = make(chan int16, 32)
+
 // fulfillRead responds to a pending read(0) delegate request with the given line.
+// Sends the callerSID to stdinDecRefCh for the delegate handler to do sidDecRef.
 func fulfillRead(rdr *readDataResponse, line []byte) {
 	buf := rdr.req.DataBuf()
 	if buf == nil {
 		rdr.req.Reply(0)
+		stdinDecRefCh <- rdr.callerSID
 		return
 	}
 	n := copy(buf, line)
 	rdr.req.Reply(int64(n))
+	stdinDecRefCh <- rdr.callerSID
 }

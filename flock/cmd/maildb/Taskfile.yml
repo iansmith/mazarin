@@ -1,0 +1,56 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build maildb shepherd (ARM64)
+    run: once
+    deps: [':check-env', ':merged-shepherd-overlay']
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.MAILDB_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building maildb for ARM64..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.MAILDB_ELF}} ./flock/cmd/maildb'
+      - '{{.GO}} tool go-echo "maildb ARM64 built at {{.MAILDB_ELF}}"'
+
+  x86_64:
+    desc: Build maildb shepherd (x86_64)
+    run: once
+    deps: [':check-env', ':merged-shepherd-overlay-amd64']
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
+    generates:
+      - '{{.MAILDB_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building maildb for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.MAILDB_AMD64_ELF}} ./flock/cmd/maildb'
+      - '{{.GO}} tool go-echo "maildb x86_64 built at {{.MAILDB_AMD64_ELF}}"'
+
+  riscv64:
+    desc: Build maildb shepherd (RISC-V 64-bit)
+    run: once
+    deps: [':check-env', ':merged-shepherd-overlay-riscv64']
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_RISCV64_DIR}}/**/*'
+    generates:
+      - '{{.MAILDB_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building maildb for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.MAILDB_RISCV64_ELF}} ./flock/cmd/maildb'
+      - '{{.GO}} tool go-echo "maildb RISC-V 64-bit built at {{.MAILDB_RISCV64_ELF}}"'

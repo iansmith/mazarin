@@ -5,21 +5,59 @@ import (
 
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/sys"
+	"mazzy/shared/dlist"
 	"mazzy/shared/sysid"
 )
 
 // syscallHandler processes delegated file syscalls for the linux shepherd.
-// It owns the FD table and communicates with the fs shepherd via uring IPC.
+// Per-shepherd filesystem state (FD tables, flocks, CWD) is tracked in
+// ShepherdFilesystemData, keyed by caller SID.
 type syscallHandler struct {
-	fdt *fdTable
-	fs  *fsclient.Client
+	shepherds map[int16]*ShepherdFilesystemData
+	flocks    *flockTable
+	fs        *fsclient.Client
 }
 
 func newSyscallHandler(fs *fsclient.Client) *syscallHandler {
 	return &syscallHandler{
-		fdt: newFDTable(),
-		fs:  fs,
+		shepherds: make(map[int16]*ShepherdFilesystemData),
+		flocks:    newFlockTable(),
+		fs:        fs,
 	}
+}
+
+// getShepherd returns the per-shepherd filesystem state for the given SID,
+// creating it lazily on first contact.
+func (h *syscallHandler) getShepherd(sid int16) *ShepherdFilesystemData {
+	s := h.shepherds[sid]
+	if s == nil {
+		s = &ShepherdFilesystemData{
+			SID:   sid,
+			FDT:   newFDTable(),
+			Locks: dlist.New[*flockEntry](),
+		}
+		h.shepherds[sid] = s
+	}
+	return s
+}
+
+// cleanupShepherd closes all open FDs, releases all flocks, and removes
+// the per-shepherd state for the given SID. Called on shepherd death.
+func (h *syscallHandler) cleanupShepherd(sid int16) {
+	s := h.shepherds[sid]
+	if s == nil {
+		return
+	}
+	// Release all advisory locks.
+	h.flocks.releaseAll(s.Locks)
+	// Close all open file handles (skip stdio fds 0-2).
+	for fd := 3; fd < MaxFDs; fd++ {
+		e := s.FDT.entries[fd]
+		if e != nil && e.handle != 0 {
+			h.fs.Close(e.handle)
+		}
+	}
+	delete(h.shepherds, sid)
 }
 
 // handle dispatches a delegated syscall request to the appropriate handler.
@@ -40,6 +78,8 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 		h.sysIoctl(req)
 	case sysid.Fsync, sysid.Fdatasync:
 		h.sysFsync(req)
+	case sysid.Flock:
+		h.sysFlock(req)
 
 	// --- Metadata syscalls (via fs IPC) ---
 	case sysid.Openat:
@@ -91,8 +131,9 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 // ============================================================
 
 func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	fd := int(req.Arg0())
-	e := h.fdt.get(fd)
+	e := fdt.get(fd)
 	if e == nil {
 		req.Reply(EBADF)
 		return
@@ -104,16 +145,17 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 	if e.handle != 0 {
 		h.fs.Close(e.handle)
 	}
-	h.fdt.free(fd)
+	fdt.free(fd)
 	req.Reply(EOK)
 }
 
 func (h *syscallHandler) sysLseek(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	fd := int(req.Arg0())
 	offset := int64(req.Args[1])
 	whence := int(req.Args[2])
 
-	e := h.fdt.get(fd)
+	e := fdt.get(fd)
 	if e == nil {
 		req.Reply(EBADF)
 		return
@@ -145,12 +187,13 @@ func (h *syscallHandler) sysLseek(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysGetcwd(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	buf := req.DataBuf()
 	if buf == nil {
 		req.Reply(EFAULT)
 		return
 	}
-	cwd := h.fdt.cwd
+	cwd := fdt.cwd
 	n := copy(buf, cwd)
 	if n < len(buf) {
 		buf[n] = 0
@@ -160,12 +203,13 @@ func (h *syscallHandler) sysGetcwd(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysChdir(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	path := req.PathString()
 	if path == "" {
 		req.Reply(EINVAL)
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
+	absPath := fdt.resolvePath(path)
 
 	isDir, _, err := h.fs.Resolve(absPath)
 	if err != nil {
@@ -177,7 +221,7 @@ func (h *syscallHandler) sysChdir(req sys.SyscallRequest) {
 		return
 	}
 
-	h.fdt.cwd = absPath
+	fdt.cwd = absPath
 	req.Reply(EOK)
 }
 
@@ -197,11 +241,40 @@ func (h *syscallHandler) sysFsync(req sys.SyscallRequest) {
 	req.Reply(EOK)
 }
 
+// sysFlock implements flock(fd, operation).
+// arg0 = fd, arg1 = operation (LOCK_SH, LOCK_EX, LOCK_UN, optionally | LOCK_NB).
+func (h *syscallHandler) sysFlock(req sys.SyscallRequest) {
+	fd := int(req.Args[0])
+	op := int(req.Args[1])
+	shep := h.getShepherd(req.CallerPID)
+	e := shep.FDT.get(fd)
+	if e == nil || e.kind == fdKindNone {
+		req.Reply(EBADF)
+		return
+	}
+	if e.handle == 0 {
+		// stdio fds don't support locking.
+		req.Reply(EINVAL)
+		return
+	}
+	nonblock := (op & flockNB) != 0
+	kind := op &^ flockNB
+	switch kind {
+	case flockSH, flockEX:
+		req.Reply(h.flocks.acquire(e.handle, kind, nonblock, shep.Locks))
+	case flockUN:
+		req.Reply(h.flocks.release(e.handle, shep.Locks))
+	default:
+		req.Reply(EINVAL)
+	}
+}
+
 // ============================================================
 // Metadata syscalls (via fs IPC)
 // ============================================================
 
 func (h *syscallHandler) sysOpenat(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	path := req.PathString()
 	if path == "" {
 		req.Reply(EINVAL)
@@ -209,7 +282,7 @@ func (h *syscallHandler) sysOpenat(req sys.SyscallRequest) {
 	}
 	flags := int32(req.Args[2])
 	mode := uint32(req.Args[3])
-	absPath := h.fdt.resolvePath(path)
+	absPath := fdt.resolvePath(path)
 	if absPath == "" {
 		req.Reply(EINVAL)
 		return
@@ -221,7 +294,7 @@ func (h *syscallHandler) sysOpenat(req sys.SyscallRequest) {
 		return
 	}
 
-	newFD := h.fdt.alloc(3)
+	newFD := fdt.alloc(3)
 	if newFD < 0 {
 		h.fs.Close(handle)
 		req.Reply(EMFILE)
@@ -233,19 +306,21 @@ func (h *syscallHandler) sysOpenat(req sys.SyscallRequest) {
 		kind = fdKindDir
 	}
 
-	h.fdt.put(newFD, &fdEntry{
+	fdt.put(newFD, &fdEntry{
 		kind:   kind,
 		handle: handle,
 		size:   size,
 		ftype:  ftype,
 		flags:  flags,
+		path:   absPath,
 	})
 	req.Reply(int64(newFD))
 }
 
 func (h *syscallHandler) sysFstat(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	fd := int(req.Arg0())
-	e := h.fdt.get(fd)
+	e := fdt.get(fd)
 	if e == nil {
 		req.Reply(EBADF)
 		return
@@ -278,13 +353,14 @@ func (h *syscallHandler) sysFstat(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysFstatat(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	path := req.PathString()
 	if path == "" {
 		req.Reply(EINVAL)
 		return
 	}
 
-	absPath := h.fdt.resolvePath(path)
+	absPath := fdt.resolvePath(path)
 	fsErr, err := h.fs.Stat(absPath)
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
@@ -305,12 +381,13 @@ func (h *syscallHandler) sysFstatat(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysMkdirat(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	path := req.PathString()
 	if path == "" {
 		req.Reply(EINVAL)
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
+	absPath := fdt.resolvePath(path)
 	if err := h.fs.Mkdir(absPath, uint32(req.Args[2])); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -319,12 +396,13 @@ func (h *syscallHandler) sysMkdirat(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysUnlinkat(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	path := req.PathString()
 	if path == "" {
 		req.Reply(EINVAL)
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
+	absPath := fdt.resolvePath(path)
 	if err := h.fs.Remove(absPath); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -341,8 +419,9 @@ func (h *syscallHandler) sysFtruncate(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	fd := int(req.Arg0())
-	e := h.fdt.get(fd)
+	e := fdt.get(fd)
 	if e == nil {
 		req.Reply(EBADF)
 		return
@@ -378,12 +457,13 @@ func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysFaccessat(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	path := req.PathString()
 	if path == "" {
 		req.Reply(EINVAL)
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
+	absPath := fdt.resolvePath(path)
 	if err := h.fs.Access(absPath); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -392,12 +472,13 @@ func (h *syscallHandler) sysFaccessat(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysFchmodat(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	path := req.PathString()
 	if path == "" {
 		req.Reply(EINVAL)
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
+	absPath := fdt.resolvePath(path)
 	if err := h.fs.SetMode(absPath, uint32(req.Args[2])); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -406,12 +487,13 @@ func (h *syscallHandler) sysFchmodat(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysUtimensat(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	path := req.PathString()
 	if path == "" {
 		req.Reply(EINVAL)
 		return
 	}
-	absPath := h.fdt.resolvePath(path)
+	absPath := fdt.resolvePath(path)
 	if err := h.fs.SetTimes(absPath); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -435,9 +517,23 @@ func (h *syscallHandler) sysFstatfs(req sys.SyscallRequest) {
 // Data syscalls (via fs IPC)
 // ============================================================
 
-func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
+// isStdinRead returns true if the request is a read on fd 0 (stdin).
+// Used by the delegate handler to skip wrapping stdin reads with sidIncRef/sidDecRef
+// since those have their own async refcount lifecycle.
+func (h *syscallHandler) isStdinRead(req sys.SyscallRequest) bool {
+	if req.SysID != sysid.Read {
+		return false
+	}
+	fdt := h.getShepherd(req.CallerPID).FDT
 	fd := int(req.Arg0())
-	e := h.fdt.get(fd)
+	e := fdt.get(fd)
+	return e != nil && e.kind == fdKindStdin
+}
+
+func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
+	fd := int(req.Arg0())
+	e := fdt.get(fd)
 	if e == nil {
 		req.Reply(EBADF)
 		return
@@ -445,7 +541,9 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 	if e.kind == fdKindStdin {
 		// Queue the request for the stdin drainer (main goroutine).
 		// Don't reply — the drainer will reply when input arrives.
-		reqQueue.Enqueue(&readDataResponse{req: req})
+		// sidIncRef here; sidDecRef happens in fulfillRead via stdinDecRefCh.
+		sidIncRef(req.CallerPID)
+		reqQueue.Enqueue(&readDataResponse{req: req, callerSID: req.CallerPID})
 		return
 	}
 	if e.kind == fdKindStdout || e.kind == fdKindStderr {
@@ -481,10 +579,11 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
 	fd := int(req.Arg0())
 	data := req.Data()
 
-	e := h.fdt.get(fd)
+	e := fdt.get(fd)
 	if e == nil || e.kind == fdKindStdout || e.kind == fdKindStderr {
 		// stdout/stderr handled by the display path in startDelegateHandler.
 		req.Reply(int64(len(data)))

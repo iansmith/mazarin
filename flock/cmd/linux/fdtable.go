@@ -1,5 +1,9 @@
 package main
 
+import (
+	"mazzy/shared/dlist"
+)
+
 // MaxFDs is the maximum number of open file descriptors.
 const MaxFDs = 256
 
@@ -30,9 +34,10 @@ type fdEntry struct {
 	size   uint32 // cached file size
 	ftype  uint8  // ftFile or ftDir
 	flags  int32  // O_RDONLY, O_WRONLY, O_RDWR, etc.
+	path   string // absolute path that was opened (for diagnostics)
 }
 
-// fdTable manages the per-process file descriptor table.
+// fdTable manages a per-shepherd file descriptor table.
 // All fields are accessed from a single goroutine (the delegate handler)
 // so no locking is needed.
 type fdTable struct {
@@ -47,6 +52,16 @@ func newFDTable() *fdTable {
 	t.entries[1] = &fdEntry{kind: fdKindStdout}
 	t.entries[2] = &fdEntry{kind: fdKindStderr}
 	return t
+}
+
+// ShepherdFilesystemData holds per-shepherd filesystem state.
+// The linux shepherd maintains one of these for each caller shepherd
+// that has interacted with it. Accessed only from the delegate handler
+// goroutine (single-goroutine safety).
+type ShepherdFilesystemData struct {
+	SID   int16
+	FDT   *fdTable
+	Locks *dlist.List[*flockEntry]
 }
 
 // alloc finds the lowest free fd >= minFD and returns it, or -1 if full.

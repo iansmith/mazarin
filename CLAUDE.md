@@ -219,6 +219,14 @@ bin/target-gdb build/kmazarin.elf
 
 ## Critical Development Rules
 
+### Build — NEVER use `go build` or `go vet` directly
+
+**All builds go through the Taskfile.** Never run `go build`, `go vet`, or `go test` directly — they will produce spurious errors because this project requires special build tags, linker flags, and cross-compilation settings that only the Taskfile provides.
+
+- **To build:** `$GO tool task` (or a specific target like `$GO tool task linux:arm64`)
+- **To check compilation:** use `$GO tool task` targets, not `go vet ./...`
+- **To run tests:** `$GO tool task test` (if available) or the appropriate Taskfile target
+
 ### Runtime Environment — MANDATORY (Kernel AND Userspace)
 
 **NEVER disable async preemption or the GC — not for the kernel, not for userspace shepherds.** These are hard, non-negotiable requirements:

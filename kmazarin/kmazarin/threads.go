@@ -1960,7 +1960,7 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 		shepherd.ThreadCount--
 		if shepherd.ThreadCount <= 0 {
 			// Last thread of this shepherd - release the shepherd
-			releaseShepherdSchedLockHeld(t.ShepherdIdx, exitingPID)
+			releaseShepherdSchedLockHeld(t.ShepherdIdx, exitingPID, false)
 		}
 	}
 
@@ -2003,26 +2003,95 @@ func threadExitInternal() uint64 {
 	return uint64(threadExitImpl(&NormalSchedulerFunc))
 }
 
+// DeferredCleanupEntry holds state for two-phase shepherd death cleanup.
+// When a shepherd dies with in-flight delegate calls as CALLER, we defer
+// page cleanup until the handler (linux shepherd) ACKs via SysDeathAck.
+// Only L0PA is stored — CleanupShepherdPages Phase 2 (full PT walk) handles
+// all page freeing without needing the span list.
+type DeferredCleanupEntry struct {
+	InUse bool
+	SID   ShepherdId
+	L0PA  uintptr
+}
+
+// deferredCleanups holds deferred page cleanup entries indexed by shepherd slot.
+var deferredCleanups [MaxShepherds]DeferredCleanupEntry
+
+// CompleteDeferredCleanup is called from SyscallDeathAck when the linux shepherd
+// has drained all in-flight I/O for a dead shepherd. Frees the dead shepherd's
+// pages and cleans up any remaining delegate call entries as a safety net.
+func CompleteDeferredCleanup(deadSID int16) {
+	for i := range deferredCleanups {
+		e := &deferredCleanups[i]
+		if !e.InUse || int16(e.SID) != deadSID {
+			continue
+		}
+		// Safety net: reclaim any delegate call entries that SyscallReply didn't clear.
+		ksyscall.CleanupRemainingDelegateCallsForCaller(deadSID)
+		// Free all the dead shepherd's pages via Phase 2 full PT walk.
+		// Pass empty spans — Phase 2 (walkAndFreePageTablePages) catches everything.
+		var emptySpans proc.LockedSpanGroup
+		kmem.CleanupShepherdPages(e.SID, &emptySpans, e.L0PA)
+		e.InUse = false
+		return
+	}
+}
+
+// FlushAllDeferredCleanups is called when the linux shepherd itself dies.
+// Any deferred entries that were waiting for an ACK will never receive one,
+// so we clean them up now.
+func FlushAllDeferredCleanups() {
+	for i := range deferredCleanups {
+		e := &deferredCleanups[i]
+		if !e.InUse {
+			continue
+		}
+		ksyscall.CleanupRemainingDelegateCallsForCaller(int16(e.SID))
+		var emptySpans proc.LockedSpanGroup
+		kmem.CleanupShepherdPages(e.SID, &emptySpans, e.L0PA)
+		e.InUse = false
+	}
+}
+
 // TerminateShepherd kills all threads belonging to a shepherd and cleans up resources.
 // Walks all thread slots, exits every thread with matching PID (except current),
 // then exits the current thread last. Calls releaseShepherdSchedLockHeld when
 // the last thread exits.
+//
+// Two-phase cleanup: if the dying shepherd has in-flight delegate calls as CALLER,
+// page cleanup is deferred until the linux shepherd ACKs via SysDeathAck.
 // Returns pointer to next ready thread's ThreadContext (or 0 if none remain).
 //
-//go:nosplit
+// NOT nosplit — breaks the nosplit chain from SyscallExitGroup/SyscallMazzyExit
+// to allow delegate cleanup functions to run stack checks.
 func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	// Clean up delegation resources BEFORE acquiring the scheduler lock.
 	// NOT nosplit, which breaks the nosplit chain and avoids exceeding
 	// the 792-byte stack limit. Safe because the delegate data structures are
 	// protected by IRQ disabling (we're in SVC handler context).
-	terminateShepherdDelegateCleanup(int16(pid))
+	deferPages := false
+	if ksyscall.HasInFlightDelegateCallsAsCaller(int16(pid)) {
+		// Two-phase path: only clean up handler-side delegate state.
+		// Leave caller-side entries intact so SyscallReply can still
+		// reclaim data pages normally.
+		terminateShepherdDelegateCleanupHandlerOnly(int16(pid))
+		deferPages = true
+	} else {
+		// Normal path: full delegate cleanup (no in-flight caller calls).
+		terminateShepherdDelegateCleanup(int16(pid))
+	}
 	CleanupBlockCompletionRing(int16(pid))
 	CleanupInputCompletionRing(int16(pid))
 	CleanupSoftIRQSlotsForShepherd(int16(pid))
 	CleanupInputFocusForShepherd(int16(pid))
 	CleanupPageSharingForShepherd(int16(pid))
+	// CleanupUringIPCForShepherd sends ProtoDeath to peers BEFORE page cleanup.
 	CleanupUringIPCForShepherd(int16(pid))
-	return terminateShepherdImpl(&NormalSchedulerFunc, pid, status)
+	// Flush deferred cleanups if the linux shepherd itself is dying.
+	if isLinuxShepherd(pid) {
+		FlushAllDeferredCleanups()
+	}
+	return terminateShepherdImpl(&NormalSchedulerFunc, pid, status, deferPages)
 }
 
 // terminateShepherdDelegateCleanup reclaims delegation resources for a dying shepherd
@@ -2037,10 +2106,34 @@ func terminateShepherdDelegateCleanup(pid int16) {
 	}
 }
 
+// terminateShepherdDelegateCleanupHandlerOnly runs handler-only delegate cleanup
+// (Parts 2+3) and wakes orphaned callers. Used in two-phase death when the dying
+// shepherd has in-flight delegate calls as CALLER that must not be reclaimed yet.
+func terminateShepherdDelegateCleanupHandlerOnly(pid int16) {
+	orphanCount := ksyscall.CleanupDelegateForDeadShepherdHandlerOnly(pid)
+	for i := 0; i < orphanCount; i++ {
+		tid := ksyscall.DelegateOrphanedCallerTIDs[i]
+		cpid := ksyscall.DelegateOrphanedCallerSIDs[i]
+		WakeDelegateCallerThread(cpid, int32(tid), -3) // -ESRCH
+	}
+}
+
+// isLinuxShepherd returns true if the shepherd with the given PID is the linux
+// shepherd. Used to flush deferred cleanups when the linux shepherd itself dies.
+func isLinuxShepherd(pid ShepherdId) bool {
+	for i := int16(0); i < int16(MaxShepherds); i++ {
+		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PID == pid {
+			return proc.ShepherdListData[i].Filename == "linux"
+		}
+	}
+	return false
+}
+
 // terminateShepherdImpl is the internal implementation of TerminateShepherd.
+// When deferPages is true, page cleanup is deferred (two-phase death protocol).
 //
 //go:nosplit
-func terminateShepherdImpl(sf *SchedulerFunc, pid ShepherdId, status int64) uintptr {
+func terminateShepherdImpl(sf *SchedulerFunc, pid ShepherdId, status int64, deferPages bool) uintptr {
 	current := GetCurrentThread()
 
 	// BEGIN CRITICAL SECTION
@@ -2098,7 +2191,7 @@ func terminateShepherdImpl(sf *SchedulerFunc, pid ShepherdId, status int64) uint
 	if shepherdIdx >= 0 {
 		// Force ThreadCount to 0 and release
 		proc.ShepherdListData[shepherdIdx].ThreadCount = 0
-		releaseShepherdSchedLockHeld(shepherdIdx, pid)
+		releaseShepherdSchedLockHeld(shepherdIdx, pid, deferPages)
 	}
 
 	// Find next ready thread
@@ -2127,12 +2220,10 @@ func terminateShepherdImpl(sf *SchedulerFunc, pid ShepherdId, status int64) uint
 
 // terminateShepherdInternal is the ABI0-compatible wrapper for TerminateShepherd.
 // Called from assembly via TerminateShepherdAsm tail-call stub.
-// Args: pid (uint64), status (int64)
-// Returns: pointer to next ThreadContext (or 0 if none remain).
 //
 //go:nosplit
 func terminateShepherdInternal(pid uint64, status int64) uint64 {
-	return uint64(terminateShepherdImpl(&NormalSchedulerFunc, ShepherdId(pid), status))
+	return uint64(TerminateShepherd(ShepherdId(pid), status))
 }
 
 // releaseShepherdSchedLockHeld releases a shepherd when its last thread exits.
@@ -2140,8 +2231,12 @@ func terminateShepherdInternal(pid uint64, status int64) uint64 {
 // Performs TLB shootdown for the ASID before releasing the shepherd ID,
 // enabling aggressive ASID reuse to expose bugs.
 //
+// When deferPages is true (two-phase death protocol), page cleanup is deferred:
+// L0PA and Spans are saved into a DeferredCleanupEntry and CleanupShepherdPages
+// is skipped. The linux shepherd will ACK via SysDeathAck to trigger cleanup.
+//
 //go:nosplit
-func releaseShepherdSchedLockHeld(shepherdIdx int16, pid ShepherdId) {
+func releaseShepherdSchedLockHeld(shepherdIdx int16, pid ShepherdId, deferPages bool) {
 	if shepherdIdx < 0 || !proc.ShepherdListInUse[shepherdIdx] {
 		return // Invalid or already released
 	}
@@ -2156,14 +2251,24 @@ func releaseShepherdSchedLockHeld(shepherdIdx int16, pid ShepherdId) {
 	// Clumps with InFlight > 0 will be freed by the completion handler.
 	ksyscall.CleanupShepherdDMAClumps(&proc.ShepherdListData[shepherdIdx])
 
-	// Read l0PA and spans pointer BEFORE zeroing the shepherd struct.
+	// Read l0PA and spans BEFORE zeroing the shepherd struct.
 	// CleanupShepherdPages needs these to walk the page tables.
 	l0PA := proc.ShepherdListData[shepherdIdx].PageTableL0PA
 	spans := &proc.ShepherdListData[shepherdIdx].Spans
 
-	// Free all physical pages owned by this shepherd (Linux-style VMA + PT walk).
-	// Must happen before zeroing the shepherd struct (which would clear Spans/l0PA).
-	kmem.CleanupShepherdPages(pid, spans, l0PA)
+	if deferPages {
+		// Two-phase death: save L0PA for deferred cleanup.
+		// Only L0PA is needed — CleanupShepherdPages Phase 2 (full PT walk)
+		// will free all leaf and intermediate pages without needing spans.
+		deferredCleanups[shepherdIdx] = DeferredCleanupEntry{
+			InUse: true,
+			SID:   pid,
+			L0PA:  l0PA,
+		}
+	} else {
+		// Normal path: free all physical pages now.
+		kmem.CleanupShepherdPages(pid, spans, l0PA)
+	}
 
 	// Release the shepherd slot
 	proc.ShepherdListInUse[shepherdIdx] = false

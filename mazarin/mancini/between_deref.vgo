@@ -1,0 +1,15 @@
+// between_deref.vgo — clamp(source, minValue, maxValue) constraint.
+//
+// Returns the source value clamped to [minValue, maxValue].
+//
+// Required placeholders:
+//   _source_ — URI of the attribute to clamp
+//   _min_    — URI of the minimum value attribute
+//   _max_    — URI of the maximum value attribute
+
+func betweenDeref() int64 {
+	v := derefI64("_source_")
+	lo := derefI64("_min_")
+	hi := derefI64("_max_")
+	return clamp(v, lo, hi)
+}

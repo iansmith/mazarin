@@ -64,3 +64,17 @@ func (q *Queue[T]) Len() int {
 	defer q.mu.Unlock()
 	return q.list.Len()
 }
+
+// RemoveWhere removes all items matching the predicate and returns them.
+func (q *Queue[T]) RemoveWhere(fn func(T) bool) []T {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var removed []T
+	q.list.Range(func(n *dlist.Node[T]) bool {
+		if fn(n.Value) {
+			removed = append(removed, q.list.Remove(n))
+		}
+		return true
+	})
+	return removed
+}

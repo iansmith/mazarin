@@ -67,6 +67,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	60: SyscallSharePagesWithTarget,  // SharePagesWithTarget = 0x103C
 	61: SyscallAttrSwap,              // AttrSwap = 0x103D
 	62: SyscallAttrDelete,            // AttrDelete = 0x103E
+	63: SyscallDeathAck,              // DeathAck = 0x103F
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

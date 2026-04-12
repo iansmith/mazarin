@@ -72,6 +72,7 @@ const (
 	SysIDFstatfs    = sysid.Fstatfs
 	SysIDFsync      = sysid.Fsync
 	SysIDFdatasync  = sysid.Fdatasync
+	SysIDFlock      = sysid.Flock
 
 	NumSyscallIDs = sysid.NumIDs
 )

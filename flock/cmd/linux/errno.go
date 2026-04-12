@@ -22,4 +22,5 @@ const (
 	ENAMETOOLONG int64 = -36
 	ENOSYS       int64 = -38
 	ENOTEMPTY    int64 = -39
+	EWOULDBLOCK  int64 = -11 // EAGAIN
 )
