@@ -488,9 +488,6 @@ func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 // Only called from dmaWorker.
 func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 	total := uint32(len(blocks))
-	batchCount := 0
-	var totalSubmit, totalWait, totalCopy time.Duration
-	t0 := time.Now()
 
 	for blockIdx := uint32(0); blockIdx < total; {
 		batch := total - blockIdx
@@ -499,7 +496,6 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 		}
 		batchBlocks := blocks[blockIdx : blockIdx+batch]
 
-		tSubmit := time.Now()
 		submitted := uint32(0)
 		sqTail := atomic.LoadUint32(&d.ioRing.SQTail)
 		for i, bn := range batchBlocks {
@@ -529,9 +525,7 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 			submitted++
 		}
 		atomic.StoreUint32(&d.ioRing.SQTail, sqTail)
-		totalSubmit += time.Since(tSubmit)
 
-		tWait := time.Now()
 		if submitted > 0 {
 			// Submit SQEs and wait for all completions (P held throughout).
 			nret, serr := sys.IOUringEnter(d.ringID, submitted, submitted, 0)
@@ -544,8 +538,8 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 			cqTail := atomic.LoadUint32(&d.ioRing.CQTail)
 			actual := cqTail - cqHead
 			if actual < submitted {
-				sys.UartWriteString(fmt.Sprintf("[dma:UNDERFLOW] batch=%d ret=%d submitted=%d cqH=%d cqT=%d actual=%d\n",
-					batchCount, nret, submitted, cqHead, cqTail, actual))
+				sys.UartWriteString(fmt.Sprintf("[dma:UNDERFLOW] ret=%d submitted=%d cqH=%d cqT=%d actual=%d\n",
+					nret, submitted, cqHead, cqTail, actual))
 				// Don't drain non-existent CQEs — return EIO.
 				return syscall.EIO
 			}
@@ -560,9 +554,7 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 			}
 			atomic.StoreUint32(&d.ioRing.CQHead, cqHead+submitted)
 		}
-		totalWait += time.Since(tWait)
 
-		tCopy := time.Now()
 		for i := range batchBlocks {
 			srcOff := uintptr(i) * asyncBlockSize
 			dstOff := int(blockIdx+uint32(i)) * asyncBlockSize
@@ -575,15 +567,9 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 				copy(dst[dstOff:dstEnd], src)
 			}
 		}
-		totalCopy += time.Since(tCopy)
-
 		blockIdx += batch
-		batchCount++
 	}
 
-	sys.UartWriteString(fmt.Sprintf("[dma] batch: %d blocks, %d batches, submit=%dms wait=%dms copy=%dms total=%dms\n",
-		total, batchCount, totalSubmit.Milliseconds(), totalWait.Milliseconds(),
-		totalCopy.Milliseconds(), time.Since(t0).Milliseconds()))
 	return nil
 }
 

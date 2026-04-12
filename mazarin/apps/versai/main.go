@@ -192,7 +192,7 @@ func main() {
 	disp, clickAgent, keyAgent := app.InitInput()
 	mancini.SetScreenOrigin(int64(bsr.AppX), int64(bsr.AppY))
 	disp.Tag = "versai"
-	disp.Debug = true
+	disp.Debug = false
 
 	// Collect all Units for focus peer wiring.
 	var allUnits []*Unit
