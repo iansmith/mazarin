@@ -1,43 +1,38 @@
 
 package ksyscall
 
+// write.go — SyscallWrite implementation.
+//
+// For fd 1/2 (stdout/stderr): pushes bytes to the PL011 TX ring buffer
+// (actual UART output), then delegates to the linux shepherd for display
+// routing (line accumulation, linux-ui). If the TX ring is completely full,
+// the thread blocks on WaitingIO; the TX interrupt top-half drains from the
+// thread's kernel buffer and wakes it when done.
+//
+// For eventfd writes: wakes the netpoll thread (epoll_wait).
+//
+// All other fds: returns EBADF (file writes are delegated at the dispatch
+// level and never reach this handler).
+
 import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
+	"mazzy/shared/sysid"
 	"sync/atomic"
 	_ "unsafe" // for go:linkname
 )
 
-// suppressSerial mirrors the runtime.suppressSerial flag.
-// When 0, userspace write() output is echoed to the serial port.
-// When 1, output goes only to the ring buffer (normal production mode).
-//
-//go:linkname suppressSerial runtime.suppressSerial
-var suppressSerial uint32
-
 // SyscallWrite implements the write(2) syscall.
-// For now, we only support stdout/stderr (fd 1 and 2).
 //
-// Routing logic:
-//   - If the caller is the linux shepherd (UART ring owner), writes are
-//     silently dropped (it cannot push into its own ring without deadlock).
-//   - If the caller is any other shepherd, bytes are pushed through the
-//     ring buffer so the linux shepherd can display them. The fd number
-//     is carried through the ring so linux can color stderr differently.
-//   - If no shepherd owns the UART slot yet (early boot), writes are dropped.
+// For fd 1/2: pushes bytes to the PL011 TX ring buffer, then delegates to
+// the linux shepherd with the actual byte count written. Returns a short
+// write if the ring can only accept some bytes. Blocks on WaitingIO if the
+// ring is completely full.
 //
 //go:nosplit
 func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 	// Handle eventfd writes — Go's netpollBreak mechanism.
-	// When Go's runtime calls write(eventfd, ...) it is trying to wake
-	// a thread sleeping in epoll_wait (our SyscallEpollPwait).
-	// We look up the shepherd's NetpollWaiterTID and wake that thread.
-	//
-	// If no thread is currently in epoll_wait (NetpollWaiterTID==0), set
-	// EventFdPending so the next SyscallEpollPwait returns immediately.
-	// This matches Linux eventfd semantics where writes accumulate in
-	// the counter and cause the next epoll_wait to return.
 	p := proc.CurrentShepherd()
 	if p != nil && p.EventFd != 0 && fd == uint64(p.EventFd) {
 		waiterTID := p.NetpollWaiterTID
@@ -46,10 +41,10 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		} else {
 			atomic.StoreUint32(&p.EventFdPending, 1)
 		}
-		return int64(count) // Success — pretend we wrote the bytes
+		return int64(count)
 	}
 
-	// Only support stdout/stderr for now
+	// Only support stdout/stderr
 	if fd != 1 && fd != 2 {
 		return -1 // EBADF
 	}
@@ -58,36 +53,38 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		return 0
 	}
 
-	// Validate user buffer address - reject NULL and kernel addresses
 	if !isValidUserAddr(bufPtr) {
 		return -14 // EFAULT
 	}
 
-	// Route to ring buffer for display by the linux shepherd.
-	// The linux shepherd itself (UART ring owner) cannot use the ring
-	// (it would deadlock consuming its own output).
-	// If no owner registered yet, fall back to direct serial output
-	// so early panic messages are visible.
-	useRing := false
-	useDirect := false
-	ownerSID := getUartSlotShepherdID()
-	echoToSerial := atomic.LoadUint32(&suppressSerial) == 0
-	if ownerSID >= 0 {
-		callerSID := getCurrentThreadSID()
-		if callerSID != ownerSID {
-			useRing = true
-		} else {
-			// linux shepherd: can't use ring (deadlock), always write direct to serial
-			useDirect = true
-		}
-	} else {
-		// No ring owner yet — write directly to serial
-		useDirect = true
+	// Check if this is a re-entry after WaitingIO wake.
+	// The TX interrupt handler has already pushed all bytes to the TX ring.
+	// We just need to delegate to the linux shepherd with the byte count.
+	complete, written := checkAndClearWaitingIO()
+	if complete {
+		return syscallWriteDelegate(fd, bufPtr, uint64(written))
 	}
 
+	// Detect gctrace output: "gc N @..." on stderr (first 3 bytes).
+	// We check here before the ring push loop for simplicity.
+	if fd == 2 && count >= 3 {
+		var peek [3]byte
+		if kmem.CopyFromUser(peek[:], uintptr(bufPtr), 3) {
+			if peek[0] == 'g' && peek[1] == 'c' && peek[2] == ' ' {
+				sid := getCurrentThreadSID()
+				if sid >= 0 && int(sid) < len(GCCountBySID) {
+					atomic.AddUint64(&GCCountBySID[sid], 1)
+				}
+			}
+		}
+	}
+
+	// Push bytes to PL011 TX ring buffer.
+	// Insert \r before each \n for serial terminal compatibility.
+	// Track user bytes consumed (not counting inserted CRs).
+	userBytesConsumed := uint64(0)
 	remaining := count
 	offset := uint64(0)
-	fdByte := byte(fd)
 	for remaining > 0 {
 		var chunk [256]byte
 		n := remaining
@@ -95,73 +92,111 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 			n = 256
 		}
 		if !kmem.CopyFromUser(chunk[:n], uintptr(bufPtr+offset), int(n)) {
+			if userBytesConsumed > 0 {
+				break // partial copy is a short write
+			}
 			return -14 // EFAULT
 		}
-		// Detect gctrace output: "gc N @..." on stderr.
-		// Increment per-shepherd GC counter on first chunk only.
-		if offset == 0 && fd == 2 && n >= 3 && chunk[0] == 'g' && chunk[1] == 'c' && chunk[2] == ' ' {
-			pid := getCurrentThreadSID()
-			if pid >= 0 && int(pid) < len(GCCountBySID) {
-				atomic.AddUint64(&GCCountBySID[pid], 1)
-			}
-		}
-		if useRing {
-			for i := uint64(0); i < n; i++ {
-				c := chunk[i]
-				if c == '\n' {
-					pushByteToUartRing(fdByte, '\r')
-				}
-				pushByteToUartRing(fdByte, c)
-			}
-			// Echo to serial only when suppressSerial is off (early boot / debug).
-			// No special-case for fd=2: all output routing goes through the
-			// linux shepherd's ring, keeping serial output clean.
-			if echoToSerial {
-				for i := uint64(0); i < n; i++ {
-					c := chunk[i]
-					if c == '\n' {
-						serial.QueueByte('\r')
-					}
-					serial.QueueByte(c)
+		for i := uint64(0); i < n; i++ {
+			c := chunk[i]
+			if c == '\n' {
+				if !serial.QueueByteTry('\r') {
+					goto doneRingPush
 				}
 			}
-		} else if useDirect {
-			// linux shepherd's own writes — both stdout and stderr use
-			// interrupt-driven QueueByte so write() doesn't stall.
-			for i := uint64(0); i < n; i++ {
-				c := chunk[i]
-				if c == '\n' {
-					serial.QueueByte('\r')
-				}
-				serial.QueueByte(c)
+			if !serial.QueueByteTry(c) {
+				goto doneRingPush
 			}
+			userBytesConsumed++
 		}
 		offset += n
 		remaining -= n
 	}
+doneRingPush:
 
-	if useRing {
-		flushUartRingWake()
+	if userBytesConsumed > 0 {
+		// Short write or full write — delegate with what we pushed.
+		return syscallWriteDelegate(fd, bufPtr, userBytesConsumed)
 	}
 
+	// Ring completely full: block on WaitingIO.
+	return syscallWriteBlock(fd, bufPtr, count)
+}
+
+// syscallWriteDelegate delegates the write to the linux shepherd for display
+// routing, with the byte count adjusted to what was actually pushed to the
+// TX ring. If no delegate is registered (e.g., linux shepherd's own writes),
+// returns the count directly.
+//
+//go:noinline
+func syscallWriteDelegate(fd, bufPtr, count uint64) int64 {
+	callerSID := getCurrentThreadSID()
+	if IsDelegated(SysIDWrite, callerSID) {
+		return DelegateSyscall(sysid.Write, fd, bufPtr, count, 0, 0, 0)
+	}
+	// Linux shepherd's own writes: no delegation needed.
 	return int64(count)
 }
 
-// getUartSlotShepherdID returns the shepherd ID that owns the UART serial slot.
-// Returns -1 if no shepherd has registered.
+// syscallWriteBlock handles the case where the TX ring is completely full.
+// Copies user data into a CR-expanded kernel buffer, sets up WaitingIO state,
+// and blocks the thread. The TX interrupt top-half will drain from the kernel
+// buffer into the TX ring and wake the thread when done.
 //
-//go:nosplit
-//go:linkname getUartSlotShepherdID main.GetUartSlotShepherdID
-func getUartSlotShepherdID() int16
+//go:noinline
+func syscallWriteBlock(fd, bufPtr, count uint64) int64 {
+	if count > 4096 {
+		count = 4096
+	}
 
-// pushByteToUartRing pushes a byte into the UART ring buffer with fd info.
-// The fd is carried in the HIDEvent.Code field so the consumer can
-// distinguish stdout (1) from stderr (2).
-//
-//go:linkname pushByteToUartRing main.PushByteToUartRing
-func pushByteToUartRing(fd byte, b byte)
+	// Copy user data into a temporary buffer first.
+	var raw [4096]byte
+	if !kmem.CopyFromUser(raw[:count], uintptr(bufPtr), int(count)) {
+		return -14 // EFAULT
+	}
 
-// flushUartRingWake wakes the UART slot consumer after pushing bytes.
-//
-//go:linkname flushUartRingWake main.FlushUartRingWake
-func flushUartRingWake()
+	// Count newlines to size the CR-expanded buffer.
+	nlCount := 0
+	for i := uint64(0); i < count; i++ {
+		if raw[i] == '\n' {
+			nlCount++
+		}
+	}
+
+	// Build CR-expanded kernel buffer.
+	expandedLen := int(count) + nlCount
+	kbuf := make([]byte, expandedLen)
+	j := 0
+	for i := uint64(0); i < count; i++ {
+		if raw[i] == '\n' {
+			kbuf[j] = '\r'
+			j++
+		}
+		kbuf[j] = raw[i]
+		j++
+	}
+
+	// Set up WaitingIO state on the current thread.
+	prepareWaitingIO(kbuf, expandedLen, int(count), byte(fd))
+
+	// Block — the TX interrupt handler will drain kbuf into the TX ring.
+	// When fully consumed, the thread is woken via RewindToSyscall and
+	// re-enters SyscallWrite, where checkAndClearWaitingIO returns true.
+	ctx := blockForWaitingIO()
+	if ctx == 0 {
+		return -11 // EAGAIN — no other thread to switch to
+	}
+	SetSyscallSwitchTarget(ctx)
+	return 0
+}
+
+// Linkname bridges to main package (kmazarin/kmazarin).
+
+//go:linkname checkAndClearWaitingIO main.CheckAndClearWaitingIO
+func checkAndClearWaitingIO() (bool, int)
+
+//go:linkname prepareWaitingIO main.PrepareWaitingIO
+func prepareWaitingIO(buf []byte, total int, userBytes int, fd byte)
+
+//go:linkname blockForWaitingIO main.BlockForWaitingIO
+func blockForWaitingIO() uintptr

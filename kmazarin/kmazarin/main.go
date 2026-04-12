@@ -360,6 +360,7 @@ func testDeviceDiscovery() {
 			if pl011, ok := bs.(*uart.PL011); ok {
 				SetupUartSoftIRQ(pl011.IRQ())
 				serial.SetQueueByteFunc(pl011.WriteByte)
+				serial.SetQueueByteTryFunc(pl011.WriteByteTry)
 				StoreUartTxDriver(pl011)
 			} else if ns16550, ok := bs.(*uart.NS16550); ok {
 				SetupUartSoftIRQ(ns16550.IRQ())

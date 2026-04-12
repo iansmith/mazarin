@@ -9,6 +9,7 @@ package main
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/proc"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -75,4 +76,106 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
+}
+
+// BlockForWaitingIO blocks the current thread because the PL011 TX ring buffer
+// is full. The thread's WaitingIO fields must be set before calling this.
+// The TX interrupt top-half will drain from the thread's kernel buffer into the
+// TX ring and wake the thread when the request is fully consumed.
+// Returns the context pointer of the next thread to switch to, or 0.
+//
+//go:nosplit
+//go:noinline
+func BlockForWaitingIO() uintptr {
+	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
+	schedulerLock.Lock()
+
+	t := GetCurrentThread()
+	if t == nil {
+		schedulerLock.Unlock()
+		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
+
+	next := findNextThreadForBlockSchedLockHeld(t)
+	if next == nil {
+		schedulerLock.Unlock()
+		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
+
+	t.State = ThreadBlockedWaitingIO
+	// Save syscall args for RewindToSyscall restoration on wake.
+	t.SoftIRQSlotArg = uint64(t.WaitingIOFd)
+	t.SoftIRQSyscallNum = 0 // unused on ARM64
+	waitingIOEnqueue(t)
+
+	schedulerLock.Unlock()
+	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+
+	return uintptr(unsafe.Pointer(&next.Context))
+}
+
+// WakeWaitingIOThread wakes a thread blocked on WaitingIO after the TX
+// interrupt top-half has fully consumed its kernel buffer.
+// Called from the nosplit TX top-half with TxLock held and IRQs disabled.
+//
+//go:nosplit
+//go:noinline
+func WakeWaitingIOThread(t *Thread) {
+	schedulerLock.Lock()
+
+	if t.State != ThreadBlockedWaitingIO {
+		schedulerLock.Unlock()
+		return
+	}
+
+	atomic.StoreUint32(&t.WaitingIOComplete, 1)
+	t.State = ThreadReady
+	t.Context.RewindToSyscall()
+	t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+	t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+	enqueueReadySchedLockHeld(t)
+	asm.Dsb()
+
+	schedulerLock.Unlock()
+}
+
+// CheckAndClearWaitingIO checks if the current thread was woken from WaitingIO.
+// If so, clears the WaitingIO state and returns (true, userBytesWritten).
+// Called from ksyscall via linkname on re-entry after RewindToSyscall.
+//
+//go:nosplit
+func CheckAndClearWaitingIO() (bool, int) {
+	t := GetCurrentThread()
+	if t == nil {
+		return false, 0
+	}
+	if atomic.LoadUint32(&t.WaitingIOComplete) == 0 {
+		return false, 0
+	}
+	written := t.WaitingIOUserBytes
+	atomic.StoreUint32(&t.WaitingIOComplete, 0)
+	t.WaitingIOBuf = nil
+	t.WaitingIOOffset = 0
+	t.WaitingIOTotal = 0
+	t.WaitingIOUserBytes = 0
+	return true, written
+}
+
+// PrepareWaitingIO sets up the current thread's WaitingIO fields before blocking.
+// Called from ksyscall via linkname.
+//
+//go:nosplit
+func PrepareWaitingIO(buf []byte, total int, userBytes int, fd byte) {
+	t := GetCurrentThread()
+	if t == nil {
+		return
+	}
+	t.WaitingIOBuf = buf
+	t.WaitingIOOffset = 0
+	t.WaitingIOTotal = total
+	t.WaitingIOUserBytes = userBytes
+	t.WaitingIOComplete = 0
+	t.WaitingIOFd = fd
 }

@@ -61,19 +61,49 @@ func uartTopHalf(irqNum uint32) {
 		}
 	}
 
-	// Handle TX: drain driver's txBuf to PL011 FIFO
+	// Handle TX: drain driver's txBuf to PL011 FIFO, then service WaitingIO queue.
+	var wakeThread *Thread
 	if status&pl011IRQTX != 0 && uartTxDriver != nil {
 		if uartTxDriver.TxTryLock() {
+			// Phase 1: drain existing txBuf to FIFO
 			for uartTxDriver.TxBufAvailable() > 0 && asm.MmioRead32(base+pl011FR)&pl011TXFF == 0 {
 				b := uartTxDriver.TxBufReadByte()
 				asm.MmioWrite32(base+pl011DR, uint32(b))
 			}
-			// If buffer empty, disable TX interrupt to prevent re-firing
-			if uartTxDriver.TxBufAvailable() == 0 {
+
+			// Phase 2: if txBuf has space and WaitingIO threads are queued,
+			// drain from the head thread's kernel buffer into txBuf.
+			t := waitingIOPeekHead()
+			if t != nil && t.State == ThreadBlockedWaitingIO {
+				for t.WaitingIOOffset < t.WaitingIOTotal {
+					if !uartTxDriver.TxBufWriteByte(t.WaitingIOBuf[t.WaitingIOOffset]) {
+						break // txBuf full
+					}
+					t.WaitingIOOffset++
+				}
+				// Drain newly added bytes to FIFO
+				for uartTxDriver.TxBufAvailable() > 0 && asm.MmioRead32(base+pl011FR)&pl011TXFF == 0 {
+					b := uartTxDriver.TxBufReadByte()
+					asm.MmioWrite32(base+pl011DR, uint32(b))
+				}
+				// If fully consumed, prepare to wake the thread
+				if t.WaitingIOOffset >= t.WaitingIOTotal {
+					waitingIODequeueHead()
+					wakeThread = t
+				}
+			}
+
+			// Disable TX interrupt only if both txBuf empty AND no WaitingIO pending
+			if uartTxDriver.TxBufAvailable() == 0 && waitingIOPeekHead() == nil {
 				asm.MmioWrite32(base+pl011IMSC, pl011IRQRX) // RX only
 			}
 			uartTxDriver.TxLockRelease()
 		}
+	}
+
+	// Wake WaitingIO thread outside TxLock (WakeWaitingIOThread takes schedulerLock)
+	if wakeThread != nil {
+		WakeWaitingIOThread(wakeThread)
 	}
 
 	// Clear handled interrupts

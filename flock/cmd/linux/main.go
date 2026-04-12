@@ -59,9 +59,8 @@ func startUringDelegateHandler(delegateCh <-chan any, handler *syscallHandler, s
 					}
 					dataCopy := make([]byte, len(data))
 					copy(dataCopy, data)
-					if fd == 2 || !suppressSerialCopy {
-						sys.UartWrite(addCRBeforeLF(data))
-					}
+					// Kernel already pushed bytes to PL011 TX ring before
+					// delegating — no need to echo to UART here.
 					req.Reply(int64(len(data)))
 					select {
 					case dataCh <- delegateMsg{fd: fd, data: dataCopy}:

@@ -28,6 +28,12 @@ type EpollWorkRequest struct {
 //
 //go:nosplit
 func IsMagicFdSyscall(sysID SysID, fd uint64) bool {
+	// Write to fd 1/2 (stdout/stderr) is handled by SyscallWrite directly:
+	// it pushes bytes to the PL011 TX ring buffer, then delegates internally.
+	// Must not be routed directly to DelegateSyscall.
+	if sysID == SysIDWrite && (fd == 1 || fd == 2) {
+		return true
+	}
 	if sysID != SysIDRead && sysID != SysIDWrite && sysID != SysIDClose {
 		return false
 	}

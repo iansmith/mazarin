@@ -239,6 +239,7 @@ const (
 	// ThreadBlockedEpoll (15) — removed, unified into ThreadBlockedKernelWork (7)
 	ThreadBlockedIOUring      ThreadState = 16 // Blocked waiting for io_uring completions
 	ThreadBlockedUringRecv    ThreadState = 17 // Blocked waiting for IPC uring message
+	ThreadBlockedWaitingIO    ThreadState = 18 // Blocked waiting for TX ring space (write fd 1/2)
 )
 
 // MaxShepherds is the maximum number of shepherd processes (userspace programs).
@@ -416,6 +417,17 @@ type Thread struct {
 	// also save the original syscall number for restoration on rewind.
 	SoftIRQSlotArg    uint64
 	SoftIRQSyscallNum uint64
+
+	// WaitingIO state — used when write(fd=1/2) blocks because the PL011 TX
+	// ring buffer is full. The kernel copies user data (with CR expansion) into
+	// WaitingIOBuf before blocking. The TX interrupt top-half drains from this
+	// buffer into the TX ring. When fully consumed, the top-half wakes the thread.
+	WaitingIOBuf       []byte // kernel copy of user data (CR-expanded)
+	WaitingIOOffset    int    // bytes consumed by interrupt handler so far
+	WaitingIOTotal     int    // total bytes in WaitingIOBuf
+	WaitingIOUserBytes int    // original user byte count (return value to caller)
+	WaitingIOComplete  uint32 // atomic: 1 = interrupt handler finished draining
+	WaitingIOFd        byte   // fd (1 or 2), saved for delegation after wake
 
 	// Signal delivery state
 	PendingSignals  uint64 // Bitmask of pending signals (bit N = signal N+1)

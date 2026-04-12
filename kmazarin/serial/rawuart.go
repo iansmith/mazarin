@@ -14,10 +14,15 @@ package serial
 // device's TX ring buffer (interrupt-driven). Before init, nil → falls
 // back to PollWrite.
 var queueByteFunc func(byte)
+var queueByteTryFunc func(byte) bool
 
 // SetQueueByteFunc registers the interrupt-driven TX path.
 // Called during device init with the driver's WriteByte method.
 func SetQueueByteFunc(f func(byte)) { queueByteFunc = f }
+
+// SetQueueByteTryFunc registers the try-write TX path.
+// Called during device init with the driver's WriteByteTry method.
+func SetQueueByteTryFunc(f func(byte) bool) { queueByteTryFunc = f }
 
 // QueueByte writes a byte to the TX ring buffer (interrupt-driven).
 // Falls back to PollWrite before driver init.
@@ -30,6 +35,19 @@ func QueueByte(b byte) {
 		return
 	}
 	PollWrite(b) // Early boot fallback
+}
+
+// QueueByteTry writes a byte to the TX ring buffer, returning false if
+// the ring is full. Used by SyscallWrite to detect ring-full and implement
+// short writes or WaitingIO blocking. Returns false before driver init.
+//
+//go:nosplit
+func QueueByteTry(b byte) bool {
+	f := queueByteTryFunc
+	if f == nil {
+		return false
+	}
+	return f(b)
 }
 
 // QueueString writes a string to the TX ring buffer (interrupt-driven).

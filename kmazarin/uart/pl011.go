@@ -312,6 +312,38 @@ func (u *PL011) WriteReg(offset uintptr, value uint32) {
 	asm.MmioWrite32(u.baseAddr+offset, value)
 }
 
+// TxBufWriteByte writes a single byte to the TX ring buffer.
+// Called from the nosplit TX interrupt top-half with TxTryLock held.
+// Does NOT drain to FIFO — the top-half handles that separately.
+//
+//go:nosplit
+func (u *PL011) TxBufWriteByte(b byte) bool {
+	return u.txBuf.WriteByte(b)
+}
+
+// WriteByteTry writes a byte to the TX ring buffer (with FIFO drain).
+// Acquires the TX lock. Returns false if the ring buffer is full.
+// For use from syscall context where the caller needs to detect ring-full.
+//
+//go:nosplit
+func (u *PL011) WriteByteTry(c byte) bool {
+	u.txLockAcquire()
+	success := u.txBuf.WriteByte(c)
+	if success {
+		// Drain as much as possible to hardware right now
+		for u.txBuf.Available() > 0 && u.ReadReg(RegFR)&FR_TXFF == 0 {
+			data := u.txBuf.ReadByte()
+			u.WriteReg(RegDR, uint32(data))
+		}
+		// Enable TX interrupt for any bytes that didn't fit in the FIFO
+		if u.txBuf.Available() > 0 {
+			u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
+		}
+	}
+	u.txLockRelease()
+	return success
+}
+
 // TxTryLock attempts to acquire the TX spinlock without blocking.
 // Returns true if lock acquired, false if already held.
 // Exported for use by the nosplit top-half TX drain.
@@ -415,6 +447,7 @@ func (r *RingBuffer) Write(p []byte) int {
 	return n
 }
 
+//go:nosplit
 func (r *RingBuffer) WriteByte(b byte) bool {
 	if (r.tail+1)%r.size == r.head {
 		return false // Buffer full
