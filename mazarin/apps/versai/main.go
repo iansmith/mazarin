@@ -42,7 +42,7 @@ func startUringDispatcher(fc *fontcache.FontCache) {
 
 func main() {
 	t0 := time.Now()
-	fmt.Printf("[versai] main() entered\n")
+	// fmt.Printf("[versai] main() entered\n")
 
 	// 1. Initialize constraint system.
 	// NOTE: waits removed — the kernel now maps constraint pages using
@@ -106,7 +106,7 @@ func main() {
 	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW := int(screenWAttr.Get())
 	screenH := int(screenHAttr.Get())
-	fmt.Printf("[versai] screen dimensions: %dx%d\n", screenW, screenH)
+	// fmt.Printf("[versai] screen dimensions: %dx%d\n", screenW, screenH)
 	fmt.Printf("[versai:timing] screen dims: %v\n", time.Since(tScreen))
 
 	// 5. Create AppWindow.
@@ -133,9 +133,11 @@ func main() {
 	appWidthURI := appLH.Width.URI()
 	appHeightURI := appLH.Height.URI()
 
+	// fmt.Printf("[versai] creating ColumnEdgeToEdge...\n")
 	col := NewColumnEdgeToEdge("versai_col", "AppWindow",
 		theme, pal, appWidthURI, appHeightURI,
 		20, std.ScrollbarStandard)
+	// fmt.Printf("[versai] ColumnEdgeToEdge created\n")
 
 	// Create 4 Units inside the scroller. Each Unit is a MarginParent
 	// containing a UnitContainer (VE + BAG). Margins add top(16)
@@ -145,7 +147,9 @@ func main() {
 	labels := [4]string{"Unit A", "Unit B", "Unit C", "Unit D"}
 	for i := range labels {
 		unitName := fmt.Sprintf("versai_u%d", i)
+		// fmt.Printf("[versai] creating unit %d (%s)...\n", i, labels[i])
 		u := NewUnit(unitName, scrollerParent, theme, pal, rachelSID, nil, labels[i])
+		// fmt.Printf("[versai] unit %d created\n", i)
 		uLH := u.GetLayout()
 		// Initial height placeholder; updated at first draw when
 		// UnitContainer computes VE height from font metrics.
@@ -153,6 +157,7 @@ func main() {
 		entry := &UnitEntry{Unit: u}
 		entry.Node = units.PushBack(entry)
 	}
+	// fmt.Printf("[versai] calling LayoutChildren...\n")
 	col.LayoutChildren()
 	fmt.Printf("[versai:timing] col + 4 margin+units: %v\n", time.Since(tUnit))
 
@@ -161,14 +166,14 @@ func main() {
 	_ = appLH.Bounds.Get()
 	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = readyAttr
-	fmt.Printf("[versai] Ready=true\n")
+	// fmt.Printf("[versai] Ready=true\n")
 
 	app.AnnounceToWMWithPlacement(0, 0, int32(winW), int32(winH), wm.PlacementRightFull)
 	fmt.Printf("[versai:timing] announce: %v\n", time.Since(tAnnounce))
 
 	// 10. Wait for BackingStoreReady.
 	tBSR := time.Now()
-	fmt.Printf("[versai] waiting for BackingStoreReady...\n")
+	// fmt.Printf("[versai] waiting for BackingStoreReady...\n")
 	var bsr wm.BackingStoreReady
 	for {
 		raw := <-wmCh
@@ -185,8 +190,8 @@ func main() {
 	winW = int(bsr.AppWidth)
 	winH = int(bsr.AppHeight)
 
-	fmt.Printf("[versai] backing store ready: app=%dx%d at (%d,%d)\n",
-		winW, winH, bsr.AppX, bsr.AppY)
+	// fmt.Printf("[versai] backing store ready: app=%dx%d at (%d,%d)\n",
+	// 	winW, winH, bsr.AppX, bsr.AppY)
 
 	// 11. Initialize input dispatch pipeline.
 	disp, clickAgent, keyAgent := app.InitInput()
@@ -259,10 +264,6 @@ func main() {
 
 	var redrawCount int64
 	var drawTotal time.Duration
-	// Steady-state counters start after warmup (first 50 draws).
-	const warmup = 50
-	var ssCount int64
-	var ssTotal time.Duration
 	// redraw reads the AppWindow's DamageRect and draws only the damaged
 	// region. If damage is empty, no drawing occurs.
 	redraw := func(reason string) {
@@ -276,18 +277,13 @@ func main() {
 		app.Draw(app, 0, 0, int64(winW), int64(winH), damage)
 		dt := time.Since(t0)
 		drawTotal += dt
-		avg := drawTotal / time.Duration(redrawCount)
-		if redrawCount > warmup {
-			ssCount++
-			ssTotal += dt
-			ssAvg := ssTotal / time.Duration(ssCount)
-			fmt.Printf("[redraw #%d] %s damage=(%d,%d)-(%d,%d) draw=%v avg=%v ss_avg=%v\n",
-				redrawCount, reason, x0, y0, x1, y1, dt, avg, ssAvg)
-		} else {
-			fmt.Printf("[redraw #%d] %s damage=(%d,%d)-(%d,%d) draw=%v avg=%v\n",
-				redrawCount, reason, x0, y0, x1, y1, dt, avg)
-		}
 		app.SendBlit()
+		// Report average every 50 redraws.
+		if redrawCount%50 == 0 {
+			avg := drawTotal / time.Duration(redrawCount)
+			fmt.Printf("[perf] redraws=%d avg=%v last=%v dmg=(%d,%d)-(%d,%d)\n",
+				redrawCount, avg, dt, x0, y0, x1, y1)
+		}
 	}
 
 	var clickTimer <-chan time.Time
@@ -363,7 +359,6 @@ func main() {
 				appScreenY = m.AppY
 			case wm.KeyPress:
 				disp.DispatchWM(msg)
-				fmt.Printf("[versai] key char=%c\n", rune(m.Char))
 			default:
 				disp.DispatchWM(msg)
 			}

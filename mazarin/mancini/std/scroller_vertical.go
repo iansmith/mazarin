@@ -189,4 +189,5 @@ func (sv *ScrollerVertical) Draw(self mancini.Interactor, x, y, w, h int64, dama
 	}
 
 	sv.Parent.DrawChildren(self, x, y, w, h, damage)
+	sv.SnapshotDamage()
 }

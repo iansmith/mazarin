@@ -92,4 +92,6 @@ func (b *Button) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Re
 	if b.Disabled {
 		ApplyDisabledOverlay(pal, dc, fx, fy, fx+fw, fy+fh, b.Radius)
 	}
+	b.SnapshotDamage()
+	b.ClearDamage()
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"image"
 
 	"mazzy/mazarin/mancini"
@@ -99,29 +98,32 @@ func (uc *UnitContainer) Draw(self mancini.Interactor, x, y, w, h int64, damage 
 			}
 		}
 		uc.heightComputed = true
-		fmt.Printf("[unitcontainer] VE height computed: %d (lineHeight=%.1f, lines=%d)\n",
-			veH, lineHeight, uc.veLines)
+		// fmt.Printf("[unitcontainer] VE height computed: %d (lineHeight=%.1f, lines=%d)\n",
+		// 	veH, lineHeight, uc.veLines)
 	}
 
-	// Position VE row: (0, 0), width = 2/3 of container.
-	veRowW := w * 2 / 3
+	// Position VE row: (0, 0), full container width.
+	// RowPacked's Width is a value — set it to the container's width.
+	// Also set Height to the VE's height so Damaged() doesn't skip it.
+	var veH int64
+	if uc.VE != nil {
+		if vl, ok := uc.VE.(mancini.Layouter); ok {
+			veH = vl.GetLayout().Height.Get()
+		}
+	}
 	if vl, ok := veRow.(mancini.Layouter); ok {
 		if vlh := vl.GetLayout(); vlh != nil {
 			vlh.X.Set(x)
 			vlh.Y.Set(y)
-			if !vlh.Width.IsConstraint() {
-				vlh.Width.Set(veRowW)
+			vlh.Width.Set(w)
+			if veH > 0 {
+				vlh.Height.Set(veH)
 			}
 		}
 	}
 
 	// Read VE row's actual height.
-	var veRowH int64
-	if vl, ok := veRow.(mancini.Layouter); ok {
-		if vlh := vl.GetLayout(); vlh != nil {
-			veRowH = vlh.Height.Get()
-		}
-	}
+	veRowH := veH
 
 	// Position BAG: (20% of container width, VERow.bottom + 2).
 	bagX := x + w*20/100

@@ -122,4 +122,5 @@ func (c *ColumnEdgeToEdge) Draw(self mancini.Interactor, x, y, w, h int64, damag
 		return
 	}
 	c.Parent.DrawChildren(self, x, y, w, h, damage)
+	c.SnapshotDamage()
 }

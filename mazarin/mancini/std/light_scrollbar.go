@@ -202,6 +202,8 @@ func (s *LightScrollbar) Draw(self mancini.Interactor, x, y, w, h int64, damage 
 	if s.Disabled {
 		ApplyDisabledOverlay(pal, dc, tx1, ty1, tx2, ty2, tR)
 	}
+	s.SnapshotDamage()
+	s.ClearDamage()
 }
 
 // ── ClickDraggable protocol ──────────────────────────────────────────

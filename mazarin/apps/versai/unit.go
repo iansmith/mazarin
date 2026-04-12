@@ -6,7 +6,8 @@
 package main
 
 import (
-	"fmt"
+	// "fmt"
+	"image/color"
 
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
@@ -41,12 +42,15 @@ func NewUnitList() *UnitList {
 type Unit struct {
 	*std.MarginParent // Unit IS a MarginParent
 
-	Container *UnitContainer
-	VERow     *std.Row
-	VELabel   *std.Label
-	Editor    *VersaiEditor
-	BAG       *std.BoxesAndGlueInteractor
-	Throbber  *std.ThrobberRadialChooser
+	Container  *UnitContainer
+	VERow      *RowPacked
+	SpacerL    *std.Spacer
+	VELabel    *std.Label
+	Editor     *VersaiEditor
+	PlayBtn    *std.Button
+	SpacerR    *std.Spacer
+	BAG        *std.BoxesAndGlueInteractor
+	Throbber   *std.ThrobberRadialChooser
 
 	// Focused is a value attribute indicating whether this Unit currently
 	// has in-app keyboard focus. Exactly one Unit should be true at a time.
@@ -79,6 +83,7 @@ func NewUnit(myName, parentName string, theme mancini.Theme,
 	editorName := myName + "_editor"
 	bagName := myName + "_bag"
 
+	// fmt.Printf("[unit] %s: creating MarginParent\n", myName)
 	// Create the MarginParent that Unit embeds.
 	mp := std.NewMarginParent(myName, parentName,
 		16, 6, 6, 6, // top, right, bottom, left
@@ -100,7 +105,11 @@ func NewUnit(myName, parentName string, theme mancini.Theme,
 	const veLines = 1
 	rowName := myName + "_verow"
 	labelName := myName + "_velbl"
-	u.Container = NewUnitContainer(contName, myName, theme, pal, veFontSize, veLines)
+	playName := myName + "_play"
+	spacerLName := myName + "_spl"
+	spacerRName := myName + "_spr"
+	// fmt.Printf("[unit] %s: creating UnitContainer\n", myName)
+	u.Container = NewUnitContainer(contName, myName, theme, pal, 20, veLines)
 
 	// When the container computes its final height, update the
 	// MarginParent's height = containerHeight + top + bottom margins.
@@ -108,22 +117,37 @@ func NewUnit(myName, parentName string, theme mancini.Theme,
 		u.GetLayout().Height.Set(containerH + mp.Top + mp.Bottom)
 	}
 
-	// VE row: label "[1]" + VE, top-aligned.
-	u.VERow = std.NewRow(rowName, contName, pal, 0, mancini.AxisMinimum, 0)
-	u.VELabel = std.NewLabelNamed(labelName, rowName, theme, "[1]", veFontSize)
+	// VE row: Spacer + Label + PlayBtn + VE + Spacer
+	// fmt.Printf("[unit] %s: creating RowPacked\n", myName)
+	u.VERow = NewRowPacked(rowName, contName, 3)
+
+	// fmt.Printf("[unit] %s: creating SpacerL\n", myName)
+	u.SpacerL = std.NewSpacer(spacerLName, rowName, 50, 1)
+
+	// fmt.Printf("[unit] %s: creating Label\n", myName)
+	u.VELabel = std.NewLabelNamed(labelName, rowName, theme, "[1]", 24)
 	u.VELabel.Transparent = true
 
-	// VE: parent is the VE row.
+	// fmt.Printf("[unit] %s: creating PlayBtn\n", myName)
+	u.PlayBtn = std.NewButtonNamed(playName, rowName, theme,
+		mancini.Raised, 47, 47)
+	u.PlayBtn.Face = &ArrowRightFace{Color: pal.Text()}
+
+	// fmt.Printf("[unit] %s: creating VE\n", myName)
 	mte := std.NewMultiLineTextNamed(
 		editorName, rowName, theme,
-		"", veFontSize, 0, 100) // height=100 placeholder, recomputed at first draw
-	tint := pal.SurfaceTint()
-	mte.BgColor = &tint
+		"", 20, 0, 100)
+	paleGreen := color.NRGBA{R: 200, G: 255, B: 200, A: 255}
+	mte.BgColor = &paleGreen
 	u.Editor = NewVersaiEditor(editorName, mte)
+
+	// fmt.Printf("[unit] %s: creating SpacerR\n", myName)
+	u.SpacerR = std.NewSpacer(spacerRName, rowName, 50, 1)
 
 	// Wire VE reference so UnitContainer can compute VE height from font metrics.
 	u.Container.VE = u.Editor
 
+	// fmt.Printf("[unit] %s: creating BAG\n", myName)
 	// BAG: parent is the container.
 	bagLH := mancini.NewLayoutAttributesBase(bagName, contName)
 	bagLH.Width = attr.ValueI64(
@@ -134,6 +158,7 @@ func NewUnit(myName, parentName string, theme mancini.Theme,
 	u.BAG = std.NewBoxesAndGlueInteractorWithLayout(bagName, bagLH, theme, 10)
 	u.BAG.SetFontFamily(mfont.LatinModernRoman)
 
+	// fmt.Printf("[unit] %s: creating BagTextLen constraint\n", myName)
 	// Text length constraint: eager, equal to the editor's text length.
 	u.BagTextLen = attr.ConstraintI64(
 		mancini.LayoutURI(bagName, mancini.DataTypeInt64, mancini.LayoutTextLen),
@@ -149,6 +174,7 @@ func NewUnit(myName, parentName string, theme mancini.Theme,
 		u.BAG.FullDamage()
 	}
 
+	// fmt.Printf("[unit] %s: creating Throbber\n", myName)
 	// ThrobberRadialChooser: parent is the container (drawn after BAG).
 	throbName := myName + "_throb"
 	u.Throbber = std.NewThrobberRadialChooser(
@@ -169,6 +195,7 @@ func NewUnit(myName, parentName string, theme mancini.Theme,
 		}
 	}
 
+	// fmt.Printf("[unit] %s: done\n", myName)
 	return u
 }
 
@@ -192,7 +219,7 @@ func (u *Unit) SetFocusToSelf() {
 		}
 	}
 	u.KeyFocusAgent.SetFocus(u.KeyFocusTarget)
-	fmt.Printf("[unit] SetFocusToSelf\n")
+	// fmt.Printf("[unit] SetFocusToSelf\n")
 }
 
 // Click implements mancini.Clickable. Catches clicks that fall through
@@ -235,8 +262,11 @@ func (u *Unit) CleanConstraints() {
 
 	// Phase 3: Leaf children.
 	u.BAG.GetLayout().CleanConstraints()
+	u.SpacerR.GetLayout().CleanConstraints()
+	u.PlayBtn.GetLayout().CleanConstraints()
 	u.Editor.GetLayout().CleanConstraints()
 	u.VELabel.GetLayout().CleanConstraints()
+	u.SpacerL.GetLayout().CleanConstraints()
 
 	// Phase 3.5: VE Row.
 	u.VERow.GetLayout().CleanConstraints()

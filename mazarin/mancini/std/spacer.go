@@ -34,7 +34,10 @@ func NewSpacer(myName, parent string, w, h int64) *Spacer {
 	return s
 }
 
-// Draw implements mancini.NewDrawer. Spacer draws nothing.
+// Draw implements mancini.NewDrawer. Spacer draws nothing but must
+// complete the damage cycle so persistent damage doesn't cause
+// infinite redraws.
 func (s *Spacer) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
-	// intentionally empty
+	s.SnapshotDamage()
+	s.ClearDamage()
 }

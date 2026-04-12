@@ -154,6 +154,8 @@ func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rec
 	dc.SetColor(l.Color)
 	l.textFace.SetText(l.resolveText())
 	l.textFace.DrawFace(dc, float64(x), float64(y), float64(w), float64(h))
+	l.SnapshotDamage()
+	l.ClearDamage()
 	drawPerf.LabelNs.Add(nanotime() - tl)
 	drawPerf.LabelCount.Add(1)
 }

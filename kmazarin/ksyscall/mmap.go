@@ -33,8 +33,8 @@ const (
 // Constraint pages are mapped read-only into every shepherd's address space.
 // The kernel writes via its own VA mapping (PA + KernelVAOffset).
 const (
-	UserConstraintPagesVA   = 0x00007FFD00000000 // Fixed VA for constraint pages
-	UserConstraintPagesSize = 0x200000           // 2MB = 512 pages (matches ConstraintTotalSize)
+	UserConstraintPagesVA   = 0x00007FFD00000000          // Fixed VA for constraint pages
+	UserConstraintPagesSize = kmem.ConstraintTotalSize    // Derived from region layout
 )
 
 // userspaceActive is set to true when we jump to userspace.

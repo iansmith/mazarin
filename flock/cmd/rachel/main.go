@@ -131,11 +131,8 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 
 	switch ev.Type {
 	case EV_KEY:
-		// Debug: log button presses with pick result.
 		if ev.Code >= BTN_LEFT {
-			pw := pickWindow(int64(mouseX), int64(mouseY))
-			fmt.Printf("[rachel:btn] code=0x%x val=%d at (%d,%d) pick=%d\n",
-				ev.Code, ev.Value, mouseX, mouseY, pw)
+			pickWindow(int64(mouseX), int64(mouseY))
 		}
 		// Update modifier state; consume modifier key events (not forwarded).
 		if input.IsModifierKey(ev.Code) {
@@ -1250,14 +1247,14 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 
 			case wm.Blit:
 				rachelMsgBlit++
-				if rachelMsgBlit%500 == 0 {
+				if rachelMsgBlit%2000 == 0 {
 					fmt.Printf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
 						rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents)
 				}
-				if rachelMsgBlit%500 == 0 {
+				if rachelMsgBlit%2000 == 0 {
 					blitTimingReport()
 				}
-				if rachelMsgBlit%500 == 0 && !blitRateStart.IsZero() {
+				if rachelMsgBlit%2000 == 0 && !blitRateStart.IsZero() {
 					ms := time.Since(blitRateStart).Milliseconds()
 					if ms > 0 {
 						rateX10 := rachelMsgBlit * 10000 / ms
