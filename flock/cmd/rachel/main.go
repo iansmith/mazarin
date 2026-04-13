@@ -793,6 +793,59 @@ func removeFromZOrder(sid int) {
 	}
 }
 
+// shepherdDeath is routed through wmCh so death cleanup runs in the event loop goroutine.
+// The uring dispatcher's OnDeath callback runs in the reader goroutine, but all window
+// state is accessed from wmEventLoop (single-goroutine safety).
+type shepherdDeath struct {
+	sid int16
+}
+
+// handleShepherdDeath cleans up all rachel state for a dead shepherd: focus,
+// overlays, animations, z-order, backing store pages, and tracked app entry.
+// Then repaints the entire display.
+func handleShepherdDeath(deadSID int) {
+	ta := trackedApps[deadSID]
+	if ta == nil {
+		return // not a windowed shepherd, or already cleaned up (deduplicated)
+	}
+	fmt.Printf("[rachel:wm] cleaning up dead shepherd SID %d\n", deadSID)
+
+	// 1. Revoke focus if the dead shepherd has it.
+	if keyboardFocusSID == deadSID {
+		revokeFocus()
+	}
+
+	// 2. Tear down overlay if active.
+	if ta.overlayActive {
+		teardownOverlay(deadSID, ta)
+	}
+
+	// 3. Unregister all animations for this SID.
+	cleanupAnimationsForShepherd(deadSID)
+
+	// 4. Remove from z-order.
+	removeFromZOrder(deadSID)
+
+	// 5. Free backing store pages back to the kernel.
+	if ta.backingStore != nil {
+		bsPages := len(ta.backingStore) / 4096
+		if bsPages > 0 {
+			mem.FreePages(unsafe.Pointer(&ta.backingStore[0]), bsPages)
+		}
+	}
+	ta.backingStore = nil
+	ta.decorFocused = nil
+	ta.decorUnfocused = nil
+
+	// 6. Remove from tracked apps.
+	delete(trackedApps, deadSID)
+
+	// 7. Repaint: clear to desktop BG, composite all living windows, flush.
+	timedBlitAllWindows()
+
+	fmt.Printf("[rachel:wm] shepherd SID %d cleanup complete, %d windows remaining\n", deadSID, len(trackedApps))
+}
+
 // pickWindow returns the SID of the topmost window whose bounds contain (x,y),
 // or -1 if no window is hit. Iterates front-to-back through zOrder.
 // Uses rachel's local position (includes borders) rather than the shepherd's
@@ -1141,6 +1194,13 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 		select {
 		case raw := <-wmCh:
 			rachelNotifyCount++
+
+			// Handle shepherd death (kernel-authoritative, routed from OnDeath).
+			if death, ok := raw.(shepherdDeath); ok {
+				handleShepherdDeath(int(death.sid))
+				continue
+			}
+
 			wmMsg, ok := raw.(wm.WMNotifyMsg)
 			if !ok {
 				rachelMsgOther++
@@ -1581,9 +1641,17 @@ func main() {
 		})
 		fmt.Printf("[rachel] font requests wired to fontsvc callbacks\n")
 	}
-	// Handle peer death — remove the dead shepherd from tracked state.
+	// Subscribe to global death notifications from the kernel.
+	// This ensures rachel hears about ALL shepherd deaths, not just uring peers.
+	if err := sys.SubscribeDeaths(); err != nil {
+		fmt.Printf("[rachel] WARNING: SubscribeDeaths failed: %v\n", err)
+	}
+	// Route death notifications through wmCh for single-goroutine safety.
+	// The OnDeath callback runs in the uring reader goroutine; all window
+	// state is accessed from wmEventLoop. Deduplication is natural: the
+	// second ProtoDeath for the same SID finds trackedApps[sid]==nil and returns.
 	disp.OnDeath(func(deadSID int16) {
-		fmt.Printf("[rachel] shepherd %d died\n", deadSID)
+		wmCh <- shepherdDeath{sid: deadSID}
 	})
 
 	disp.Start()

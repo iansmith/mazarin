@@ -86,6 +86,30 @@ func unregisterAnimation(senderSID int, msg wm.AnimationUnregister) {
 	_ = uring.Send(senderSID, &reply)
 }
 
+// cleanupAnimationsForShepherd removes all animations belonging to the given SID.
+// Called from handleShepherdDeath when a shepherd dies.
+func cleanupAnimationsForShepherd(sid int) {
+	// Remove keyRepeatByCode entries for this SID's animations.
+	for code, animID := range keyRepeatByCode {
+		for _, a := range animations {
+			if a.id == animID && a.targetSID == sid {
+				delete(keyRepeatByCode, code)
+				break
+			}
+		}
+	}
+
+	// Remove all animations for this SID.
+	n := 0
+	for _, a := range animations {
+		if a.targetSID != sid {
+			animations[n] = a
+			n++
+		}
+	}
+	animations = animations[:n]
+}
+
 // startKeyRepeat registers an AnimateAlways animation for key auto-repeat.
 // Called from WindowInteractor.KeyDown. Returns the animation ID.
 func startKeyRepeat(targetSID int, nowNanos int64, kp wm.KeyPress) uint64 {
