@@ -16,4 +16,5 @@ func initCOM1Uart() {
 	SetupUartSoftIRQ(com1IOAPICInput)
 	enableIOAPICIRQ(com1IOAPICInput)
 	serial.SetQueueByteFunc(serial.COM1QueueByte)
+	serial.SetQueueByteTryFunc(serial.COM1QueueByteTry)
 }

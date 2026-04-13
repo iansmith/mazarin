@@ -110,6 +110,32 @@ func COM1QueueByte(b byte) {
 	com1TxUnlock()
 }
 
+// COM1QueueByteTry pushes a byte to the COM1 TX ring buffer, returning false
+// if the ring is full. Same as COM1QueueByte but non-blocking on ring-full.
+// Used by SyscallWrite to detect short writes.
+//
+//go:nosplit
+func COM1QueueByteTry(b byte) bool {
+	for !com1TxTryLock() {
+	}
+	next := (com1TxTail + 1) % com1TxBufSize
+	if next == com1TxHead {
+		com1TxUnlock()
+		return false
+	}
+	com1TxBuf[com1TxTail] = b
+	com1TxTail = next
+	for com1TxHead != com1TxTail && txReady() {
+		RawUART(com1TxBuf[com1TxHead])
+		com1TxHead = (com1TxHead + 1) % com1TxBufSize
+	}
+	if com1TxHead != com1TxTail {
+		EnableTxInterrupt()
+	}
+	com1TxUnlock()
+	return true
+}
+
 // COM1DrainTx drains the TX ring buffer to COM1 THR while THRE is set.
 // Called from the top-half when a TX interrupt fires.
 // Disables TX interrupt when buffer is empty.

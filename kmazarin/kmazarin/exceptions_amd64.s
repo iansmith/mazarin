@@ -995,6 +995,10 @@ timer_preempt_check:
 	TESTQ	R12, R12
 	JZ	irq_exception_return
 
+	// Increment context switch counter (matches ARM64 exceptions_arm64.s:1549)
+	LEAQ	·timerCtxSwitchCount(SB), AX
+	INCQ	(AX)
+
 	JMP	load_context_and_iretq
 
 handle_device_irq:
