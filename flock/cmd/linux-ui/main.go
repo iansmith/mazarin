@@ -84,7 +84,7 @@ func MazarinMain() {
 
 // buildUI creates the console interactor tree and returns a drain function
 // that processes WriteChannel messages.
-func buildUI(a *linuxapp.App[linuxio.LinuxIO]) linuxapp.DrainFunc {
+func buildUI(a *linuxapp.App[linuxio.LinuxIO]) linuxapp.BuildResult {
 	fonts := a.Fonts
 	pal := a.Pal
 	fontSize := a.FontSize
@@ -172,19 +172,21 @@ func buildUI(a *linuxapp.App[linuxio.LinuxIO]) linuxapp.DrainFunc {
 
 	// Return drain function that processes console output.
 	writeCh := a.Injected.WriteChannel()
-	return func() bool {
-		dirty := false
-		for {
-			select {
-			case line := <-writeCh:
-				for _, b := range line.Data {
-					console.HandleByte(b, line.Fd)
+	return linuxapp.BuildResult{
+		Drain: func() bool {
+			dirty := false
+			for {
+				select {
+				case line := <-writeCh:
+					for _, b := range line.Data {
+						console.HandleByte(b, line.Fd)
+					}
+					dirty = true
+				default:
+					return dirty
 				}
-				dirty = true
-			default:
-				return dirty
 			}
-		}
+		},
 	}
 }
 

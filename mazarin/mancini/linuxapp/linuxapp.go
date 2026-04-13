@@ -42,19 +42,29 @@ type AppConfig[T any] struct {
 	// BuildUI is called after the theme and AppWindow are created but
 	// before the WM handshake. It receives the fully configured App
 	// (carrying the typed injection value) and must create the interactor
-	// tree and return a DrainFunc.
+	// tree and return a BuildResult containing the DrainFunc and an
+	// optional notification channel.
 	//
 	// The DrainFunc is called from the event loop whenever channel
 	// traffic arrives or constraint attributes change. It should
 	// drain app-specific channels (non-blocking) and return true
 	// if a redraw is needed.
-	BuildUI func(a *App[T]) DrainFunc
+	BuildUI func(a *App[T]) BuildResult
 }
 
 // DrainFunc is called by the event loop to process app-specific messages.
 // It must be non-blocking (use select/default). Return true if the
 // display needs redrawing.
 type DrainFunc func() bool
+
+// BuildResult is returned by BuildUI to provide both the drain function
+// and an optional notification channel. When NotifyCh is non-nil, the
+// event loop includes it in its select so that app-driven messages
+// (e.g. status updates from a background goroutine) wake the loop.
+type BuildResult struct {
+	Drain    DrainFunc
+	NotifyCh <-chan struct{}
+}
 
 // App holds all the framework state created during bootstrap. BuildUI
 // receives this and uses it to create interactors. The Injected field
@@ -152,7 +162,8 @@ func Bootstrap[T any](inj *Injection[T], cfg AppConfig[T]) {
 	}
 
 	// Let the caller build the interactor tree.
-	drain := cfg.BuildUI(app)
+	br := cfg.BuildUI(app)
+	drain := br.Drain
 
 	// Screen size attributes.
 	screenWURI := "attr:///kernel/int64/screen/width"
@@ -245,12 +256,12 @@ func Bootstrap[T any](inj *Injection[T], cfg AppConfig[T]) {
 	appWin.SendBlit()
 
 	// Enter event loop.
-	runLoop(appWin, wmCh, drain, winW, winH)
+	runLoop(appWin, wmCh, drain, br.NotifyCh, winW, winH)
 }
 
 // runLoop is the main event loop. It processes WM messages, constraint
-// change notifications, and calls drain for app-specific traffic.
-func runLoop(appWin *std.AppWindow, wmCh chan any, drain DrainFunc, winW, winH int) {
+// change notifications, app notifications, and calls drain for app-specific traffic.
+func runLoop(appWin *std.AppWindow, wmCh chan any, drain DrainFunc, notifyCh <-chan struct{}, winW, winH int) {
 	eagerCh := attr.OnEager()
 	appLH := appWin.GetLayout()
 
@@ -259,7 +270,18 @@ func runLoop(appWin *std.AppWindow, wmCh chan any, drain DrainFunc, winW, winH i
 		appWin.SendBlit()
 	}
 
+	drainAndRedraw := func() {
+		if drain() {
+			redraw()
+		}
+	}
+
 	var dirtyTicks int64
+
+	// If no notify channel, use a nil channel (never fires, costs nothing in select).
+	if notifyCh == nil {
+		notifyCh = make(chan struct{})
+	}
 
 	for {
 		runtime.Gosched()
@@ -306,6 +328,9 @@ func runLoop(appWin *std.AppWindow, wmCh chan any, drain DrainFunc, winW, winH i
 			if dirtyTicks%10 == 0 {
 				rawPuts(fmt.Sprintf("[linuxapp] dirtyTicks=%d\n", dirtyTicks))
 			}
+
+		case <-notifyCh:
+			drainAndRedraw()
 		}
 	}
 }
