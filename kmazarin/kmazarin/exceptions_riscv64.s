@@ -545,6 +545,23 @@ pf_user_handled:
 	// SFENCE.VMA S2(x18), zero
 	WORD	$0x12090073
 
+	// Check if page fault handler requested a context switch (file-backed mmap page fill)
+	GO_CALL_0_1(·GetSyscallSwitchTarget)
+	// T0 = target or 0/-1
+	MOV	$0, T1
+	BLE	T0, T1, pf_no_switch
+
+	MOV	T0, S2			// save target in callee-saved S2
+
+	// Context switch: DoContextSwitch(framePtr, targetPtr) uintptr
+	MOV	X2, T1			// frame pointer
+	GO_CALL_2_1(·DoContextSwitch, T1, S2)
+	MOV	T0, S2			// new context pointer
+
+	BEQ	S2, ZERO, trap_return
+	JMP	load_context_and_sret
+
+pf_no_switch:
 	JMP	trap_return
 
 pf_really_not_handled:

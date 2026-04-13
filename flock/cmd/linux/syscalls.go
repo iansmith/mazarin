@@ -120,6 +120,12 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 		h.sysWritev(req)
 	case sysid.Readv:
 		h.sysReadv(req)
+	case sysid.Pread64:
+		h.sysPread64(req)
+	case sysid.Pwrite64:
+		h.sysPwrite64(req)
+	case sysid.MmapPageFill:
+		h.sysMmapPageFill(req)
 
 	default:
 		req.Reply(ENOSYS)
@@ -226,7 +232,19 @@ func (h *syscallHandler) sysChdir(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysFchdir(req sys.SyscallRequest) {
-	req.Reply(ENOSYS)
+	shep := h.getShepherd(req.CallerPID)
+	fd := int(req.Args[0])
+	e := shep.FDT.get(fd)
+	if e == nil || e.kind == fdKindNone {
+		req.Reply(EBADF)
+		return
+	}
+	if e.kind != fdKindDir {
+		req.Reply(ENOTDIR)
+		return
+	}
+	shep.FDT.cwd = e.path
+	req.Reply(EOK)
 }
 
 func (h *syscallHandler) sysIoctl(req sys.SyscallRequest) {
@@ -411,11 +429,69 @@ func (h *syscallHandler) sysUnlinkat(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysRenameat(req sys.SyscallRequest) {
-	req.Reply(ENOSYS)
+	// Data page contains "oldpath\0newpath\0". Arg0 = offset of newpath.
+	d := req.Data()
+	if d == nil {
+		req.Reply(EINVAL)
+		return
+	}
+	newOff := int(req.Arg0())
+	if newOff <= 0 || newOff >= len(d) {
+		req.Reply(EINVAL)
+		return
+	}
+	// Extract old path (up to first null).
+	var oldPath string
+	for i := 0; i < newOff; i++ {
+		if d[i] == 0 {
+			oldPath = string(d[:i])
+			break
+		}
+	}
+	// Extract new path (from newOff to next null).
+	var newPath string
+	for i := newOff; i < len(d); i++ {
+		if d[i] == 0 {
+			newPath = string(d[newOff:i])
+			break
+		}
+	}
+	if oldPath == "" || newPath == "" {
+		req.Reply(EINVAL)
+		return
+	}
+	// Resolve relative paths through the caller's CWD.
+	fdt := h.getShepherd(req.CallerPID).FDT
+	oldPath = fdt.resolvePath(oldPath)
+	newPath = fdt.resolvePath(newPath)
+
+	err := h.fs.Rename(oldPath, newPath)
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
+		return
+	}
+	req.Reply(0)
 }
 
 func (h *syscallHandler) sysFtruncate(req sys.SyscallRequest) {
-	req.Reply(ENOSYS)
+	shep := h.getShepherd(req.CallerPID)
+	fd := int(req.Args[0])
+	newSize := int64(req.Args[1])
+	e := shep.FDT.get(fd)
+	if e == nil || e.kind == fdKindNone {
+		req.Reply(EBADF)
+		return
+	}
+	if e.kind != fdKindFile {
+		req.Reply(EINVAL)
+		return
+	}
+	if err := h.fs.Truncate(e.handle, newSize); err != nil {
+		req.Reply(int64(errToErrno(err)))
+		return
+	}
+	e.size = uint32(newSize)
+	req.Reply(EOK)
 }
 
 func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
@@ -621,6 +697,118 @@ func (h *syscallHandler) sysWritev(req sys.SyscallRequest) {
 
 func (h *syscallHandler) sysReadv(req sys.SyscallRequest) {
 	req.Reply(ENOSYS)
+}
+
+// sysPread64 implements pread64(fd, buf, count, offset).
+// Like read but uses the caller-supplied offset without changing the fd position.
+func (h *syscallHandler) sysPread64(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
+	fd := int(req.Arg0())
+	e := fdt.get(fd)
+	if e == nil {
+		req.Reply(EBADF)
+		return
+	}
+	if e.kind != fdKindFile {
+		req.Reply(ESPIPE)
+		return
+	}
+
+	buf := req.DataBuf()
+	if buf == nil {
+		req.Reply(EFAULT)
+		return
+	}
+	count := int(req.Args[2])
+	if count > len(buf) {
+		count = len(buf)
+	}
+	offset := int64(req.Args[3])
+
+	n, err := h.fs.Read(e.handle, offset, count)
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
+		return
+	}
+	if n > 0 {
+		copy(buf[:n], h.fs.DataSlice(n))
+	}
+	req.Reply(int64(n))
+}
+
+// sysPwrite64 implements pwrite64(fd, buf, count, offset).
+// Like write but uses the caller-supplied offset without changing the fd position.
+func (h *syscallHandler) sysPwrite64(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
+	fd := int(req.Arg0())
+	data := req.Data()
+
+	e := fdt.get(fd)
+	if e == nil {
+		req.Reply(EBADF)
+		return
+	}
+	if e.kind != fdKindFile {
+		req.Reply(ESPIPE)
+		return
+	}
+	if data == nil {
+		req.Reply(EFAULT)
+		return
+	}
+
+	offset := int64(req.Args[3])
+	n := h.fs.WriteData(data)
+
+	written, err := h.fs.Write(e.handle, offset, n)
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
+		return
+	}
+	// Update cached size if file grew.
+	endPos := offset + int64(written)
+	if uint32(endPos) > e.size {
+		e.size = uint32(endPos)
+	}
+	req.Reply(int64(written))
+}
+
+// sysMmapPageFill handles kernel requests to fill a file-backed mmap page.
+// The kernel allocates a physical frame and maps it into our address space,
+// then sends this request so we read file data into it. The kernel's reply
+// path unmaps the page from us and maps it read-only into the faulting shepherd.
+func (h *syscallHandler) sysMmapPageFill(req sys.SyscallRequest) {
+	// Args[0]=fd, Args[1]=fileOffset, Args[2]=count
+	// CallerPID = shepherd that owns the fd
+	fdt := h.getShepherd(req.CallerPID).FDT
+	fd := int(req.Args[0])
+	e := fdt.get(fd)
+	if e == nil {
+		req.Reply(EBADF)
+		return
+	}
+
+	buf := req.DataBuf()
+	if buf == nil {
+		req.Reply(EFAULT)
+		return
+	}
+
+	offset := int64(req.Args[1])
+	count := int(req.Args[2])
+	if count > len(buf) {
+		count = len(buf)
+	}
+
+	n, err := h.fs.Read(e.handle, offset, count)
+	if err != nil {
+		req.Reply(int64(errToErrno(err)))
+		return
+	}
+	if n > 0 {
+		copy(buf[:n], h.fs.DataSlice(n))
+	}
+	req.Reply(int64(n))
 }
 
 // ============================================================

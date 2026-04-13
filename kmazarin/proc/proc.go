@@ -122,6 +122,10 @@ type Shepherd struct {
 	// inside SyscallMmap on the g0 stack.
 	DMAClumps    [MaxDMAClumps]DMAClump
 	NumDMAClumps int32
+
+	// FileMappings tracks file-backed mmap regions. When a page fault occurs
+	// in one of these ranges, the kernel reads file data and maps it read-only.
+	FileMappings [MaxFileMappings]FileMapping
 }
 
 // Id implements the ds.Ider interface for Shepherd.

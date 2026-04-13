@@ -2162,6 +2162,19 @@ el0_upf_not_perm:
 	CMP	$0, R0
 	BEQ	el0_data_abort_unhandled
 
+	// Check if page fault handler requested a context switch (file-backed mmap page fill)
+	GO_CALL_0_1(·GetSyscallSwitchTarget)
+	MOVD	R0, R20
+	CBZ	R20, el0_pf_no_switch
+
+	// Context switch: save current frame, load new thread's context
+	MOVD	RSP, R0
+	MOVD	R20, R1
+	GO_CALL_2_1(·DoContextSwitch, R0, R1)
+	MOVD	R0, R21
+	B	copy_context_to_frame
+
+el0_pf_no_switch:
 	// Fault handled successfully - return to faulting instruction
 	B	el0_return
 

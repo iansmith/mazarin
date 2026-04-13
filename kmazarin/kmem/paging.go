@@ -50,6 +50,25 @@ func currentShepherdBumpEnd() uint64 {
 	return v
 }
 
+// OnFileMappedPageFault is called when a page fault occurs in a file-backed
+// mmap region. Set by ksyscall during init to avoid circular dependency.
+// The handler allocates a frame, sends a read request to the linux shepherd,
+// blocks the faulting thread, and returns true. Assembly checks
+// GetSyscallSwitchTarget after return to perform the context switch.
+var OnFileMappedPageFault func(faultAddr uintptr, fm *proc.FileMapping) bool
+
+// currentShepherdFindFileMapping returns the FileMapping containing addr,
+// or nil if none. Returns nil for kernel context.
+//
+//go:nosplit
+func currentShepherdFindFileMapping(addr uint64) *proc.FileMapping {
+	p := proc.CurrentShepherd()
+	if p == nil {
+		return nil
+	}
+	return p.FindFileMappingByVA(addr)
+}
+
 // currentShepherdSpanContains returns true if the current shepherd has a span
 // covering addr. Returns false for kernel context.
 //
@@ -695,9 +714,17 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	existingPA := WalkUserPageTable(faultAddr)
 	if existingPA != 0 {
 		if isPermFault != 0 {
-			// Permission fault on an already-mapped page: the page exists in the
-			// page table but the access was denied (e.g. write to a read-only ELF
-			// code/rodata page). We cannot fix this — return false so the exception
+			// Permission fault on an already-mapped page.
+			// Check if this is a write to a file-backed mmap page.
+			fm := currentShepherdFindFileMapping(uint64(pageAddr))
+			if fm != nil {
+				serial.RawUARTPuts("[mmap] WRITE to file-backed page VA=0x")
+				serial.RawUARTHex64(uint64(faultAddr))
+				serial.RawUARTPuts(" fd=")
+				serial.RawUARTDecimal(uint64(fm.FD))
+				serial.RawUARTPuts(" -- not yet supported\r\n")
+			}
+			// We cannot fix permission faults — return false so the exception
 			// handler kills the process instead of looping forever.
 			return false
 		}
@@ -707,6 +734,18 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 		dsbSY()
 		isbSY()
 		return true
+	}
+
+	// Check if this is a file-backed mmap page (translation fault).
+	// If so, delegate to the file-mapped page fault handler which will
+	// allocate a frame, send a read request to the linux shepherd, and
+	// block the faulting thread until the data arrives.
+	fm := currentShepherdFindFileMapping(uint64(pageAddr))
+	if fm != nil {
+		if OnFileMappedPageFault != nil {
+			return OnFileMappedPageFault(faultAddr, fm)
+		}
+		return false
 	}
 
 	// Get the current mmap allocation end (addresses >= this were NOT allocated)

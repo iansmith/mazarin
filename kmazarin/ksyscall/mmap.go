@@ -66,8 +66,6 @@ const (
 func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	// Suppress unused warnings
 	_ = prot
-	_ = fd
-	_ = offset
 
 	// Zero-length mmap is invalid (EINVAL) - standard Linux behavior
 	if length == 0 {
@@ -153,6 +151,14 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	if result == 0 {
 		mmapENOMEM('D', addr, length)
 		return -12 // ENOMEM
+	}
+
+	// Record file-backed mapping if fd is valid and not MAP_ANONYMOUS (0x20)
+	if (flags&0x20) == 0 && fd != ^uint64(0) && int64(fd) >= 0 {
+		p := proc.CurrentShepherd()
+		if p != nil {
+			p.AddFileMapping(result, alignedLength, int16(p.PID), int32(fd), offset)
+		}
 	}
 
 	return int64(result)

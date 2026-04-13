@@ -76,6 +76,10 @@ const (
 	Fsync      // fsync
 	Fdatasync  // fdatasync
 	Flock      // flock
+	Pread64    // pread64
+	Pwrite64   // pwrite64
+
+	MmapPageFill // internal: kernel → linux shepherd page fill for file-backed mmap
 
 	NumIDs // sentinel — array size
 )

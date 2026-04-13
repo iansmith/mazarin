@@ -40,6 +40,11 @@ func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
 		}
 	}
 
+	// Remove file-backed mapping metadata for this VA range (if any)
+	if p != nil {
+		p.RemoveFileMapping(alignedAddr, alignedLength)
+	}
+
 	// Normal path: unmap individual pages
 	removeSpan(alignedAddr, alignedLength)
 

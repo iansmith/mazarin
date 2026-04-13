@@ -117,8 +117,8 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	var dataLen uint32
 
 	switch id {
-	case sysid.Write:
-		// Write: copy caller's buffer into data page
+	case sysid.Write, sysid.Pwrite64:
+		// Write/Pwrite64: copy caller's buffer into data page
 		if arg1 != 0 && arg2 > 0 {
 			count := arg2
 			if count > 4096 {
@@ -133,7 +133,7 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataLen = uint32(n)
 		}
 
-	case sysid.Read:
+	case sysid.Read, sysid.Pread64:
 		// Read: allocate empty page for handler to fill
 		if arg2 > 0 {
 			count := arg2
@@ -206,17 +206,43 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		}
 
 	case sysid.Renameat:
-		// renameat2: arg1 = oldpath, arg3 = newpath. Copy oldpath; newpath
-		// goes through args (handler reads it from a second delegation or
-		// we pack both into one page separated by null).
-		if arg1 != 0 {
-			pa, va, n := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg1))
+		// renameat2: arg1 = oldpath, arg3 = newpath. Pack both paths
+		// into one data page as "oldpath\0newpath\0". The handler reads
+		// the old path from offset 0 and the new path from the byte
+		// after the first null. Arg0 stores the length of oldpath+null
+		// so the handler can find the split point.
+		if arg1 != 0 && arg3 != 0 {
+			pa, va, oldLen := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg1))
 			if pa == 0 {
 				return -12 // ENOMEM
 			}
+			// Append newpath after oldpath+null in the same page.
+			scratchVA := kmem.MapPAToKernelScratch(pa)
+			newOff := oldLen + 1 // skip past null terminator
+			maxNew := uintptr(4096) - uintptr(newOff)
+			newPageOff := uintptr(arg3) & 0xFFF
+			maxCopy := uintptr(4096) - newPageOff
+			if maxCopy > maxNew {
+				maxCopy = maxNew
+			}
+			dst := unsafe.Slice((*byte)(unsafe.Pointer(scratchVA+uintptr(newOff))), maxCopy)
+			kmem.CopyFromUser(dst, uintptr(arg3), int(maxCopy))
+			// Find newpath length.
+			var newLen uint64
+			for i := uintptr(0); i < maxCopy; i++ {
+				if dst[i] == 0 {
+					newLen = uint64(i)
+					break
+				}
+			}
+			if newLen == 0 && maxCopy > 0 && dst[0] != 0 {
+				newLen = uint64(maxCopy)
+			}
 			dataPagePA = pa
 			handlerDataVA = va
-			dataLen = uint32(n)
+			dataLen = uint32(newOff + newLen + 1) // total: oldpath\0newpath\0
+			// Store oldpath+null length in arg0 so handler can split.
+			arg0 = newOff
 		}
 
 	case sysid.Fstatat:
@@ -234,8 +260,32 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataLen = 4096
 		}
 
-	case sysid.Fstat, sysid.Getdents64, sysid.Getcwd,
-		sysid.Fstatfs:
+	case sysid.Fstat:
+		// fstat(fd, statbuf): arg0=fd, arg1=statbuf. No count arg.
+		// Always allocate a data page (handler writes 128-byte stat result).
+		if arg1 != 0 {
+			pa, va := allocEmptyDataPage(handlerSID, handlerShepherd)
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = 4096
+		}
+
+	case sysid.Fstatfs:
+		// fstatfs(fd, buf): arg0=fd, arg1=buf. No count arg.
+		if arg1 != 0 {
+			pa, va := allocEmptyDataPage(handlerSID, handlerShepherd)
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = 4096
+		}
+
+	case sysid.Getdents64, sysid.Getcwd:
 		// Output buffer syscalls: handler fills data page, kernel copies back.
 		// Like Read: allocate empty page for handler to fill.
 		if arg1 != 0 && arg2 > 0 {
@@ -282,6 +332,16 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		callerBufVA = uintptr(arg2)
 		callerBufLen = uint32(arg3)
 	}
+	// Pre-fault the caller's output buffer pages while we're still in the
+	// caller's context (TTBR0 + CurrentShepherd() are correct). During the
+	// reply path, CopyToUserWithL0 walks the caller's page table with an
+	// explicit L0 PA and cannot demand-fault missing pages (wrong TTBR0
+	// context). Without this, stat/read/getdents on stack buffers that
+	// haven't been touched yet will EFAULT.
+	if isCopyBackSyscall(id) && callerBufVA != 0 && callerBufLen > 0 {
+		prefaultOutputBuffer(callerBufVA, uintptr(callerBufLen))
+	}
+
 	if int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
 		info.DataPagePA = dataPagePA
@@ -520,6 +580,31 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 			if info.HandlerSID != int16(replyingShepherd.PID) {
 				return -1 // EPERM
 			}
+			// For MmapPageFill: unmap from handler, map read-only into
+			// faulting shepherd's page table. The page stays mapped — do not free it.
+			if info.SysID == sysid.MmapPageFill && info.DataPagePA != 0 {
+				// Unmap from linux shepherd
+				handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
+				if handlerShepherd != nil {
+					kmem.UnmapUserPageWithL0(uintptr(info.DataPageVA), handlerShepherd.PageTableL0PA)
+					handlerShepherd.Spans.Remove(info.DataPageVA, 4096)
+				}
+
+				// Check if faulting shepherd is still alive
+				callerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.CallerSID))
+				if callerShepherd == nil {
+					// Shepherd died while waiting — free the page
+					kmem.ReleasePageByPA(info.DataPagePA)
+				} else {
+					// Map read-only into faulting shepherd's page table
+					kmem.MapPageInProcess(info.CallerSID, uintptr(info.CallerBufVA), info.DataPagePA, kmem.ELF_PF_R)
+				}
+
+				// Prevent reclaimDataPage from freeing it
+				info.DataPagePA = 0
+				info.InUse = false
+			}
+
 			// For Read: copy data from handler's page back to caller's buffer.
 			// Linux semantics: if the copy faults at any point (even after
 			// partial success), read() returns -EFAULT. A partial copy means
@@ -574,9 +659,23 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 
 // isCopyBackSyscall returns true if the given syscall ID uses the Read pattern:
 // handler fills a data page and the kernel copies the result back to the caller.
+// prefaultOutputBuffer ensures all pages spanned by the caller's output buffer
+// are demand-mapped. Called while still in the caller's syscall context so
+// HandleUserPageFault can use TTBR0 and CurrentShepherd() correctly.
+func prefaultOutputBuffer(bufVA uintptr, bufLen uintptr) {
+	const pageSize = 4096
+	endVA := bufVA + bufLen
+	for va := bufVA &^ (pageSize - 1); va < endVA; va += pageSize {
+		pa := kmem.WalkUserPageTable(va)
+		if pa == 0 {
+			kmem.HandleUserPageFault(va, 0)
+		}
+	}
+}
+
 func isCopyBackSyscall(id sysid.ID) bool {
 	switch id {
-	case sysid.Read, sysid.Fstat, sysid.Getdents64, sysid.Getcwd,
+	case sysid.Read, sysid.Pread64, sysid.Fstat, sysid.Getdents64, sysid.Getcwd,
 		sysid.Fstatfs, sysid.Fstatat, sysid.Readlinkat, sysid.Readv:
 		return true
 	}

@@ -631,7 +631,24 @@ try_user_pf_handler:
 	GO_CALL_2_1(·HandleUserPageFaultAsm, R13, R12)
 
 	TESTQ	AX, AX
-	JNZ	pf_restore_xmm_return	// handled by user handler
+	JZ	pf_neither_handled	// not handled
+
+	// Check if page fault handler requested a context switch (file-backed mmap page fill)
+	GO_CALL_0_1(·GetSyscallSwitchTarget)
+	CMPQ	AX, $0
+	JLE	pf_restore_xmm_return	// no switch needed, return normally
+
+	MOVQ	AX, R12			// save target in callee-saved R12
+
+	// Context switch: DoContextSwitch(framePtr, targetPtr) uintptr
+	MOVQ	SP, DI			// frame pointer
+	GO_CALL_2_1(·DoContextSwitch, DI, R12)
+	MOVQ	AX, R12			// new context pointer
+
+	TESTQ	R12, R12
+	JZ	pf_restore_xmm_return	// no context, return normally
+
+	JMP	load_context_and_iretq
 
 pf_neither_handled:
 

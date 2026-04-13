@@ -54,6 +54,9 @@ const (
 	// Ramdisk backing store (off-heap, shepherd-owned, reclaimed on death)
 	PageRamdisk
 
+	// File-backed mmap pages (read-only, populated from file on demand)
+	PageFileMmap
+
 	// Sentinel
 	PageTypeCount // Must be last
 )
@@ -85,6 +88,7 @@ var pageTypeNames = [PageTypeCount]string{
 	PageIPCBuffer:        "IPCBuffer",
 	PageUserDMA:          "UserDMA",
 	PageRamdisk:          "Ramdisk",
+	PageFileMmap:         "FileMmap",
 }
 
 // String returns a human-readable name for the page type.
