@@ -48,8 +48,10 @@ var x86ToSysID = [512]SysID{
 	8:   SysIDLseek,
 	5:   SysIDFstat,
 	262: SysIDFstatat, // newfstatat
-	83:  SysIDMkdirat,
+	83:  SysIDMkdirat, // mkdir (legacy)
+	258: SysIDMkdirat, // mkdirat
 	263: SysIDUnlinkat,
+	264: SysIDRenameat, // renameat
 	316: SysIDRenameat, // renameat2
 	77:  SysIDFtruncate,
 	217: SysIDGetdents64,
@@ -65,6 +67,8 @@ var x86ToSysID = [512]SysID{
 	19:  SysIDReadv,
 	137: SysIDStatfs,
 	138: SysIDFstatfs,
+	17:  SysIDPread64,
+	18:  SysIDPwrite64,
 	74:  SysIDFsync,
 	75:  SysIDFdatasync,
 	73:  SysIDFlock,

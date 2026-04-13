@@ -45,11 +45,11 @@ tasks:
     run: once
     deps: [':check-env', 'arm64-overlay', ':stage-embedded-fs-arm64', ':stage-kernel-config-arm64']
     sources:
-      - 'kmazarin/**/*.go'
-      - 'kmazarin/**/*.s'
-      - 'kmazarin/kmazarin/fs.elf'
-      - 'kmazarin/kmazarin/kernel.toml'
-      - 'shared/**/*.go'
+      - '**/*.go'
+      - '**/*.s'
+      - 'kmazarin/fs.elf'
+      - 'kmazarin/kernel.toml'
+      - '../shared/**/*.go'
       - '{{.KMAZARIN_OVERLAY_JSON}}'
       - '{{.RUNTIME_PATCHES_DIR}}/*.go'
       - '{{.RUNTIME_PATCHES_DIR}}/*.s'
@@ -72,11 +72,11 @@ tasks:
     run: once
     deps: [':check-env', 'x86_64-overlay', ':stage-embedded-fs-x86_64', ':stage-kernel-config-x86_64']
     sources:
-      - 'kmazarin/**/*.go'
-      - 'kmazarin/**/*.s'
-      - 'kmazarin/kmazarin/fs.elf'
-      - 'kmazarin/kmazarin/kernel.toml'
-      - 'shared/**/*.go'
+      - '**/*.go'
+      - '**/*.s'
+      - 'kmazarin/fs.elf'
+      - 'kmazarin/kernel.toml'
+      - '../shared/**/*.go'
       - '{{.KMAZARIN_AMD64_OVERLAY_JSON}}'
       - '{{.RUNTIME_PATCHES_DIR}}/*.go'
       - '{{.RUNTIME_PATCHES_DIR}}/*.s'
@@ -95,11 +95,11 @@ tasks:
     run: once
     deps: [':check-env', 'riscv64-overlay', ':stage-embedded-fs-riscv64', ':stage-kernel-config-riscv64']
     sources:
-      - 'kmazarin/**/*.go'
-      - 'kmazarin/**/*.s'
-      - 'kmazarin/kmazarin/fs.elf'
-      - 'kmazarin/kmazarin/kernel.toml'
-      - 'shared/**/*.go'
+      - '**/*.go'
+      - '**/*.s'
+      - 'kmazarin/fs.elf'
+      - 'kmazarin/kernel.toml'
+      - '../shared/**/*.go'
       - '{{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
       - '{{.RUNTIME_PATCHES_DIR}}/*.go'
       - '{{.RUNTIME_PATCHES_DIR}}/*.s'

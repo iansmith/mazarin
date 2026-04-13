@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"unsafe"
 
 	"mazzy/mazarin/fsclient"
@@ -876,14 +875,7 @@ func (h *syscallHandler) sysMmapPageWriteback(req sys.SyscallRequest) {
 // ============================================================
 
 // fillStdioStatBuf writes a minimal stat struct for stdin/stdout/stderr.
-func fillStdioStatBuf(buf []byte) {
-	for i := range buf[:128] {
-		buf[i] = 0
-	}
-	// st_mode = S_IFCHR | 0666
-	le := binary.LittleEndian
-	le.PutUint32(buf[16:], 0020666)
-}
+// Arch-specific: see stat_arm64.go / stat_amd64.go / stat_riscv64.go.
 
 // errToErrno converts an fsclient error to a negative errno value.
 func errToErrno(err error) int32 {
