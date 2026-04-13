@@ -19,8 +19,8 @@
 #define LAPIC_VA	(0xFEE00000 + 0xFFFFFFFF00000000)
 #define LAPIC_EOI	0xB0
 #define LAPIC_LVT_TMR	0x320
-#define LAPIC_TMRINITCNT	0x380
-#define LAPIC_TMRDIV	0x3E0
+#define LAPIC_INITIAL_COUNT 0x380
+#define ONESHOT_VEC30 0x00000030
 
 // TimerIRQHandlerAsm is the pure assembly timer IRQ handler.
 // Does NOT call any Go functions. Sets NeedsThreadPreempt when
@@ -66,7 +66,6 @@ TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
 	JZ	timer_done		// No current thread
 
 	// Check thread preemption deadline
-	// Check thread preemption deadline
 	MOVQ	main·ThreadPreemptDeadlineOffset(SB), DX
 	ADDQ	BX, DX
 	MOVQ	(DX), DX		// DX = thread deadline
@@ -78,20 +77,14 @@ TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
 	MOVL	$1, 20(AX)
 
 timer_done:
-	// Re-arm LAPIC timer
+	// Re-arm LAPIC timer via one-shot mode
 	MOVQ	$LAPIC_VA, CX
 
-	// Set divide by 16
-	MOVL	$3, LAPIC_TMRDIV(CX)
+	// Set LVT timer: one-shot mode, vector 0x30
+	MOVL	$ONESHOT_VEC30, LAPIC_LVT_TMR(CX)
 
-	// Set LVT timer: one-shot, vector 0x30, not masked
-	MOVL	$0x30, LAPIC_LVT_TMR(CX)
-
-	// Set initial count: TickIntervalMs (4ms) at ~62.5MHz effective rate = 250000
-	// NOTE: This handler is not called on x86_64 (Go path handles timer re-arm
-	// via TimerIRQHandlerCanPreempt → ktimer.Rearm(TimerRearmTicks)).
-	// Kept for reference / potential future use.
-	MOVL	$250000, LAPIC_TMRINITCNT(CX)
+	// Write initial count (~4M LAPIC ticks)
+	MOVL	$4000000, LAPIC_INITIAL_COUNT(CX)
 
 	// Send EOI
 	MOVL	$0, LAPIC_EOI(CX)

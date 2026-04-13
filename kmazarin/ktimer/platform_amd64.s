@@ -2,7 +2,7 @@
 
 #include "textflag.h"
 
-// LAPIC constants
+// LAPIC constants (virtual addresses via kernel MMIO offset)
 #define LAPIC_PHYS_BASE     0xFEE00000
 #define KERNEL_MMIO_OFFSET  0xFFFFFFFF00000000
 #define LAPIC_BASE          (LAPIC_PHYS_BASE + KERNEL_MMIO_OFFSET)
@@ -11,99 +11,70 @@
 #define LAPIC_CURRENT_COUNT 0x390
 #define LAPIC_DIVIDE_CONFIG 0x3E0
 
-// LVT Timer: one-shot mode (bits 18:17 = 00), unmasked (bit 16 = 0), vector 0x30
-#define ONESHOT_MODE_VEC30  0x00000030
+// LVT Timer: One-shot mode (bits 18:17 = 00), unmasked (bit 16 = 0), vector 0x30
+#define ONESHOT_VEC30       0x00000030
 
 // PlatformDisableTimer masks the LAPIC timer to stop generating interrupts.
 // func PlatformDisableTimer()
 TEXT ·PlatformDisableTimer(SB), NOSPLIT, $0-0
-	// Read current LVT Timer register
 	MOVQ	$LAPIC_BASE, AX
 	MOVL	LAPIC_LVT_TIMER(AX), BX
-	// Set bit 16 (masked) to disable interrupts
-	ORL	$0x10000, BX
+	ORL	$0x10000, BX		// Set bit 16 (masked)
 	MOVL	BX, LAPIC_LVT_TIMER(AX)
+	// Zero the initial count to stop the timer
+	MOVL	$0, LAPIC_INITIAL_COUNT(AX)
 	RET
 
-// PlatformRearmTimer converts TSC ticks to LAPIC ticks and starts the countdown.
-// The caller passes ticks in TSC frequency units (matching PlatformReadCounter).
-// We scale to LAPIC frequency: lapic_ticks = tsc_ticks * scaleNumer / scaleDenom.
+// PlatformRearmTimer sets the next timer interrupt after 'ticks' LAPIC timer ticks.
+// Uses LAPIC one-shot mode: writes initial count, timer counts down to zero and
+// fires vector 0x30.
+//
+// The 'ticks' parameter is in LAPIC timer ticks (at the LAPIC timer frequency,
+// which is calibrated by PlatformTimerInit). The caller (ktimer.Rearm) passes
+// the value computed from the desired interval and the calibrated frequency.
+//
 // func PlatformRearmTimer(ticks uint64)
 TEXT ·PlatformRearmTimer(SB), NOSPLIT, $0-8
-	MOVQ	ticks+0(FP), R8		// R8 = TSC ticks to wait
+	MOVQ	ticks+0(FP), R8		// R8 = LAPIC timer ticks
 
-	// Scale TSC ticks to LAPIC ticks using PIT-calibrated ratio
-	MOVQ	·scaleDenom(SB), CX
-	TESTQ	CX, CX
-	JZ	rearm_fallback		// Guard: no calibration data
+	// Clamp to 32-bit (LAPIC initial count is 32-bit)
+	MOVQ	$0xFFFFFFFF, AX
+	CMPQ	R8, AX
+	CMOVQHI	AX, R8			// if R8 > 0xFFFFFFFF, R8 = 0xFFFFFFFF
 
-	MOVQ	R8, AX			// RAX = tsc_ticks
-	MOVQ	·scaleNumer(SB), BX
-	MULQ	BX			// RDX:RAX = tsc_ticks * scaleNumer
-	DIVQ	CX			// RAX = (tsc_ticks * scaleNumer) / scaleDenom
-
-	// Cap to 32-bit max (LAPIC initial count is 32-bit)
-	MOVQ	$0xFFFFFFFF, CX
-	CMPQ	AX, CX
-	JBE	rearm_check_zero
-	MOVQ	CX, AX
-rearm_check_zero:
-	// Ensure at least 1 tick
-	TESTQ	AX, AX
-	JNZ	rearm_write
-	MOVQ	$1, AX
-	JMP	rearm_write
-
-rearm_fallback:
-	// No calibration data: use ticks directly (wrong frequency but won't crash)
-	MOVQ	R8, AX
-
-rearm_write:
-	MOVQ	AX, R8			// R8 = LAPIC ticks
-
-	// Ensure divide-by-1 (0x0B) matches PlatformTimerInit calibration.
-	// RearmTimerNow sets divide-by-16 (0x03) which makes all subsequent
-	// rearms 16x slower than calibrated if we don't reset it here.
+	// Configure LVT Timer: one-shot mode, vector 0x30, unmasked
 	MOVQ	$LAPIC_BASE, AX
-	MOVL	$0x0B, CX
-	MOVL	CX, LAPIC_DIVIDE_CONFIG(AX)
+	MOVL	$ONESHOT_VEC30, BX
+	MOVL	BX, LAPIC_LVT_TIMER(AX)
 
-	// Set LVT Timer: one-shot, unmasked, vector 0x30
-	MOVL	$ONESHOT_MODE_VEC30, CX
-	MOVL	CX, LAPIC_LVT_TIMER(AX)
-
-	// Write initial count to start countdown
+	// Write initial count — timer starts counting down immediately
 	MOVL	R8, LAPIC_INITIAL_COUNT(AX)
+
 	RET
 
-// PlatformTimerInit configures the LAPIC timer and calibrates frequencies.
-// Uses PIT Channel 2 (~10ms gate) as a reference to measure the TSC and
-// LAPIC timer rates. Stores the LAPIC/TSC ratio in scaleNumer/scaleDenom
-// for PlatformRearmTimer. Returns the TSC frequency in Hz.
+// PlatformTimerInit calibrates the LAPIC timer frequency using PIT Channel 2.
+// Returns the LAPIC timer frequency in Hz.
 //
-// Register usage:
-//   R8  = LAPIC MMIO base
-//   R9  = TSC start value
-//   R10 = LAPIC current count at calibration end
-//   R11 = TSC end value
-//   R12 = LAPIC elapsed ticks
-//   R13 = TSC elapsed ticks
+// Strategy: Start the LAPIC timer counting down from a large value, use PIT
+// to measure ~10ms, then see how many LAPIC ticks elapsed. This gives us the
+// LAPIC timer frequency directly, avoiding any TSC-to-LAPIC conversion issues.
 //
 // func PlatformTimerInit() uint32
 TEXT ·PlatformTimerInit(SB), NOSPLIT, $0-4
+	// --- Configure LAPIC timer for calibration ---
+	// Set divide config to 1 (divide by 1)
+	// Divide value encoding: 0xB = divide by 1
 	MOVQ	$LAPIC_BASE, R8
+	MOVL	$0x0B, AX
+	MOVL	AX, LAPIC_DIVIDE_CONFIG(R8)
 
-	// Configure LAPIC divider: divide-by-1 (0x0B)
-	MOVL	$0x0B, BX
-	MOVL	BX, LAPIC_DIVIDE_CONFIG(R8)
+	// Set LVT timer to one-shot, MASKED (we don't want an interrupt during calibration)
+	MOVL	$(ONESHOT_VEC30 | 0x10000), AX	// vector 0x30, one-shot, masked
+	MOVL	AX, LAPIC_LVT_TIMER(R8)
 
-	// Set LVT Timer: one-shot, MASKED during calibration, vector 0x30
-	MOVL	$0x00010030, BX
-	MOVL	BX, LAPIC_LVT_TIMER(R8)
-
-	// Start LAPIC countdown from 0xFFFFFFFF
-	MOVL	$0xFFFFFFFF, BX
-	MOVL	BX, LAPIC_INITIAL_COUNT(R8)
+	// Set initial count to max (0xFFFFFFFF) — starts counting down
+	MOVL	$0xFFFFFFFF, AX
+	MOVL	AX, LAPIC_INITIAL_COUNT(R8)
 
 	// --- PIT Channel 2 calibration (~10ms reference) ---
 	// PIT oscillator: 1,193,182 Hz. Count 11932 ≈ 10.0013ms.
@@ -128,11 +99,9 @@ TEXT ·PlatformTimerInit(SB), NOSPLIT, $0-4
 	MOVB	$0x2E, AX		// High byte
 	OUTB
 
-	// Read TSC start
-	BYTE	$0x0F; BYTE $0x31	// RDTSC → EDX:EAX
-	SHLQ	$32, DX
-	ORQ	DX, AX
-	MOVQ	AX, R9			// R9 = TSC start
+	// Read LAPIC current count before PIT starts
+	MOVQ	$LAPIC_BASE, R8
+	MOVL	LAPIC_CURRENT_COUNT(R8), R9	// R9 = LAPIC count at start
 
 	// Enable PIT CH2 gate (start counting)
 	MOVW	$0x61, DX
@@ -147,68 +116,47 @@ pit_poll:
 	TESTB	$0x20, AX		// Test OUT2 (bit 5)
 	JZ	pit_poll
 
-	// PIT expired — read LAPIC current count and TSC end
-	MOVL	LAPIC_CURRENT_COUNT(R8), R10	// R10 = LAPIC remaining
-	BYTE	$0x0F; BYTE $0x31	// RDTSC
-	SHLQ	$32, DX
-	ORQ	DX, AX
-	MOVQ	AX, R11			// R11 = TSC end
+	// PIT expired (~10ms elapsed) — read LAPIC current count
+	MOVQ	$LAPIC_BASE, R8
+	MOVL	LAPIC_CURRENT_COUNT(R8), R10	// R10 = LAPIC count at end
 
-	// Calculate elapsed ticks
-	// LAPIC elapsed = 0xFFFFFFFF - current (timer counts DOWN)
-	MOVL	$0xFFFFFFFF, AX
-	MOVQ	AX, R12			// zero-extend 32→64
-	SUBQ	R10, R12		// R12 = LAPIC elapsed
-
-	// TSC elapsed
-	MOVQ	R11, R13
-	SUBQ	R9, R13			// R13 = TSC elapsed
-
-	// Guard against zero TSC (shouldn't happen)
-	TESTQ	R13, R13
-	JNZ	cal_ok
-
-	// Fallback: assume ~3:1 LAPIC:TSC ratio, TSC = 1 GHz
-	MOVQ	$1, R12
-	MOVQ	$3, R13
-	MOVL	$1000000000, AX
-	JMP	cal_store
-
-cal_ok:
-	// TSC freq ≈ TSC_elapsed × (1,193,182 / 11,932) ≈ TSC_elapsed × 100
-	// The 0.01% error from rounding 100.01→100 is negligible.
-	MOVQ	R13, AX
-	MOVQ	$100, BX
-	IMULQ	BX, AX			// AX = approximate TSC frequency in Hz
-
-cal_store:
-	// Store calibration ratio for PlatformRearmTimer
-	MOVQ	R12, ·scaleNumer(SB)	// LAPIC ticks in ~10ms
-	MOVQ	R13, ·scaleDenom(SB)	// TSC ticks in ~10ms
-
-	// Stop LAPIC calibration countdown
+	// Stop the LAPIC timer (zero initial count)
 	MOVL	$0, LAPIC_INITIAL_COUNT(R8)
 
-	// Unmask timer for future use
-	MOVL	$ONESHOT_MODE_VEC30, BX
+	// LAPIC counts DOWN, so elapsed = start - end
+	MOVL	R9, AX
+	SUBL	R10, AX			// AX = LAPIC ticks in ~10ms
+	// AX is 32-bit result (MOVL/SUBL)
+
+	// Guard against zero (shouldn't happen)
+	TESTL	AX, AX
+	JNZ	lapic_cal_ok
+
+	// Fallback: assume LAPIC timer = 100 MHz
+	MOVL	$100000000, AX
+	JMP	lapic_cal_store
+
+lapic_cal_ok:
+	// LAPIC freq = LAPIC_elapsed × (1,193,182 / 11,932) ≈ LAPIC_elapsed × 100
+	MOVL	$100, BX
+	IMULL	BX, AX			// AX = approximate LAPIC timer frequency in Hz
+
+lapic_cal_store:
+	// Configure LVT Timer for one-shot mode, unmasked (ready for PlatformRearmTimer)
+	MOVQ	$LAPIC_BASE, R8
+	MOVL	$ONESHOT_VEC30, BX
 	MOVL	BX, LAPIC_LVT_TIMER(R8)
 
-	// TSC freq already in AX from calibration
-
-	// Return TSC frequency as uint32
+	// Return LAPIC timer frequency as uint32
 	MOVL	AX, ret+0(FP)
 	RET
 
 // PlatformReadCounter reads the TSC and returns the current counter value.
+// The TSC is still used as the monotonic clock source for timestamps.
 // func PlatformReadCounter() uint64
 TEXT ·PlatformReadCounter(SB), NOSPLIT, $0-8
-	// Read TSC using RDTSC
-	// Returns EDX:EAX (high:low)
-	BYTE $0x0F; BYTE $0x31  // RDTSC
-
-	// Combine EDX:EAX into a single 64-bit value
+	BYTE $0x0F; BYTE $0x31		// RDTSC → EDX:EAX
 	SHLQ	$32, DX
-	ORQ	DX, AX  // AX = TSC value
-
+	ORQ	DX, AX
 	MOVQ	AX, ret+0(FP)
 	RET

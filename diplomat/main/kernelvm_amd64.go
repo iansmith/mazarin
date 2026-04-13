@@ -350,8 +350,8 @@ func mapStacks(pml4Phys uint64, vm *KernelVM) {
 	}
 	printString("Stack mapping complete\r\n")
 
-	// VERIFICATION: Read back the PTE for the critical stack page
-	verifyVA := uint64(0xFFFFFFFF43E07D00)
+	// VERIFICATION: Read back the PTE for the first g0 stack page we just mapped.
+	verifyVA := uint64(KernelG0StackBottom)
 	printString("Verifying mapping for VA ")
 	printHex(verifyVA)
 	printString("\r\n")

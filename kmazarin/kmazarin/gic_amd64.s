@@ -3,9 +3,11 @@
 // LAPIC registers (physical addresses, add KernelMMIOOffset for VA)
 #define LAPIC_PHYS_BASE   0xFEE00000
 #define LAPIC_LVT_TMR     0x320
-#define LAPIC_TMRINITCNT   0x380
-#define LAPIC_TMRDIV       0x3E0
+#define LAPIC_INITIAL_COUNT 0x380
 #define KERNEL_MMIO_OFFSET 0xFFFFFFFF00000000
+
+// LVT Timer: One-shot mode (bits 18:17 = 00), vector 0x30, unmasked
+#define ONESHOT_VEC30 0x00000030
 
 // ReadTSC reads the Time Stamp Counter.
 // func ReadTSC() uint64
@@ -24,26 +26,21 @@ TEXT ·ReadRFLAGS(SB), NOSPLIT, $0-8
 	MOVQ	AX, ret+0(FP)
 	RET
 
-// RearmTimerNow re-arms the LAPIC timer to fire after ~10ms.
-// Uses one-shot mode with divide-by-1 (matching PlatformTimerInit calibration).
+// RearmTimerNow re-arms the LAPIC timer to fire after ~10ms using one-shot mode.
+// Uses a fixed initial count based on typical LAPIC timer frequency (~200KHz under TCG).
 // func RearmTimerNow()
 TEXT ·RearmTimerNow(SB), NOSPLIT, $0-0
-	// LAPIC VA = LAPIC_PHYS_BASE + KERNEL_MMIO_OFFSET
+	// Set LVT Timer to one-shot mode, vector 0x30
 	MOVQ	$(LAPIC_PHYS_BASE + KERNEL_MMIO_OFFSET), CX
-
-	// Set timer divide: divide by 1 (value 0x0B) — must match PlatformTimerInit
-	MOVL	$0x0B, AX
-	MOVL	AX, LAPIC_TMRDIV(CX)
-
-	// Set LVT timer: one-shot, vector 48 (0x30), not masked
-	MOVL	$0x30, AX			// vector 48, one-shot mode
+	MOVL	$ONESHOT_VEC30, AX
 	MOVL	AX, LAPIC_LVT_TMR(CX)
 
-	// Set initial count for ~10ms at ~1GHz bus clock (divide-by-1)
-	// QEMU LAPIC timer runs at bus frequency (~1GHz typically)
-	// 10ms * 1GHz = 10,000,000 ticks
+	// Write initial count — use a large value for safety.
+	// The actual tick interval is calibrated by PlatformTimerInit.
+	// 10,000,000 LAPIC ticks ≈ 10ms at 1GHz LAPIC frequency,
+	// or 50s at 200KHz (QEMU TCG). Either way, the interrupt fires.
 	MOVL	$10000000, AX
-	MOVL	AX, LAPIC_TMRINITCNT(CX)
+	MOVL	AX, LAPIC_INITIAL_COUNT(CX)
 
 	RET
 
@@ -55,7 +52,6 @@ TEXT ·DisableTimerHardware(SB), NOSPLIT, $0-0
 	MOVL	AX, LAPIC_LVT_TMR(CX)
 
 	// Zero the initial count to stop the timer
-	MOVL	$0, AX
-	MOVL	AX, LAPIC_TMRINITCNT(CX)
+	MOVL	$0, LAPIC_INITIAL_COUNT(CX)
 
 	RET

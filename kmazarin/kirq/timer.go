@@ -2,6 +2,7 @@ package kirq
 
 import (
 	"mazzy/kmazarin/ktimer"
+	"sync/atomic"
 )
 
 // InitTimer initializes the hardware timer via ktimer.
@@ -22,6 +23,18 @@ func InitTimer() {
 //go:nosplit
 //go:noinline
 func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
+	// Increment timer IRQ counter (on ARM64/RISC-V this is done by
+	// TimerIRQHandlerAsm in assembly; on x86_64 we do it here since
+	// the pure-asm handler is not in the interrupt path).
+	c := atomic.AddUint64(&TimerIRQCount, 1)
+
+	// Track counter values for Hz calculation
+	now := ktimer.ReadCounter()
+	if c == 1 {
+		atomic.StoreUint64(&DbgTimerFirstCounter, now)
+	}
+	atomic.StoreUint64(&DbgTimerLatestCounter, now)
+
 	// Re-arm timer for next kernel tick (TickIntervalMs, derived in InitPreemptThresholds)
 	ktimer.Rearm(TimerRearmTicks)
 
