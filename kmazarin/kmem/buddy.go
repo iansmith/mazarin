@@ -476,6 +476,8 @@ func buddyRemoveSpecific(pa uintptr, order int) bool {
 // buddyCorruptionHalt prints diagnostic info about a corrupted free list
 // entry and halts. NOT nosplit — breaks the nosplit chain from exception
 // handlers so we can print full diagnostic output.
+//
+//go:noinline
 func buddyCorruptionHalt(prev, pa uintptr, order int) {
 	klog.Criticalf("B!C!",
 		"[BUDDY] CORRUPT free list! order=%d bad-next=0x%x looking-for=0x%x pool=[0x%x,0x%x)\n",
