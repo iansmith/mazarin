@@ -52,3 +52,18 @@ func AllocPagesSlice(count int, pageType int) ([]byte, error) {
 	size := count * 4096
 	return unsafe.Slice((*byte)(ptr), size), nil
 }
+
+// FreePages releases pages previously allocated by AllocPages or AllocPagesSlice.
+// The pointer must be the exact base returned by AllocPages. The count must match
+// the original allocation size (partial frees from the base are allowed but the
+// caller is responsible for tracking the remainder).
+func FreePages(ptr unsafe.Pointer, count int) error {
+	r1, _, errno := syscall.RawSyscall6(mazzy.SysFreePages,
+		uintptr(ptr),
+		uintptr(count),
+		0, 0, 0, 0)
+	if errno != 0 || int64(r1) < 0 {
+		return errors.New("FreePages failed")
+	}
+	return nil
+}

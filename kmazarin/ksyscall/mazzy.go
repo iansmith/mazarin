@@ -9,7 +9,8 @@ import (
 // Indexed by (syscallNum - mazzy.MazzySyscallBase).
 var mazzySyscallTable = [64]SyscallHandler{
 	0: SyscallGetTime,              // GetTime = 0x1000
-	// slots 1-2 freed (were SyscallLaunch, SyscallBootstrapRunElf)
+	1: SyscallSubscribeDeaths,      // SubscribeDeaths = 0x1001
+	2: SyscallFreePages,            // FreePages = 0x1002
 	3: SyscallAllocPages,           // AllocPages = 0x1003
 	4: SyscallMazzyExit,            // Exit = 0x1004
 	5: nil,                         // Reap = 0x1005 (not yet implemented)

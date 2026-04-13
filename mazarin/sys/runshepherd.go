@@ -14,14 +14,36 @@ import (
 //
 // The raw ELF pages (from LoadFile) are implicitly unmapped from the caller.
 //
+// Optional args are passed as command-line arguments to the new shepherd.
+// The new shepherd sees os.Args = ["/name.elf", "<shepherdNum>", args...].
+//
 // Usage:
 //
 //	lf, err := sys.LoadFile("/linux.elf")
 //	if err == nil {
 //	    err = sys.RunShepherd("linux", uintptr(lf.StartVA), int(lf.NumPages), int(lf.BytesRead))
 //	}
-func RunShepherd(name string, startVA uintptr, numPages int, totalBytes int) *merror.Error {
+//
+//	// With arguments:
+//	err = sys.RunShepherd("myapp", startVA, numPages, totalBytes, "--port", "8080")
+func RunShepherd(name string, startVA uintptr, numPages int, totalBytes int, args ...string) *merror.Error {
 	nameBytes := append([]byte(name), 0)
+
+	var argsPtr uintptr
+	var argsLen uintptr
+	var packed []byte
+
+	if len(args) > 0 {
+		// Pack args as null-separated strings.
+		for i, a := range args {
+			if i > 0 {
+				packed = append(packed, 0)
+			}
+			packed = append(packed, []byte(a)...)
+		}
+		argsPtr = uintptr(unsafe.Pointer(&packed[0]))
+		argsLen = uintptr(len(packed))
+	}
 
 	r1, _, _ := syscall.RawSyscall6(
 		mazzy.SysRunShepherd,
@@ -29,7 +51,8 @@ func RunShepherd(name string, startVA uintptr, numPages int, totalBytes int) *me
 		startVA,
 		uintptr(numPages),
 		uintptr(totalBytes),
-		0, 0,
+		argsPtr,
+		argsLen,
 	)
 
 	if r1 != 0 {

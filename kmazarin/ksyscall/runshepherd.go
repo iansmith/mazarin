@@ -19,6 +19,7 @@ type RunShepherdWorkRequest struct {
 	StartVA        uintptr
 	NumPages       int
 	TotalBytes     int
+	Args           []string // additional command-line arguments (after filename and shepherd number)
 	CallerShepherd *proc.Shepherd
 	CallerL0PA     uintptr
 }
@@ -29,15 +30,19 @@ type RunShepherdWorkRequest struct {
 // arg1 = startVA (page-aligned, where raw ELF data is mapped)
 // arg2 = numPages (number of 4KB pages)
 // arg3 = totalBytes (actual file size)
+// arg4 = pointer to packed args (null-separated strings in caller's address space, or 0 for no args)
+// arg5 = total byte length of packed args
 //
 // Returns: 0 on success, ErrorCode on failure.
 //
 //go:noinline
-func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
+func SyscallRunShepherd(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	namePtr := uintptr(arg0)
 	startVA := uintptr(arg1)
 	numPages := int(arg2)
 	totalBytes := int(arg3)
+	argsPtr := uintptr(arg4)
+	argsLen := int(arg5)
 
 	if namePtr == 0 || startVA == 0 {
 		return int64(errNullPointer)
@@ -54,6 +59,11 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	if totalBytes < 64 || totalBytes > numPages*4096 {
 		return int64(errInvalidELF)
 	}
+	// Validate args length (max 4KB of packed args).
+	const maxArgsLen = 4096
+	if argsLen < 0 || argsLen > maxArgsLen {
+		return -22 // EINVAL
+	}
 
 	shepherd := proc.CurrentShepherd()
 	if shepherd == nil {
@@ -66,11 +76,18 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		return int64(errInvalidFilename)
 	}
 
+	// Read packed args from caller's address space (null-separated strings).
+	var args []string
+	if argsPtr != 0 && argsLen > 0 {
+		args = readPackedArgs(argsPtr, argsLen)
+	}
+
 	ctxPtr := submitRunShepherd(RunShepherdWorkRequest{
 		Name:           name,
 		StartVA:        startVA,
 		NumPages:       numPages,
 		TotalBytes:     totalBytes,
+		Args:           args,
 		CallerShepherd: shepherd,
 		CallerL0PA:     shepherd.PageTableL0PA,
 	})
@@ -82,6 +99,32 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	}
 
 	return 0
+}
+
+// readPackedArgs reads null-separated strings from userspace memory.
+// Returns nil if the memory is not accessible.
+func readPackedArgs(ptr uintptr, totalLen int) []string {
+	var result []string
+	var current []byte
+	for i := 0; i < totalLen; i++ {
+		b, ok := kmem.ReadUserByte(ptr + uintptr(i))
+		if !ok {
+			break
+		}
+		if b == 0 {
+			if len(current) > 0 {
+				result = append(result, string(current))
+				current = current[:0]
+			}
+		} else {
+			current = append(current, b)
+		}
+	}
+	// Handle last arg if not null-terminated.
+	if len(current) > 0 {
+		result = append(result, string(current))
+	}
+	return result
 }
 
 // DoRunShepherdWork performs the heavy shepherd creation from the caller's pages.
@@ -139,7 +182,7 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	shepherdHighestVA := findHighestVA(elfData, &hdr)
 
 	// Load ELF into the new shepherd's page table
-	loadedProc, err := loadELF(elfData, "/"+req.Name+".elf", processL0PA, 0)
+	loadedProc, err := loadELF(elfData, "/"+req.Name+".elf", processL0PA, 0, req.Args)
 	if err != nil {
 		klog.Errf("[RunShepherd] loadELF failed\n")
 		return int64(errInvalidELF)

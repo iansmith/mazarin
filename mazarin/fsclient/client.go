@@ -268,6 +268,33 @@ func (c *Client) Mkdir(path string, mode uint32) error {
 	return nil
 }
 
+// Rename renames oldPath to newPath. Both paths are packed into the data area
+// as "oldPath\0newPath\0". Arg0 carries the offset of newPath.
+func (c *Client) Rename(oldPath, newPath string) error {
+	area := c.dataArea()
+	// Pack: oldpath\0newpath\0
+	n := copy(area, oldPath)
+	area[n] = 0
+	newOff := n + 1
+	n2 := copy(area[newOff:], newPath)
+	area[newOff+n2] = 0
+	totalLen := uint32(newOff + n2 + 1)
+
+	resp, err := c.call(&ipc.FSIPCReqPayload{
+		Op:      ipc.FSOpRename,
+		PathLen: uint16(n + 1), // oldpath + null
+		Arg0:    uint64(newOff),
+		DataLen: totalLen,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.Err != 0 {
+		return ErrnoErr(resp.Err)
+	}
+	return nil
+}
+
 // Remove removes a file or directory.
 func (c *Client) Remove(path string) error {
 	pathLen := c.setPath(path)
@@ -340,6 +367,22 @@ func (c *Client) SetTimes(path string) error {
 	resp, err := c.call(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpSetTimes,
 		PathLen: pathLen,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.Err != 0 {
+		return ErrnoErr(resp.Err)
+	}
+	return nil
+}
+
+// Truncate sets the size of an open handle.
+func (c *Client) Truncate(handle uint32, size int64) error {
+	resp, err := c.call(&ipc.FSIPCReqPayload{
+		Op:     ipc.FSOpTruncate,
+		Handle: handle,
+		Arg0:   uint64(size),
 	})
 	if err != nil {
 		return err

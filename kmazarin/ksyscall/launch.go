@@ -177,7 +177,7 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 
 	// Parse and load ELF using the fresh process page table
 	filename := "/" + name + ".elf"
-	loadedProc, err := loadELF(elfData, filename, processL0PA, 0)
+	loadedProc, err := loadELF(elfData, filename, processL0PA, 0, nil)
 	if err != nil {
 		klog.Errf("[Launch] loadELF FAILED: %v\n", err)
 		return -5
@@ -223,7 +223,7 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 // l0PA is the physical address of the L0 page table to use for mapping.
 // CRITICAL: This must be passed explicitly to prevent race conditions with
 // context switches that would otherwise corrupt the global processL0PA.
-func loadELF(data []byte, filename string, l0PA uintptr, shepherdNum uint64) (*Process, error) {
+func loadELF(data []byte, filename string, l0PA uintptr, shepherdNum uint64, extraArgs []string) (*Process, error) {
 	if len(data) < 64 {
 		return nil, &elfError{"file too small for ELF header"}
 	}
@@ -263,7 +263,7 @@ func loadELF(data []byte, filename string, l0PA uintptr, shepherdNum uint64) (*P
 		return nil, err
 	}
 
-	stackTop, err := setupUserStack(stackBase, stackSize, filename, l0PA, shepherdNum)
+	stackTop, err := setupUserStack(stackBase, stackSize, filename, l0PA, shepherdNum, extraArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -655,7 +655,7 @@ func allocateUserStack(base, size uint64, l0PA uintptr) error {
 
 // setupUserStack maps the stack page and uses ProcessEnv to lay out the
 // argv/envp/auxv appropriate for launching a shepherd.
-func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, shepherdNum uint64) (uint64, error) {
+func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, shepherdNum uint64, extraArgs []string) (uint64, error) {
 	pageSize := uint64(4096)
 	stackTop := stackBase + stackSize
 
@@ -750,6 +750,7 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	penv.SetAuxv(6, 4096) // AT_PAGESZ
 
 	argv := []string{filename, shepherdStr}
+	argv = append(argv, extraArgs...)
 	sw := &StackWriter{
 		StackBase: stackBase,
 		StackTop:  stackTop,

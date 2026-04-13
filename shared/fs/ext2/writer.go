@@ -760,6 +760,21 @@ func (fs *FileSystem) SetMode(path string, mode uint16) error {
 	return fs.WriteInode(inum, inode)
 }
 
+// Truncate sets the size of the inode to newSize.
+// Shrinking zeroes the tail of the last block but does not free blocks.
+// Extending creates a sparse hole (reads return zero).
+func (fs *FileSystem) Truncate(inum uint32, newSize uint32) error {
+	if !fs.writable {
+		return ErrReadOnly
+	}
+	inode, err := fs.ReadInode(inum)
+	if err != nil {
+		return err
+	}
+	inode.Size = newSize
+	return fs.WriteInode(inum, inode)
+}
+
 // Sync flushes all in-memory metadata (bitmaps, group descriptors, superblock) to disk.
 func (fs *FileSystem) Sync() error {
 	if !fs.writable {

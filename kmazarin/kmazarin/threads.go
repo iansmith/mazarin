@@ -14,6 +14,7 @@ import (
 	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/util"
 	"mazzy/shared/constants"
+	"mazzy/shared/ipc"
 	"sync/atomic"
 	"unsafe"
 )
@@ -2087,6 +2088,13 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	CleanupPageSharingForShepherd(int16(pid))
 	// CleanupUringIPCForShepherd sends ProtoDeath to peers BEFORE page cleanup.
 	CleanupUringIPCForShepherd(int16(pid))
+	// Notify global death subscribers (e.g. rachel for window cleanup).
+	// Peers were notified above; subscribers get notified after.
+	ksyscall.NotifyDeathSubscribers(int16(pid), func(targetSID int16, msg *ipc.UringIPCMsg) {
+		KernelWriteToRing(targetSID, msg)
+	})
+	// Remove the dying shepherd from the subscriber list.
+	ksyscall.CleanupDeathSubscriptionsForShepherd(int16(pid))
 	// Flush deferred cleanups if the linux shepherd itself is dying.
 	if isLinuxShepherd(pid) {
 		FlushAllDeferredCleanups()

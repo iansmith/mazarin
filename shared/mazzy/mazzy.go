@@ -9,7 +9,8 @@ const MazzySyscallBase = 0x1000
 
 const (
 	SysGetTime         = MazzySyscallBase + 0  // 0x1000 - Get current time
-	// slots 1-2 freed (were SysLaunch, SysBootstrapRunElf)
+	SysSubscribeDeaths = MazzySyscallBase + 1  // 0x1001 - Subscribe to global shepherd death notifications
+	SysFreePages       = MazzySyscallBase + 2  // 0x1002 - Free previously allocated pages
 	SysAllocPages      = MazzySyscallBase + 3  // 0x1003 - Allocate pages for userspace
 	SysExit            = MazzySyscallBase + 4  // 0x1004 - Exit program
 	SysReap            = MazzySyscallBase + 5  // 0x1005 - Reap terminated program

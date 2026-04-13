@@ -109,7 +109,7 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 			// shepherd doesn't know about them and would return errors.
 			callerSID := getCurrentThreadSID()
 			if IsDelegated(sysID, callerSID) && !IsMagicFdSyscall(sysID, arg0) {
-				result = DelegateSyscall(sysID, arg0, arg1, arg2, arg3, arg4, arg5)
+					result = DelegateSyscall(sysID, arg0, arg1, arg2, arg3, arg4, arg5)
 			} else {
 				handler := syscallTable[sysID]
 				if handler == nil {

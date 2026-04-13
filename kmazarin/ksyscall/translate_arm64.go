@@ -50,6 +50,7 @@ var arm64ToSysID = [512]SysID{
 	79:  SysIDFstatat,
 	34:  SysIDMkdirat,
 	35:  SysIDUnlinkat,
+	38:  SysIDRenameat, // renameat on ARM64 (Go uses this)
 	276: SysIDRenameat, // renameat2 on ARM64
 	46:  SysIDFtruncate,
 	61:  SysIDGetdents64,
@@ -68,6 +69,8 @@ var arm64ToSysID = [512]SysID{
 	82:  SysIDFsync,
 	83:  SysIDFdatasync,
 	32:  SysIDFlock,
+	67:  SysIDPread64,
+	68:  SysIDPwrite64,
 }
 
 // translateSyscallNum converts an ARM64 Linux syscall number to SysID.

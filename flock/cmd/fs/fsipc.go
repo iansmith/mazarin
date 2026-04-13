@@ -129,6 +129,8 @@ func (s *fsIPCServer) processRequest(raw fsIPCRequest, mt *mountTable) {
 		s.ipcMkdir(conn, req, &resp, mt)
 	case ipc.FSOpRemove:
 		s.ipcRemove(conn, req, &resp, mt)
+	case ipc.FSOpRename:
+		s.ipcRename(conn, req, &resp, mt)
 	case ipc.FSOpReadDir:
 		s.ipcReadDir(conn, req, &resp, mt)
 	case ipc.FSOpAccess:
@@ -141,6 +143,8 @@ func (s *fsIPCServer) processRequest(raw fsIPCRequest, mt *mountTable) {
 		s.ipcSetTimes(conn, req, &resp, mt)
 	case ipc.FSOpSync:
 		s.ipcSync(conn, req, &resp, mt)
+	case ipc.FSOpTruncate:
+		s.ipcTruncate(conn, req, &resp, mt)
 	default:
 		resp.Err = -38 // ENOSYS
 	}
@@ -352,6 +356,45 @@ func (s *fsIPCServer) ipcRemove(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp 
 	resp.Err = ext2ToErrno(fsys.Remove(relPath))
 }
 
+func (s *fsIPCServer) ipcRename(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	// Data area contains "oldpath\0newpath\0". Arg0 = offset of newpath.
+	area := conn.dataArea()
+	newOff := int(req.Arg0)
+	if newOff <= 0 || newOff >= len(area) {
+		resp.Err = -22 // EINVAL
+		return
+	}
+	// Extract old path.
+	var oldPath string
+	for i := 0; i < newOff; i++ {
+		if area[i] == 0 {
+			oldPath = string(area[:i])
+			break
+		}
+	}
+	// Extract new path.
+	var newPath string
+	for i := newOff; i < len(area); i++ {
+		if area[i] == 0 {
+			newPath = string(area[newOff:i])
+			break
+		}
+	}
+	if oldPath == "" || newPath == "" {
+		resp.Err = -22 // EINVAL
+		return
+	}
+	// Both paths must resolve to the same mount.
+	oldKind, oldRel := mt.resolve(oldPath)
+	newKind, newRel := mt.resolve(newPath)
+	if oldKind != newKind {
+		resp.Err = -18 // EXDEV — cross-device rename
+		return
+	}
+	fsys := mt.getFS(oldKind)
+	resp.Err = ext2ToErrno(fsys.Rename(oldRel, newRel))
+}
+
 func (s *fsIPCServer) ipcReadDir(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
 	h := conn.getHandle(req.Handle)
 	if h == nil {
@@ -424,6 +467,21 @@ func (s *fsIPCServer) ipcSync(_ *fsIPCConn, _ *ipc.FSIPCReqPayload, resp *ipc.FS
 	if mt.tmpFS != nil {
 		resp.Err = ext2ToErrno(mt.tmpFS.Sync())
 	}
+}
+
+func (s *fsIPCServer) ipcTruncate(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	h := conn.getHandle(req.Handle)
+	if h == nil {
+		resp.Err = -9 // EBADF
+		return
+	}
+	fsys := mt.getFS(h.kind)
+	newSize := uint32(req.Arg0)
+	if err := fsys.Truncate(h.inum, newSize); err != nil {
+		resp.Err = ext2ToErrno(err)
+		return
+	}
+	h.size = newSize
 }
 
 // --- Helpers ---

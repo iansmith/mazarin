@@ -27,13 +27,14 @@ const (
 	FSOpFstat    uint16 = 6  // stat handle → data area
 	FSOpMkdir    uint16 = 7  // create directory
 	FSOpRemove   uint16 = 8  // remove file/dir
-	FSOpRename   uint16 = 9  // rename (not implemented)
+	FSOpRename   uint16 = 9  // rename oldpath→newpath (both packed in data area)
 	FSOpReadDir  uint16 = 10 // read dirents → data area
 	FSOpAccess   uint16 = 11 // check file existence
 	FSOpSetMode  uint16 = 12 // chmod
 	FSOpSetTimes uint16 = 13 // utimens
 	FSOpSync     uint16 = 14 // flush metadata
 	FSOpResolve  uint16 = 15 // resolve path → isDir + size
+	FSOpTruncate uint16 = 16 // truncate handle to size (Arg0)
 )
 
 // FSIPCReqPayload is the payload for ProtoFSIPCReq messages.
