@@ -23,7 +23,6 @@ import (
 
 const (
 	consoleCols = 80
-	consoleRows = 200
 )
 
 // MazEntryPoint holds a reference to MazarinMain to prevent DCE.
@@ -88,7 +87,7 @@ func MazarinMain() {
 
 // buildUI creates the mail UI interactor tree and returns a drain function
 // that processes ResponseChannel messages.
-func buildUI(a *linuxapp.App[maildbio.MailDBIO]) linuxapp.DrainFunc {
+func buildUI(a *linuxapp.App[maildbio.MailDBIO]) linuxapp.BuildResult {
 	fonts := a.Fonts
 	pal := a.Pal
 	fontSize := a.FontSize
@@ -108,40 +107,29 @@ func buildUI(a *linuxapp.App[maildbio.MailDBIO]) linuxapp.DrainFunc {
 	col := std.NewColumnWithLayout(colLH, pal, mancini.AxisMinimum, 0, 1, false)
 	_ = col
 
-	// ScrollerVertical: width/height constrained to column.
-	colWidthURI := mancini.LayoutURI("column", mancini.DataTypeInt64, mancini.LayoutWidth)
-	colHeightURI := mancini.LayoutURI("column", mancini.DataTypeInt64, mancini.LayoutHeight)
-	const scrollbarTrackWidth = int64(16)
-
-	sv := std.NewScrollerVertical("sv", "column",
-		a.Theme, pal,
-		colWidthURI, colHeightURI,
-		scrollbarTrackWidth,
-		std.ScrollbarLight)
-
-	// Console: parent is the scroller, width constrained to scroller width.
-	console := std.NewConsole("console", sv.ScrollerName(), pal, fonts, fontSize,
-		consoleCols, consoleRows)
-
-	// The scroller's VirtualWidth/VirtualHeight are driven by the console's
-	// natural dimensions (set internally by NewScrollerVertical + Console).
+	// Console: direct child of column (no scroller for now).
+	console := std.NewConsole("console", "column", pal, fonts, fontSize,
+		consoleCols, 20)
 
 	// Initialize input dispatch (for future keyboard/mouse handling).
 	a.AppWindow.InitInput()
+
+	// Add a test line to verify console rendering works.
+	console.AddLine("=== MailDB Console Ready ===", pal.AnsiColor(2)) // green
 
 	// Response drainer: reads responses and displays results in console.
 	respCh := a.Injected.ResponseChannel()
 	statusCh := a.Injected.StatusChannel()
 	var pending []<-chan shared.MailMessage
 
-	return func() bool {
+	drain := func() bool {
 		dirty := false
 
 		// Drain status messages from the shepherd (import progress, etc.).
 		for {
 			select {
 			case s := <-statusCh:
-				console.AddLine(s, pal.AnsiColor(6)) // cyan
+					console.AddLine(s, pal.AnsiColor(6)) // cyan
 				dirty = true
 			default:
 				goto drainResponses
@@ -186,11 +174,12 @@ func buildUI(a *linuxapp.App[maildbio.MailDBIO]) linuxapp.DrainFunc {
 		}
 		pending = still
 
-		if dirty {
-			sv.Scroller.MarkContentDirty()
-		}
-
 		return dirty
+	}
+
+	return linuxapp.BuildResult{
+		Drain:    drain,
+		NotifyCh: a.Injected.NotifyChannel(),
 	}
 }
 

@@ -39,6 +39,11 @@ type MailDBIO interface {
 	// all channels. The shepherd reads them back via the getter methods.
 	SetChannels(queryCh chan string, respCh chan shared.Response, wmCh chan []byte, fontReplyCh chan []byte)
 
+	// NotifyChannel returns the channel used to wake the UI event loop
+	// when status or response data is available. The shepherd pokes this
+	// after sending on StatusChannel.
+	NotifyChannel() <-chan struct{}
+
 	// GetRachelSID returns rachel's shepherd ID for uring IPC.
 	GetRachelSID() int
 }
@@ -58,6 +63,7 @@ type MailDBIOInit struct {
 	// Filled by shepherd before injection.
 	RachelSIDVal int
 	StatusCh     chan string
+	NotifyCh     chan struct{} // poked after each statusCh send to wake UI event loop
 }
 
 func (m *MailDBIOInit) QueryChannel() chan string            { return m.QueryCh }
@@ -71,4 +77,5 @@ func (m *MailDBIOInit) SetChannels(queryCh chan string, respCh chan shared.Respo
 	m.WMCh = wmCh
 	m.FontReplyCh = fontReplyCh
 }
-func (m *MailDBIOInit) GetRachelSID() int { return m.RachelSIDVal }
+func (m *MailDBIOInit) NotifyChannel() <-chan struct{} { return m.NotifyCh }
+func (m *MailDBIOInit) GetRachelSID() int              { return m.RachelSIDVal }

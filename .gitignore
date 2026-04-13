@@ -91,6 +91,8 @@ helloworld
 /keymapper
 /calc
 /linux-ui
+/maildb
+/mail-ui
 /versai
 
 # Old directories (should be removed)

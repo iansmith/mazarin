@@ -4,8 +4,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"unsafe"
+
+	badger "github.com/dgraph-io/badger/v4"
+	"github.com/blevesearch/bleve/v2"
 
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/maildbio"
@@ -28,6 +32,7 @@ func forceMailDBIOItab(v interface{}) {
 	_ = io.QueryChannel()
 	_ = io.ResponseChannel()
 	_ = io.StatusChannel()
+	_ = io.NotifyChannel()
 	_ = io.WMChannel()
 	_ = io.FontReplyChannel()
 	io.SetChannels(nil, nil, nil, nil) //nolint:staticcheck
@@ -55,23 +60,72 @@ func decodeRawPayload(msg *ipc.UringIPCMsg) any {
 	return raw
 }
 
-// handleQuery processes a single query string and sends a Response.
-// For now this is a stub that returns a hard-coded test message.
-func handleQuery(query string, respCh chan<- shared.Response) {
+// handleQuery searches the bleve index and sends matching messages
+// as a Response on respCh.
+func handleQuery(query string, respCh chan<- shared.Response, index bleve.Index, db *badger.DB) {
 	fmt.Printf("[maildb] query: %s\n", query)
 
-	// TODO: execute query against SQLite database.
-	// For now, return a stub response to prove the plumbing works.
-	resultCh := make(chan shared.MailMessage, 1)
+	req := bleve.NewSearchRequest(bleve.NewQueryStringQuery(query))
+	req.Size = 50
+	result, err := index.Search(req)
+	if err != nil {
+		respCh <- shared.Response{Error: fmt.Sprintf("search error: %v", err)}
+		return
+	}
+
+	resultCh := make(chan shared.MailMessage, len(result.Hits)+1)
 	respCh <- shared.Response{Results: resultCh}
 
-	resultCh <- shared.MailMessage{
-		MessageId: "stub-001",
-		From:      "test@example.com",
-		Sender:    "Test Sender",
-		Subject:   "Stub response for: " + query,
+	for _, hit := range result.Hits {
+		var msg shared.MailMessage
+		_ = db.View(func(txn *badger.Txn) error {
+			item, err := txn.Get([]byte(hit.ID))
+			if err != nil {
+				return err
+			}
+			return item.Value(func(val []byte) error {
+				return json.Unmarshal(val, &msg)
+			})
+		})
+		if msg.MessageId != "" {
+			resultCh <- msg
+		}
 	}
 	close(resultCh)
+}
+
+// testSearch runs a bleve search and sends results to the console via notify.
+func testSearch(term string, index bleve.Index, db *badger.DB, notify func(string)) {
+	fmt.Printf("[maildb] testSearch: %q\n", term)
+	notify(fmt.Sprintf("--- Search: \"%s\" ---", term))
+	req := bleve.NewSearchRequest(bleve.NewQueryStringQuery(term))
+	req.Size = 10
+	result, err := index.Search(req)
+	if err != nil {
+		notify(fmt.Sprintf("  error: %v", err))
+		return
+	}
+	fmt.Printf("[maildb] testSearch %q: %d hits\n", term, result.Total)
+	if len(result.Hits) == 0 {
+		notify("  (no results)")
+		return
+	}
+	for _, hit := range result.Hits {
+		var msg shared.MailMessage
+		_ = db.View(func(txn *badger.Txn) error {
+			item, err := txn.Get([]byte(hit.ID))
+			if err != nil {
+				return err
+			}
+			return item.Value(func(val []byte) error {
+				return json.Unmarshal(val, &msg)
+			})
+		})
+		if msg.MessageId != "" {
+			notify(fmt.Sprintf("  %.2f  %s — %s", hit.Score, msg.From, msg.Subject))
+		}
+	}
+	notify(fmt.Sprintf("  %d hits (showing top %d)", result.Total, len(result.Hits)))
 }
 
 func main() {
@@ -90,25 +144,47 @@ func main() {
 
 	// 2. Prepare MailDBIO injection struct.
 	statusCh := make(chan string, 32)
+	notifyCh := make(chan struct{}, 1)
 	ioInit := &maildbio.MailDBIOInit{
 		RachelSIDVal: rachelSID,
 		StatusCh:     statusCh,
+		NotifyCh:     notifyCh,
 	}
 	forceMailDBIOItab(ioInit)
 
 	fmt.Println("[maildb] MailDBIO config prepared")
 
-	// 2b. Import mbox into BadgerDB before loading UI.
+	// 2b. Import mbox into BadgerDB + bleve FTI.
+	// notifyStatus sends a status message and pokes the UI event loop.
+	notifyStatus := func(msg string) {
+		statusCh <- msg
+		select {
+		case notifyCh <- struct{}{}:
+		default:
+		}
+	}
+
+	const dbDir = "/tmp/mail/db"
+
+	// Channel to receive index+db handles from import goroutine.
+	type importResult struct {
+		index bleve.Index
+		db    *badger.DB
+		err   error
+	}
+	importDone := make(chan importResult, 1)
+
 	go func() {
-		err := mboxImport(
+		idx, bdb, err := mboxImport(
 			"/data/mail/mbox/gmail/important.partial.mbox",
-			"/data/mail/db",
-			statusCh,
+			dbDir,
+			notifyStatus,
 		)
 		if err != nil {
-			statusCh <- fmt.Sprintf("mbox import error: %v", err)
+			notifyStatus(fmt.Sprintf("mbox import error: %v", err))
 			fmt.Printf("[maildb] mbox import error: %v\n", err)
 		}
+		importDone <- importResult{index: idx, db: bdb, err: err}
 	}()
 
 	// 3. Set up uring dispatcher BEFORE loading .maz.
@@ -172,9 +248,32 @@ func main() {
 	sys.SetReady(true)
 	fmt.Println("[maildb] Ready=true")
 
-	// 6. Main goroutine: process queries from mail-ui.
+	// 6. Wait for import to finish, then enter query loop.
+	fmt.Println("[maildb] waiting for import to finish...")
+	ir := <-importDone
+	if ir.err != nil {
+		fmt.Printf("[maildb] import failed: %v\n", ir.err)
+	}
+	if ir.db != nil {
+		defer ir.db.Close()
+	}
+	if ir.index != nil {
+		defer ir.index.Close()
+	}
+
+	// Run test searches to prove the bleve index works.
+	if ir.index != nil {
+		for _, term := range []string{"banking", "account", "security"} {
+			testSearch(term, ir.index, ir.db, notifyStatus)
+		}
+	}
+
 	fmt.Println("[maildb] entering query loop")
 	for query := range queryCh {
-		handleQuery(query, respCh)
+		if ir.index == nil || ir.db == nil {
+			respCh <- shared.Response{Error: "index not available"}
+			continue
+		}
+		handleQuery(query, respCh, ir.index, ir.db)
 	}
 }
