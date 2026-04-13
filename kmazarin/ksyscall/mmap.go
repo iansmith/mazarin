@@ -50,7 +50,9 @@ func SetUserspaceActive() {
 
 // Linux mmap flags
 const (
-	_MAP_FIXED = 0x10
+	_MAP_SHARED  = 0x01
+	_MAP_PRIVATE = 0x02
+	_MAP_FIXED   = 0x10
 )
 
 // SyscallMmap implements the mmap(2) syscall
@@ -64,8 +66,8 @@ const (
 //
 //go:nosplit
 func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
-	// Suppress unused warnings
-	_ = prot
+	// Linux PROT_* flags
+	const protWrite = 2
 
 	// Zero-length mmap is invalid (EINVAL) - standard Linux behavior
 	if length == 0 {
@@ -153,17 +155,29 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 		return -12 // ENOMEM
 	}
 
-	// Record file-backed mapping if fd is valid and not MAP_ANONYMOUS (0x20)
+	// Record file-backed mapping if fd is valid and not MAP_ANONYMOUS (0x20).
+	// Both read-only and writable mappings are recorded. Writable MAP_SHARED
+	// mappings are written back to the file on munmap or shepherd death.
 	if (flags&0x20) == 0 && fd != ^uint64(0) && int64(fd) >= 0 {
+		isWritable := (prot & protWrite) != 0
+		isShared := (flags & _MAP_SHARED) != 0
 		p := proc.CurrentShepherd()
 		if p != nil {
-			p.AddFileMapping(result, alignedLength, int16(p.PID), int32(fd), offset)
+			p.AddFileMapping(result, alignedLength, int16(p.PID), int32(fd), offset, isWritable, isShared)
+			logFileMmap(result, alignedLength, fd)
 		}
 	}
 
 	return int64(result)
 }
 
+// logFileMmap logs a file-backed mmap recording. Called from the nosplit
+// SyscallMmap via a non-nosplit helper so we can use klog.
+//
+//go:noinline
+func logFileMmap(va, length, fd uint64) {
+	klog.Logf("[mmap:F] va=%x l=%x fd=%d\n", va, length, fd)
+}
 
 // mmapENOMEM logs an mmap ENOMEM via direct UART. path identifies which
 // branch failed (A=addSpan, B=kernel fixed, C=user fixed, D=bump alloc).

@@ -14,9 +14,9 @@ package ksyscall
 //   - Openat/Close: no data page, just args and return value.
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"mazzy/shared/ipc"
 	"mazzy/shared/sysid"
@@ -39,15 +39,16 @@ type delegateHandler struct {
 // DelegateCallInfo records per-caller-thread state while a delegated syscall
 // is in flight. Used by the reply path to copy data back (Read) and reclaim pages.
 type DelegateCallInfo struct {
-	DataPagePA   uintptr  // PA of data page (0 = no page)
-	DataPageVA   uint64   // VA of data page in handler's address space
-	HandlerSID   int16    // Handler shepherd PID (to unmap from)
-	CallerSID    int16    // Caller shepherd PID (for cleanup on caller death)
-	CallerBufVA  uintptr  // Caller's original buffer VA (Read: copy-back destination)
-	CallerBufLen uint32   // Max bytes caller requested (Read: cap for copy-back)
-	CallerL0PA   uintptr  // Caller's L0 page table PA (for copy-back)
-	SysID        sysid.ID // Which syscall (determines copy direction)
-	InUse        bool
+	DataPagePA      uintptr  // PA of data page (0 = no page)
+	DataPageVA      uint64   // VA of data page in handler's address space
+	HandlerSID      int16    // Handler shepherd PID (to unmap from)
+	CallerSID       int16    // Caller shepherd PID (for cleanup on caller death)
+	CallerBufVA     uintptr  // Caller's original buffer VA (Read: copy-back destination)
+	CallerBufLen    uint32   // Max bytes caller requested (Read: cap for copy-back)
+	CallerL0PA      uintptr  // Caller's L0 page table PA (for copy-back)
+	SysID           sysid.ID // Which syscall (determines copy direction)
+	InUse           bool
+	WritableMapping bool // MmapPageFill: map page RW instead of RO
 }
 
 // syscallDelegates maps SysID → handler shepherd PID.
@@ -372,14 +373,14 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			delegateCallInfos[callerTID].InUse = false
 		}
 		reclaimDataPage(dataPagePA, handlerDataVA, handlerSID, handlerShepherd)
-		serial.RawUARTPuts("[DLG] uring send failed\r\n")
+		klog.Errf("[DLG] uring send failed\n")
 		return -11 // EAGAIN
 	}
 
 	// Block the caller until the handler replies via SyscallReply.
 	ctx := blockForDelegatedSyscall()
 	if ctx == 0 {
-		serial.RawUARTPuts("[DLG:block] NO NEXT THREAD, EAGAIN\r\n")
+		klog.Errf("[DLG:block] NO NEXT THREAD, EAGAIN\n")
 		return -11 // EAGAIN
 	}
 	SetSyscallSwitchTarget(ctx)
@@ -580,8 +581,9 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 			if info.HandlerSID != int16(replyingShepherd.PID) {
 				return -1 // EPERM
 			}
-			// For MmapPageFill: unmap from handler, map read-only into
-			// faulting shepherd's page table. The page stays mapped — do not free it.
+			// For MmapPageFill: unmap from handler, map into faulting
+			// shepherd's page table. RW if the mapping was writable, RO otherwise.
+			// The page stays mapped — do not free it.
 			if info.SysID == sysid.MmapPageFill && info.DataPagePA != 0 {
 				// Unmap from linux shepherd
 				handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
@@ -596,12 +598,21 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 					// Shepherd died while waiting — free the page
 					kmem.ReleasePageByPA(info.DataPagePA)
 				} else {
-					// Map read-only into faulting shepherd's page table
-					kmem.MapPageInProcess(info.CallerSID, uintptr(info.CallerBufVA), info.DataPagePA, kmem.ELF_PF_R)
+					elfFlags := uint32(kmem.ELF_PF_R)
+					if info.WritableMapping {
+						elfFlags |= kmem.ELF_PF_W
+					}
+					kmem.MapPageInProcess(info.CallerSID, uintptr(info.CallerBufVA), info.DataPagePA, elfFlags)
 				}
 
 				// Prevent reclaimDataPage from freeing it
 				info.DataPagePA = 0
+				info.InUse = false
+			}
+
+			// For MmapPageWriteback: clean up batch write-back resources.
+			if info.SysID == sysid.MmapPageWriteback {
+				HandleMmapWritebackReply(callerTID, info.HandlerSID)
 				info.InUse = false
 			}
 
@@ -619,13 +630,8 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 				}
 				actual := copyDataPageToCaller(info.DataPagePA, info.CallerBufVA, info.CallerL0PA, bytesToCopy)
 				if uint32(actual) < bytesToCopy {
-					serial.RawUARTPuts("[DLG] unable to write to client buffer @0x")
-					serial.RawUARTHex64(uint64(info.CallerBufVA))
-					serial.RawUARTPuts(", only ")
-					serial.RawUARTDecimal(uint64(actual))
-					serial.RawUARTPuts(" of ")
-					serial.RawUARTDecimal(uint64(bytesToCopy))
-					serial.RawUARTPuts(" were written before a fault\r\n")
+					klog.Errf("[DLG] unable to write to client buffer @0x%x, only %d of %d were written before a fault\n",
+						uint64(info.CallerBufVA), actual, bytesToCopy)
 					returnVal = -14 // EFAULT
 				}
 			}

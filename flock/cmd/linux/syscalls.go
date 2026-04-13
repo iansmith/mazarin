@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/binary"
+	"unsafe"
 
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/dlist"
+	"mazzy/shared/ipc"
 	"mazzy/shared/sysid"
 )
 
@@ -126,6 +128,8 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 		h.sysPwrite64(req)
 	case sysid.MmapPageFill:
 		h.sysMmapPageFill(req)
+	case sysid.MmapPageWriteback:
+		h.sysMmapPageWriteback(req)
 
 	default:
 		req.Reply(ENOSYS)
@@ -809,6 +813,62 @@ func (h *syscallHandler) sysMmapPageFill(req sys.SyscallRequest) {
 		copy(buf[:n], h.fs.DataSlice(n))
 	}
 	req.Reply(int64(n))
+}
+
+// sysMmapPageWriteback handles batch write-back of MAP_SHARED mmap pages.
+// The kernel sends a descriptor page containing an array of MmapWritebackEntry
+// structs, each describing a contiguous data region mapped into our address space.
+// We iterate the entries and pwrite64 each one back to the file.
+//
+// Args[0]=fd, Args[1]=descriptorVA, Args[2]=numEntries
+// CallerPID = shepherd that owns the fd
+func (h *syscallHandler) sysMmapPageWriteback(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
+	fd := int(req.Args[0])
+	e := fdt.get(fd)
+	if e == nil {
+		req.Reply(EBADF)
+		return
+	}
+	if e.kind != fdKindFile {
+		req.Reply(ESPIPE)
+		return
+	}
+
+	descriptorVA := uintptr(req.Args[1])
+	numEntries := int(req.Args[2])
+	if descriptorVA == 0 || numEntries == 0 {
+		req.Reply(EINVAL)
+		return
+	}
+	if numEntries > ipc.MmapWritebackEntriesPerPage {
+		numEntries = ipc.MmapWritebackEntriesPerPage
+	}
+
+	// Read the descriptor array from the mapped page
+	entries := unsafe.Slice((*ipc.MmapWritebackEntry)(unsafe.Pointer(descriptorVA)), numEntries)
+
+	var totalWritten int64
+	for i := 0; i < numEntries; i++ {
+		entry := &entries[i]
+		if entry.DataVA == 0 || entry.Length == 0 {
+			continue
+		}
+		data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(entry.DataVA))), entry.Length)
+		n := h.fs.WriteData(data)
+		written, err := h.fs.Write(e.handle, int64(entry.FileOffset), n)
+		if err != nil {
+			req.Reply(int64(errToErrno(err)))
+			return
+		}
+		totalWritten += int64(written)
+		// Update cached size if file grew
+		endPos := int64(entry.FileOffset) + int64(written)
+		if uint32(endPos) > e.size {
+			e.size = uint32(endPos)
+		}
+	}
+	req.Reply(totalWritten)
 }
 
 // ============================================================

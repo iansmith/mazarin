@@ -718,11 +718,7 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 			// Check if this is a write to a file-backed mmap page.
 			fm := currentShepherdFindFileMapping(uint64(pageAddr))
 			if fm != nil {
-				serial.RawUARTPuts("[mmap] WRITE to file-backed page VA=0x")
-				serial.RawUARTHex64(uint64(faultAddr))
-				serial.RawUARTPuts(" fd=")
-				serial.RawUARTDecimal(uint64(fm.FD))
-				serial.RawUARTPuts(" -- not yet supported\r\n")
+				logFileMmapWrite(faultAddr, fm.FD)
 			}
 			// We cannot fix permission faults — return false so the exception
 			// handler kills the process instead of looping forever.
@@ -761,6 +757,10 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	inSpanRegion := currentShepherdSpanContains(uint64(faultAddr))
 
 	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
+		// Debug: if fault is below 0x10000, log shepherd and file mapping info
+		if uint64(faultAddr) < minUserAddr {
+			logLowFaultDebug(faultAddr)
+		}
 		serial.RawUART('!')
 		return false
 	}
@@ -853,6 +853,28 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	})
 
 	return true
+}
+
+// logFileMmapWrite logs a write attempt to a file-backed mmap page.
+// Separated from HandleUserPageFault (nosplit) so we can use klog.
+//
+//go:noinline
+func logFileMmapWrite(faultAddr uintptr, fd int32) {
+	klog.Errf("[mmap] WRITE to read-only file-backed page VA=0x%x fd=%d\n",
+		uint64(faultAddr), fd)
+}
+
+// logLowFaultDebug logs debug info when a page fault occurs below minUserAddr.
+// Separated from HandleUserPageFault (nosplit) so we can use klog.
+//
+//go:noinline
+func logLowFaultDebug(faultAddr uintptr) {
+	p := proc.CurrentShepherd()
+	if p == nil {
+		klog.Errf("[pf-dbg] fault=0x%x sid=unknown\n", uint64(faultAddr))
+		return
+	}
+	klog.Errf("[pf-dbg] fault=0x%x sid=%d\n", uint64(faultAddr), int(p.PID))
 }
 
 // DemandMapUserPage ensures a userspace page is mapped, demand-faulting if needed.

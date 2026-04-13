@@ -8,7 +8,6 @@ import (
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"mazzy/shared/iouring"
 	"sync/atomic"
@@ -538,15 +537,6 @@ func NonTimerIRQTopHalf() {
 	_, inputRing := GetIOUringSlotForInputIRQ()
 	cqPushed := false
 
-	// Debug: print once on first IRQ whether input ring exists.
-	if dev.dbgIRQCount == 1 {
-		if inputRing != nil {
-			serial.RawUARTPuts("[input:IRQ1] ring=OK\n")
-		} else {
-			serial.RawUARTPuts("[input:IRQ1] ring=NIL\n")
-		}
-	}
-
 	for dev.lastUsedIdx != usedIdx {
 		ringIdx := dev.lastUsedIdx % dev.queueSize
 		entryAddr := dev.usedVA + 4 + uintptr(ringIdx)*8
@@ -642,15 +632,6 @@ func topHalfTabletHandler() {
 	_, inputRing := GetIOUringSlotForInputIRQ()
 	cqPushed := false
 
-	// Debug: print once on first IRQ whether input ring exists.
-	if dev.dbgIRQCount == 1 {
-		if inputRing != nil {
-			serial.RawUARTPuts("[tablet:IRQ1] ring=OK\n")
-		} else {
-			serial.RawUARTPuts("[tablet:IRQ1] ring=NIL\n")
-		}
-	}
-
 	// Track latest absolute position for hardware cursor.
 	var lastAbsX, lastAbsY uint32
 	gotAbs := false
@@ -739,20 +720,6 @@ func topHalfTabletHandler() {
 	if cqPushed {
 		WakeIOUringFromIRQ()
 	}
-}
-
-// breadcrumbHex32 prints a uint32 as hex digits via UART breadcrumbs.
-//
-//go:nosplit
-func breadcrumbHex32(v uint32) {
-	serial.RawUARTHex32(v)
-}
-
-// breadcrumbDec16 prints a uint16 as decimal digits via UART breadcrumbs.
-//
-//go:nosplit
-func breadcrumbDec16(v uint16) {
-	serial.RawUARTDecimal(uint64(v))
 }
 
 // ============================================================================

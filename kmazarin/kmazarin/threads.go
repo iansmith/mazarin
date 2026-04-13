@@ -11,7 +11,6 @@ import (
 	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/util"
 	"mazzy/shared/constants"
 	"mazzy/shared/ipc"
@@ -44,50 +43,28 @@ const (
 // Set to true to see per-CPU scheduling, work stealing, and IRQ handling.
 const SMPDebugEnabled = false
 
-// smpDebugPrintRun prints "R<cpu><tid><pid>" when a thread starts running.
-// Uses serial.PollWrite for minimal overhead.
+// smpDebugPrintRun prints "R<cpu> <tid> <pid>" when a thread starts running.
 func smpDebugPrintRun(cpuID uint64, tid ThreadId, pid ShepherdId) {
 	if !SMPDebugEnabled {
 		return
 	}
-	serial.PollWrite('R')
-	serial.PollWrite('0' + byte(cpuID))
-	serial.PollWrite(' ')
-	serial.RawUARTHex8(uint8(tid))
-	serial.PollWrite(' ')
-	serial.RawUARTHex8(uint8(pid))
-	serial.PollWrite('\r')
-	serial.PollWrite('\n')
+	klog.Logf("R%d %02x %02x\n", cpuID, uint8(tid), uint8(pid))
 }
 
-// smpDebugPrintSteal prints "S<cpu><tid><from>" when work is stolen.
-// Uses serial.PollWrite for minimal overhead.
+// smpDebugPrintSteal prints "S<cpu> <tid> <from>" when work is stolen.
 func smpDebugPrintSteal(thisCPU uint64, tid ThreadId, victimCPU uint64) {
 	if !SMPDebugEnabled {
 		return
 	}
-	serial.PollWrite('S')
-	serial.PollWrite('0' + byte(thisCPU))
-	serial.PollWrite(' ')
-	serial.RawUARTHex8(uint8(tid))
-	serial.PollWrite(' ')
-	serial.PollWrite('0' + byte(victimCPU))
-	serial.PollWrite('\r')
-	serial.PollWrite('\n')
+	klog.Logf("S%d %02x %d\n", thisCPU, uint8(tid), victimCPU)
 }
 
-// smpDebugPrintIRQ prints "I<cpu><irq>" when an IRQ fires.
-// Uses serial.PollWrite for minimal overhead.
+// smpDebugPrintIRQ prints "I<cpu> <irq>" when an IRQ fires.
 func smpDebugPrintIRQ(cpuID uint64, irqNum uint32) {
 	if !SMPDebugEnabled {
 		return
 	}
-	serial.PollWrite('I')
-	serial.PollWrite('0' + byte(cpuID))
-	serial.PollWrite(' ')
-	serial.RawUARTHex16(uint16(irqNum))
-	serial.PollWrite('\r')
-	serial.PollWrite('\n')
+	klog.Logf("I%d %04x\n", cpuID, irqNum)
 }
 
 // Timer frequency (set from timer init)
@@ -2080,6 +2057,12 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	} else {
 		// Normal path: full delegate cleanup (no in-flight caller calls).
 		terminateShepherdDelegateCleanup(int16(pid))
+	}
+	// Write back MAP_SHARED writable mmap pages before freeing them.
+	// Must happen pre-lock: blocks the calling thread while linux shepherd writes.
+	// Skip if the linux shepherd itself is dying (no handler available).
+	if !isLinuxShepherd(pid) {
+		ksyscall.WriteBackSharedMmapOnDeath(int16(pid))
 	}
 	CleanupBlockCompletionRing(int16(pid))
 	CleanupInputCompletionRing(int16(pid))

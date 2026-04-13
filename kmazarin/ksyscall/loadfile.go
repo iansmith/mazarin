@@ -1,8 +1,8 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/sysid"
 	"sync/atomic"
 )
@@ -34,7 +34,7 @@ func SyscallLoadFile(arg0, arg1, _, _, _, _ uint64) int64 {
 	// Check if LoadFile delegate is registered
 	hpid := atomic.LoadInt32(&syscallDelegates[sysid.LoadFile].pid)
 	if hpid < 0 {
-		serial.RawUARTPuts("[LoadFile] no delegate registered\r\n")
+		klog.Errf("[LoadFile] no delegate registered\n")
 		return int64(errNoDelegate)
 	}
 

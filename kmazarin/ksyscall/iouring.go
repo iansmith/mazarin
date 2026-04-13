@@ -21,7 +21,7 @@ import (
 	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
+	"mazzy/kmazarin/klog"
 	"mazzy/shared/constants"
 	"mazzy/shared/iouring"
 	"mazzy/shared/mazzy"
@@ -126,13 +126,7 @@ func SyscallIOUringSetup(arg0, arg1, arg2, _, _, _ uint64) int64 {
 		enableBlockAsyncMode()
 	}
 
-	serial.RawUARTPuts("[IOUring] setup ring=")
-	serial.RawUARTDecimal(uint64(slotIdx))
-	serial.RawUARTPuts(" KVA=0x")
-	serial.RawUARTHexCompact(uint64(kva))
-	serial.RawUARTPuts(" SID=")
-	serial.RawUARTDecimal(uint64(shepherd.PID))
-	serial.RawUARTPuts("\r\n")
+	klog.Logf("[IOUring] setup ring=%d KVA=0x%x SID=%d\n", slotIdx, uint64(kva), int(shepherd.PID))
 
 	return int64(slotIdx)
 }
@@ -206,7 +200,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			bufVA := uintptr(sqe.Addr)
 			clump := shepherd.FindClumpByVA(bufVA)
 			if clump == nil {
-				serial.RawUARTPuts("[IOUring] EFAULT: VA not in clump\r\n")
+				klog.Errf("[IOUring] EFAULT: VA not in clump\n")
 				return -14 // EFAULT
 			}
 			totalBytes := uint64(sqe.Len) * blockSize
@@ -234,7 +228,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			// Submit to VirtIO engine.
 			tag, err := dev.DoBlockIOSubmit(uint32(requestType), sqe.Off, nil, 0, pa, uint32(totalBytes))
 			if err != nil {
-				serial.RawUARTPuts("[IOUring] submit failed\r\n")
+				klog.Errf("[IOUring] submit failed\n")
 				return -5 // EIO
 			}
 

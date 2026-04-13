@@ -7,6 +7,7 @@
 package kmem
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
@@ -154,13 +155,17 @@ func InitConstraintPages() bool {
 	constraintState.pa = pa
 	atomic.StoreUint32(&constraintState.initialized, 1)
 
-	serial.RawUARTPuts("[kmem] Constraint pages v2 at PA=0x")
-	serial.RawUARTHex64(uint64(pa))
-	serial.RawUARTPuts(" (")
-	serial.RawUARTHex64(ConstraintTotalSize)
-	serial.RawUARTPuts(" bytes)\r\n")
+	logConstraintPagesInit(pa)
 
 	return true
+}
+
+// logConstraintPagesInit logs the constraint pages initialization.
+// Separated from InitConstraintPages (nosplit) to use klog.
+//
+//go:noinline
+func logConstraintPagesInit(pa uintptr) {
+	klog.Logf("[kmem] Constraint pages v2 at PA=0x%x (%d bytes)\n", uint64(pa), ConstraintTotalSize)
 }
 
 // GetConstraintPagePA returns the PA of the constraint shared pages.

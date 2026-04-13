@@ -2,7 +2,7 @@ package proc
 
 // FileMapping records a file-backed mmap region. When a page fault occurs
 // in [StartVA, StartVA+Length), the kernel reads file data from fd at
-// FileOffset + (faultVA - StartVA) and maps it read-only.
+// FileOffset + (faultVA - StartVA) and maps it with appropriate permissions.
 type FileMapping struct {
 	StartVA    uint64 // Start of the VA range
 	Length     uint64 // Length in bytes (page-aligned)
@@ -10,6 +10,8 @@ type FileMapping struct {
 	FD         int32  // fd in that shepherd's FDT
 	FileOffset uint64 // Byte offset in file where mapping starts
 	InUse      bool
+	Writable   bool // PROT_WRITE was set
+	Shared     bool // MAP_SHARED (needs write-back on munmap/death)
 }
 
 // MaxFileMappings is the maximum number of file-backed mmap regions per shepherd.
@@ -32,7 +34,7 @@ func (p *Shepherd) FindFileMappingByVA(va uint64) *FileMapping {
 // Returns true on success, false if no free slots.
 //
 //go:nosplit
-func (p *Shepherd) AddFileMapping(startVA, length uint64, callerSID int16, fd int32, fileOffset uint64) bool {
+func (p *Shepherd) AddFileMapping(startVA, length uint64, callerSID int16, fd int32, fileOffset uint64, writable, shared bool) bool {
 	for i := 0; i < MaxFileMappings; i++ {
 		fm := &p.FileMappings[i]
 		if !fm.InUse {
@@ -41,6 +43,8 @@ func (p *Shepherd) AddFileMapping(startVA, length uint64, callerSID int16, fd in
 			fm.CallerSID = callerSID
 			fm.FD = fd
 			fm.FileOffset = fileOffset
+			fm.Writable = writable
+			fm.Shared = shared
 			fm.InUse = true
 			return true
 		}

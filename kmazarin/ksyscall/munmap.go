@@ -40,6 +40,15 @@ func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
 		}
 	}
 
+	// Write back MAP_SHARED writable file-backed pages before unmapping.
+	// Must happen before RemoveFileMapping clears the metadata.
+	if p != nil {
+		fm := p.FindFileMappingByVA(alignedAddr)
+		if fm != nil && fm.Shared && fm.Writable {
+			writeBackSharedPages(fm)
+		}
+	}
+
 	// Remove file-backed mapping metadata for this VA range (if any)
 	if p != nil {
 		p.RemoveFileMapping(alignedAddr, alignedLength)

@@ -6,8 +6,8 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/serial"
 	"mazzy/mazarin/vm/flat"
 	"unsafe"
 )
@@ -78,9 +78,7 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 	// Allocate a node slot.
 	slot := attrMgr.allocNode()
 	if slot == 0xFFFF {
-		serial.RawUARTPuts("[attr] ENOMEM: allocNode full (cap=")
-		serial.RawUARTDecimal(uint64(attrMgr.nodeCapacity))
-		serial.RawUARTPuts(")\r\n")
+		klog.Errf("[attr] ENOMEM: allocNode full (cap=%d)\n", attrMgr.nodeCapacity)
 		return -12 // ENOMEM
 	}
 
@@ -102,13 +100,8 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 		needed := uint32(bytecodeLen)
 		if bcOff+needed > uint32(kmem.RegionBytecodeSize) {
 			attrMgr.freeNode(slot)
-			serial.RawUARTPuts("[attr] ENOMEM: bytecode full (off=")
-			serial.RawUARTHex64(uint64(bcOff))
-			serial.RawUARTPuts(" need=")
-			serial.RawUARTDecimal(uint64(needed))
-			serial.RawUARTPuts(" cap=")
-			serial.RawUARTHex64(uint64(kmem.RegionBytecodeSize))
-			serial.RawUARTPuts(")\r\n")
+			klog.Errf("[attr] ENOMEM: bytecode full (off=0x%x need=%d cap=0x%x)\n",
+				uint64(bcOff), needed, uint64(kmem.RegionBytecodeSize))
 			return -12 // ENOMEM
 		}
 		// Copy directly from userspace into the bytecode region (no stack buffer limit).
@@ -132,9 +125,7 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 	nameOff, ok := attrMgr.allocString(uri)
 	if !ok {
 		attrMgr.freeNode(slot)
-		serial.RawUARTPuts("[attr] ENOMEM: allocString full (cap=")
-		serial.RawUARTDecimal(uint64(attrMgr.stringCap))
-		serial.RawUARTPuts(")\r\n")
+		klog.Errf("[attr] ENOMEM: allocString full (cap=%d)\n", attrMgr.stringCap)
 		return -12 // ENOMEM
 	}
 	node.NameOffset = nameOff
@@ -144,9 +135,7 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 	if rc < 0 {
 		attrMgr.freeNode(slot)
 		if rc == -12 {
-			serial.RawUARTPuts("[attr] ENOMEM: trieInsert full (cap=")
-			serial.RawUARTDecimal(uint64(attrMgr.trieCapacity))
-			serial.RawUARTPuts(")\r\n")
+			klog.Errf("[attr] ENOMEM: trieInsert full (cap=%d)\n", attrMgr.trieCapacity)
 		}
 		return rc
 	}
@@ -995,28 +984,7 @@ func SyscallAttrDelete(slotArg, _, _, _, _, _ uint64) int64 {
 
 	// Refuse deletion if anything depends on this attribute.
 	if node.DependentsCount > 0 {
-		uri := attrMgr.readNodeURI(slot)
-		serial.RawUARTPuts("[attr] EBUSY: AttrDelete slot=")
-		serial.RawUARTDecimal(uint64(slot))
-		serial.RawUARTPuts(" uri=")
-		serial.RawUARTPuts(uri)
-		serial.RawUARTPuts(" has ")
-		serial.RawUARTDecimal(uint64(node.DependentsCount))
-		serial.RawUARTPuts(" dependents: [")
-		for i := 0; i < int(node.DependentsCount); i++ {
-			depSlot := attrMgr.readEdge(node.DependentsOffset, i)
-			if i > 0 {
-				serial.RawUARTPuts(", ")
-			}
-			serial.RawUARTDecimal(uint64(depSlot))
-			depURI := attrMgr.readNodeURI(depSlot)
-			if depURI != "" {
-				serial.RawUARTPuts("(")
-				serial.RawUARTPuts(depURI)
-				serial.RawUARTPuts(")")
-			}
-		}
-		serial.RawUARTPuts("]\r\n")
+		logAttrDeleteBusy(slot, node, &attrMgr)
 		return -16 // EBUSY
 	}
 
@@ -1041,6 +1009,27 @@ func SyscallAttrDelete(slotArg, _, _, _, _, _ uint64) int64 {
 	attrMgr.freeNode(slot)
 
 	return 0
+}
+
+// logAttrDeleteBusy logs the EBUSY error when an attribute cannot be deleted
+// because other attributes depend on it.
+func logAttrDeleteBusy(slot uint16, node *flat.AttrNode, mgr *KernelAttrManager) {
+	uri := mgr.readNodeURI(slot)
+	deps := ""
+	for i := 0; i < int(node.DependentsCount); i++ {
+		depSlot := mgr.readEdge(node.DependentsOffset, i)
+		if i > 0 {
+			deps += ", "
+		}
+		depURI := mgr.readNodeURI(depSlot)
+		if depURI != "" {
+			deps += depURI
+		} else {
+			deps += "?"
+		}
+	}
+	klog.Errf("[attr] EBUSY: AttrDelete slot=%d uri=%s has %d dependents: [%s]\n",
+		slot, uri, node.DependentsCount, deps)
 }
 
 // unsafeStringFromBytes creates a string from a byte slice without allocation.

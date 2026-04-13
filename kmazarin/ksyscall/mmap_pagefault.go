@@ -1,9 +1,9 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/ipc"
 	"mazzy/shared/sysid"
 	"sync/atomic"
@@ -27,12 +27,12 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 	// Find the linux shepherd (delegate handler for Read)
 	handlerSID := int16(atomic.LoadInt32(&syscallDelegates[sysid.Read].pid))
 	if handlerSID < 0 {
-		serial.RawUARTPuts("[mmap-pf] no Read delegate handler\r\n")
+		klog.Errf("[mmap-pf] no Read delegate handler\n")
 		return false
 	}
 	handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(handlerSID))
 	if handlerShepherd == nil {
-		serial.RawUARTPuts("[mmap-pf] handler shepherd gone\r\n")
+		klog.Errf("[mmap-pf] handler shepherd gone\n")
 		return false
 	}
 
@@ -40,7 +40,7 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 	callerSID := int16(proc.CurrentShepherd().PID)
 	framePA := kmem.AllocPage(kmem.PageFileMmap, callerSID)
 	if framePA == 0 {
-		serial.RawUARTPuts("[mmap-pf] ENOMEM\r\n")
+		klog.Errf("[mmap-pf] ENOMEM\n")
 		return false
 	}
 
@@ -82,6 +82,7 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 	info.CallerBufLen = 4096
 	info.CallerL0PA = uintptr(kmem.ReadCurrentL0PA())
 	info.SysID = sysid.MmapPageFill
+	info.WritableMapping = fm.Writable
 	info.InUse = true
 
 	// Send MmapPageFill request to linux shepherd
@@ -98,14 +99,14 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 	if result < 0 {
 		info.InUse = false
 		reclaimDataPage(framePA, handlerDataVA, handlerSID, handlerShepherd)
-		serial.RawUARTPuts("[mmap-pf] uring send failed\r\n")
+		klog.Errf("[mmap-pf] uring send failed\n")
 		return false
 	}
 
 	// Block the faulting thread until the linux shepherd fills the page
 	ctx := blockForDelegatedSyscall()
 	if ctx == 0 {
-		serial.RawUARTPuts("[mmap-pf] NO NEXT THREAD\r\n")
+		klog.Errf("[mmap-pf] NO NEXT THREAD\n")
 		return false
 	}
 	SetSyscallSwitchTarget(ctx)

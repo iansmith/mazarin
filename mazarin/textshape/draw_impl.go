@@ -1193,12 +1193,18 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 
 	if isIdentityScale {
 		// Fast path: plain pixel copy.
-		dst := image.Rect(int(math.Round(m.X0)), int(math.Round(m.Y0)),
-			int(math.Round(m.X0))+s.X, int(math.Round(m.Y0))+s.Y)
+		origMin := image.Pt(int(math.Round(m.X0)), int(math.Round(m.Y0)))
+		dst := image.Rect(origMin.X, origMin.Y, origMin.X+s.X, origMin.Y+s.Y)
 		if dc.gs.hasClipRect {
 			dst = dst.Intersect(dc.gs.clipRect)
 		}
-		xdraw.Draw(dc.im, dst, im, im.Bounds().Min, xdraw.Over)
+		// Adjust source point to account for any clipping offset so that
+		// the source-to-destination alignment is preserved after clipping.
+		sp := image.Pt(
+			im.Bounds().Min.X+(dst.Min.X-origMin.X),
+			im.Bounds().Min.Y+(dst.Min.Y-origMin.Y),
+		)
+		xdraw.Draw(dc.im, dst, im, sp, xdraw.Over)
 		return
 	}
 
