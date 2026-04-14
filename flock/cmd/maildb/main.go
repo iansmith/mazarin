@@ -154,6 +154,11 @@ func main() {
 
 	fmt.Println("[maildb] MailDBIO config prepared")
 
+	// 2a. Run mmap coherence test before badger (which also uses mmap).
+	if !testMmapCoherence() {
+		fmt.Println("[maildb] WARNING: mmap coherence test FAILED")
+	}
+
 	// 2b. Import mbox into BadgerDB + bleve FTI.
 	// notifyStatus sends a status message and pokes the UI event loop.
 	notifyStatus := func(msg string) {
@@ -163,8 +168,6 @@ func main() {
 		default:
 		}
 	}
-
-	const dbDir = "/tmp/mail/db"
 
 	// Channel to receive index+db handles from import goroutine.
 	type importResult struct {
@@ -177,7 +180,6 @@ func main() {
 	go func() {
 		idx, bdb, err := mboxImport(
 			"/data/mail/mbox/gmail/important.partial.mbox",
-			dbDir,
 			notifyStatus,
 		)
 		if err != nil {

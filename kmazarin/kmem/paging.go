@@ -748,8 +748,8 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	allocEnd := currentShepherdBumpEnd()
 
 	// For UNMAPPED pages, validate the address is in a known allocation region:
-	// 1. MAP_FIXED region: 0x10000 to userMmapStart (0xC000000000) — ELF, thread stacks, etc.
-	// 2. Bump-allocated region: userMmapStart (0xC000000000) to allocEnd — Go heap arena
+	// 1. MAP_FIXED region: 0x10000 to userMmapStart — ELF, thread stacks, Go heap arenas, etc.
+	// 2. Bump-allocated region: userMmapStart to allocEnd — file-backed mmaps, anon mmaps
 	// 3. Hint-based allocations: tracked in the span list (can be anywhere in userspace range)
 	const minUserAddr = 0x10000 // Minimum userspace address (64KB, above NULL guard)
 	inMapFixedRegion := uint64(faultAddr) >= minUserAddr && uint64(faultAddr) < userMmapStart

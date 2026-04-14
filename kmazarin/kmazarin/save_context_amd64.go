@@ -6,6 +6,10 @@ import (
 	"unsafe"
 )
 
+// xmmSaveArea is defined in exceptions_amd64.s — global buffer where
+// common_exception_entry saves XMM0-XMM15 on exception entry.
+var xmmSaveArea [256]byte
+
 // SaveContextFromFrame saves the current thread's context from an x86_64 exception frame.
 //
 // Frame layout (pushed by exception handler):
@@ -57,6 +61,11 @@ func SaveContextFromFrame(framePtr uintptr) {
 	} else {
 		t.Context.FSBase = savedExcFSBase
 	}
+	// Copy XMM state from global save area to per-thread context.
+	// common_exception_entry saved XMM0-15 to xmmSaveArea before any Go code
+	// could clobber them. We must copy to ThreadContext so that when this thread
+	// is rescheduled, load_context_and_iretq restores the correct XMM state.
+	copy(t.Context.XMM[:], xmmSaveArea[:])
 }
 
 // doContextSwitchABI0 is the ABI0 entry point for context switching.
@@ -120,4 +129,6 @@ func SaveCurrentThreadContext(
 	// so hardcode kernel segment selectors.
 	t.Context.CS = kernelCS
 	t.Context.SS = kernelSS
+	// Copy XMM state from global save area (same as SaveContextFromFrame).
+	copy(t.Context.XMM[:], xmmSaveArea[:])
 }

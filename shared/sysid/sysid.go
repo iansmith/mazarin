@@ -80,7 +80,8 @@ const (
 	Pwrite64   // pwrite64
 
 	MmapPageFill      // internal: kernel → linux shepherd page fill for file-backed mmap
-	MmapPageWriteback // internal: kernel → linux shepherd batch write-back for MAP_SHARED pages
+	_                // reserved (was MmapPageWriteback)
+	MmapPageFlush     // internal: kernel → linux shepherd flush dirty cached pages for a file
 
 	NumIDs // sentinel — array size
 )

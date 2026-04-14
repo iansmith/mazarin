@@ -1659,26 +1659,25 @@ rip_ok:
 	MOVQ	R13, 8(SP)		// CS in IRETQ frame
 	MOVQ	CX, 0(SP)		// RIP
 
-	// Restore XMM registers saved at common_exception_entry.
-	// NOTE: This restores the interrupted thread's XMM, not the target thread's.
-	// Proper per-thread XMM state requires extending ThreadContext (future work).
-	// For now, this prevents kernel Go code's XMM garbage from leaking to user code.
-	MOVOU	·xmmSaveArea+0(SB), X0
-	MOVOU	·xmmSaveArea+16(SB), X1
-	MOVOU	·xmmSaveArea+32(SB), X2
-	MOVOU	·xmmSaveArea+48(SB), X3
-	MOVOU	·xmmSaveArea+64(SB), X4
-	MOVOU	·xmmSaveArea+80(SB), X5
-	MOVOU	·xmmSaveArea+96(SB), X6
-	MOVOU	·xmmSaveArea+112(SB), X7
-	MOVOU	·xmmSaveArea+128(SB), X8
-	MOVOU	·xmmSaveArea+144(SB), X9
-	MOVOU	·xmmSaveArea+160(SB), X10
-	MOVOU	·xmmSaveArea+176(SB), X11
-	MOVOU	·xmmSaveArea+192(SB), X12
-	MOVOU	·xmmSaveArea+208(SB), X13
-	MOVOU	·xmmSaveArea+224(SB), X14
-	MOVOU	·xmmSaveArea+240(SB), X15
+	// Restore XMM registers from per-thread ThreadContext.XMM (offset 168).
+	// SaveContextFromFrame copied xmmSaveArea → ThreadContext.XMM when the
+	// thread was last saved, so this restores the correct per-thread XMM state.
+	MOVOU	168(R12), X0
+	MOVOU	184(R12), X1
+	MOVOU	200(R12), X2
+	MOVOU	216(R12), X3
+	MOVOU	232(R12), X4
+	MOVOU	248(R12), X5
+	MOVOU	264(R12), X6
+	MOVOU	280(R12), X7
+	MOVOU	296(R12), X8
+	MOVOU	312(R12), X9
+	MOVOU	328(R12), X10
+	MOVOU	344(R12), X11
+	MOVOU	360(R12), X12
+	MOVOU	376(R12), X13
+	MOVOU	392(R12), X14
+	MOVOU	408(R12), X15
 
 	// Load GPRs from context
 	MOVQ	0(R12), AX

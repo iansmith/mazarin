@@ -89,14 +89,3 @@ func DecodeFSDelegateResp(msg *UringIPCMsg) *FSDelegateRespPayload {
 	return (*FSDelegateRespPayload)(unsafe.Pointer(&msg.Payload[0]))
 }
 
-// MmapWritebackEntry describes one contiguous region to write back to a file.
-// An array of these is placed in a descriptor page by the kernel and read
-// by the linux shepherd's MmapPageWriteback handler.
-type MmapWritebackEntry struct {
-	FileOffset uint64 // byte offset in the file to write at
-	DataVA     uint64 // VA of data in linux shepherd's address space
-	Length     uint64 // bytes to write (multiple of 4096, up to 64KB)
-}
-
-// MmapWritebackEntriesPerPage is the number of entries that fit in one 4KB page.
-const MmapWritebackEntriesPerPage = 4096 / 24 // = 170

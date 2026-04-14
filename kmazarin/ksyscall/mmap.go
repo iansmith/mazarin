@@ -93,6 +93,8 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	// MAP_FIXED can overwrite existing mappings (dangerous but that's the semantics)
 	if isMapFixed && addr != 0 {
 		if isUserspace && addr >= userMmapStart && addr+alignedLength <= userMmapEnd {
+			// Check if this MAP_FIXED overlaps any file mapping
+			checkMapFixedFileOverlap(addr, alignedLength)
 			// Remove any existing spans that overlap, then add new span
 			removeSpan(addr, alignedLength)
 			if !addSpan(addr, alignedLength) {
@@ -155,6 +157,15 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 		return -12 // ENOMEM
 	}
 
+	// Trace ALL mmap results for file-backed and anonymous MAP_SHARED
+	logMmapResult(addr, alignedLength, flags, fd, result)
+
+	// DEBUG: Check for pre-existing PTEs in the allocated VA range.
+	// This detects overlap with Go runtime heap pages.
+	if (flags&0x20) == 0 && fd != ^uint64(0) && int64(fd) >= 0 {
+		scanForStalePTEs(result, alignedLength, fd)
+	}
+
 	// Record file-backed mapping if fd is valid and not MAP_ANONYMOUS (0x20).
 	// Both read-only and writable mappings are recorded. Writable MAP_SHARED
 	// mappings are written back to the file on munmap or shepherd death.
@@ -169,6 +180,65 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	}
 
 	return int64(result)
+}
+
+// scanForStalePTEs walks the page table for a file-backed mmap VA range and
+// reports any pre-existing PTEs. This detects cases where the bump allocator
+// returns VAs that overlap with Go runtime heap pages.
+//
+//go:noinline
+func scanForStalePTEs(va, length, fd uint64) {
+	p := proc.CurrentShepherd()
+	if p == nil || p.PageTableL0PA == 0 {
+		return
+	}
+	l0PA := p.PageTableL0PA
+	pageCount := length / 4096
+	staleCount := uint64(0)
+	for i := uint64(0); i < pageCount; i++ {
+		pageVA := uintptr(va + i*4096)
+		pa := kmem.WalkUserPageTableWithL0(pageVA, l0PA)
+		if pa != 0 {
+			staleCount++
+			if staleCount <= 4 {
+				kmem.SerialPuts("[mmap:STALE] fd=")
+				kmem.SerialHex16(fd)
+				kmem.SerialPuts(" va=")
+				kmem.SerialHex16(uint64(pageVA))
+				kmem.SerialPuts(" existingPA=")
+				kmem.SerialHex16(uint64(pa))
+				kmem.SerialPuts("\r\n")
+			}
+		}
+	}
+	if staleCount > 0 {
+		kmem.SerialPuts("[mmap:STALE] total=")
+		kmem.SerialHex16(staleCount)
+		kmem.SerialPuts(" in fd=")
+		kmem.SerialHex16(fd)
+		kmem.SerialPuts(" range ")
+		kmem.SerialHex16(va)
+		kmem.SerialPuts("-")
+		kmem.SerialHex16(va + length)
+		kmem.SerialPuts("\r\n")
+	}
+}
+
+// checkMapFixedFileOverlap checks if a MAP_FIXED call would overlap with any
+// existing file-backed mapping. This detects Go's MAP_FIXED overwriting
+// file-backed mmap PTEs. Separated to avoid nosplit growth.
+//
+//go:noinline
+func checkMapFixedFileOverlap(addr, length uint64) {
+	p := proc.CurrentShepherd()
+	if p == nil {
+		return
+	}
+	fm := p.FindFileMappingByVA(addr)
+	if fm != nil {
+		klog.Errf("[MAP_FIXED:OVERLAP] sid=%d addr=%x len=%x HITS file mapping fd=%d [%x, %x)\n",
+			p.PID, addr, length, fm.FD, fm.StartVA, fm.StartVA+fm.Length)
+	}
 }
 
 // logFileMmap logs a file-backed mmap recording. Called from the nosplit
@@ -210,6 +280,36 @@ func mmapENOMEM(path byte, addr, length uint64) {
 	serial.PollWrite('\r')
 	serial.PollWrite('\n')
 	kmem.LogPageBreakdown()
+}
+
+// logMmapResult traces mmap calls via serial. Shows hint, result VA, flags, fd.
+// Only logs for the specific SID we're debugging (30 = maildb).
+//
+//go:noinline
+func logMmapResult(addr, alignedLength, flags, fd, result uint64) {
+	p := proc.CurrentShepherd()
+	if p == nil {
+		return
+	}
+	// Only trace file-backed and MAP_FIXED mmaps (skip anonymous heap noise)
+	if fd == ^uint64(0) && (flags&_MAP_FIXED) == 0 {
+		return
+	}
+	kmem.SerialPuts("[mmap-trace] sid=")
+	kmem.SerialHex16(uint64(p.PID))
+	kmem.SerialPuts(" hint=")
+	kmem.SerialHex16(addr)
+	kmem.SerialPuts(" len=")
+	kmem.SerialHex16(alignedLength)
+	kmem.SerialPuts(" fl=")
+	kmem.SerialHex16(flags)
+	kmem.SerialPuts(" fd=")
+	kmem.SerialHex16(fd)
+	kmem.SerialPuts(" →va=")
+	kmem.SerialHex16(result)
+	kmem.SerialPuts(" bp=")
+	kmem.SerialHex16(atomic.LoadUint64(&p.BumpPointer))
+	kmem.SerialPuts("\r\n")
 }
 
 // GetUserMmapAllocEnd returns the current end of userspace mmap allocations
@@ -268,9 +368,12 @@ func userBumpAlloc(size uint64) uint64 {
 	}
 }
 
-// bumpAllocForShepherd allocates VA space from a specific shepherd's bump pointer.
-// Same logic as userBumpAlloc but operates on an explicit shepherd, not CurrentShepherd().
-// Used by IPC syscalls that need to allocate VA in a target process.
+// bumpAllocForShepherd allocates VA space in a target shepherd's address space
+// for kernel-initiated mappings (IPC data pages, mmap page fill, mailbox,
+// shared pages, writeback). Uses IPCBumpPointer starting at ipcDataVAStart
+// (0x500000000000), separate from the shepherd's own BumpPointer/Go heap
+// (0xC000000000) to prevent Go's MAP_FIXED arena management from creating
+// span gaps that allow VA reuse.
 //
 //go:nosplit
 func bumpAllocForShepherd(p *proc.Shepherd, size uint64) uint64 {
@@ -282,27 +385,22 @@ func bumpAllocForShepherd(p *proc.Shepherd, size uint64) uint64 {
 	aligned := (size + pageSize - 1) & ^(pageSize - 1)
 
 	for {
-		currentPtr := atomic.LoadUint64(&p.BumpPointer)
+		currentPtr := atomic.LoadUint64(&p.IPCBumpPointer)
 
-		// Lazy initialization: first allocation starts at userMmapStart
+		// Lazy initialization: first IPC allocation starts at ipcDataVAStart
 		if currentPtr == 0 {
-			atomic.CompareAndSwapUint64(&p.BumpPointer, 0, userMmapStart)
+			atomic.CompareAndSwapUint64(&p.IPCBumpPointer, 0, ipcDataVAStart)
 			continue
 		}
 
 		nextPtr := currentPtr + aligned
-
-		// Check if this allocation would overlap any existing span
-		if p.Spans.FindOverlapEnd(currentPtr, aligned) != 0 {
-			return 0 // ENOMEM - allocation conflicts with reserved span
-		}
 
 		// Check for wrap-around AND exceeding end
 		if nextPtr < currentPtr || nextPtr > userMmapEnd {
 			return 0 // Out of VA space
 		}
 
-		if atomic.CompareAndSwapUint64(&p.BumpPointer, currentPtr, nextPtr) {
+		if atomic.CompareAndSwapUint64(&p.IPCBumpPointer, currentPtr, nextPtr) {
 			return currentPtr
 		}
 	}

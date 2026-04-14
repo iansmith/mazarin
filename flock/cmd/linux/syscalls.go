@@ -1,12 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"unsafe"
 
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/dlist"
-	"mazzy/shared/ipc"
 	"mazzy/shared/sysid"
 )
 
@@ -17,6 +17,7 @@ type syscallHandler struct {
 	shepherds map[int16]*ShepherdFilesystemData
 	flocks    *flockTable
 	fs        *fsclient.Client
+	cache     *pageCache
 }
 
 func newSyscallHandler(fs *fsclient.Client) *syscallHandler {
@@ -24,6 +25,7 @@ func newSyscallHandler(fs *fsclient.Client) *syscallHandler {
 		shepherds: make(map[int16]*ShepherdFilesystemData),
 		flocks:    newFlockTable(),
 		fs:        fs,
+		cache:     newPageCache(),
 	}
 }
 
@@ -58,6 +60,7 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 			h.fs.Close(e.handle)
 		}
 	}
+	h.cache.RemoveAll(sid)
 	delete(h.shepherds, sid)
 }
 
@@ -127,8 +130,8 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 		h.sysPwrite64(req)
 	case sysid.MmapPageFill:
 		h.sysMmapPageFill(req)
-	case sysid.MmapPageWriteback:
-		h.sysMmapPageWriteback(req)
+	case sysid.MmapPageFlush:
+		h.sysMmapPageFlush(req)
 
 	default:
 		req.Reply(ENOSYS)
@@ -154,6 +157,7 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 	if e.handle != 0 {
 		h.fs.Close(e.handle)
 	}
+	h.cache.RemoveFD(req.CallerPID, fd)
 	fdt.free(fd)
 	req.Reply(EOK)
 }
@@ -493,6 +497,8 @@ func (h *syscallHandler) sysFtruncate(req sys.SyscallRequest) {
 		req.Reply(int64(errToErrno(err)))
 		return
 	}
+	// Invalidate cached pages beyond the new size.
+	h.cache.RemoveRange(req.CallerPID, fd, newSize, 1<<62)
 	e.size = uint32(newSize)
 	req.Reply(EOK)
 }
@@ -644,6 +650,16 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 		count = len(buf)
 	}
 
+	// Check page cache first — if all pages in range are cached, read
+	// directly from cached pages (same physical pages as mmap'd memory).
+	if entries := h.cache.LookupRange(req.CallerPID, fd, e.offset, count); len(entries) > 0 {
+		if n, ok := readFromCachedPages(entries, e.offset, buf[:count], count, int64(e.size)); ok {
+			e.offset += int64(n)
+			req.Reply(int64(n))
+			return
+		}
+	}
+
 	n, err := h.fs.Read(e.handle, e.offset, count)
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
@@ -677,17 +693,35 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 		return
 	}
 
-	// Copy data to shared area and send write request.
-	n := h.fs.WriteData(data)
+	// If all pages in the write range are cached, write directly to the
+	// cached pages and mark them dirty. This is the fast path — no ext2
+	// round-trip. Dirty pages are flushed on munmap/msync/close.
+	if entries := h.cache.LookupRange(req.CallerPID, fd, e.offset, len(data)); len(entries) > 0 {
+		if written, ok := writeToCachedPages(entries, e.offset, data); ok {
+			h.cache.MarkDirty(req.CallerPID, fd, entries)
+			e.offset += int64(written)
+			if uint32(e.offset) > e.size {
+				e.size = uint32(e.offset)
+			}
+			req.Reply(int64(written))
+			return
+		}
+	}
 
+	// Slow path: not all pages cached, write through ext2.
+	n := h.fs.WriteData(data)
 	written, err := h.fs.Write(e.handle, e.offset, n)
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
 	}
 
+	// Update any cached pages that overlap so mmap'd memory stays coherent.
+	if entries := h.cache.LookupRange(req.CallerPID, fd, e.offset, written); len(entries) > 0 {
+		updateCachedPages(entries, e.offset, data[:written])
+	}
+
 	e.offset += int64(written)
-	// Update cached size if file grew.
 	if uint32(e.offset) > e.size {
 		e.size = uint32(e.offset)
 	}
@@ -728,6 +762,15 @@ func (h *syscallHandler) sysPread64(req sys.SyscallRequest) {
 	}
 	offset := int64(req.Args[3])
 
+	// Check page cache first — if all pages in range are cached, read
+	// directly from cached pages (same physical pages as mmap'd memory).
+	if entries := h.cache.LookupRange(req.CallerPID, fd, offset, count); len(entries) > 0 {
+		if n, ok := readFromCachedPages(entries, offset, buf[:count], count, int64(e.size)); ok {
+			req.Reply(int64(n))
+			return
+		}
+	}
+
 	n, err := h.fs.Read(e.handle, offset, count)
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
@@ -761,14 +804,34 @@ func (h *syscallHandler) sysPwrite64(req sys.SyscallRequest) {
 	}
 
 	offset := int64(req.Args[3])
-	n := h.fs.WriteData(data)
 
+	// Fast path: if all pages in the write range are cached, write directly
+	// to cached pages and mark dirty. No ext2 round-trip.
+	if entries := h.cache.LookupRange(req.CallerPID, fd, offset, len(data)); len(entries) > 0 {
+		if written, ok := writeToCachedPages(entries, offset, data); ok {
+			h.cache.MarkDirty(req.CallerPID, fd, entries)
+			endPos := offset + int64(written)
+			if uint32(endPos) > e.size {
+				e.size = uint32(endPos)
+			}
+			req.Reply(int64(written))
+			return
+		}
+	}
+
+	// Slow path: not all pages cached, write through ext2.
+	n := h.fs.WriteData(data)
 	written, err := h.fs.Write(e.handle, offset, n)
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
 	}
-	// Update cached size if file grew.
+
+	// Update any cached pages that overlap.
+	if entries := h.cache.LookupRange(req.CallerPID, fd, offset, written); len(entries) > 0 {
+		updateCachedPages(entries, offset, data[:written])
+	}
+
 	endPos := offset + int64(written)
 	if uint32(endPos) > e.size {
 		e.size = uint32(endPos)
@@ -778,8 +841,9 @@ func (h *syscallHandler) sysPwrite64(req sys.SyscallRequest) {
 
 // sysMmapPageFill handles kernel requests to fill a file-backed mmap page.
 // The kernel allocates a physical frame and maps it into our address space,
-// then sends this request so we read file data into it. The kernel's reply
-// path unmaps the page from us and maps it read-only into the faulting shepherd.
+// then sends this request so we read file data into it. The page stays mapped
+// in both our address space and the faulting shepherd's — this provides page
+// cache coherence so read/write through us see the same data as mmap'd memory.
 func (h *syscallHandler) sysMmapPageFill(req sys.SyscallRequest) {
 	// Args[0]=fd, Args[1]=fileOffset, Args[2]=count
 	// CallerPID = shepherd that owns the fd
@@ -803,71 +867,123 @@ func (h *syscallHandler) sysMmapPageFill(req sys.SyscallRequest) {
 		count = len(buf)
 	}
 
+	// Zero the page first — the kernel allocates physical frames from the
+	// buddy allocator without zeroing, and if the file is shorter than a
+	// full page (sparse/truncated), the tail would contain stale data.
+	for i := range buf[:count] {
+		buf[i] = 0
+	}
+
 	n, err := h.fs.Read(e.handle, offset, count)
 	if err != nil {
+		fmt.Printf("[mmap-fill] sid=%d fd=%d offset=%d READ ERR: %v\n", req.CallerPID, fd, offset, err)
 		req.Reply(int64(errToErrno(err)))
 		return
 	}
 	if n > 0 {
 		copy(buf[:n], h.fs.DataSlice(n))
 	}
+	// Diagnostic: show what we filled
+	fmt.Printf("[mmap-fill] sid=%d fd=%d offset=%d n=%d dataVA=0x%x buf[0:20]=%02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x\n",
+		req.CallerPID, fd, offset, n, req.DataVA(),
+		buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+		buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+		buf[16], buf[17], buf[18], buf[19])
+
+	// Record this page in the cache so read/pread/write/pwrite can
+	// see mmap'd data without going through ext2.
+	pageAlignedOffset := int64(req.Args[1]) &^ 0xFFF
+	h.cache.Add(req.CallerPID, fd, pageAlignedOffset, req.DataVA())
+
 	req.Reply(int64(n))
 }
 
-// sysMmapPageWriteback handles batch write-back of MAP_SHARED mmap pages.
-// The kernel sends a descriptor page containing an array of MmapWritebackEntry
-// structs, each describing a contiguous data region mapped into our address space.
-// We iterate the entries and pwrite64 each one back to the file.
+// sysMmapPageFlush handles kernel requests to flush dirty cached pages and
+// return handler VAs for PTE cleanup. The kernel sends this on munmap or
+// shepherd death. The handler:
+//  1. Flushes dirty pages to ext2 (first round only — subsequent rounds
+//     have no dirty pages left)
+//  2. Removes up to 511 page cache entries
+//  3. Writes their handler VAs into the response page
+//  4. Replies with the number of VAs written
 //
-// Args[0]=fd, Args[1]=descriptorVA, Args[2]=numEntries
-// CallerPID = shepherd that owns the fd
-func (h *syscallHandler) sysMmapPageWriteback(req sys.SyscallRequest) {
-	fdt := h.getShepherd(req.CallerPID).FDT
-	fd := int(req.Args[0])
-	e := fdt.get(fd)
-	if e == nil {
-		req.Reply(EBADF)
-		return
-	}
-	if e.kind != fdKindFile {
-		req.Reply(ESPIPE)
-		return
-	}
+// The kernel reads the response page, unmaps those handler PTEs, and sends
+// another round if count == 511.
+//
+// Args[0]=fd (0xFFFFFFFF = all fds, for death cleanup)
+// Args[1]=callerSID
+// DataVA/DataLen = response page (handler writes VAs here)
+//
+// Response page layout:
+//
+//	[0:4]    uint32   count (0..511)
+//	[4:8]    uint32   reserved
+//	[8:4096] [511]uint64  handler VAs to unmap
+const maxFlushVAsPerRound = 511
 
-	descriptorVA := uintptr(req.Args[1])
-	numEntries := int(req.Args[2])
-	if descriptorVA == 0 || numEntries == 0 {
+func (h *syscallHandler) sysMmapPageFlush(req sys.SyscallRequest) {
+	callerSID := int16(req.Args[1])
+	fd := int(req.Args[0])
+	allFDs := fd == 0xFFFFFFFF
+
+	responseBuf := req.DataBuf()
+	if responseBuf == nil || len(responseBuf) < 4096 {
 		req.Reply(EINVAL)
 		return
 	}
-	if numEntries > ipc.MmapWritebackEntriesPerPage {
-		numEntries = ipc.MmapWritebackEntriesPerPage
+
+	// Flush all pages to ext2. We flush everything (not just pages marked
+	// dirty via syscalls) because user writes through the mmap VA don't
+	// generate syscalls, so we have no way to track which pages changed.
+	if allFDs {
+		h.cache.FlushAllPagesForSID(callerSID, func(cacheFD int, offset int64, data []byte) (int, error) {
+			return h.writePageToExt2(callerSID, cacheFD, offset, data)
+		})
+	} else {
+		h.cache.FlushAllPagesForFD(callerSID, fd, func(offset int64, data []byte) (int, error) {
+			return h.writePageToExt2(callerSID, fd, offset, data)
+		})
 	}
 
-	// Read the descriptor array from the mapped page
-	entries := unsafe.Slice((*ipc.MmapWritebackEntry)(unsafe.Pointer(descriptorVA)), numEntries)
-
-	var totalWritten int64
-	for i := 0; i < numEntries; i++ {
-		entry := &entries[i]
-		if entry.DataVA == 0 || entry.Length == 0 {
-			continue
-		}
-		data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(entry.DataVA))), entry.Length)
-		n := h.fs.WriteData(data)
-		written, err := h.fs.Write(e.handle, int64(entry.FileOffset), n)
-		if err != nil {
-			req.Reply(int64(errToErrno(err)))
-			return
-		}
-		totalWritten += int64(written)
-		// Update cached size if file grew
-		endPos := int64(entry.FileOffset) + int64(written)
-		if uint32(endPos) > e.size {
-			e.size = uint32(endPos)
-		}
+	// Remove up to 511 entries and write their VAs to the response page.
+	var removed []pageCacheEntry
+	if allFDs {
+		removed = h.cache.RemoveAllBatch(callerSID, maxFlushVAsPerRound)
+	} else {
+		removed = h.cache.RemoveRangeBatch(callerSID, fd, maxFlushVAsPerRound)
 	}
-	req.Reply(totalWritten)
+
+	// Write response: count + VA array
+	count := uint32(len(removed))
+	*(*uint32)(unsafe.Pointer(&responseBuf[0])) = count
+	*(*uint32)(unsafe.Pointer(&responseBuf[4])) = 0 // reserved
+
+	for i, entry := range removed {
+		offset := 8 + i*8
+		*(*uint64)(unsafe.Pointer(&responseBuf[offset])) = uint64(entry.VA)
+	}
+
+	fmt.Printf("[mmap-flush] sid=%d fd=%d removed=%d\n", callerSID, fd, count)
+	req.Reply(int64(count))
+}
+
+// writePageToExt2 writes a single page to ext2 for the given (sid, fd, offset).
+func (h *syscallHandler) writePageToExt2(sid int16, fd int, offset int64, data []byte) (int, error) {
+	fdt := h.getShepherd(sid).FDT
+	e := fdt.get(fd)
+	if e == nil || e.kind != fdKindFile {
+		return 0, nil // skip non-file fds
+	}
+	n := h.fs.WriteData(data)
+	written, err := h.fs.Write(e.handle, offset, n)
+	if err != nil {
+		return 0, err
+	}
+	endPos := offset + int64(written)
+	if uint32(endPos) > e.size {
+		e.size = uint32(endPos)
+	}
+	return written, nil
 }
 
 // ============================================================

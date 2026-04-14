@@ -24,10 +24,10 @@ type bleveDoc struct {
 }
 
 // mboxImport parses the mbox file inside mboxDir and writes each message's
-// headers into a BadgerDB database at dbDir and a bleve full-text index
-// at ftiDir. Progress strings are sent via notify so the UI can display them.
+// headers into in-memory BadgerDB and bleve indexes. Progress strings are
+// sent via notify so the UI can display them.
 // Returns the open index and db for subsequent queries; caller must close them.
-func mboxImport(mboxDir string, dbDir string, notify func(string)) (bleve.Index, *badger.DB, error) {
+func mboxImport(mboxDir string, notify func(string)) (bleve.Index, *badger.DB, error) {
 	mboxPath := mboxDir + "/mbox"
 
 	fmt.Printf("[maildb] mboxImport: opening %s\n", mboxPath)
@@ -38,19 +38,19 @@ func mboxImport(mboxDir string, dbDir string, notify func(string)) (bleve.Index,
 	defer f.Close()
 	fmt.Println("[maildb] mboxImport: mbox opened, opening badger")
 
-	opts := badger.DefaultOptions(dbDir).WithLogger(nil).WithBypassLockGuard(true)
+	// File-backed badger in /tmp (ramdisk). Exercises mmap coherence:
+	// badger uses mmap for its value log and SSTables.
+	opts := badger.DefaultOptions("/tmp/maildb-badger").WithLogger(nil)
 	db, err := badger.Open(opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open badger at %s: %w", dbDir, err)
+		return nil, nil, fmt.Errorf("open badger: %w", err)
 	}
 	fmt.Println("[maildb] mboxImport: badger opened, opening bleve")
 
-	// In-memory bleve index. On-disk bbolt requires file-backed mmap
-	// coherence (pwrite data visible through mmap), which is not yet
-	// implemented. Since /tmp is a ramdisk and we rebuild from the mbox
-	// on every boot, in-memory is the right fit.
+	// File-backed bleve index in /tmp (ramdisk). Exercises mmap coherence:
+	// bleve uses bbolt internally, which mmaps its database file.
 	mapping := bleve.NewIndexMapping()
-	index, err := bleve.NewMemOnly(mapping)
+	index, err := bleve.New("/tmp/maildb-bleve", mapping)
 	if err != nil {
 		db.Close()
 		return nil, nil, fmt.Errorf("create bleve index: %w", err)

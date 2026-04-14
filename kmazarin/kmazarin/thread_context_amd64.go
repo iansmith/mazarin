@@ -52,6 +52,7 @@ type ThreadContext struct {
 	FSBase uint64 // x86_64 FS_BASE MSR value (per-thread TLS base)
 	CS     uint64 // Code segment selector for IRETQ (Ring 0: 0x08, Ring 3: 0x1B)
 	SS     uint64 // Stack segment selector for IRETQ (Ring 0: 0x10, Ring 3: 0x23)
+	XMM    [256]byte // XMM0-XMM15 saved state, 16 bytes each (offset 168)
 }
 
 // GetGRegister returns the g register (R14 on x86_64).

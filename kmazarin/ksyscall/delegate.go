@@ -49,6 +49,13 @@ type DelegateCallInfo struct {
 	SysID           sysid.ID // Which syscall (determines copy direction)
 	InUse           bool
 	WritableMapping bool // MmapPageFill: map page RW instead of RO
+
+	// MmapPageFlush round state — used by the reply path to continue
+	// sending rounds if the response page was full (count == 511).
+	FlushResponsePA uintptr // PA of response page (kernel owns)
+	FlushResponseVA uint64  // VA of response page in handler's address space
+	FlushFD         uint64  // fd for the file being flushed
+	FlushCallerSID  int16   // SID of the shepherd whose pages are being flushed
 }
 
 // syscallDelegates maps SysID → handler shepherd PID.
@@ -572,37 +579,75 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	}
 
 	// Look up the in-flight call info
+	isPageFaultReply := false
+	var pageFaultCallerVA uintptr
+	var pageFaultCallerL0PA uintptr
 	if int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
 		if info.InUse {
+			isPageFaultReply = info.SysID == sysid.MmapPageFill
+			if isPageFaultReply {
+				pageFaultCallerVA = uintptr(info.CallerBufVA)
+				pageFaultCallerL0PA = info.CallerL0PA
+			}
 			// Verify the replying shepherd is the registered handler for this
 			// delegation. Without this check, any shepherd that guesses a
 			// caller's TID could forge a reply with an arbitrary return value.
 			if info.HandlerSID != int16(replyingShepherd.PID) {
 				return -1 // EPERM
 			}
-			// For MmapPageFill: unmap from handler, map into faulting
-			// shepherd's page table. RW if the mapping was writable, RO otherwise.
-			// The page stays mapped — do not free it.
+			// For MmapPageFill: map into faulting shepherd's page table.
+			// Keep the page mapped in the handler too — this provides
+			// mmap page cache coherence (same physical page visible to
+			// both sides, so read/pread/write/pwrite through the handler
+			// see the same data as mmap'd memory in the caller).
 			if info.SysID == sysid.MmapPageFill && info.DataPagePA != 0 {
-				// Unmap from linux shepherd
-				handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
-				if handlerShepherd != nil {
-					kmem.UnmapUserPageWithL0(uintptr(info.DataPageVA), handlerShepherd.PageTableL0PA)
-					handlerShepherd.Spans.Remove(info.DataPageVA, 4096)
-				}
-
 				// Check if faulting shepherd is still alive
 				callerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.CallerSID))
 				if callerShepherd == nil {
-					// Shepherd died while waiting — free the page
+					// Shepherd died while waiting — unmap from handler, free the page
+					hs := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
+					if hs != nil {
+						kmem.UnmapUserPageWithL0(uintptr(info.DataPageVA), hs.PageTableL0PA)
+						hs.Spans.Remove(info.DataPageVA, 4096)
+					}
 					kmem.ReleasePageByPA(info.DataPagePA)
 				} else {
 					elfFlags := uint32(kmem.ELF_PF_R)
 					if info.WritableMapping {
 						elfFlags |= kmem.ELF_PF_W
 					}
-					kmem.MapPageInProcess(info.CallerSID, uintptr(info.CallerBufVA), info.DataPagePA, elfFlags)
+					logMmapReply(info.CallerSID, uintptr(info.CallerBufVA), info.DataPagePA, info.DataPageVA, elfFlags)
+					mapOK := kmem.MapPageInProcess(info.CallerSID, uintptr(info.CallerBufVA), info.DataPagePA, elfFlags)
+
+					// Serial diagnostic: verify mapping
+					kmem.SerialPuts("[mmap-verify] PA=")
+					kmem.SerialHex16(uint64(info.DataPagePA))
+					kmem.SerialPuts(" cVA=")
+					kmem.SerialHex16(uint64(info.CallerBufVA))
+					kmem.SerialPuts(" map=")
+					if mapOK {
+						kmem.SerialPuts("OK")
+					} else {
+						kmem.SerialPuts("FAIL")
+					}
+					// Walk caller's page table to verify PTE points to correct PA
+					mappedPA := kmem.WalkUserPageTableWithL0(uintptr(info.CallerBufVA), callerShepherd.PageTableL0PA)
+					kmem.SerialPuts(" ptePA=")
+					kmem.SerialHex16(uint64(mappedPA))
+					// Read first 8 bytes through caller's page table
+					word0, rok := kmem.ReadUserUint64WithL0(uintptr(info.CallerBufVA), callerShepherd.PageTableL0PA)
+					kmem.SerialPuts(" w0=")
+					kmem.SerialHex16(word0)
+					if !rok {
+						kmem.SerialPuts("(FAIL)")
+					}
+					kmem.SerialPuts("\r\n")
+
+					// Handler-side pageCache tracks the dual mapping.
+					// On munmap/death, flushAndCleanupPages sends IPC
+					// rounds to flush dirty pages and return handler VAs
+					// for unmapping — no kernel-side tracking needed.
 				}
 
 				// Prevent reclaimDataPage from freeing it
@@ -610,9 +655,13 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 				info.InUse = false
 			}
 
-			// For MmapPageWriteback: clean up batch write-back resources.
-			if info.SysID == sysid.MmapPageWriteback {
-				HandleMmapWritebackReply(callerTID, info.HandlerSID)
+			// For MmapPageFlush: process response page (unmap handler VAs).
+			// If count == 511, send another round and keep caller blocked.
+			if info.SysID == sysid.MmapPageFlush {
+				if handleFlushReply(callerTID, info) {
+					// Another round sent — caller stays blocked, don't wake
+					return 0
+				}
 				info.InUse = false
 			}
 
@@ -657,8 +706,18 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		}
 	}
 
-	// Wake the blocked caller thread with the return value
-	wakeDelegateCallerThread(callerSID, int32(callerTID), returnVal)
+	// Wake the blocked caller thread.
+	// For MmapPageFill: the thread was blocked by a page fault, not a syscall.
+	// Its saved registers (including RAX) must be preserved exactly so the CPU
+	// can retry the faulting instruction after IRETQ. SetReturnValue (which
+	// overwrites RAX) would corrupt the register state and lose the write.
+	if isPageFaultReply {
+		// Diagnostic: verify page content and saved registers before wake
+		diagMmapWake(callerSID, int32(callerTID), pageFaultCallerVA, pageFaultCallerL0PA)
+		wakeDelegateCallerThreadNoReturn(callerSID, int32(callerTID))
+	} else {
+		wakeDelegateCallerThread(callerSID, int32(callerTID), returnVal)
+	}
 
 	return 0
 }
@@ -747,6 +806,12 @@ func blockForDelegatedSyscall() uintptr
 
 //go:linkname wakeDelegateCallerThread main.WakeDelegateCallerThread
 func wakeDelegateCallerThread(pid int16, tid int32, returnVal int64)
+
+//go:linkname wakeDelegateCallerThreadNoReturn main.WakeDelegateCallerThreadNoReturn
+func wakeDelegateCallerThreadNoReturn(pid int16, tid int32)
+
+//go:linkname readThreadRAX main.ReadThreadRAX
+func readThreadRAX(pid int16, tid int32) uint64
 
 // CleanupDelegateForDeadShepherd reclaims resources for a shepherd that is being terminated.
 // Handles both cases:

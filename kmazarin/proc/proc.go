@@ -49,6 +49,13 @@ type Shepherd struct {
 	// lazily set to userMmapStart on first mmap call.
 	BumpPointer uint64
 
+	// IPCBumpPointer is a separate bump pointer for cross-shepherd VA
+	// allocations (IPC data pages, mailbox pages, shared pages, mmap page
+	// fill). Uses a different VA range (ipcDataVAStart) to avoid collisions
+	// with Go's heap allocator, which also allocates from userMmapStart.
+	// Zero means uninitialized.
+	IPCBumpPointer uint64
+
 	// Spans tracks reserved VA ranges for this process (mmap hint reservations,
 	// MAP_FIXED mappings, etc.).
 	Spans LockedSpanGroup

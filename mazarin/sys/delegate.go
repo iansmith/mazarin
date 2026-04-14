@@ -45,6 +45,11 @@ type SyscallRequest struct {
 // Arg0 returns the first syscall argument (e.g. fd for write/read/close).
 func (r *SyscallRequest) Arg0() uint64 { return r.Args[0] }
 
+// DataVA returns the raw virtual address of the data page mapped into the
+// handler's address space. Used by the page cache to track which handler VA
+// backs a given (fd, offset) pair.
+func (r *SyscallRequest) DataVA() uintptr { return r.dataVA }
+
 // Data returns the data buffer that was copied from the caller's address space.
 // For Write: contains the bytes the caller wants written.
 // For Read: returns nil (use DataBuf instead to get the writable buffer).

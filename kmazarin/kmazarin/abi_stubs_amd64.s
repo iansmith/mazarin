@@ -211,6 +211,24 @@ run_skip_tls:
 	PUSHQ	152(R12)		// CS from context
 	PUSHQ	120(R12)		// RIP from context
 
+	// Restore XMM registers from ThreadContext.XMM (offset 168)
+	MOVOU	168(R12), X0
+	MOVOU	184(R12), X1
+	MOVOU	200(R12), X2
+	MOVOU	216(R12), X3
+	MOVOU	232(R12), X4
+	MOVOU	248(R12), X5
+	MOVOU	264(R12), X6
+	MOVOU	280(R12), X7
+	MOVOU	296(R12), X8
+	MOVOU	312(R12), X9
+	MOVOU	328(R12), X10
+	MOVOU	344(R12), X11
+	MOVOU	360(R12), X12
+	MOVOU	376(R12), X13
+	MOVOU	392(R12), X14
+	MOVOU	408(R12), X15
+
 	// Load all GPRs from ThreadContext
 	MOVQ	0(R12), AX		// RAX
 	MOVQ	8(R12), BX		// RBX
@@ -314,6 +332,44 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	$0x08, 152(R12)		// CS = kernelCS
 	MOVQ	$0x10, 160(R12)		// SS = kernelSS
 
+	// Copy XMM state from global save area to ThreadContext.XMM (offset 168).
+	// XMM registers were saved to xmmSaveArea at entry before any Go code ran.
+	// We must persist them in the per-thread context so that when this thread is
+	// rescheduled, load_context_and_iretq restores the correct XMM state.
+	// Using X0 as temp is safe — it was already saved to the global buffer.
+	MOVOU	·xmmSaveArea+0(SB), X0
+	MOVOU	X0, 168(R12)
+	MOVOU	·xmmSaveArea+16(SB), X0
+	MOVOU	X0, 184(R12)
+	MOVOU	·xmmSaveArea+32(SB), X0
+	MOVOU	X0, 200(R12)
+	MOVOU	·xmmSaveArea+48(SB), X0
+	MOVOU	X0, 216(R12)
+	MOVOU	·xmmSaveArea+64(SB), X0
+	MOVOU	X0, 232(R12)
+	MOVOU	·xmmSaveArea+80(SB), X0
+	MOVOU	X0, 248(R12)
+	MOVOU	·xmmSaveArea+96(SB), X0
+	MOVOU	X0, 264(R12)
+	MOVOU	·xmmSaveArea+112(SB), X0
+	MOVOU	X0, 280(R12)
+	MOVOU	·xmmSaveArea+128(SB), X0
+	MOVOU	X0, 296(R12)
+	MOVOU	·xmmSaveArea+144(SB), X0
+	MOVOU	X0, 312(R12)
+	MOVOU	·xmmSaveArea+160(SB), X0
+	MOVOU	X0, 328(R12)
+	MOVOU	·xmmSaveArea+176(SB), X0
+	MOVOU	X0, 344(R12)
+	MOVOU	·xmmSaveArea+192(SB), X0
+	MOVOU	X0, 360(R12)
+	MOVOU	·xmmSaveArea+208(SB), X0
+	MOVOU	X0, 376(R12)
+	MOVOU	·xmmSaveArea+224(SB), X0
+	MOVOU	X0, 392(R12)
+	MOVOU	·xmmSaveArea+240(SB), X0
+	MOVOU	X0, 408(R12)
+
 	// Call SaveThread0AndYield() to get next thread's context
 	SUBQ	$16, SP
 	CALL	·SaveThread0AndYield(SB)
@@ -362,23 +418,23 @@ yr_halt:
 	HLT
 	JMP	yr_halt
 yr_rip_ok:
-	// Restore XMM registers (saved at entry before Go scheduler call)
-	MOVOU	·xmmSaveArea+0(SB), X0
-	MOVOU	·xmmSaveArea+16(SB), X1
-	MOVOU	·xmmSaveArea+32(SB), X2
-	MOVOU	·xmmSaveArea+48(SB), X3
-	MOVOU	·xmmSaveArea+64(SB), X4
-	MOVOU	·xmmSaveArea+80(SB), X5
-	MOVOU	·xmmSaveArea+96(SB), X6
-	MOVOU	·xmmSaveArea+112(SB), X7
-	MOVOU	·xmmSaveArea+128(SB), X8
-	MOVOU	·xmmSaveArea+144(SB), X9
-	MOVOU	·xmmSaveArea+160(SB), X10
-	MOVOU	·xmmSaveArea+176(SB), X11
-	MOVOU	·xmmSaveArea+192(SB), X12
-	MOVOU	·xmmSaveArea+208(SB), X13
-	MOVOU	·xmmSaveArea+224(SB), X14
-	MOVOU	·xmmSaveArea+240(SB), X15
+	// Restore XMM registers from target thread's ThreadContext.XMM (offset 168)
+	MOVOU	168(R12), X0
+	MOVOU	184(R12), X1
+	MOVOU	200(R12), X2
+	MOVOU	216(R12), X3
+	MOVOU	232(R12), X4
+	MOVOU	248(R12), X5
+	MOVOU	264(R12), X6
+	MOVOU	280(R12), X7
+	MOVOU	296(R12), X8
+	MOVOU	312(R12), X9
+	MOVOU	328(R12), X10
+	MOVOU	344(R12), X11
+	MOVOU	360(R12), X12
+	MOVOU	376(R12), X13
+	MOVOU	392(R12), X14
+	MOVOU	408(R12), X15
 
 	// Build IRETQ frame on current stack (same pattern as load_context_and_iretq)
 	LEAQ	-40(SP), SP		// make room for 5 QWORDs

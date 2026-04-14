@@ -78,6 +78,29 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 	RestoreIRQs(savedDAIF)
 }
 
+// WakeDelegateCallerThreadNoReturn wakes a blocked delegate caller without
+// modifying its saved registers. Used for MmapPageFill where the thread was
+// blocked by a page fault — the CPU must retry the faulting instruction with
+// the original register state intact (especially RAX).
+//
+//go:noinline
+func WakeDelegateCallerThreadNoReturn(pid int16, tid int32) {
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+
+	t := threadLookupByTID(tid)
+	if t != nil && t.PID == proc.ShepherdId(pid) && t.State == ThreadBlockedDelegate {
+		// Do NOT call SetReturnValue — preserve all saved registers
+		t.PreemptElapsed = 0
+		t.State = ThreadReady
+		enqueueReadySchedLockHeld(t)
+		asm.Dsb()
+	}
+
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
+}
+
 // BlockForWaitingIO blocks the current thread because the PL011 TX ring buffer
 // is full. The thread's WaitingIO fields must be set before calling this.
 // The TX interrupt top-half will drain from the thread's kernel buffer into the

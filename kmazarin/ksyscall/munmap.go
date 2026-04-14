@@ -40,12 +40,22 @@ func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
 		}
 	}
 
-	// Write back MAP_SHARED writable file-backed pages before unmapping.
-	// Must happen before RemoveFileMapping clears the metadata.
+	// For file-backed mappings: flush pages and clean up handler-side
+	// mappings via IPC rounds. Must happen before RemoveFileMapping
+	// clears metadata and before freeing physical pages.
+	//
+	// IMPORTANT: flushAndCleanupPages uses SetSyscallSwitchTarget which
+	// does NOT stop execution — code after it continues running before
+	// the IPC round-trip completes. The handler still needs to read the
+	// page data through its VA, so we must NOT free the physical pages
+	// here. They are released by handleFlushReply after the handler has
+	// finished reading and the handler PTEs are unmapped.
+	fileBacked := false
 	if p != nil {
 		fm := p.FindFileMappingByVA(alignedAddr)
-		if fm != nil && fm.Shared && fm.Writable {
-			writeBackSharedPages(fm)
+		if fm != nil {
+			fileBacked = true
+			flushAndCleanupPages(uint64(fm.FD), int16(p.PID))
 		}
 	}
 
@@ -54,12 +64,12 @@ func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
 		p.RemoveFileMapping(alignedAddr, alignedLength)
 	}
 
-	// Normal path: unmap individual pages
+	// Unmap caller PTEs and (for non-file-backed pages) free physical pages.
 	removeSpan(alignedAddr, alignedLength)
 
 	for va := alignedAddr; va < alignedEnd; va += pageSize {
 		pa := kmem.UnmapUserPage(uintptr(va))
-		if pa != 0 {
+		if pa != 0 && !fileBacked {
 			kmem.ReleasePageByPA(pa)
 		}
 	}
