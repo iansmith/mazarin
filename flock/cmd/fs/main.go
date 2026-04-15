@@ -101,13 +101,11 @@ func main() {
 			}
 		}
 		if sid >= 0 {
-			sys.UartWriteString(fmt.Sprintf("[ext2] TRACE ON sid=%d blocks=%d\n", sid, blocks))
 			syscall.RawSyscall6(0x1006, 0xDB6, uintptr(sid), 0, 0, 0, 0)
 		}
 	}
 	ext2.ReadBlocksPostHook = func(blocks int) {
 		// Disable tracing: set DbgTraceSID = -1
-		sys.UartWriteString("[ext2] TRACE OFF\n")
 		syscall.RawSyscall6(0x1006, 0xDB6, ^uintptr(0), 0, 0, 0, 0)
 	}
 
@@ -151,10 +149,12 @@ func main() {
 		fmt.Printf("[fs] AllocContiguous for scratch failed: %v\n", scratchErr)
 		os.Exit(1)
 	}
+	fmt.Printf("[fs] DMA scratch allocated: %d pages at %p\n", scratchPages, scratch.Addr)
 	// 4. Create block device.
 	blkDev := newAsyncBlockDev(scratch.Addr, ioRing, ringID)
 	ipcSrv := newFsIPCServer()
 
+	fmt.Println("[fs] attempting ext2 mount...")
 	fsys, mountErr := ext2.Mount(blkDev)
 	if mountErr != nil {
 		fmt.Printf("[fs] ext2 mount failed: %v\n", mountErr)

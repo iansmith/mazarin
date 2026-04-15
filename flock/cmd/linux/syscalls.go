@@ -259,6 +259,19 @@ func (h *syscallHandler) sysIoctl(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysFsync(req sys.SyscallRequest) {
+	fd := int(req.Arg0())
+
+	// Flush dirty cached pages for this fd to ext2 BEFORE syncing.
+	// The pwrite fast path writes directly to cached pages without
+	// touching ext2. Without this flush, fdatasync/fsync would leave
+	// stale data on disk, causing mmap coherence failures after re-mmap
+	// (bbolt reads zeros for pages it just wrote).
+	if fd >= 0 {
+		h.cache.FlushAllPagesForFD(req.CallerPID, fd, func(offset int64, data []byte) (int, error) {
+			return h.writePageToExt2(req.CallerPID, fd, offset, data)
+		})
+	}
+
 	if err := h.fs.Sync(); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -693,22 +706,8 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 		return
 	}
 
-	// If all pages in the write range are cached, write directly to the
-	// cached pages and mark them dirty. This is the fast path — no ext2
-	// round-trip. Dirty pages are flushed on munmap/msync/close.
-	if entries := h.cache.LookupRange(req.CallerPID, fd, e.offset, len(data)); len(entries) > 0 {
-		if written, ok := writeToCachedPages(entries, e.offset, data); ok {
-			h.cache.MarkDirty(req.CallerPID, fd, entries)
-			e.offset += int64(written)
-			if uint32(e.offset) > e.size {
-				e.size = uint32(e.offset)
-			}
-			req.Reply(int64(written))
-			return
-		}
-	}
-
-	// Slow path: not all pages cached, write through ext2.
+	// Always write through ext2 first — ensures on-disk data is current
+	// so mmap page faults after re-mmap see correct data (same fix as pwrite).
 	n := h.fs.WriteData(data)
 	written, err := h.fs.Write(e.handle, e.offset, n)
 	if err != nil {
@@ -805,21 +804,11 @@ func (h *syscallHandler) sysPwrite64(req sys.SyscallRequest) {
 
 	offset := int64(req.Args[3])
 
-	// Fast path: if all pages in the write range are cached, write directly
-	// to cached pages and mark dirty. No ext2 round-trip.
-	if entries := h.cache.LookupRange(req.CallerPID, fd, offset, len(data)); len(entries) > 0 {
-		if written, ok := writeToCachedPages(entries, offset, data); ok {
-			h.cache.MarkDirty(req.CallerPID, fd, entries)
-			endPos := offset + int64(written)
-			if uint32(endPos) > e.size {
-				e.size = uint32(endPos)
-			}
-			req.Reply(int64(written))
-			return
-		}
-	}
-
-	// Slow path: not all pages cached, write through ext2.
+	// Always write through ext2 first — this ensures the on-disk file is
+	// up to date so that mmap page faults after re-mmap see the correct data.
+	// The old "fast path" that bypassed ext2 broke mmap/pwrite coherence:
+	// pwrite updated cached pages only, then bolt re-mmapped, new page faults
+	// read from ext2 which still had zeros → bbolt panic.
 	n := h.fs.WriteData(data)
 	written, err := h.fs.Write(e.handle, offset, n)
 	if err != nil {
@@ -827,7 +816,8 @@ func (h *syscallHandler) sysPwrite64(req sys.SyscallRequest) {
 		return
 	}
 
-	// Update any cached pages that overlap.
+	// Update any cached pages that overlap so mmap reads without
+	// re-faulting also see the new data.
 	if entries := h.cache.LookupRange(req.CallerPID, fd, offset, written); len(entries) > 0 {
 		updateCachedPages(entries, offset, data[:written])
 	}
@@ -883,12 +873,7 @@ func (h *syscallHandler) sysMmapPageFill(req sys.SyscallRequest) {
 	if n > 0 {
 		copy(buf[:n], h.fs.DataSlice(n))
 	}
-	// Diagnostic: show what we filled
-	fmt.Printf("[mmap-fill] sid=%d fd=%d offset=%d n=%d dataVA=0x%x buf[0:20]=%02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x\n",
-		req.CallerPID, fd, offset, n, req.DataVA(),
-		buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-		buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
-		buf[16], buf[17], buf[18], buf[19])
+	// Verbose mmap-fill trace disabled — UART saturation starved CPU-bound shepherds.
 
 	// Record this page in the cache so read/pread/write/pwrite can
 	// see mmap'd data without going through ext2.
@@ -963,7 +948,7 @@ func (h *syscallHandler) sysMmapPageFlush(req sys.SyscallRequest) {
 		*(*uint64)(unsafe.Pointer(&responseBuf[offset])) = uint64(entry.VA)
 	}
 
-	fmt.Printf("[mmap-flush] sid=%d fd=%d removed=%d\n", callerSID, fd, count)
+	// Verbose mmap-flush trace disabled — UART saturation.
 	req.Reply(int64(count))
 }
 

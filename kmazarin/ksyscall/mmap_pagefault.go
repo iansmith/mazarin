@@ -52,16 +52,11 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 	}
 	zeroPage(scratchVA)
 
-	// Serial diagnostic: confirm allocation and zeroing
-	kmem.SerialPuts("[mmap-pf] alloc PA=")
-	kmem.SerialHex16(uint64(framePA))
-	kmem.SerialPuts(" faultVA=")
-	kmem.SerialHex16(uint64(pageAddr))
-	// Verify zero through scratch mapping
+	// Verify zero through scratch mapping (silent — only report failures)
 	word0 := *(*uint64)(unsafe.Pointer(scratchVA))
-	kmem.SerialPuts(" z0=")
-	kmem.SerialHex16(word0)
-	kmem.SerialPuts("\r\n")
+	if word0 != 0 {
+		klog.Errf("[mmap-pf] ZERO FAIL PA=%x z0=%x\n", uint64(framePA), word0)
+	}
 
 	// Map the frame into the linux shepherd's address space so it can fill it
 	handlerDataVA := bumpAllocForShepherd(handlerShepherd, 4096)
@@ -75,9 +70,6 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 	// Compute file offset for this page
 	pageOffset := uint64(pageAddr) - fm.StartVA
 	fileOffset := fm.FileOffset + pageOffset
-
-	// TEMPORARILY DISABLED to isolate mmap corruption bug:
-	// logMmapPageFault(callerSID, uint64(pageAddr), uint64(framePA), int32(fm.FD), fileOffset, handlerDataVA)
 
 	// Get current thread info for delegation tracking
 	_, callerTID := getCurrentThreadSIDAndTID()
@@ -109,7 +101,8 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 		DataLen:   4096,
 	}
 	msg := ipc.EncodeFSDelegateReq(&reqPayload)
-	result, _ := uringSendKernel(-1, handlerSID, uintptr(unsafe.Pointer(&msg)))
+	handlerRingIdx := syscallDelegates[sysid.Read].ringIdx
+	result, _ := uringSendKernel(-1, handlerSID, handlerRingIdx, uintptr(unsafe.Pointer(&msg)))
 	if result < 0 {
 		info.InUse = false
 		reclaimDataPage(framePA, handlerDataVA, handlerSID, handlerShepherd)
@@ -128,48 +121,3 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 	return true
 }
 
-// logMmapPageFault logs page fault details. Separated from handleFileMappedPageFault
-// so the nosplit chain doesn't grow. Uses klog which requires a normal Go stack.
-//
-//go:noinline
-func logMmapPageFault(sid int16, faultVA, pa uint64, fd int32, fileOff, handlerVA uint64) {
-	klog.Logf("[mmap-pf] sid=%d VB=%x PA=%x fd=%d off=%x hVB=%x\n",
-		sid, faultVA, pa, fd, fileOff, handlerVA)
-}
-
-// logMmapReply logs the reply-side mapping details.
-//
-//go:noinline
-func logMmapReply(callerSID int16, callerVA uintptr, pa uintptr, handlerVA uint64, flags uint32) {
-	klog.Logf("[mmap-reply] sid=%d cVA=%x PA=%x hVA=%x fl=%x\n",
-		callerSID, callerVA, pa, handlerVA, flags)
-}
-
-// diagMmapWake prints diagnostic info just before waking a page-fault-blocked thread.
-// Reads the first 8 bytes of the mmap page through the caller's page table
-// to verify the page is still clean before the thread resumes.
-//
-//go:noinline
-func diagMmapWake(callerSID int16, callerTID int32, callerVA uintptr, callerL0PA uintptr) {
-	if callerVA == 0 || callerL0PA == 0 {
-		return
-	}
-	// Read first 8 bytes through caller's page table
-	word0, ok := kmem.ReadUserUint64WithL0(callerVA, callerL0PA)
-	kmem.SerialPuts("[wake-diag] sid=")
-	kmem.SerialHex16(uint64(callerSID))
-	kmem.SerialPuts(" tid=")
-	kmem.SerialHex16(uint64(callerTID))
-	kmem.SerialPuts(" VA=")
-	kmem.SerialHex16(uint64(callerVA))
-	kmem.SerialPuts(" w0=")
-	kmem.SerialHex16(word0)
-	if !ok {
-		kmem.SerialPuts("(FAIL)")
-	}
-	// Also read saved RAX from thread context via bridge
-	rax := readThreadRAX(callerSID, callerTID)
-	kmem.SerialPuts(" RAX=")
-	kmem.SerialHex16(rax)
-	kmem.SerialPuts("\r\n")
-}

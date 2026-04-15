@@ -33,7 +33,8 @@ const MaxDelegateThreads = constants.ThreadPoolSize
 // 4-byte alignment. With int16, odd-indexed array elements would be
 // at 2-byte boundaries, causing misaligned load traps (scause=4).
 type delegateHandler struct {
-	pid int32 // handler shepherd PID (-1 = unregistered)
+	pid     int32 // handler shepherd PID (-1 = unregistered)
+	ringIdx uint8 // which ring on the handler to send delegate requests to
 }
 
 // DelegateCallInfo records per-caller-thread state while a delegated syscall
@@ -373,7 +374,8 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		DataLen:   dataLen,
 	}
 	msg := ipc.EncodeFSDelegateReq(&reqPayload)
-	result, _ := uringSendKernel(-1, handlerSID, uintptr(unsafe.Pointer(&msg)))
+	handlerRingIdx := syscallDelegates[id].ringIdx
+	result, _ := uringSendKernel(-1, handlerSID, handlerRingIdx, uintptr(unsafe.Pointer(&msg)))
 	if result < 0 {
 		// Ring full or target gone — reclaim and fail.
 		if int(callerTID) < MaxDelegateThreads {
@@ -535,13 +537,19 @@ func reclaimDataPage(pa uintptr, handlerVA uint64, handlerSID int16, handlerShep
 // for a specific SysID. Can be called multiple times for different SysIDs.
 //
 // arg0 = SysID to handle
+// arg1 = ring index on this shepherd to receive delegate requests (0 = default)
 // Returns: 0 on success, negative errno on error.
 //
 //go:noinline
-func SyscallRegisterSyscallHandler(arg0, _, _, _, _, _ uint64) int64 {
+func SyscallRegisterSyscallHandler(arg0, arg1, _, _, _, _ uint64) int64 {
 	id := sysid.ID(arg0)
 	if id == sysid.Invalid || id >= sysid.NumIDs {
 		return -22 // EINVAL
+	}
+
+	ringIdx := uint8(arg1)
+	if ringIdx >= ipc.MaxRingsPerShepherd {
+		return -22 // EINVAL — invalid ring index
 	}
 
 	callerShepherd := proc.CurrentShepherd()
@@ -553,6 +561,7 @@ func SyscallRegisterSyscallHandler(arg0, _, _, _, _, _ uint64) int64 {
 	if !atomic.CompareAndSwapInt32(&h.pid, -1, int32(callerShepherd.PID)) {
 		return -16 // EBUSY — already registered
 	}
+	h.ringIdx = ringIdx
 
 	return 0
 }
@@ -580,16 +589,10 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 
 	// Look up the in-flight call info
 	isPageFaultReply := false
-	var pageFaultCallerVA uintptr
-	var pageFaultCallerL0PA uintptr
 	if int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
 		if info.InUse {
 			isPageFaultReply = info.SysID == sysid.MmapPageFill
-			if isPageFaultReply {
-				pageFaultCallerVA = uintptr(info.CallerBufVA)
-				pageFaultCallerL0PA = info.CallerL0PA
-			}
 			// Verify the replying shepherd is the registered handler for this
 			// delegation. Without this check, any shepherd that guesses a
 			// caller's TID could forge a reply with an arbitrary return value.
@@ -617,32 +620,11 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 					if info.WritableMapping {
 						elfFlags |= kmem.ELF_PF_W
 					}
-					logMmapReply(info.CallerSID, uintptr(info.CallerBufVA), info.DataPagePA, info.DataPageVA, elfFlags)
 					mapOK := kmem.MapPageInProcess(info.CallerSID, uintptr(info.CallerBufVA), info.DataPagePA, elfFlags)
 
-					// Serial diagnostic: verify mapping
-					kmem.SerialPuts("[mmap-verify] PA=")
-					kmem.SerialHex16(uint64(info.DataPagePA))
-					kmem.SerialPuts(" cVA=")
-					kmem.SerialHex16(uint64(info.CallerBufVA))
-					kmem.SerialPuts(" map=")
-					if mapOK {
-						kmem.SerialPuts("OK")
-					} else {
-						kmem.SerialPuts("FAIL")
+					if !mapOK {
+						klog.Errf("[mmap-verify] MAP FAIL PA=%x cVA=%x\n", uint64(info.DataPagePA), uint64(info.CallerBufVA))
 					}
-					// Walk caller's page table to verify PTE points to correct PA
-					mappedPA := kmem.WalkUserPageTableWithL0(uintptr(info.CallerBufVA), callerShepherd.PageTableL0PA)
-					kmem.SerialPuts(" ptePA=")
-					kmem.SerialHex16(uint64(mappedPA))
-					// Read first 8 bytes through caller's page table
-					word0, rok := kmem.ReadUserUint64WithL0(uintptr(info.CallerBufVA), callerShepherd.PageTableL0PA)
-					kmem.SerialPuts(" w0=")
-					kmem.SerialHex16(word0)
-					if !rok {
-						kmem.SerialPuts("(FAIL)")
-					}
-					kmem.SerialPuts("\r\n")
 
 					// Handler-side pageCache tracks the dual mapping.
 					// On munmap/death, flushAndCleanupPages sends IPC
@@ -712,8 +694,6 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	// can retry the faulting instruction after IRETQ. SetReturnValue (which
 	// overwrites RAX) would corrupt the register state and lose the write.
 	if isPageFaultReply {
-		// Diagnostic: verify page content and saved registers before wake
-		diagMmapWake(callerSID, int32(callerTID), pageFaultCallerVA, pageFaultCallerL0PA)
 		wakeDelegateCallerThreadNoReturn(callerSID, int32(callerTID))
 	} else {
 		wakeDelegateCallerThread(callerSID, int32(callerTID), returnVal)
@@ -951,3 +931,4 @@ func SyscallDeathAck(arg0, _, _, _, _, _ uint64) int64 {
 
 //go:linkname completeDeferredCleanup main.CompleteDeferredCleanup
 func completeDeferredCleanup(deadSID int16)
+

@@ -1,6 +1,8 @@
 package ext2
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+)
 
 // ErrReadOnly is returned when a write operation is attempted on a read-only mount.
 var ErrReadOnly = &Ext2Error{"filesystem mounted read-only"}
@@ -849,3 +851,4 @@ func (fs *FileSystem) ResolveInode(path string) (uint32, error) {
 	}
 	return de.Inode, nil
 }
+

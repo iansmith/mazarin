@@ -63,7 +63,6 @@ func flushAndCleanupPages(fd uint64, callerSID int16) {
 	kmem.MapPageInProcess(handlerSID, uintptr(responseHandlerVA), responsePA, 0) // RW
 	handlerShepherd.Spans.Add(responseHandlerVA, 4096)
 
-	klog.Logf("[mmap-flush] sid=%d fd=%x sending first round\n", callerSID, fd)
 
 	// Set up DelegateCallInfo with flush round state
 	info := &delegateCallInfos[callerTID]
@@ -97,7 +96,8 @@ func sendFlushRound(info *DelegateCallInfo, handlerSID int16, callerSID int16, c
 		DataLen:   4096,
 	}
 	msg := ipc.EncodeFSDelegateReq(&reqPayload)
-	result, _ := uringSendKernel(-1, handlerSID, uintptr(unsafe.Pointer(&msg)))
+	handlerRingIdx := syscallDelegates[sysid.Write].ringIdx
+	result, _ := uringSendKernel(-1, handlerSID, handlerRingIdx, uintptr(unsafe.Pointer(&msg)))
 	if result < 0 {
 		info.InUse = false
 		cleanupFlushResponsePage(info, handlerSID)
@@ -134,7 +134,6 @@ func handleFlushReply(callerTID int16, info *DelegateCallInfo) bool {
 	count := *(*uint32)(unsafe.Pointer(scratchVA))
 	vasPtr := (*[maxFlushVAsPerRound]uint64)(unsafe.Pointer(scratchVA + 8))
 
-	klog.Logf("[mmap-flush] reply: count=%d\n", count)
 
 	// Unmap each handler VA from the handler's page table and release
 	// the physical page. The caller's PTE was already removed by
@@ -156,7 +155,6 @@ func handleFlushReply(callerTID int16, info *DelegateCallInfo) bool {
 
 	// If response was full, there may be more — send another round
 	if count == maxFlushVAsPerRound {
-		klog.Logf("[mmap-flush] count==511, sending another round\n")
 
 		// Re-send flush IPC. The info fields are still set up correctly.
 		// We need to send from the handler's SVC context. uringSendKernel
@@ -170,7 +168,8 @@ func handleFlushReply(callerTID int16, info *DelegateCallInfo) bool {
 			DataLen:   4096,
 		}
 		msg := ipc.EncodeFSDelegateReq(&reqPayload)
-		result, _ := uringSendKernel(-1, handlerSID, uintptr(unsafe.Pointer(&msg)))
+		flushRingIdx := syscallDelegates[sysid.Write].ringIdx
+		result, _ := uringSendKernel(-1, handlerSID, flushRingIdx, uintptr(unsafe.Pointer(&msg)))
 		if result < 0 {
 			klog.Errf("[mmap-flush] uring send failed on round continuation\n")
 			cleanupFlushResponsePage(info, handlerSID)

@@ -157,9 +157,6 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 		return -12 // ENOMEM
 	}
 
-	// Trace ALL mmap results for file-backed and anonymous MAP_SHARED
-	logMmapResult(addr, alignedLength, flags, fd, result)
-
 	// DEBUG: Check for pre-existing PTEs in the allocated VA range.
 	// This detects overlap with Go runtime heap pages.
 	if (flags&0x20) == 0 && fd != ^uint64(0) && int64(fd) >= 0 {
@@ -175,7 +172,6 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 		p := proc.CurrentShepherd()
 		if p != nil {
 			p.AddFileMapping(result, alignedLength, int16(p.PID), int32(fd), offset, isWritable, isShared)
-			logFileMmap(result, alignedLength, fd)
 		}
 	}
 
@@ -200,27 +196,10 @@ func scanForStalePTEs(va, length, fd uint64) {
 		pa := kmem.WalkUserPageTableWithL0(pageVA, l0PA)
 		if pa != 0 {
 			staleCount++
-			if staleCount <= 4 {
-				kmem.SerialPuts("[mmap:STALE] fd=")
-				kmem.SerialHex16(fd)
-				kmem.SerialPuts(" va=")
-				kmem.SerialHex16(uint64(pageVA))
-				kmem.SerialPuts(" existingPA=")
-				kmem.SerialHex16(uint64(pa))
-				kmem.SerialPuts("\r\n")
-			}
 		}
 	}
 	if staleCount > 0 {
-		kmem.SerialPuts("[mmap:STALE] total=")
-		kmem.SerialHex16(staleCount)
-		kmem.SerialPuts(" in fd=")
-		kmem.SerialHex16(fd)
-		kmem.SerialPuts(" range ")
-		kmem.SerialHex16(va)
-		kmem.SerialPuts("-")
-		kmem.SerialHex16(va + length)
-		kmem.SerialPuts("\r\n")
+		klog.Errf("[mmap:STALE] total=%x in fd=%x range %x-%x\n", staleCount, fd, va, va+length)
 	}
 }
 
@@ -239,14 +218,6 @@ func checkMapFixedFileOverlap(addr, length uint64) {
 		klog.Errf("[MAP_FIXED:OVERLAP] sid=%d addr=%x len=%x HITS file mapping fd=%d [%x, %x)\n",
 			p.PID, addr, length, fm.FD, fm.StartVA, fm.StartVA+fm.Length)
 	}
-}
-
-// logFileMmap logs a file-backed mmap recording. Called from the nosplit
-// SyscallMmap via a non-nosplit helper so we can use klog.
-//
-//go:noinline
-func logFileMmap(va, length, fd uint64) {
-	klog.Logf("[mmap:F] va=%x l=%x fd=%d\n", va, length, fd)
 }
 
 // mmapENOMEM logs an mmap ENOMEM via direct UART. path identifies which
@@ -280,36 +251,6 @@ func mmapENOMEM(path byte, addr, length uint64) {
 	serial.PollWrite('\r')
 	serial.PollWrite('\n')
 	kmem.LogPageBreakdown()
-}
-
-// logMmapResult traces mmap calls via serial. Shows hint, result VA, flags, fd.
-// Only logs for the specific SID we're debugging (30 = maildb).
-//
-//go:noinline
-func logMmapResult(addr, alignedLength, flags, fd, result uint64) {
-	p := proc.CurrentShepherd()
-	if p == nil {
-		return
-	}
-	// Only trace file-backed and MAP_FIXED mmaps (skip anonymous heap noise)
-	if fd == ^uint64(0) && (flags&_MAP_FIXED) == 0 {
-		return
-	}
-	kmem.SerialPuts("[mmap-trace] sid=")
-	kmem.SerialHex16(uint64(p.PID))
-	kmem.SerialPuts(" hint=")
-	kmem.SerialHex16(addr)
-	kmem.SerialPuts(" len=")
-	kmem.SerialHex16(alignedLength)
-	kmem.SerialPuts(" fl=")
-	kmem.SerialHex16(flags)
-	kmem.SerialPuts(" fd=")
-	kmem.SerialHex16(fd)
-	kmem.SerialPuts(" →va=")
-	kmem.SerialHex16(result)
-	kmem.SerialPuts(" bp=")
-	kmem.SerialHex16(atomic.LoadUint64(&p.BumpPointer))
-	kmem.SerialPuts("\r\n")
 }
 
 // GetUserMmapAllocEnd returns the current end of userspace mmap allocations

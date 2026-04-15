@@ -208,6 +208,8 @@ func (s *fsIPCServer) ipcOpen(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *i
 		if err == ext2.ErrNotFound && (flags&oCREAT) != 0 {
 			f, createErr := fsys.Create(relPath, mode|ext2.PermOwnerRW)
 			if createErr != nil {
+				fmt.Printf("[fs:open] O_CREAT failed: path=%s rel=%s resolve=%v create=%v\n",
+					path, relPath, err, createErr)
 				resp.Err = ext2ToErrno(createErr)
 				return
 			}
@@ -346,7 +348,8 @@ func (s *fsIPCServer) ipcMkdir(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *
 	path := pathFromReq(conn, req)
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
-	resp.Err = ext2ToErrno(fsys.Mkdir(relPath, uint16(req.Mode)))
+	err := fsys.Mkdir(relPath, uint16(req.Mode))
+	resp.Err = ext2ToErrno(err)
 }
 
 func (s *fsIPCServer) ipcRemove(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
