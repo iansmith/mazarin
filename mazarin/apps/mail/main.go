@@ -176,7 +176,7 @@ func main() {
 	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = readyAttr
 
-	app.AnnounceToWM(0, 0, int32(winW), int32(winH))
+	app.AnnounceToWM(600, 0, int32(winW), int32(winH))
 	fmt.Printf("[mail:timing] announce: %v\n", time.Since(t0))
 
 	// 9. Wait for BackingStoreReady.

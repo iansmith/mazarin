@@ -196,7 +196,7 @@ func main() {
 	ftiRespCh := make(chan any, 16)
 
 	// FTI tracker: drains fti responses, frees shared pages, notifies UI.
-	ftiTracker := newFTITracker(ftiRespCh, notifyStatus)
+	ftiTracker := newFTITracker(ftiRespCh, ftiSID, notifyStatus)
 
 	// Channel to receive db handle from import goroutine.
 	type importResult struct {
@@ -221,7 +221,6 @@ func main() {
 	go func() {
 		bdb, err := mboxImport(
 			"/data/mail/mbox/gmail/important.partial.mbox",
-			ftiSID,
 			ftiTracker,
 			notifyStatus,
 		)

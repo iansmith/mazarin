@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -24,96 +25,137 @@ import (
 type pendingIndex struct {
 	pagePtr  unsafe.Pointer
 	numPages int
+	display  string // short human-readable description (from — subject)
 }
 
-// ftiTracker manages outstanding fti IndexDocument requests. It runs a
-// goroutine that drains completion responses from fti, frees the shared
-// pages, and notifies the UI.
+// ftiQueueItem holds the data needed to send one IndexDocument request to fti.
+type ftiQueueItem struct {
+	messageId string
+	subject   string
+	from      string
+	sender    string
+	date      string
+	body      string
+	display   string
+}
+
+// ftiTracker manages fti IndexDocument requests. It accepts items into a queue
+// and sends them one at a time, waiting for each confirmation before sending
+// the next.
 type ftiTracker struct {
-	mu       sync.Mutex
-	pending  map[string]pendingIndex // docId -> shared page info
-	inflight int                     // number of outstanding requests
-	done     chan struct{}           // closed when all inflight requests are drained
-	closed   bool                   // set when no more requests will be sent
+	mu      sync.Mutex
+	pending map[string]pendingIndex // docId -> shared page info
+
+	queue  chan ftiQueueItem // incoming items to index
+	done   chan struct{}     // closed when all items are indexed
+	ftiSID int
 }
 
-func newFTITracker(ftiRespCh <-chan any, notify func(string)) *ftiTracker {
+func newFTITracker(ftiRespCh <-chan any, ftiSID int, notify func(string)) *ftiTracker {
 	t := &ftiTracker{
 		pending: make(map[string]pendingIndex),
+		queue:   make(chan ftiQueueItem, 256),
 		done:    make(chan struct{}),
+		ftiSID:  ftiSID,
 	}
-	go t.drainLoop(ftiRespCh, notify)
+	go t.sendLoop(ftiRespCh, notify)
 	return t
 }
 
-// track registers a pending IndexDocument request.
-func (t *ftiTracker) track(docId string, pagePtr unsafe.Pointer, numPages int) {
-	t.mu.Lock()
-	t.pending[docId] = pendingIndex{pagePtr: pagePtr, numPages: numPages}
-	t.inflight++
-	t.mu.Unlock()
+// enqueue adds an item to the indexing queue.
+func (t *ftiTracker) enqueue(item ftiQueueItem) {
+	t.queue <- item
 }
 
-// close signals that no more requests will be sent. The drain goroutine
-// will close t.done after all outstanding requests complete.
+// close signals that no more items will be enqueued. The send loop will
+// drain remaining items and close t.done when finished.
 func (t *ftiTracker) close() {
-	t.mu.Lock()
-	t.closed = true
-	if t.inflight == 0 {
-		close(t.done)
-	}
-	t.mu.Unlock()
+	close(t.queue)
 }
 
-// wait blocks until all outstanding fti requests have completed.
+// wait blocks until all queued items have been indexed.
 func (t *ftiTracker) wait() {
 	<-t.done
 }
 
-// drainLoop reads fti responses, frees shared pages, and notifies the UI.
-func (t *ftiTracker) drainLoop(ftiRespCh <-chan any, notify func(string)) {
-	for resp := range ftiRespCh {
-		var docId string
-		var errMsg string
+// sendLoop reads items from the queue one at a time, sends each to fti,
+// and waits for the confirmation response before sending the next.
+func (t *ftiTracker) sendLoop(ftiRespCh <-chan any, notify func(string)) {
+	defer close(t.done)
 
-		switch r := resp.(type) {
-		case fti.IndexingCompleted:
-			docId = fti.UnpackCompletedId(&r)
-			fmt.Printf("[maildb] fti indexed: %s\n", docId)
-			notify(fmt.Sprintf("Indexed: %s", docId))
-		case fti.IndexError:
-			docId, errMsg = fti.UnpackIndexError(&r)
-			fmt.Printf("[maildb] fti error: %s: %s\n", docId, errMsg)
-			notify(fmt.Sprintf("Index error: %s", errMsg))
-		default:
-			fmt.Printf("[maildb] unexpected fti response: %T\n", resp)
+	var totalBytes int64
+	var totalDur time.Duration
+	count := 0
+
+	for item := range t.queue {
+		bodyLen := len(item.body)
+		t0 := time.Now()
+		if err := fireToFTI(item.messageId, item.subject, item.from, item.sender, item.date, item.body, t.ftiSID, t, item.display); err != nil {
+			fmt.Printf("[maildb] fti send failed (non-fatal): %v\n", err)
 			continue
 		}
+		// Wait for fti to confirm this item before sending the next.
+		t.waitForOne(ftiRespCh, notify)
+		elapsed := time.Since(t0)
 
-		// Free the shared pages.
-		t.mu.Lock()
-		if pi, ok := t.pending[docId]; ok {
-			mem.FreePages(pi.pagePtr, pi.numPages)
-			delete(t.pending, docId)
-		}
-		t.inflight--
-		shouldClose := t.closed && t.inflight == 0
-		t.mu.Unlock()
+		count++
+		totalBytes += int64(bodyLen)
+		totalDur += elapsed
 
-		if shouldClose {
-			close(t.done)
-			return
-		}
+		mbps := float64(bodyLen) / elapsed.Seconds() / (1024 * 1024)
+		fmt.Printf("[maildb] fti: indexed %d/%d (%d bytes in %v, %.2f MB/s, cumulative %.2f MB/s)\n",
+			count, count, bodyLen, elapsed.Round(time.Microsecond),
+			mbps, float64(totalBytes)/totalDur.Seconds()/(1024*1024))
+	}
+
+	if count > 0 {
+		fmt.Printf("[maildb] fti: complete — %d docs, %d bytes in %v (%.2f MB/s avg)\n",
+			count, totalBytes, totalDur.Round(time.Millisecond),
+			float64(totalBytes)/totalDur.Seconds()/(1024*1024))
 	}
 }
 
+// waitForOne blocks until one fti response arrives, frees its shared pages,
+// and notifies the UI.
+func (t *ftiTracker) waitForOne(ftiRespCh <-chan any, notify func(string)) {
+	resp, ok := <-ftiRespCh
+	if !ok {
+		return
+	}
+
+	var docId string
+	var errMsg string
+
+	switch r := resp.(type) {
+	case fti.IndexingCompleted:
+		docId = fti.UnpackCompletedId(&r)
+	case fti.IndexError:
+		docId, errMsg = fti.UnpackIndexError(&r)
+		fmt.Printf("[maildb] fti error: %s: %s\n", docId, errMsg)
+		notify(fmt.Sprintf("Index error: %s", errMsg))
+	default:
+		fmt.Printf("[maildb] unexpected fti response: %T\n", resp)
+		return
+	}
+
+	t.mu.Lock()
+	if pi, ok := t.pending[docId]; ok {
+		if errMsg == "" {
+			notify(fmt.Sprintf("Indexed: %s", pi.display))
+		}
+		mem.FreePages(pi.pagePtr, pi.numPages)
+		delete(t.pending, docId)
+	}
+	t.mu.Unlock()
+}
+
 // mboxImport parses the mbox file inside mboxDir and writes each message's
-// headers + body into BadgerDB. Each message body is also sent (non-blocking)
-// to the fti shepherd for full-text indexing via shared memory pages.
+// headers + body into BadgerDB. Each message body is also enqueued for
+// full-text indexing via the ftiTracker (sent one at a time).
 //
 // Returns the open db immediately after badger flush. FTI indexing continues
 // in the background via the ftiTracker.
-func mboxImport(mboxDir string, ftiSID int, tracker *ftiTracker, notify func(string)) (*badger.DB, error) {
+func mboxImport(mboxDir string, tracker *ftiTracker, notify func(string)) (*badger.DB, error) {
 	mboxPath := mboxDir + "/mbox"
 
 	fmt.Printf("[maildb] mboxImport: opening %s\n", mboxPath)
@@ -160,7 +202,7 @@ func mboxImport(mboxDir string, ftiSID int, tracker *ftiTracker, notify func(str
 				count++
 				fmt.Printf("[maildb] parse: msg %d id=%s subj=%q body=%d bytes\n",
 					count, headers["message-id"], headers["subject"], len(bodyStr))
-				if storeErr := storeParsedMessage(wb, headers, bodyStr, ftiSID, tracker); storeErr != nil {
+				if storeErr := storeParsedMessage(wb, headers, bodyStr, tracker, notify); storeErr != nil {
 					fmt.Printf("[maildb] store error: %v\n", storeErr)
 					count--
 				}
@@ -206,16 +248,16 @@ func mboxImport(mboxDir string, ftiSID int, tracker *ftiTracker, notify func(str
 	fmt.Printf("[maildb] mboxImport: badger flush complete, %d messages stored\n", count)
 	notify(fmt.Sprintf("Import complete: %d messages in database", count))
 
-	// Signal that no more fti requests will be sent.
+	// Signal that no more fti requests will be enqueued.
 	tracker.close()
 
 	return db, nil
 }
 
 // storeParsedMessage writes message metadata + body to BadgerDB, then
-// fires off a non-blocking IndexDocument to fti. The tracker goroutine
-// handles completion and page cleanup.
-func storeParsedMessage(wb *badger.WriteBatch, headers map[string]string, body string, ftiSID int, tracker *ftiTracker) error {
+// enqueues the message for fti indexing. The tracker sends items one at
+// a time and handles completion/page cleanup.
+func storeParsedMessage(wb *badger.WriteBatch, headers map[string]string, body string, tracker *ftiTracker, notify func(string)) error {
 	messageId := strings.Trim(headers["message-id"], "<> ")
 	if messageId == "" {
 		return fmt.Errorf("no message-id")
@@ -265,13 +307,25 @@ func storeParsedMessage(wb *badger.WriteBatch, headers map[string]string, body s
 		}
 	}
 
-	fmt.Printf("[maildb] badger: stored %s (%s — %s)\n", messageId, from, subject)
-
-	// Send to fti (non-blocking — tracker handles completion).
-	if err := fireToFTI(messageId, subject, from, sender, date, body, ftiSID, tracker); err != nil {
-		// FTI send failure is non-fatal — message is in badger, just not indexed.
-		fmt.Printf("[maildb] fti send failed (non-fatal): %v\n", err)
+	// Build a short display string for UI notifications.
+	display := from
+	if subject != "" {
+		display += " — " + subject
 	}
+
+	fmt.Printf("[maildb] badger: stored %s (%s)\n", messageId, display)
+	notify(fmt.Sprintf("Stored: %s", display))
+
+	// Enqueue for fti indexing (tracker sends one at a time).
+	tracker.enqueue(ftiQueueItem{
+		messageId: messageId,
+		subject:   subject,
+		from:      from,
+		sender:    sender,
+		date:      date,
+		body:      body,
+		display:   display,
+	})
 
 	return nil
 }
@@ -279,7 +333,7 @@ func storeParsedMessage(wb *badger.WriteBatch, headers map[string]string, body s
 // fireToFTI allocates shared pages, writes the SharedPageHeader + fields +
 // body, shares the pages with fti, and sends an IndexDocument request.
 // Does NOT wait for a response — the ftiTracker handles that.
-func fireToFTI(messageId, subject, from, sender, date, body string, ftiSID int, tracker *ftiTracker) error {
+func fireToFTI(messageId, subject, from, sender, date, body string, ftiSID int, tracker *ftiTracker, display string) error {
 	headerAndFields := fti.SharedPageHeaderSize + len(subject) + len(from) + len(sender) + len(date)
 	totalBytes := headerAndFields + len(body)
 	numPages := (totalBytes + 4095) / 4096
@@ -303,7 +357,9 @@ func fireToFTI(messageId, subject, from, sender, date, body string, ftiSID int, 
 	}
 
 	// Register with tracker BEFORE sending so the response can't arrive first.
-	tracker.track(messageId, pagePtr, numPages)
+	tracker.mu.Lock()
+	tracker.pending[messageId] = pendingIndex{pagePtr: pagePtr, numPages: numPages, display: display}
+	tracker.mu.Unlock()
 
 	doc := fti.PackIndexDocument(
 		fti.IndexTypeMailMessage,
@@ -317,7 +373,6 @@ func fireToFTI(messageId, subject, from, sender, date, body string, ftiSID int, 
 		// Undo the track — we never sent.
 		tracker.mu.Lock()
 		delete(tracker.pending, messageId)
-		tracker.inflight--
 		tracker.mu.Unlock()
 		mem.FreePages(pagePtr, numPages)
 		return fmt.Errorf("uring.Send: %w", err)
