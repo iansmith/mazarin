@@ -1,6 +1,8 @@
-// maildb is a userspace shepherd that owns a SQLite database of mail
+// maildb is a userspace shepherd that owns a BadgerDB database of mail
 // messages. It loads mail-ui.maz for the console UI and processes
-// query strings received via the MailDBIO QueryChannel.
+// query strings received via the MailDBIO QueryChannel. It also serves
+// mail protocol requests (GetHeaders, GetBody) from the mail shepherd
+// over uring IPC. Full-text indexing is delegated to the fti shepherd.
 package main
 
 import (
@@ -9,14 +11,15 @@ import (
 	"unsafe"
 
 	badger "github.com/dgraph-io/badger/v4"
-	"github.com/blevesearch/bleve/v2"
 
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/maildbio"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
+	"mazzy/shared/fti"
 	"mazzy/shared/ipc"
+	"mazzy/shared/mail"
 	"mazzy/flock/cmd/maildb/shared"
 )
 
@@ -41,16 +44,38 @@ func forceMailDBIOItab(v interface{}) {
 
 // startUringDispatcher sets up the uring Dispatcher for shared.
 // WM and font response messages are forwarded to mail-ui via the
-// injection channels.
-func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh chan any) {
+// injection channels. Mail protocol requests are dispatched to the
+// mailHandler. FTI responses are sent to ftiRespCh.
+func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh chan any, mh *mailHandler, ftiRespCh chan any) {
 	d := uring.NewDispatcher()
 	d.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
 	d.On(ipc.ProtoFontResponse, decodeRawPayload, fontReplyCh)
 	d.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
+	d.OnFunc(ipc.ProtoMailReq, decodeMailReqWithSID, func(v any) {
+		if tagged, ok := v.(taggedMailReq); ok {
+			mh.handleMailReq(tagged.req, tagged.senderSID)
+		}
+	})
+	d.On(ipc.ProtoFTIResp, fti.DecodeFTIResp, ftiRespCh)
 	d.OnDeath(func(deadSID int16) {
 		fmt.Printf("[maildb] shepherd %d died\n", deadSID)
 	})
 	d.Start()
+}
+
+// taggedMailReq wraps a decoded mail request with the sender's SID.
+type taggedMailReq struct {
+	req       any
+	senderSID int16
+}
+
+// decodeMailReqWithSID decodes a ProtoMailReq and preserves the sender SID.
+func decodeMailReqWithSID(msg *ipc.UringIPCMsg) any {
+	decoded := mail.DecodeMailReq(msg)
+	if decoded == nil {
+		return nil
+	}
+	return taggedMailReq{req: decoded, senderSID: msg.SenderSID}
 }
 
 // decodeRawPayload copies the raw UringIPCMsg payload without interpreting it.
@@ -60,86 +85,85 @@ func decodeRawPayload(msg *ipc.UringIPCMsg) any {
 	return raw
 }
 
-// handleQuery searches the bleve index and sends matching messages
-// as a Response on respCh.
-func handleQuery(query string, respCh chan<- shared.Response, index bleve.Index, db *badger.DB) {
-	fmt.Printf("[maildb] query: %s\n", query)
+// handleList sends all messages in reverse chronological order.
+// Uses the date-indexed keys ("date:<RFC3339>:<messageId>") for ordering.
+func handleList(db *badger.DB, respCh chan<- shared.Response) {
+	// First, count messages.
+	var total int
+	_ = db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		opts.Prefix = []byte("date:")
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek([]byte("date:")); it.Valid(); it.Next() {
+			total++
+		}
+		return nil
+	})
 
-	req := bleve.NewSearchRequest(bleve.NewQueryStringQuery(query))
-	req.Size = 50
-	result, err := index.Search(req)
-	if err != nil {
-		respCh <- shared.Response{Error: fmt.Sprintf("search error: %v", err)}
-		return
-	}
+	resultCh := make(chan shared.MailMessage, 64)
+	respCh <- shared.Response{Total: total, Results: resultCh}
 
-	resultCh := make(chan shared.MailMessage, len(result.Hits)+1)
-	respCh <- shared.Response{Results: resultCh}
-
-	for _, hit := range result.Hits {
-		var msg shared.MailMessage
-		_ = db.View(func(txn *badger.Txn) error {
-			item, err := txn.Get([]byte(hit.ID))
-			if err != nil {
-				return err
+	_ = db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte("date:")
+		opts.Reverse = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek([]byte("date:\xff")); it.Valid(); it.Next() {
+			key := string(it.Item().Key())
+			// Key: "date:<RFC3339>:<messageId>" — extract messageId after 2nd colon.
+			if len(key) < 6 {
+				continue
 			}
-			return item.Value(func(val []byte) error {
+			rest := key[5:] // skip "date:"
+			colonIdx := -1
+			for i := 0; i < len(rest); i++ {
+				if rest[i] == ':' {
+					colonIdx = i
+					break
+				}
+			}
+			if colonIdx < 0 || colonIdx+1 >= len(rest) {
+				continue
+			}
+			msgID := rest[colonIdx+1:]
+
+			item, err := txn.Get([]byte(msgID))
+			if err != nil {
+				continue
+			}
+			var msg shared.MailMessage
+			_ = item.Value(func(val []byte) error {
 				return json.Unmarshal(val, &msg)
 			})
-		})
-		if msg.MessageId != "" {
-			resultCh <- msg
+			if msg.MessageId != "" {
+				resultCh <- msg
+			}
 		}
-	}
+		return nil
+	})
 	close(resultCh)
-}
-
-// testSearch runs a bleve search and sends results to the console via notify.
-func testSearch(term string, index bleve.Index, db *badger.DB, notify func(string)) {
-	fmt.Printf("[maildb] testSearch: %q\n", term)
-	notify(fmt.Sprintf("--- Search: \"%s\" ---", term))
-	req := bleve.NewSearchRequest(bleve.NewQueryStringQuery(term))
-	req.Size = 10
-	result, err := index.Search(req)
-	if err != nil {
-		notify(fmt.Sprintf("  error: %v", err))
-		return
-	}
-	fmt.Printf("[maildb] testSearch %q: %d hits\n", term, result.Total)
-	if len(result.Hits) == 0 {
-		notify("  (no results)")
-		return
-	}
-	for _, hit := range result.Hits {
-		var msg shared.MailMessage
-		_ = db.View(func(txn *badger.Txn) error {
-			item, err := txn.Get([]byte(hit.ID))
-			if err != nil {
-				return err
-			}
-			return item.Value(func(val []byte) error {
-				return json.Unmarshal(val, &msg)
-			})
-		})
-		if msg.MessageId != "" {
-			notify(fmt.Sprintf("  %.2f  %s — %s", hit.Score, msg.From, msg.Subject))
-		}
-	}
-	notify(fmt.Sprintf("  %d hits (showing top %d)", result.Total, len(result.Hits)))
+	fmt.Printf("[maildb] list: sent %d messages\n", total)
 }
 
 func main() {
 	fmt.Println("[maildb] main() entered")
 
-	// 1. Wait for fs and rachel.
+	// 1. Wait for fs, rachel, and fti.
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[maildb] FATAL: fs: %v", err))
 	}
 	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
 		panic(fmt.Sprintf("[maildb] FATAL: rachel: %v", err))
 	}
+	if err := sys.WaitForShepherdReady("fti", 10); err != nil {
+		panic(fmt.Sprintf("[maildb] FATAL: fti: %v", err))
+	}
 	rachelSID := sys.MustGetShepherdByName("rachel")
 	fsSID := sys.MustGetShepherdByName("fs")
+	ftiSID := sys.MustGetShepherdByName("fti")
 	fsClient := fsclient.New(fsSID)
 
 	// 2. Prepare MailDBIO injection struct.
@@ -159,8 +183,7 @@ func main() {
 		fmt.Println("[maildb] WARNING: mmap coherence test FAILED")
 	}
 
-	// 2b. Import mbox into BadgerDB + bleve FTI.
-	// notifyStatus sends a status message and pokes the UI event loop.
+	// 2b. Import mbox into BadgerDB; indexing is delegated to fti.
 	notifyStatus := func(msg string) {
 		statusCh <- msg
 		select {
@@ -169,34 +192,45 @@ func main() {
 		}
 	}
 
-	// Channel to receive index+db handles from import goroutine.
+	// FTI response channel — fed by the uring dispatcher.
+	ftiRespCh := make(chan any, 16)
+
+	// FTI tracker: drains fti responses, frees shared pages, notifies UI.
+	ftiTracker := newFTITracker(ftiRespCh, notifyStatus)
+
+	// Channel to receive db handle from import goroutine.
 	type importResult struct {
-		index bleve.Index
-		db    *badger.DB
-		err   error
+		db  *badger.DB
+		err error
 	}
 	importDone := make(chan importResult, 1)
 
+	// 3. Set up uring dispatcher BEFORE loading .maz.
+	mh := newMailHandler(nil)
+	tempWMCh := make(chan any, 8)
+	tempFontReplyCh := make(chan any, 8)
+	startUringDispatcher(fsClient, tempWMCh, tempFontReplyCh, mh, ftiRespCh)
+	if err := fsClient.Connect(); err != nil {
+		panic(fmt.Sprintf("[maildb] FATAL: fsclient.Connect: %v", err))
+	}
+	fmt.Println("[maildb] fs IPC connected via uring")
+
+	// Start import goroutine. mboxImport returns as soon as all messages
+	// are written to badger (fast). FTI indexing continues in the background
+	// via the ftiTracker goroutine.
 	go func() {
-		idx, bdb, err := mboxImport(
+		bdb, err := mboxImport(
 			"/data/mail/mbox/gmail/important.partial.mbox",
+			ftiSID,
+			ftiTracker,
 			notifyStatus,
 		)
 		if err != nil {
 			notifyStatus(fmt.Sprintf("mbox import error: %v", err))
 			fmt.Printf("[maildb] mbox import error: %v\n", err)
 		}
-		importDone <- importResult{index: idx, db: bdb, err: err}
+		importDone <- importResult{db: bdb, err: err}
 	}()
-
-	// 3. Set up uring dispatcher BEFORE loading .maz.
-	tempWMCh := make(chan any, 8)
-	tempFontReplyCh := make(chan any, 8)
-	startUringDispatcher(fsClient, tempWMCh, tempFontReplyCh)
-	if err := fsClient.Connect(); err != nil {
-		panic(fmt.Sprintf("[maildb] FATAL: fsclient.Connect: %v", err))
-	}
-	fmt.Println("[maildb] fs IPC connected via uring")
 
 	// 4. Load mail-ui.maz and inject MailDBIO.
 	uiPath := sys.LoadMazByName("/mail-ui")
@@ -246,36 +280,39 @@ func main() {
 	go mazhost.RunMaz(uiMain)
 	fmt.Println("[maildb] mail-ui.maz launched")
 
-	// 5. Signal readiness.
-	sys.SetReady(true)
-	fmt.Println("[maildb] Ready=true")
-
-	// 6. Wait for import to finish, then enter query loop.
-	fmt.Println("[maildb] waiting for import to finish...")
+	// 5. Wait for badger import to finish, then signal readiness.
+	// FTI indexing continues in the background — that's fine, the mail
+	// program only needs badger (headers, bodies) to be queryable.
+	fmt.Println("[maildb] waiting for badger import to finish...")
 	ir := <-importDone
 	if ir.err != nil {
 		fmt.Printf("[maildb] import failed: %v\n", ir.err)
 	}
 	if ir.db != nil {
 		defer ir.db.Close()
-	}
-	if ir.index != nil {
-		defer ir.index.Close()
-	}
-
-	// Run test searches to prove the bleve index works.
-	if ir.index != nil {
-		for _, term := range []string{"banking", "account", "security"} {
-			testSearch(term, ir.index, ir.db, notifyStatus)
-		}
+		// Enable the mail protocol handler now that the db is ready.
+		mh.mu.Lock()
+		mh.db = ir.db
+		mh.mu.Unlock()
 	}
 
+	// Signal readiness now that badger is queryable. The mail program
+	// (and any other shepherd waiting on maildb) can proceed.
+	sys.SetReady(true)
+	fmt.Println("[maildb] Ready=true (badger queryable, fti indexing in background)")
+
+	// 6. Enter query loop.
 	fmt.Println("[maildb] entering query loop")
 	for query := range queryCh {
-		if ir.index == nil || ir.db == nil {
-			respCh <- shared.Response{Error: "index not available"}
+		if ir.db == nil {
+			respCh <- shared.Response{Error: "database not available"}
 			continue
 		}
-		handleQuery(query, respCh, ir.index, ir.db)
+		if query == "list" {
+			handleList(ir.db, respCh)
+		} else {
+			// Search queries will be forwarded to fti in a future phase.
+			respCh <- shared.Response{Error: "search not yet available (migrating to fti)"}
+		}
 	}
 }

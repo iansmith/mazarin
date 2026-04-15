@@ -1450,6 +1450,59 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 	}
 }
 
+// TestOnlyOnRamdisk copies the directory structure and files from /data
+// to /tmp/data so that shepherds can write to paths under /tmp/data that
+// mirror the read-only data disk layout.
+func TestOnlyOnRamdisk() {
+	fmt.Println("[rachel] TestOnlyOnRamdisk: mirroring /data → /tmp/data")
+	if err := copyTree("/data", "/tmp/data"); err != nil {
+		fmt.Printf("[rachel] TestOnlyOnRamdisk: %v\n", err)
+	}
+	// Create /tmp/data/fti for full-text index storage (bleve + badger).
+	if err := os.MkdirAll("/tmp/data/fti", 0755); err != nil {
+		fmt.Printf("[rachel] TestOnlyOnRamdisk: mkdir /tmp/data/fti: %v\n", err)
+	}
+}
+
+// copyTree recursively copies a directory tree from src to dst, creating
+// directories and copying files.
+func copyTree(src, dst string) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dst, err)
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("readdir %s: %w", src, err)
+	}
+	for _, e := range entries {
+		srcPath := src + "/" + e.Name()
+		dstPath := dst + "/" + e.Name()
+		if e.IsDir() {
+			if err := copyTree(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// copyFile copies a single file from src to dst.
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", src, err)
+	}
+	if err := os.WriteFile(dst, data, 0644); err != nil {
+		return fmt.Errorf("write %s: %w", dst, err)
+	}
+	fmt.Printf("[rachel] copied %s (%d bytes)\n", dst, len(data))
+	return nil
+}
+
 func main() {
 	fmt.Printf("[rachel] Starting window manager\n")
 
@@ -1544,6 +1597,10 @@ func main() {
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[rachel] FATAL: fs: %v", err))
 	}
+
+	// Mirror /data to /tmp/data so shepherds can write to ramdisk paths
+	// that mirror the read-only data disk layout.
+	TestOnlyOnRamdisk()
 
 	// Read rachel.toml from the ext2 filesystem.
 	var rachelCfg constants.RachelConfig

@@ -8,54 +8,129 @@ import (
 	"net/mail"
 	"os"
 	"strings"
+	"sync"
+	"unsafe"
 
 	badger "github.com/dgraph-io/badger/v4"
-	"github.com/blevesearch/bleve/v2"
+
 	"mazzy/flock/cmd/maildb/shared"
+	"mazzy/mazarin/mem"
+	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
+	"mazzy/shared/fti"
 )
 
-// bleveDoc is the document structure indexed by bleve.
-type bleveDoc struct {
-	MessageId string
-	From      string
-	Sender    string
-	Subject   string
-	Date      string
+// pendingIndex tracks a shared page allocation for an outstanding fti request.
+type pendingIndex struct {
+	pagePtr  unsafe.Pointer
+	numPages int
+}
+
+// ftiTracker manages outstanding fti IndexDocument requests. It runs a
+// goroutine that drains completion responses from fti, frees the shared
+// pages, and notifies the UI.
+type ftiTracker struct {
+	mu       sync.Mutex
+	pending  map[string]pendingIndex // docId -> shared page info
+	inflight int                     // number of outstanding requests
+	done     chan struct{}           // closed when all inflight requests are drained
+	closed   bool                   // set when no more requests will be sent
+}
+
+func newFTITracker(ftiRespCh <-chan any, notify func(string)) *ftiTracker {
+	t := &ftiTracker{
+		pending: make(map[string]pendingIndex),
+		done:    make(chan struct{}),
+	}
+	go t.drainLoop(ftiRespCh, notify)
+	return t
+}
+
+// track registers a pending IndexDocument request.
+func (t *ftiTracker) track(docId string, pagePtr unsafe.Pointer, numPages int) {
+	t.mu.Lock()
+	t.pending[docId] = pendingIndex{pagePtr: pagePtr, numPages: numPages}
+	t.inflight++
+	t.mu.Unlock()
+}
+
+// close signals that no more requests will be sent. The drain goroutine
+// will close t.done after all outstanding requests complete.
+func (t *ftiTracker) close() {
+	t.mu.Lock()
+	t.closed = true
+	if t.inflight == 0 {
+		close(t.done)
+	}
+	t.mu.Unlock()
+}
+
+// wait blocks until all outstanding fti requests have completed.
+func (t *ftiTracker) wait() {
+	<-t.done
+}
+
+// drainLoop reads fti responses, frees shared pages, and notifies the UI.
+func (t *ftiTracker) drainLoop(ftiRespCh <-chan any, notify func(string)) {
+	for resp := range ftiRespCh {
+		var docId string
+		var errMsg string
+
+		switch r := resp.(type) {
+		case fti.IndexingCompleted:
+			docId = fti.UnpackCompletedId(&r)
+			fmt.Printf("[maildb] fti indexed: %s\n", docId)
+			notify(fmt.Sprintf("Indexed: %s", docId))
+		case fti.IndexError:
+			docId, errMsg = fti.UnpackIndexError(&r)
+			fmt.Printf("[maildb] fti error: %s: %s\n", docId, errMsg)
+			notify(fmt.Sprintf("Index error: %s", errMsg))
+		default:
+			fmt.Printf("[maildb] unexpected fti response: %T\n", resp)
+			continue
+		}
+
+		// Free the shared pages.
+		t.mu.Lock()
+		if pi, ok := t.pending[docId]; ok {
+			mem.FreePages(pi.pagePtr, pi.numPages)
+			delete(t.pending, docId)
+		}
+		t.inflight--
+		shouldClose := t.closed && t.inflight == 0
+		t.mu.Unlock()
+
+		if shouldClose {
+			close(t.done)
+			return
+		}
+	}
 }
 
 // mboxImport parses the mbox file inside mboxDir and writes each message's
-// headers into in-memory BadgerDB and bleve indexes. Progress strings are
-// sent via notify so the UI can display them.
-// Returns the open index and db for subsequent queries; caller must close them.
-func mboxImport(mboxDir string, notify func(string)) (bleve.Index, *badger.DB, error) {
+// headers + body into BadgerDB. Each message body is also sent (non-blocking)
+// to the fti shepherd for full-text indexing via shared memory pages.
+//
+// Returns the open db immediately after badger flush. FTI indexing continues
+// in the background via the ftiTracker.
+func mboxImport(mboxDir string, ftiSID int, tracker *ftiTracker, notify func(string)) (*badger.DB, error) {
 	mboxPath := mboxDir + "/mbox"
 
 	fmt.Printf("[maildb] mboxImport: opening %s\n", mboxPath)
 	f, err := os.Open(mboxPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open mbox %s: %w", mboxPath, err)
+		return nil, fmt.Errorf("open mbox %s: %w", mboxPath, err)
 	}
 	defer f.Close()
 	fmt.Println("[maildb] mboxImport: mbox opened, opening badger")
 
-	// File-backed badger in /tmp (ramdisk). Exercises mmap coherence:
-	// badger uses mmap for its value log and SSTables.
-	opts := badger.DefaultOptions("/tmp/maildb-badger").WithLogger(nil)
+	os.RemoveAll("/tmp/data/fti/badger")
+	opts := badger.DefaultOptions("/tmp/data/fti/badger").WithLogger(nil)
 	db, err := badger.Open(opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open badger: %w", err)
+		return nil, fmt.Errorf("open badger: %w", err)
 	}
-	fmt.Println("[maildb] mboxImport: badger opened, opening bleve")
-
-	// File-backed bleve index in /tmp (ramdisk). Exercises mmap coherence:
-	// bleve uses bbolt internally, which mmaps its database file.
-	mapping := bleve.NewIndexMapping()
-	index, err := bleve.New("/tmp/maildb-bleve", mapping)
-	if err != nil {
-		db.Close()
-		return nil, nil, fmt.Errorf("create bleve index: %w", err)
-	}
-	fmt.Println("[maildb] mboxImport: bleve ready, starting parse")
+	fmt.Println("[maildb] mboxImport: badger opened, starting parse")
 
 	notify("Starting mbox import...")
 
@@ -64,6 +139,7 @@ func mboxImport(mboxDir string, notify func(string)) (bleve.Index, *badger.DB, e
 	inHeaders := false
 	headers := make(map[string]string)
 	var lastKey string
+	var body strings.Builder
 
 	wb := db.NewWriteBatch()
 
@@ -71,26 +147,26 @@ func mboxImport(mboxDir string, notify func(string)) (bleve.Index, *badger.DB, e
 		line, err := reader.ReadString('\n')
 		if err != nil && err != io.EOF {
 			wb.Cancel()
-			index.Close()
 			db.Close()
-			return nil, nil, fmt.Errorf("read mbox: %w", err)
+			return nil, fmt.Errorf("read mbox: %w", err)
 		}
 		atEOF := err == io.EOF
 
-		// Trim trailing newline for easier comparison.
 		trimmed := strings.TrimRight(line, "\r\n")
 
 		if strings.HasPrefix(trimmed, "From ") || atEOF {
-			// Flush previous message if we collected any headers.
 			if len(headers) > 0 {
-				if storeErr := storeParsedHeaders(wb, index, headers); storeErr == nil {
-					count++
-					sender := headers["from"]
-					subject := headers["subject"]
-					notify(fmt.Sprintf("%d: %s — %s", count, sender, subject))
+				bodyStr := body.String()
+				count++
+				fmt.Printf("[maildb] parse: msg %d id=%s subj=%q body=%d bytes\n",
+					count, headers["message-id"], headers["subject"], len(bodyStr))
+				if storeErr := storeParsedMessage(wb, headers, bodyStr, ftiSID, tracker); storeErr != nil {
+					fmt.Printf("[maildb] store error: %v\n", storeErr)
+					count--
 				}
 				headers = make(map[string]string)
 				lastKey = ""
+				body.Reset()
 			}
 			if atEOF {
 				break
@@ -100,22 +176,20 @@ func mboxImport(mboxDir string, notify func(string)) (bleve.Index, *badger.DB, e
 		}
 
 		if !inHeaders {
+			body.WriteString(line)
 			continue
 		}
 
-		// Blank line terminates headers.
 		if trimmed == "" {
 			inHeaders = false
 			continue
 		}
 
-		// Header continuation line (leading whitespace).
 		if (trimmed[0] == ' ' || trimmed[0] == '\t') && lastKey != "" {
 			headers[lastKey] += " " + strings.TrimSpace(trimmed)
 			continue
 		}
 
-		// New header field.
 		if idx := strings.IndexByte(trimmed, ':'); idx > 0 {
 			key := strings.ToLower(trimmed[:idx])
 			val := strings.TrimSpace(trimmed[idx+1:])
@@ -125,19 +199,23 @@ func mboxImport(mboxDir string, notify func(string)) (bleve.Index, *badger.DB, e
 	}
 
 	if err := wb.Flush(); err != nil {
-		index.Close()
 		db.Close()
-		return nil, nil, fmt.Errorf("badger flush: %w", err)
+		return nil, fmt.Errorf("badger flush: %w", err)
 	}
 
-	fmt.Printf("[maildb] mboxImport: flush complete, %d messages imported+indexed\n", count)
-	notify(fmt.Sprintf("Import complete: %d messages indexed", count))
-	return index, db, nil
+	fmt.Printf("[maildb] mboxImport: badger flush complete, %d messages stored\n", count)
+	notify(fmt.Sprintf("Import complete: %d messages in database", count))
+
+	// Signal that no more fti requests will be sent.
+	tracker.close()
+
+	return db, nil
 }
 
-// storeParsedHeaders converts a header map into a MailMessage, writes it
-// to the BadgerDB WriteBatch keyed by Message-ID, and indexes it in bleve.
-func storeParsedHeaders(wb *badger.WriteBatch, index bleve.Index, headers map[string]string) error {
+// storeParsedMessage writes message metadata + body to BadgerDB, then
+// fires off a non-blocking IndexDocument to fti. The tracker goroutine
+// handles completion and page cleanup.
+func storeParsedMessage(wb *badger.WriteBatch, headers map[string]string, body string, ftiSID int, tracker *ftiTracker) error {
 	messageId := strings.Trim(headers["message-id"], "<> ")
 	if messageId == "" {
 		return fmt.Errorf("no message-id")
@@ -148,32 +226,102 @@ func storeParsedHeaders(wb *badger.WriteBatch, index bleve.Index, headers map[st
 	if sender == "" {
 		sender = from
 	}
+	subject := headers["subject"]
+	date := headers["date"]
 
 	msg := shared.MailMessage{
 		MessageId: messageId,
 		From:      from,
 		Sender:    sender,
-		Subject:   headers["subject"],
+		Subject:   subject,
+		BodyLen:   len(body),
 	}
-	if dateStr := headers["date"]; dateStr != "" {
-		msg.Timestamp, _ = mail.ParseDate(dateStr)
+	if date != "" {
+		msg.Timestamp, _ = mail.ParseDate(date)
 	}
 
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
+
+	// Write metadata to badger.
 	if err := wb.Set([]byte(messageId), data); err != nil {
-		return err
+		return fmt.Errorf("badger meta: %w", err)
 	}
 
-	// Index in bleve for full-text search.
-	doc := bleveDoc{
-		MessageId: messageId,
-		From:      from,
-		Sender:    sender,
-		Subject:   headers["subject"],
-		Date:      headers["date"],
+	// Write body to badger.
+	if len(body) > 0 {
+		if err := wb.Set([]byte("body:"+messageId), []byte(body)); err != nil {
+			return fmt.Errorf("badger body: %w", err)
+		}
 	}
-	return index.Index(messageId, doc)
+
+	// Write date index key.
+	if !msg.Timestamp.IsZero() {
+		dateKey := fmt.Sprintf("date:%s:%s", msg.Timestamp.UTC().Format("2006-01-02T15:04:05.000000000Z"), messageId)
+		if err := wb.Set([]byte(dateKey), nil); err != nil {
+			return fmt.Errorf("badger date: %w", err)
+		}
+	}
+
+	fmt.Printf("[maildb] badger: stored %s (%s — %s)\n", messageId, from, subject)
+
+	// Send to fti (non-blocking — tracker handles completion).
+	if err := fireToFTI(messageId, subject, from, sender, date, body, ftiSID, tracker); err != nil {
+		// FTI send failure is non-fatal — message is in badger, just not indexed.
+		fmt.Printf("[maildb] fti send failed (non-fatal): %v\n", err)
+	}
+
+	return nil
+}
+
+// fireToFTI allocates shared pages, writes the SharedPageHeader + fields +
+// body, shares the pages with fti, and sends an IndexDocument request.
+// Does NOT wait for a response — the ftiTracker handles that.
+func fireToFTI(messageId, subject, from, sender, date, body string, ftiSID int, tracker *ftiTracker) error {
+	headerAndFields := fti.SharedPageHeaderSize + len(subject) + len(from) + len(sender) + len(date)
+	totalBytes := headerAndFields + len(body)
+	numPages := (totalBytes + 4095) / 4096
+	if numPages == 0 {
+		numPages = 1
+	}
+
+	pages, err := mem.AllocPagesSlice(numPages, mem.PageShared)
+	if err != nil {
+		return fmt.Errorf("AllocPages(%d): %w", numPages, err)
+	}
+	pagePtr := unsafe.Pointer(&pages[0])
+
+	bodyOffset := fti.WriteSharedPageHeader(pages, subject, from, sender, date)
+	copy(pages[bodyOffset:], body)
+
+	targetVA, err := sys.SharePagesWithTarget(ftiSID, uintptr(pagePtr), numPages)
+	if err != nil {
+		mem.FreePages(pagePtr, numPages)
+		return fmt.Errorf("SharePagesWithTarget: %w", err)
+	}
+
+	// Register with tracker BEFORE sending so the response can't arrive first.
+	tracker.track(messageId, pagePtr, numPages)
+
+	doc := fti.PackIndexDocument(
+		fti.IndexTypeMailMessage,
+		messageId,
+		uint32(len(body)),
+		uint32(numPages),
+		uint64(targetVA),
+	)
+	ipcMsg := fti.EncodeIndexDocument(&doc)
+	if err := uring.Send(ftiSID, &ipcMsg); err != nil {
+		// Undo the track — we never sent.
+		tracker.mu.Lock()
+		delete(tracker.pending, messageId)
+		tracker.inflight--
+		tracker.mu.Unlock()
+		mem.FreePages(pagePtr, numPages)
+		return fmt.Errorf("uring.Send: %w", err)
+	}
+
+	return nil
 }

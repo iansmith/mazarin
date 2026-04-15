@@ -1,0 +1,50 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build mail (ARM64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    sources:
+      - 'mazarin/apps/mail/**/*'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.MAIL_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building mail..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.MAIL_ELF}} ./mazarin/apps/mail'
+      - '{{.GO}} tool go-echo "mail ARM64 built at {{.MAIL_ELF}}"'
+
+  x86_64:
+    desc: Build mail (x86_64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    sources:
+      - 'mazarin/apps/mail/**/*'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.MAIL_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building mail for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.MAIL_AMD64_ELF}} ./mazarin/apps/mail'
+      - '{{.GO}} tool go-echo "mail x86_64 built at {{.MAIL_AMD64_ELF}}"'
+
+  riscv64:
+    desc: Build mail (RISC-V 64-bit)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    sources:
+      - 'mazarin/apps/mail/**/*'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.MAIL_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building mail for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.MAIL_RISCV64_ELF}} ./mazarin/apps/mail'
+      - '{{.GO}} tool go-echo "mail RISC-V 64-bit built at {{.MAIL_RISCV64_ELF}}"'

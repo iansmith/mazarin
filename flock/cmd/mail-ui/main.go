@@ -1,11 +1,12 @@
 // mail-ui is a .maz module loaded by the maildb shepherd that provides
-// the mancini UI for displaying mail database query results.
+// the mancini UI for displaying mail headers in a scrollable list.
 //
 // Interactor hierarchy:
 //   AppWindow
-//     Column (width = max(320, parent), height = max(240, parent))
-//       ScrollerVertical (scroller + scrollbar)
-//         Console (80 cols x 200 rows, scrollable)
+//     ScrollerVertical (scroller + scrollbar)
+//       Label row 0 (From | Date | Subject)
+//       Label row 1 ...
+//       ...
 //
 // From the kernel's perspective, mail-ui IS the maildb shepherd (same PID/SID).
 package main
@@ -22,7 +23,8 @@ import (
 )
 
 const (
-	consoleCols = 80
+	rowHeight  int64 = 20 // pixels per message row
+	trackWidth int64 = 16 // scrollbar width
 )
 
 // MazEntryPoint holds a reference to MazarinMain to prevent DCE.
@@ -85,67 +87,121 @@ func MazarinMain() {
 	})
 }
 
+// messageRow tracks one label row in the message list.
+type messageRow struct {
+	label *std.Label
+	msg   shared.MailMessage
+}
+
 // buildUI creates the mail UI interactor tree and returns a drain function
 // that processes ResponseChannel messages.
 func buildUI(a *linuxapp.App[maildbio.MailDBIO]) linuxapp.BuildResult {
-	fonts := a.Fonts
+	theme := a.Theme
 	pal := a.Pal
 	fontSize := a.FontSize
 
-	// Column: width = max(320, AppWindow width), height = max(240, AppWindow height).
+	// ScrollerVertical fills the AppWindow.
 	appWURI := mancini.LayoutURI("AppWindow", mancini.DataTypeInt64, mancini.LayoutWidth)
 	appHURI := mancini.LayoutURI("AppWindow", mancini.DataTypeInt64, mancini.LayoutHeight)
 
-	colLH := mancini.NewLayoutAttributesBase("column", "AppWindow")
-	colLH.Width = attr.ConstraintI64(
-		mancini.LayoutURI("column", mancini.DataTypeInt64, mancini.LayoutWidth),
-		mancini.MaxI64(appWURI, 320))
-	colLH.Height = attr.ConstraintI64(
-		mancini.LayoutURI("column", mancini.DataTypeInt64, mancini.LayoutHeight),
-		mancini.MaxI64(appHURI, 240))
-	colLH.InitBounds("column")
-	col := std.NewColumnWithLayout(colLH, pal, mancini.AxisMinimum, 0, 1, false)
-	_ = col
+	sv := std.NewScrollerVertical("msglist", "AppWindow",
+		theme, pal, appWURI, appHURI,
+		trackWidth, std.ScrollbarStandard)
 
-	// Console: direct child of column (no scroller for now).
-	console := std.NewConsole("console", "column", pal, fonts, fontSize,
-		consoleCols, 20)
+	scrollerParent := sv.ScrollerName()
+	scrollerWidthURI := sv.ScrollerWidthURI()
 
-	// Initialize input dispatch (for future keyboard/mouse handling).
+	// Initialize input dispatch.
 	a.AppWindow.InitInput()
 
-	// Add a test line to verify console rendering works.
-	console.AddLine("=== MailDB Console Ready ===", pal.AnsiColor(2)) // green
+	// State for dynamic row creation.
+	var rows []messageRow
+	importDone := false
+	listRequested := false
 
-	// Response drainer: reads responses and displays results in console.
+	// Channels from injection.
+	queryCh := a.Injected.QueryChannel()
 	respCh := a.Injected.ResponseChannel()
 	statusCh := a.Injected.StatusChannel()
 	var pending []<-chan shared.MailMessage
+	var pendingTotal int // total from the Response that started the current pending drain
+
+	// addRow creates a new label row as child of the scroller, threaded
+	// to the predecessor's bottom.
+	addRow := func(msg shared.MailMessage) {
+		idx := len(rows)
+		name := fmt.Sprintf("mr_%d", idx)
+
+		// Layout: width = scroller width, height = rowHeight.
+		lh := mancini.NewLayoutAttributesBase(name, scrollerParent)
+		lh.Width = attr.ConstraintI64(
+			mancini.LayoutURI(name, mancini.DataTypeInt64, mancini.LayoutWidth),
+			mancini.EqualI64(scrollerWidthURI))
+		lh.Height = attr.ValueI64(
+			mancini.LayoutURI(name, mancini.DataTypeInt64, mancini.LayoutHeight),
+			rowHeight)
+		lh.InitBounds(name)
+
+		// Thread Y to predecessor's bottom.
+		var y int64
+		if idx > 0 {
+			prev := rows[idx-1].label
+			prevLH := prev.GetLayout()
+			y = prevLH.Y.Get() + prevLH.Height.Get() + 1
+		}
+		lh.Y.Set(y)
+		lh.X.Set(0)
+
+		// Format: "date  sender  subject"
+		dateStr := ""
+		if !msg.Timestamp.IsZero() {
+			dateStr = msg.Timestamp.Format("Jan 02 15:04")
+		}
+		text := fmt.Sprintf("%s  %s  %s", dateStr, msg.From, msg.Subject)
+
+		label := std.NewLabel(lh, theme, text, fontSize)
+		label.Transparent = true
+		rows = append(rows, messageRow{label: label, msg: msg})
+
+		// Update virtual height.
+		totalH := y + rowHeight
+		sv.Scroller.VirtualHeight.Set(totalH)
+	}
 
 	drain := func() bool {
 		dirty := false
 
-		// Drain status messages from the shepherd (import progress, etc.).
+		// Drain status messages. When import completes, request the list.
 		for {
 			select {
 			case s := <-statusCh:
-					console.AddLine(s, pal.AnsiColor(6)) // cyan
+				rawPuts("[mail-ui] status: " + s + "\n")
 				dirty = true
+				if !importDone && len(s) > 7 && s[:7] == "Import " {
+					importDone = true
+				}
 			default:
 				goto drainResponses
 			}
 		}
 
 	drainResponses:
+		// Once import is done, request the full message list.
+		if importDone && !listRequested {
+			listRequested = true
+			queryCh <- "list"
+		}
+
 		// Check for new responses.
 		for {
 			select {
 			case resp := <-respCh:
 				if resp.Error != "" {
-					console.AddLine("ERROR: "+resp.Error, pal.AnsiColor(1))
+					rawPuts("[mail-ui] error: " + resp.Error + "\n")
 					dirty = true
 				} else if resp.Results != nil {
 					pending = append(pending, resp.Results)
+					pendingTotal = resp.Total
 				}
 			default:
 				goto drainResults
@@ -153,7 +209,7 @@ func buildUI(a *linuxapp.App[maildbio.MailDBIO]) linuxapp.BuildResult {
 		}
 
 	drainResults:
-		// Drain pending result channels.
+		// Drain pending result channels — create rows as messages arrive.
 		still := pending[:0]
 		for _, ch := range pending {
 			for {
@@ -162,8 +218,7 @@ func buildUI(a *linuxapp.App[maildbio.MailDBIO]) linuxapp.BuildResult {
 					if !ok {
 						goto nextPending
 					}
-					line := fmt.Sprintf("%s  %s  %s", msg.From, msg.Subject, msg.MessageId)
-					console.AddLine(line, pal.Text())
+					addRow(msg)
 					dirty = true
 				default:
 					still = append(still, ch)
@@ -173,6 +228,11 @@ func buildUI(a *linuxapp.App[maildbio.MailDBIO]) linuxapp.BuildResult {
 		nextPending:
 		}
 		pending = still
+
+		// If we know the total and have all rows, set final virtual height.
+		if pendingTotal > 0 && len(rows) >= pendingTotal && len(pending) == 0 {
+			sv.Scroller.VirtualHeight.Set(int64(len(rows)) * (rowHeight + 1))
+		}
 
 		return dirty
 	}
