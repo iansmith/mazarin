@@ -13,6 +13,7 @@ import (
 
 	goFont "github.com/go-text/typesetting/font"
 	ot "github.com/go-text/typesetting/font/opentype"
+	ottables "github.com/go-text/typesetting/font/opentype/tables"
 	"golang.org/x/image/vector"
 )
 
@@ -313,19 +314,65 @@ func (p *DirectGlyphProvider) allocFontID() int32 {
 
 func (p *DirectGlyphProvider) metricsFor(fontID int32) FontMetrics {
 	df := p.fonts[fontID]
-	return ComputeFontMetrics(df.face, df.scale, fontID)
+	return computeFontMetricsWithData(df.face, df.scale, fontID, df.fontData)
 }
 
 // ComputeFontMetrics extracts font-level metrics from a go-text Face.
 // All values are in fixed.Int26_6 format (multiply by 64).
+//
+// This entry point uses only the go-text Face (no raw font data), so it
+// reports whatever Ascender/Descender/LineGap the Face exposes — which is
+// hhea metrics unless the font's OS/2 USE_TYPO_METRICS bit is set. Prefer
+// computeFontMetricsWithData when raw font bytes are available, so that
+// OS/2 sTypo metrics can be used regardless of the USE_TYPO_METRICS bit
+// (matching Blink's policy of preferring sTypo for modern fonts).
 func ComputeFontMetrics(face *goFont.Face, scale float32, fontID int32) FontMetrics {
-	ext, _ := face.FontHExtents()
+	return computeFontMetricsWithData(face, scale, fontID, nil)
+}
+
+// computeFontMetricsWithData builds FontMetrics, preferring OS/2 sTypo
+// metrics parsed from fontData when they are present. Falls back to the
+// Face's FontHExtents (hhea-based for fonts without USE_TYPO_METRICS).
+func computeFontMetricsWithData(face *goFont.Face, scale float32, fontID int32, fontData []byte) FontMetrics {
+	asc, desc, gap, ok := parseSTypoMetrics(fontData)
+	if !ok {
+		ext, _ := face.FontHExtents()
+		asc, desc, gap = ext.Ascender, ext.Descender, ext.LineGap
+	}
 	return FontMetrics{
 		FontID:    fontID,
-		Height:    int32((ext.Ascender - ext.Descender + ext.LineGap) * scale * 64),
-		Ascent:    int32(ext.Ascender * scale * 64),
-		Descent:   int32(-ext.Descender * scale * 64),
+		Height:    int32((asc - desc + gap) * scale * 64),
+		Ascent:    int32(asc * scale * 64),
+		Descent:   int32(-desc * scale * 64),
 		XHeight:   int32(face.LineMetric(goFont.XHeight) * scale * 64),
 		CapHeight: int32(face.LineMetric(goFont.CapHeight) * scale * 64),
 	}
+}
+
+// parseSTypoMetrics reads the OS/2 table from fontData and returns the
+// sTypoAscender / sTypoDescender / sTypoLineGap values in font units.
+// Returns ok=false if the OS/2 table is absent, fails to parse, or has
+// an invalid (zero) STypoAscender. Descender is returned as a negative
+// value (matching the FontHExtents convention).
+func parseSTypoMetrics(fontData []byte) (ascender, descender, lineGap float32, ok bool) {
+	if len(fontData) == 0 {
+		return 0, 0, 0, false
+	}
+	loader, err := ot.NewLoader(bytes.NewReader(fontData))
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	raw, err := loader.RawTable(ot.MustNewTag("OS/2"))
+	if err != nil || len(raw) == 0 {
+		return 0, 0, 0, false
+	}
+	os2, _, err := ottables.ParseOs2(raw)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	// Reject clearly invalid sTypo tables (zero ascender).
+	if os2.STypoAscender == 0 {
+		return 0, 0, 0, false
+	}
+	return float32(os2.STypoAscender), float32(os2.STypoDescender), float32(os2.STypoLineGap), true
 }
