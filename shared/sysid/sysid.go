@@ -77,7 +77,8 @@ const (
 	Fdatasync  // fdatasync
 	Flock      // flock
 	Pread64    // pread64
-	Pwrite64   // pwrite64
+	Pwrite64       // pwrite64
+	RiscvHWProbe   // riscv_hwprobe (RISC-V only, arch-specific syscall 258)
 
 	MmapPageFill      // internal: kernel → linux shepherd page fill for file-backed mmap
 	_                // reserved (was MmapPageWriteback)

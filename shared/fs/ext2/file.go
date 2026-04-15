@@ -233,23 +233,24 @@ func (f *File) Write(data []byte) (int, error) {
 		blkIdx := int64(f.pos / blockSize)
 		blkOff := f.pos % blockSize
 
-		// Allocate a new block if we're beyond current size
-		if f.pos >= uint64(f.inode.Size) {
-			// Check if this block already exists (could be a partial block extension)
-			existing, _ := f.fs.inodeBlockNum(&f.inode, uint32(blkIdx))
-			if existing == 0 {
-				newBlock, err := f.fs.allocBlock()
-				if err != nil {
-					return totalWritten, err
-				}
-				if err := f.fs.setInodeBlock(&f.inode, uint32(blkIdx), newBlock); err != nil {
-					return totalWritten, err
-				}
-				f.inode.Blocks += f.fs.blockSize / 512
-				// Zero the new block
-				if err := f.fs.writeBlock(newBlock, make([]byte, f.fs.blockSize)); err != nil {
-					return totalWritten, err
-				}
+		// Allocate a new block if this block is unallocated.  This covers
+		// both extending writes (pos >= size) and writes into sparse holes
+		// created by ftruncate extending the file size without allocating
+		// data blocks.  Without this, writing into a sparse hole would
+		// resolve blockNum=0 and corrupt the superblock area.
+		existing, _ := f.fs.inodeBlockNum(&f.inode, uint32(blkIdx))
+		if existing == 0 {
+			newBlock, err := f.fs.allocBlock()
+			if err != nil {
+				return totalWritten, err
+			}
+			if err := f.fs.setInodeBlock(&f.inode, uint32(blkIdx), newBlock); err != nil {
+				return totalWritten, err
+			}
+			f.inode.Blocks += f.fs.blockSize / 512
+			// Zero the new block
+			if err := f.fs.writeBlock(newBlock, make([]byte, f.fs.blockSize)); err != nil {
+				return totalWritten, err
 			}
 		}
 

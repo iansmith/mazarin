@@ -7,6 +7,9 @@ package main
 // elfMachineExpected is the ELF machine type diplomat expects when loading a kernel.
 const elfMachineExpected = elfMachineARM64
 
+// kernelFilePath is the path to the kernel on the FAT32 boot disk.
+const kernelFilePath = "/EFI/Linux/kmazarin.elf"
+
 // _efi_main_arm64 is the full UEFI entry point for ARM64
 // Implemented in entry_arm64.s - sets up g0/m0 and calls DiplomatEntry
 func _efi_main_arm64()

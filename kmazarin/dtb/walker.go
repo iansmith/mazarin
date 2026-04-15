@@ -319,6 +319,24 @@ func (n *DTBNode) GetPropU32(name string) (uint32, bool) {
 	return swapU32(*(*uint32)(unsafe.Pointer(&prop.value[0]))), true
 }
 
+// GetPropString reads a null-terminated string property by name.
+// Returns (value, true) if found, ("", false) if not found.
+func (n *DTBNode) GetPropString(name string) (string, bool) {
+	prop := n.findProperty(name)
+	if prop == nil || prop.valueLen == 0 {
+		return "", false
+	}
+	length := int(prop.valueLen)
+	if length > 256 {
+		length = 256
+	}
+	// Strip trailing null byte.
+	if length > 0 && prop.value[length-1] == 0 {
+		length--
+	}
+	return string(prop.value[:length]), true
+}
+
 // GetNameBuf copies the node name into provided buffer
 // Returns the length
 //

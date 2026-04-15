@@ -1283,18 +1283,42 @@ func printEpochStatus() {
 		}
 	}
 
+	// Per-SysID deltas (non-zero only)
+	sysIDDelta := ""
+	sysIDDelegDelta := ""
+	for i := 0; i < int(ksyscall.NumSyscallIDs); i++ {
+		cur := atomic.LoadUint64(&ksyscall.SysIDCounts[i])
+		d := cur - prevSysIDCounts[i]
+		if d > 0 {
+			sysIDDelta += fmt.Sprintf(" %d=%d", i, d)
+		}
+		prevSysIDCounts[i] = cur
+		curD := atomic.LoadUint64(&ksyscall.SysIDDelegated[i])
+		dD := curD - prevSysIDDelegated[i]
+		if dD > 0 {
+			sysIDDelegDelta += fmt.Sprintf(" %d=%d", i, dD)
+		}
+		prevSysIDDelegated[i] = curD
+	}
+
+	futexPIDMismatch := atomic.LoadUint64(&DbgFutexPIDMismatch)
+
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
 			"  threads: running=%d ready=%d futex=%d sleep=%d softirq=%d uring=%d delegate=%d\n"+
-			"  yield: calls=%d switched=%d futex: wait=%d wake=%d\n"+
+			"  yield: calls=%d switched=%d futex: wait=%d wake=%d pid_mismatch=%d\n"+
 			"  memory: kernel_heap=%d_pages(%dMB) page_faults=%d\n"+
 			"  svc/shepherd:%s\n"+
+			"  svc/sysid:%s\n"+
+			"  svc/delegated:%s\n"+
 			"  gc cycles:%s\n",
 		uptimeSec, totalSVC, actualHz, tcs,
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nDelegate,
-		yieldCalls, yieldSwitch, futexWait, futexWake,
+		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
 		khPages, khMB, pageFaults,
 		svcDelta,
+		sysIDDelta,
+		sysIDDelegDelta,
 		gcInfo,
 	)
 }
@@ -1370,6 +1394,8 @@ var dbgLastEL1hSPSR uint64 // SPSR when timer skipped due to EL1h
 // prevSVCCountBySID holds the previous epoch's per-SID SVC counts for delta computation.
 var prevSVCCountBySID [32]uint64
 var prevSID0Syscalls [256]uint64
+var prevSysIDCounts [ksyscall.NumSyscallIDs]uint64
+var prevSysIDDelegated [ksyscall.NumSyscallIDs]uint64
 var dbgBoostAttempt uint64        // times boostThread0ForPendingWork was called
 var dbgBoostSuccess uint64        // times boost succeeded (thread 0 was Ready)
 var dbgBoostFailState uint64      // thread 0 state when boost failed (last value)

@@ -488,7 +488,12 @@ pf_ifault_ra_print:
 	// Check if instruction page fault came from user mode
 	MOV	256(X2), T3			// saved sstatus from trap frame
 	AND	$0x100, T3, T3			// SPP bit (bit 8)
-	BNE	T3, ZERO, pf_ifault_halt	// Kernel fault → halt
+	BNE	T3, ZERO, pf_ifault_kernel	// Kernel fault → print 'K' then halt
+
+	// User fault: print 'U' marker
+	MOV	$0xFFFFFFFF10000000, X28
+	MOV	$0x55, X29			// 'U'
+	MOVB	X29, (X28)
 
 	// User fault: map to signal and deliver or kill shepherd
 	MOV	X2, S6				// S6 = trap frame base (for SaveContextFromFrame)
@@ -503,9 +508,32 @@ pf_ifault_ra_print:
 	GO_CALL_1_0(·SaveContextFromFrame, S6)
 
 	GO_CALL_3_1(·HandleUnhandledExceptionAsm, S3, S4, S5)
-	BEQ	T0, ZERO, pf_ifault_halt	// 0 = error, halt
+	BEQ	T0, ZERO, pf_ifault_nil		// 0 = nil thread, halt
+
+	// Print 'R' (resume) marker before loading new context
+	MOV	$0xFFFFFFFF10000000, X28
+	MOV	$0x52, X29			// 'R'
+	MOVB	X29, (X28)
 	MOV	T0, S2				// S2 = ThreadContext (signal or next thread)
 	JMP	load_context_and_sret
+
+pf_ifault_kernel:
+	// Kernel-mode instruction fault — print 'K' then halt
+	MOV	$0xFFFFFFFF10000000, X28
+	MOV	$0x4B, X29			// 'K'
+	MOVB	X29, (X28)
+	MOV	$0x0A, X29			// newline
+	MOVB	X29, (X28)
+	JMP	pf_ifault_halt
+
+pf_ifault_nil:
+	// HandleUnhandledException returned 0 (nil thread) — print 'N' then halt
+	MOV	$0xFFFFFFFF10000000, X28
+	MOV	$0x4E, X29			// 'N'
+	MOVB	X29, (X28)
+	MOV	$0x0A, X29			// newline
+	MOVB	X29, (X28)
+	JMP	pf_ifault_halt
 
 pf_ifault_halt:
 	WORD	$0x10500073			// wfi

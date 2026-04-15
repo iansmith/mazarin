@@ -259,7 +259,7 @@ func DiplomatEntry() {
 	printString("FAT32 mounted OK\r\n")
 
 	// Load the kernel into physical memory
-	kernel, err := boot.LoadKernel(fs, "/EFI/Linux/kmazarin.elf")
+	kernel, err := boot.LoadKernel(fs, kernelFilePath)
 	if err != nil {
 		printString("ERROR: kernel load: ")
 		printString(err.Error())

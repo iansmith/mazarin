@@ -36,6 +36,7 @@ includes:
   linux:        {taskfile: ./flock/cmd/linux/Taskfile.yml}
   fs:           {taskfile: ./flock/cmd/fs/Taskfile.yml}
   maildb:       {taskfile: ./flock/cmd/maildb/Taskfile.yml}
+  fti:          {taskfile: ./flock/cmd/fti/Taskfile.yml}
   # .maz programs
   mail-ui:      {taskfile: ./flock/cmd/mail-ui/Taskfile.yml}
   helloworld:   {taskfile: ./flock/cmd/helloworld/Taskfile.yml}
@@ -54,6 +55,8 @@ includes:
   versai:       {taskfile: ./mazarin/apps/versai/Taskfile.yml}
   # Shepherds (calc)
   calc:         {taskfile: ./mazarin/apps/calc/Taskfile.yml}
+  # Shepherds (mail)
+  mail-app:     {taskfile: ./mazarin/apps/mail/Taskfile.yml}
   # Kernel
   kmazarin:     {taskfile: ./kmazarin/Taskfile.yml}
   # Bootloader
@@ -101,6 +104,7 @@ vars:
   CLOCKS_ELF: '{{.BUILD_DIR}}/clocks.elf'
   VERSAI_ELF: '{{.BUILD_DIR}}/versai.elf'
   CALC_ELF: '{{.BUILD_DIR}}/calc.elf'
+  MAIL_ELF: '{{.BUILD_DIR}}/mail.elf'
 
   # .maz program build artifacts (per-architecture: thin overlay, maz overlay, manifest)
   THIN_OVERLAY_DIR: '{{.BUILD_DIR}}/thin-overlay'
@@ -126,6 +130,7 @@ vars:
   RACHEL_ELF: '{{.BUILD_DIR}}/rachel.elf'
   LINUX_ELF: '{{.BUILD_DIR}}/linux.elf'
   MAILDB_ELF: '{{.BUILD_DIR}}/maildb.elf'
+  FTI_ELF: '{{.BUILD_DIR}}/fti.elf'
   FS_ELF: '{{.BUILD_DIR}}/fs.elf'
   DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
 
@@ -133,6 +138,7 @@ vars:
   RACHEL_AMD64_ELF: '{{.BUILD_DIR}}/rachel-amd64.elf'
   LINUX_AMD64_ELF: '{{.BUILD_DIR}}/linux-amd64.elf'
   MAILDB_AMD64_ELF: '{{.BUILD_DIR}}/maildb-amd64.elf'
+  FTI_AMD64_ELF: '{{.BUILD_DIR}}/fti-amd64.elf'
   FS_AMD64_ELF: '{{.BUILD_DIR}}/fs-amd64.elf'
   SIEVETEST_AMD64_ELF: '{{.BUILD_DIR}}/sievetest-amd64.elf'
   ATTRTEST_AMD64_ELF: '{{.BUILD_DIR}}/attrtest-amd64.elf'
@@ -141,12 +147,14 @@ vars:
   CLOCKS_AMD64_ELF: '{{.BUILD_DIR}}/clocks-amd64.elf'
   VERSAI_AMD64_ELF: '{{.BUILD_DIR}}/versai-amd64.elf'
   CALC_AMD64_ELF: '{{.BUILD_DIR}}/calc-amd64.elf'
+  MAIL_AMD64_ELF: '{{.BUILD_DIR}}/mail-amd64.elf'
   DISK_AMD64_IMAGE: '{{.BUILD_DIR}}/disk-amd64.img'
 
   # RISC-V 64-bit userspace programs
   RACHEL_RISCV64_ELF: '{{.BUILD_DIR}}/rachel-riscv64.elf'
   LINUX_RISCV64_ELF: '{{.BUILD_DIR}}/linux-riscv64.elf'
   MAILDB_RISCV64_ELF: '{{.BUILD_DIR}}/maildb-riscv64.elf'
+  FTI_RISCV64_ELF: '{{.BUILD_DIR}}/fti-riscv64.elf'
   FS_RISCV64_ELF: '{{.BUILD_DIR}}/fs-riscv64.elf'
   SIEVETEST_RISCV64_ELF: '{{.BUILD_DIR}}/sievetest-riscv64.elf'
   ATTRTEST_RISCV64_ELF: '{{.BUILD_DIR}}/attrtest-riscv64.elf'
@@ -155,6 +163,7 @@ vars:
   CLOCKS_RISCV64_ELF: '{{.BUILD_DIR}}/clocks-riscv64.elf'
   VERSAI_RISCV64_ELF: '{{.BUILD_DIR}}/versai-riscv64.elf'
   CALC_RISCV64_ELF: '{{.BUILD_DIR}}/calc-riscv64.elf'
+  MAIL_RISCV64_ELF: '{{.BUILD_DIR}}/mail-riscv64.elf'
   HELLOWORLD_MAZ_RISCV64: '{{.BUILD_DIR}}/helloworld-riscv64.maz'
   PREFS_MAZ_RISCV64: '{{.BUILD_DIR}}/prefs-riscv64.maz'
   FONTSVC_MAZ_RISCV64: '{{.BUILD_DIR}}/fontsvc-riscv64.maz'
@@ -162,6 +171,7 @@ vars:
   LINUX_UI_MAZ_RISCV64: '{{.BUILD_DIR}}/linux-ui-riscv64.maz'
   MAIL_UI_MAZ_RISCV64: '{{.BUILD_DIR}}/mail-ui-riscv64.maz'
   DISK_RISCV64_IMAGE: '{{.BUILD_DIR}}/disk-riscv64.img'
+  BOOT_RISCV64_IMAGE: '{{.BUILD_DIR}}/boot-riscv64.img'
 
   # Fonts base image (built once, used as -base for disk images)
   LOUIS14_DIR: '{{env "LOUIS14_DIR" | default "../louis14"}}'
@@ -490,15 +500,15 @@ tasks:
 
   userspace-build:
     desc: Build all ARM64 userspace programs (shepherds, .maz modules, test programs)
-    deps: [rachel:arm64, linux:arm64, fs:arm64, clocks:arm64, versai:arm64, calc:arm64, handletest:arm64, clocktest:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, maildb:arm64, mail-ui:arm64]
+    deps: [rachel:arm64, linux:arm64, fs:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, handletest:arm64, clocktest:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64]
 
   userspace-build-x86_64:
     desc: Build all x86_64 userspace programs (shepherds + test programs)
-    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, clocks:x86_64, versai:x86_64, calc:x86_64, handletest:x86_64, clocktest:x86_64, maildb:x86_64, mail-ui:amd64]
+    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, clocks:x86_64, versai:x86_64, calc:x86_64, mail-app:x86_64, handletest:x86_64, clocktest:x86_64, fti:x86_64, maildb:x86_64, mail-ui:amd64]
 
   userspace-build-riscv64:
     desc: Build all RISC-V userspace programs (shepherds, .maz/.mzr modules, test programs)
-    deps: [rachel:riscv64, linux:riscv64, fs:riscv64, clocks:riscv64, versai:riscv64, calc:riscv64, handletest:riscv64, clocktest:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64, keymapper:riscv64, linux-ui:riscv64, maildb:riscv64, mail-ui:riscv64]
+    deps: [rachel:riscv64, linux:riscv64, fs:riscv64, clocks:riscv64, versai:riscv64, calc:riscv64, mail-app:riscv64, handletest:riscv64, clocktest:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64, keymapper:riscv64, linux-ui:riscv64, fti:riscv64, maildb:riscv64, mail-ui:riscv64]
 
   # ===========================================================================
   # Disk Image
@@ -525,7 +535,7 @@ tasks:
 
   disk-arm64:
     desc: Create ext2 disk image with ARM64 flock binaries and kmazarin kernel
-    deps: [rachel:arm64, linux:arm64, fs:arm64, handletest:arm64, clocktest:arm64, clocks:arm64, versai:arm64, calc:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, maildb:arm64, mail-ui:arm64, kmazarin:arm64, convert-boot-image]
+    deps: [rachel:arm64, linux:arm64, fs:arm64, handletest:arm64, clocktest:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, kmazarin:arm64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -539,11 +549,13 @@ tasks:
       - '{{.CLOCKS_ELF}}'
       - '{{.VERSAI_ELF}}'
       - '{{.CALC_ELF}}'
+      - '{{.MAIL_ELF}}'
       - '{{.HELLOWORLD_MAZ}}'
       - '{{.PREFS_MAZ}}'
       - '{{.FONTSVC_MAZ}}'
       - '{{.KEYMAPPER_MAZ}}'
       - '{{.LINUX_UI_MAZ}}'
+      - '{{.FTI_ELF}}'
       - '{{.MAILDB_ELF}}'
       - '{{.MAIL_UI_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
@@ -560,12 +572,12 @@ tasks:
       - '{{.GO}} tool go-cp config/startup.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/startup.toml'
       - '{{.GO}} tool go-cp config/rachel.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.RACHEL_ELF}} {{.LINUX_ELF}} {{.FS_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.CLOCKS_ELF}} {{.VERSAI_ELF}} {{.CALC_ELF}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.LINUX_UI_MAZ}} {{.MAILDB_ELF}} {{.MAIL_UI_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
+      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.RACHEL_ELF}} {{.LINUX_ELF}} {{.FS_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.CLOCKS_ELF}} {{.VERSAI_ELF}} {{.CALC_ELF}} {{.MAIL_ELF}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.LINUX_UI_MAZ}} {{.FTI_ELF}} {{.MAILDB_ELF}} {{.MAIL_UI_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
     desc: Create ext2 disk image with x86_64 flock binaries and kmazarin kernel
-    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, handletest:x86_64, clocktest:x86_64, clocks:x86_64, helloworld:amd64, prefs:amd64, fontsvc:amd64, keymapper:amd64, linux-ui:amd64, maildb:x86_64, mail-ui:amd64, kmazarin:x86_64, convert-boot-image]
+    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, handletest:x86_64, clocktest:x86_64, clocks:x86_64, mail-app:x86_64, helloworld:amd64, prefs:amd64, fontsvc:amd64, keymapper:amd64, linux-ui:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64, kmazarin:x86_64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -577,10 +589,12 @@ tasks:
       - '{{.HANDLETEST_AMD64_ELF}}'
       - '{{.CLOCKTEST_AMD64_ELF}}'
       - '{{.CLOCKS_AMD64_ELF}}'
+      - '{{.MAIL_AMD64_ELF}}'
       - '{{.HELLOWORLD_MAZ_AMD64}}'
       - '{{.PREFS_MAZ_AMD64}}'
       - '{{.FONTSVC_MAZ_AMD64}}'
       - '{{.LINUX_UI_MAZ_AMD64}}'
+      - '{{.FTI_AMD64_ELF}}'
       - '{{.MAILDB_AMD64_ELF}}'
       - '{{.MAIL_UI_MAZ_AMD64}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
@@ -605,17 +619,19 @@ tasks:
       - '{{.GO}} tool go-cp {{.FONTSVC_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz'
       - '{{.GO}} tool go-cp {{.KEYMAPPER_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz'
       - '{{.GO}} tool go-cp {{.LINUX_UI_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz'
+      - '{{.GO}} tool go-cp {{.MAIL_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/mail.elf'
+      - '{{.GO}} tool go-cp {{.FTI_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/fti.elf'
       - '{{.GO}} tool go-cp {{.MAILDB_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/maildb.elf'
       - '{{.GO}} tool go-cp {{.MAIL_UI_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz'
       - '{{.GO}} tool go-cp config/startup.amd64.toml {{.BUILD_DIR}}/disk-staging-amd64/startup.toml'
       - '{{.GO}} tool go-cp config/rachel.amd64.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml'
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_AMD64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.BUILD_DIR}}/disk-staging-amd64/rachel.elf {{.BUILD_DIR}}/disk-staging-amd64/linux.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.elf {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocktest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.elf {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/maildb.elf {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/startup.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkext2 -o {{.DISK_AMD64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.BUILD_DIR}}/disk-staging-amd64/rachel.elf {{.BUILD_DIR}}/disk-staging-amd64/linux.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.elf {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocktest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.elf {{.BUILD_DIR}}/disk-staging-amd64/mail.elf {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/fti.elf {{.BUILD_DIR}}/disk-staging-amd64/maildb.elf {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/startup.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   disk-riscv64:
     desc: Create ext2 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
-    deps: [rachel:riscv64, linux:riscv64, fs:riscv64, handletest:riscv64, clocktest:riscv64, clocks:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64, keymapper:riscv64, linux-ui:riscv64, maildb:riscv64, mail-ui:riscv64, kmazarin:riscv64, convert-boot-image]
+    deps: [rachel:riscv64, linux:riscv64, fs:riscv64, handletest:riscv64, clocktest:riscv64, clocks:riscv64, mail-app:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64, keymapper:riscv64, linux-ui:riscv64, fti:riscv64, maildb:riscv64, mail-ui:riscv64, kmazarin:riscv64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -627,10 +643,12 @@ tasks:
       - '{{.HANDLETEST_RISCV64_ELF}}'
       - '{{.CLOCKTEST_RISCV64_ELF}}'
       - '{{.CLOCKS_RISCV64_ELF}}'
+      - '{{.MAIL_RISCV64_ELF}}'
       - '{{.HELLOWORLD_MAZ_RISCV64}}'
       - '{{.PREFS_MAZ_RISCV64}}'
       - '{{.FONTSVC_MAZ_RISCV64}}'
       - '{{.LINUX_UI_MAZ_RISCV64}}'
+      - '{{.FTI_RISCV64_ELF}}'
       - '{{.MAILDB_RISCV64_ELF}}'
       - '{{.MAIL_UI_MAZ_RISCV64}}'
       - '{{.KMAZARIN_RISCV64_ELF}}'
@@ -654,13 +672,28 @@ tasks:
       - '{{.GO}} tool go-cp {{.FONTSVC_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/fontsvc.mzr'
       - '{{.GO}} tool go-cp {{.KEYMAPPER_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/keymapper.mzr'
       - '{{.GO}} tool go-cp {{.LINUX_UI_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/linux-ui.mzr'
+      - '{{.GO}} tool go-cp {{.MAIL_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/mail.elf'
+      - '{{.GO}} tool go-cp {{.FTI_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/fti.elf'
       - '{{.GO}} tool go-cp {{.MAILDB_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/maildb.elf'
       - '{{.GO}} tool go-cp {{.MAIL_UI_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/mail-ui.mzr'
       - '{{.GO}} tool go-cp config/startup.riscv64.toml {{.BUILD_DIR}}/disk-staging-riscv64/startup.toml'
       - '{{.GO}} tool go-cp config/rachel.riscv64.toml {{.BUILD_DIR}}/disk-staging-riscv64/rachel.toml'
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_RISCV64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.BUILD_DIR}}/disk-staging-riscv64/rachel.elf {{.BUILD_DIR}}/disk-staging-riscv64/linux.elf {{.BUILD_DIR}}/disk-staging-riscv64/fs.elf {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocktest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocks.elf {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr {{.BUILD_DIR}}/disk-staging-riscv64/prefs.mzr {{.BUILD_DIR}}/disk-staging-riscv64/fontsvc.mzr {{.BUILD_DIR}}/disk-staging-riscv64/keymapper.mzr {{.BUILD_DIR}}/disk-staging-riscv64/linux-ui.mzr {{.BUILD_DIR}}/disk-staging-riscv64/maildb.elf {{.BUILD_DIR}}/disk-staging-riscv64/mail-ui.mzr {{.BUILD_DIR}}/disk-staging-riscv64/startup.toml {{.BUILD_DIR}}/disk-staging-riscv64/rachel.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkext2 -o {{.DISK_RISCV64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.BUILD_DIR}}/disk-staging-riscv64/rachel.elf {{.BUILD_DIR}}/disk-staging-riscv64/linux.elf {{.BUILD_DIR}}/disk-staging-riscv64/fs.elf {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocktest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocks.elf {{.BUILD_DIR}}/disk-staging-riscv64/mail.elf {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr {{.BUILD_DIR}}/disk-staging-riscv64/prefs.mzr {{.BUILD_DIR}}/disk-staging-riscv64/fontsvc.mzr {{.BUILD_DIR}}/disk-staging-riscv64/keymapper.mzr {{.BUILD_DIR}}/disk-staging-riscv64/linux-ui.mzr {{.BUILD_DIR}}/disk-staging-riscv64/fti.elf {{.BUILD_DIR}}/disk-staging-riscv64/maildb.elf {{.BUILD_DIR}}/disk-staging-riscv64/mail-ui.mzr {{.BUILD_DIR}}/disk-staging-riscv64/startup.toml {{.BUILD_DIR}}/disk-staging-riscv64/rachel.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
+
+  boot-riscv64:
+    desc: Create FAT32 boot image for RISC-V diplomat (contains kmazarin kernel)
+    deps: [kmazarin:riscv64]
+    method: checksum
+    sources:
+      - '{{.KMAZARIN_RISCV64_ELF}}'
+    generates:
+      - '{{.BOOT_RISCV64_IMAGE}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Creating RISC-V FAT32 boot image..."'
+      - '{{.GO}} tool mkfat32 -o {{.BOOT_RISCV64_IMAGE}} -pad 64 {{.KMAZARIN_RISCV64_ELF}}'
+      - '{{.GO}} tool go-echo "RISC-V boot image created at {{.BOOT_RISCV64_IMAGE}}"'
 
   # ===========================================================================
   # Run Tasks
@@ -827,7 +860,7 @@ tasks:
 
   run-riscv64:
     desc: "Run RISC-V diplomat+kmazarin in QEMU via OpenSBI -kernel (TIMEOUT=N for timeout, default=5s)"
-    deps: [diplomat:riscv64, disk-riscv64]
+    deps: [diplomat:riscv64, boot-riscv64, disk-riscv64]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
@@ -857,7 +890,7 @@ tasks:
         {{if eq .VIRTIO_TRANSPORT "mmio"}}
         {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-device,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false
         {{else}}
-        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=boot-mmio,readonly=on -device virtio-blk-device,drive=boot-mmio -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0,file.locking=off -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false
+        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.BOOT_RISCV64_IMAGE}},format=raw,if=none,id=boot-mmio,readonly=on -device virtio-blk-device,drive=boot-mmio -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0,file.locking=off -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false
         {{end}}
       - '{{.GO}} tool go-echo "QEMU (RISC-V diplomat via OpenSBI, VirtIO {{.VIRTIO_TRANSPORT}}) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4447"'

@@ -10,7 +10,6 @@ import (
 	"mazzy/kmazarin/uart"
 	"mazzy/shared/constants"
 	"mazzy/shared/hid"
-	"sync/atomic"
 )
 
 // plicInstance holds the concrete PLIC pointer for direct use from the
@@ -50,14 +49,13 @@ func plicDispatchIRQInternal() {
 		virtioInputPLICTopHalf(&topHalfKbd)
 	} else if irq == topHalfMouse.irqNum && topHalfMouse.usedVA != 0 {
 		virtioInputPLICTopHalf(&topHalfMouse)
+	} else if irq == topHalfTablet.irqNum && topHalfTablet.usedVA != 0 {
+		virtioInputPLICTopHalf(&topHalfTablet)
 	} else if irq == blockIRQNum && blockIRQNum != 0 {
-		// VirtIO block PCI INTx: read ISR to deassert, set IOComplete for WFI loop.
-		if blockISRBase != 0 {
-			_ = asm.MmioRead8(blockISRBase)
-		}
-		if blockIOComplete != nil {
-			atomic.StoreUint32(blockIOComplete, 1)
-		}
+		// VirtIO block PCI INTx: dispatch through NonTimerIRQTopHalf which
+		// handles both sync (IOComplete) and async (io_uring CQ) paths.
+		topHalfIRQNum = uint64(irq)
+		NonTimerIRQTopHalf()
 	} else {
 		plicInstance.CallHandler(irq)
 	}

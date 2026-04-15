@@ -235,6 +235,27 @@ func (u *NS16550) WriteByte(c byte) {
 	u.txLockRelease()
 }
 
+// WriteByteTry writes a byte to the TX ring buffer (with FIFO drain).
+// Acquires the TX lock. Returns false if the ring buffer is full.
+// For use from syscall context where the caller needs to detect ring-full.
+//
+//go:nosplit
+func (u *NS16550) WriteByteTry(c byte) bool {
+	u.txLockAcquire()
+	success := u.txBuf.WriteByte(c)
+	if success {
+		for u.txBuf.Available() > 0 && u.ReadReg(NS_LSR)&NS_LSR_THRE != 0 {
+			data := u.txBuf.ReadByte()
+			u.WriteReg(NS_THR, data)
+		}
+		if u.txBuf.Available() > 0 {
+			u.WriteReg(NS_IER, NS_IER_RDI|NS_IER_THRI)
+		}
+	}
+	u.txLockRelease()
+	return success
+}
+
 // WriteString writes a string to the UART.
 //
 //go:nosplit

@@ -365,6 +365,7 @@ func testDeviceDiscovery() {
 			} else if ns16550, ok := bs.(*uart.NS16550); ok {
 				SetupUartSoftIRQ(ns16550.IRQ())
 				serial.SetQueueByteFunc(ns16550.WriteByte)
+				serial.SetQueueByteTryFunc(ns16550.WriteByteTry)
 				StoreUartTxDriver(ns16550)
 			}
 		}
@@ -569,6 +570,10 @@ func simpleMain() {
 	// Must be called before EnableTimerIRQ().
 	initTimerFrequency()
 
+	// Parse RISC-V ISA extensions from DTB for riscv_hwprobe syscall.
+	// No-op on ARM64/x86_64.
+	initHWProbeFromDTB()
+
 	// Cache interrupt controller pointer for per-arch IRQ enable/disable
 	initInterruptController()
 
@@ -581,6 +586,8 @@ func simpleMain() {
 	// the INTx GIC IRQ from the PCI interrupt pin routing (no MSI-X).
 	if !block.Init() {
 		klog.Errf("[Main] VirtIO Block init failed (no device found?)\n")
+	} else {
+		klog.Logf("[Main] VirtIO Block init OK, IRQ=%d\n", uint64(block.GetIRQNum()))
 	}
 
 	// Initialize VirtIO RNG device (entropy source).

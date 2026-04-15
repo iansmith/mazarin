@@ -67,6 +67,9 @@ var riscv64ToSysID = [512]SysID{
 	82:  SysIDFsync,
 	83:  SysIDFdatasync,
 	32:  SysIDFlock,
+	67:  SysIDPread64,
+	68:  SysIDPwrite64,
+	258: SysIDRiscvHWProbe,
 }
 
 // translateSyscallNum converts a RISC-V Linux syscall number to SysID.

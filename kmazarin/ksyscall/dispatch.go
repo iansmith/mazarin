@@ -59,6 +59,7 @@ var syscallTable = [NumSyscallIDs]SyscallHandler{
 	SysIDGetrandom:        SyscallGetrandom,        // getrandom
 	SysIDRtSigreturn:      SyscallRtSigreturn,      // rt_sigreturn
 	SysIDGetitimer:        SyscallGetitimer,        // getitimer
+	SysIDRiscvHWProbe:     SyscallRiscvHWProbe,     // riscv_hwprobe (RISC-V arch-specific)
 }
 
 // DispatchSyscall is called from assembly exception handler
@@ -104,11 +105,14 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 			klog.Errf("[UNK:%x]\n", syscallNum)
 			result = -38 // ENOSYS
 		} else {
+			// Per-SysID counter for all shepherd syscalls.
+			atomic.AddUint64(&SysIDCounts[sysID], 1)
 			// Check if this syscall is delegated to a userspace shepherd.
 			// Magic fds (epoll instance, eventfd) are never delegated — the linux
 			// shepherd doesn't know about them and would return errors.
 			callerSID := getCurrentThreadSID()
 			if IsDelegated(sysID, callerSID) && !IsMagicFdSyscall(sysID, arg0) {
+					atomic.AddUint64(&SysIDDelegated[sysID], 1)
 					result = DelegateSyscall(sysID, arg0, arg1, arg2, arg3, arg4, arg5)
 			} else {
 				handler := syscallTable[sysID]

@@ -32,6 +32,9 @@ var (
 	SVCCountBySID      [32]uint64 // Per-SID SVC counter for diagnostics
 	// SID0 per-syscall-number counters for diagnosing kernel thread load.
 	SID0SyscallCounts [256]uint64 // indexed by syscall number (clamped to 255)
+	// Per-SysID counters for all shepherds (not SID 0).
+	SysIDCounts    [NumSyscallIDs]uint64 // indexed by SysID
+	SysIDDelegated [NumSyscallIDs]uint64 // delegated calls by SysID
 )
 
 // PrintFutexStats prints futex statistics for debugging

@@ -31,5 +31,13 @@
 #path = "/calc.elf"
 
 [[shepherd]]
+name = "fti"
+path = "/fti.elf"
+
+[[shepherd]]
 name = "maildb"
 path = "/maildb.elf"
+
+[[shepherd]]
+name = "mail"
+path = "/mail.elf"

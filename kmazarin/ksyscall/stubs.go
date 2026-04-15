@@ -421,6 +421,8 @@ func SyscallGetitimer(_, _, _, _, _, _ uint64) int64 {
 	return 0
 }
 
+// SyscallRiscvHWProbe is in hwprobe_riscv64.go (real) / hwprobe_stub.go (other archs).
+
 // SyscallTkill sends a signal to a thread (deprecated in favor of tgkill).
 // Forward to tgkill implementation.
 //

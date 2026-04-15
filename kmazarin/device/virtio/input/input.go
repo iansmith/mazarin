@@ -557,6 +557,7 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 // Should be called during kernel init after PCI ECAM is available.
 func InitVirtIOInput() {
 	platformInitInterrupts()
+	klog.Logf("[VirtIO Input] PCI scan starting\n")
 
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
@@ -572,9 +573,14 @@ func InitVirtIOInput() {
 					continue
 				}
 
+				klog.Logf("[VirtIO Input] PCI %d:%d.%d vendor=0x%x device=0x%x\n",
+					bus, slot, funcNum, vendorID, deviceID)
+
 				if vendorID != pci.VIRTIO_VENDOR_ID || deviceID != VIRTIO_INPUT_DEVICE_ID {
 					continue
 				}
+
+				klog.Logf("[VirtIO Input] Found input device at PCI %d:%d.%d\n", bus, slot, funcNum)
 
 				// Found VirtIO input device — clear Interrupt Disable before FindAndMapBARs
 				cmd := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_COMMAND)
@@ -604,15 +610,20 @@ func InitVirtIOInput() {
 				// Assign to global slots
 				if dev.DevType == hid.DeviceTypeKeyboard && KeyboardDevice == nil {
 					KeyboardDevice = dev
+					klog.Logf("[VirtIO Input] Keyboard assigned (slot %d, IRQ %d)\n", slot, irq)
 				} else if dev.DevType == hid.DeviceTypeMouse && MouseDevice == nil {
 					MouseDevice = dev
+					klog.Logf("[VirtIO Input] Mouse assigned (slot %d, IRQ %d)\n", slot, irq)
 				} else if dev.DevType == hid.DeviceTypeTablet && TabletDevice == nil {
 					TabletDevice = dev
+					klog.Logf("[VirtIO Input] Tablet assigned (slot %d, IRQ %d)\n", slot, irq)
 				}
 				allDevices = append(allDevices, dev)
 			}
 		}
 	}
+	klog.Logf("[VirtIO Input] PCI scan done: %d devices (kbd=%v mouse=%v tablet=%v)\n",
+		len(allDevices), KeyboardDevice != nil, MouseDevice != nil, TabletDevice != nil)
 }
 
 // PollAllDevices checks the Used ring of all input devices for pending events.

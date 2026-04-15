@@ -13,9 +13,11 @@ func diplomatEntryWrapper()    // Wrapper that writes debug marker and calls Dip
 // elfMachineExpected is the ELF machine type diplomat expects when loading a kernel.
 const elfMachineExpected = elfMachineRISCV64
 
-// kernelFilePath is the path to the kernel on the FAT32 disk.
-// On RISC-V, files are in the root directory (no /EFI/Linux/ UEFI structure).
-const kernelFilePath = "KMAZARIN.ELF"
+// kernelFilePath is the path to the kernel on the FAT32 boot disk.
+// On RISC-V, the kernel is in the root directory (no /EFI/ UEFI structure)
+// because OpenSBI loads diplomat directly. The filename must match the file
+// placed on the FAT32 boot disk by the Taskfile's boot-riscv64 task.
+const kernelFilePath = "kmazarin-riscv64.elf"
 
 // Early boot parameters passed by firmware
 var bootHartID uint64  // Hart (hardware thread) ID from a0
