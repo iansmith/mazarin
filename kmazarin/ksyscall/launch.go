@@ -208,7 +208,7 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 			// Allocate IPC uring ring for the new shepherd
 			uringID := allocateUringID()
 			proc.ShepherdListData[i].UringID = uringID
-			allocateUringIPCRing(&proc.ShepherdListData[i])
+			allocateUringIPCRing(&proc.ShepherdListData[i], 0)
 			registerUringID(uringID, int16(proc.ShepherdListData[i].PID))
 
 			break

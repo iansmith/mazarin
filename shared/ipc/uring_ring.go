@@ -14,7 +14,8 @@ const (
 	UringIPCCapacity   = 64  // number of message slots
 	UringIPCMask       = UringIPCCapacity - 1
 	UringIPCHeaderSize = 128 // ring header padded to one slot width
-	UringIPCPagesNeeded = 3  // 12KB: header + 64 * 128-byte slots
+	UringIPCPagesNeeded    = 3  // 12KB: header + 64 * 128-byte slots
+	MaxRingsPerShepherd    = 3  // max uring rings per shepherd (ring 0 = default)
 )
 
 // Protocol discriminators for UringIPCMsg.Protocol.
@@ -32,6 +33,10 @@ const (
 	ProtoFSDelegateResp  uint32 = 10 // Delegated FS syscall response (handler → caller via kernel)
 	ProtoFSIPCReq        uint32 = 11 // Shepherd → fs file operation request
 	ProtoFSIPCResp       uint32 = 12 // fs → shepherd file operation response
+	ProtoMailReq         uint32 = 13 // mail → maildb request (GetHeaders, GetBody, BodyConfirm)
+	ProtoMailResp        uint32 = 14 // maildb → mail response (HeadersResult, BodyResult)
+	ProtoFTIReq          uint32 = 15 // shepherd → fti request (IndexDocument)
+	ProtoFTIResp         uint32 = 16 // fti → shepherd response (IndexingCompleted, IndexError)
 )
 
 // UringIPCRingHeader is the metadata at offset 0 of the ring's first page.

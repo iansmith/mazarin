@@ -17,7 +17,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	6: SyscallDebugPrint,           // DebugPrint = 0x1006
 	7: SyscallGetFramebuffer,       // GetFramebuffer = 0x1007
 	8: SyscallWaitKernelAsync,      // WaitKernelAsync = 0x1008
-	// slot 9 removed (was RegisterAsyncPreempt)
+	9: SyscallUringSetup,            // UringSetup = 0x1009
 	10: SyscallWaitSoftIRQ,          // WaitSoftIRQ = 0x100A
 	11: SyscallRegisterSoftIRQ,      // RegisterSoftIRQ = 0x100B
 	12: SyscallQueryInputDevices,    // QueryInputDevices = 0x100C

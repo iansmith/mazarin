@@ -4,6 +4,10 @@
 // connect to each other's rings via UringID (discoverable through ShepherdInfo),
 // then send 128-byte messages. A dedicated reader goroutine receives messages
 // and dispatches them to typed Go channels by protocol.
+//
+// Ring 0 is created automatically at shepherd startup. Shepherds that need
+// multiple independent readers (e.g. the linux shepherd) can create additional
+// rings (1, 2) via Setup and use the WithRing variants.
 package uring
 
 import (
@@ -25,33 +29,13 @@ func runtime_entersyscallblock()
 //go:linkname runtime_exitsyscall runtime.exitsyscall
 func runtime_exitsyscall()
 
-// Connect establishes a connection to a target shepherd's uring ring by uring ID.
-// Returns a handle (small integer) for use with Release.
-//
-// Uses Syscall (P released) because this routes through KernelSVCWorker.
-func Connect(targetUringID uint64) (handle int, err error) {
-	r1, _, errno := syscall.Syscall6(mazzy.SysUringConnect,
-		uintptr(targetUringID),
+// Setup creates an additional uring ring for the calling shepherd.
+// ringIdx must be 1 or 2 (ring 0 is created automatically at startup).
+// Returns nil on success, or an error.
+func Setup(ringIdx int) error {
+	r1, _, errno := syscall.RawSyscall6(mazzy.SysUringSetup,
+		uintptr(ringIdx),
 		0, 0, 0, 0, 0)
-	if errno != 0 {
-		return -1, errno
-	}
-	if int64(r1) < 0 {
-		return -1, syscall.Errno(-int64(r1))
-	}
-	return int(r1), nil
-}
-
-// Send sends a 128-byte message to a target shepherd's uring ring.
-// The msg must be exactly 128 bytes (ipc.UringIPCMsg). The kernel stamps
-// the SenderSID and SenderID fields automatically.
-//
-// Uses RawSyscall (P held) because this is a fast non-blocking operation.
-func Send(targetSID int, msg *ipc.UringIPCMsg) error {
-	r1, _, errno := syscall.RawSyscall6(mazzy.SysUringSend,
-		uintptr(targetSID),
-		uintptr(unsafe.Pointer(msg)),
-		0, 0, 0, 0)
 	if errno != 0 {
 		return errno
 	}
@@ -61,21 +45,74 @@ func Send(targetSID int, msg *ipc.UringIPCMsg) error {
 	return nil
 }
 
-// Recv blocks until a message arrives on the caller's own uring ring.
-// The received message is written into msg.
+// Connect establishes a connection to a target shepherd's uring ring 0.
+func Connect(targetUringID uint64) (handle int, err error) {
+	return ConnectWithRing(targetUringID, 0)
+}
+
+// ConnectWithRing establishes a connection to a specific ring on the target shepherd.
+// ringIdx selects which ring on the target (0 = default, 1-2 = additional).
+//
+// Uses Syscall (P released) because this routes through KernelSVCWorker.
+func ConnectWithRing(targetUringID uint64, ringIdx int) (handle int, err error) {
+	r1, _, errno := syscall.Syscall6(mazzy.SysUringConnect,
+		uintptr(targetUringID),
+		uintptr(ringIdx),
+		0, 0, 0, 0)
+	if errno != 0 {
+		return -1, errno
+	}
+	if int64(r1) < 0 {
+		return -1, syscall.Errno(-int64(r1))
+	}
+	return int(r1), nil
+}
+
+// Send sends a 128-byte message to a target shepherd's uring ring 0.
+func Send(targetSID int, msg *ipc.UringIPCMsg) error {
+	return SendWithRing(targetSID, msg, 0)
+}
+
+// SendWithRing sends a 128-byte message to a specific ring on the target shepherd.
+// ringIdx selects which ring on the target (0 = default, 1-2 = additional).
+//
+// Uses RawSyscall (P held) because this is a fast non-blocking operation.
+func SendWithRing(targetSID int, msg *ipc.UringIPCMsg, ringIdx int) error {
+	r1, _, errno := syscall.RawSyscall6(mazzy.SysUringSend,
+		uintptr(targetSID),
+		uintptr(unsafe.Pointer(msg)),
+		uintptr(ringIdx),
+		0, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	if int64(r1) < 0 {
+		return syscall.Errno(-int64(r1))
+	}
+	return nil
+}
+
+// Recv blocks until a message arrives on the caller's uring ring 0.
+func Recv(msg *ipc.UringIPCMsg) error {
+	return RecvWithRing(msg, 0)
+}
+
+// RecvWithRing blocks until a message arrives on the specified ring.
+// ringIdx selects which ring to receive from (0 = default, 1-2 = additional).
 //
 // Uses entersyscallblock (not entersyscall) because this is a known-blocking
 // operation. entersyscallblock immediately hands off the P via handoffp() →
 // startm(), so other goroutines (e.g. event loops parked on channels) can
 // run while this M is blocked in the kernel. When the kernel wakes us
 // (priority queue, SVC rewind), exitsyscall reacquires the P.
-func Recv(msg *ipc.UringIPCMsg) error {
+func RecvWithRing(msg *ipc.UringIPCMsg, ringIdx int) error {
 	// Touch the buffer to ensure demand-fault before kernel writes.
 	*(*byte)(unsafe.Pointer(msg)) = 0
 	runtime_entersyscallblock()
 	r1, _, errno := syscall.RawSyscall6(mazzy.SysUringRecv,
 		uintptr(unsafe.Pointer(msg)),
-		0, 0, 0, 0, 0)
+		uintptr(ringIdx),
+		0, 0, 0, 0)
 	runtime_exitsyscall()
 	if errno != 0 {
 		return errno

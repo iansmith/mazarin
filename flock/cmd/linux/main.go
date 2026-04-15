@@ -224,22 +224,28 @@ func addCRBeforeLF(data []byte) []byte {
 	return out
 }
 
-// startUringDispatcher sets up the uring Dispatcher.
-// WM messages go to wmCh, font responses go to fontReplyCh (both forwarded
-// to linux-ui via LinuxIO channels). The shepherd does not interpret these
-// messages — it only routes them.
-func startUringDispatcher(fsClient *fsclient.Client, delegateCh chan any, wmCh chan any, fontReplyCh chan any) {
-	d := uring.NewDispatcher()
-	d.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
-	d.On(ipc.ProtoFontResponse, decodeRawPayload, fontReplyCh)
-	d.On(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, delegateCh)
-	d.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
-	d.OnDeath(func(deadSID int16) {
+// startUringDispatchers sets up two uring Dispatchers to avoid a single-reader
+// deadlock. Ring 0 handles shepherd IPC (fs responses, WM, fonts, death).
+// Ring 1 handles kernel delegate requests. Two independent reader goroutines
+// mean the delegate reader can block on delegateCh without preventing IPC
+// response delivery.
+func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, wmCh chan any, fontReplyCh chan any) {
+	// Ring 0: shepherd IPC
+	ipcDispatcher := uring.NewDispatcher() // ring 0 (default)
+	ipcDispatcher.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
+	ipcDispatcher.On(ipc.ProtoFontResponse, decodeRawPayload, fontReplyCh)
+	ipcDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
+	ipcDispatcher.OnDeath(func(deadSID int16) {
 		sys.UartWriteString(fmt.Sprintf("[linux] shepherd %d died\n", deadSID))
 		// Route through delegateCh so all sidStates access is single-goroutine.
 		delegateCh <- deathNotification{deadSID: deadSID}
 	})
-	d.Start()
+	ipcDispatcher.Start()
+
+	// Ring 1: kernel delegate requests
+	delegateDispatcher := uring.NewDispatcherWithRing(1)
+	delegateDispatcher.On(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, delegateCh)
+	delegateDispatcher.Start()
 }
 
 // decodeRawPayload copies the raw UringIPCMsg payload without interpreting it.
@@ -341,13 +347,17 @@ func main() {
 
 	sys.UartWriteString("[linux] LinuxIO config prepared\n")
 
-	// 4. Set up uring dispatcher BEFORE loading .maz.
+	// 4. Set up uring dispatchers BEFORE loading .maz.
+	// Create ring 1 for delegate requests (ring 0 is auto-created).
+	if err := uring.Setup(1); err != nil {
+		panic("[linux] uring.Setup(1) failed: " + err.Error())
+	}
 	// WM and font response messages go to temp channels that will be
 	// forwarded to the .maz's channels after injection.
 	tempWMCh := make(chan any, 8)
 	tempFontReplyCh := make(chan any, 8)
 	delegateCh := make(chan any, 8)
-	startUringDispatcher(fsClient, delegateCh, tempWMCh, tempFontReplyCh)
+	startUringDispatchers(fsClient, delegateCh, tempWMCh, tempFontReplyCh)
 	if err := fsClient.Connect(); err != nil {
 		panic(fmt.Sprintf("[linux] FATAL: fsclient.Connect: %v", err))
 	}
@@ -407,7 +417,7 @@ func main() {
 	suppressSerialCopy = os.Getenv("SUPPRESS_SERIAL_STDIO_COPY") == "1"
 	globalHandler = newSyscallHandler(fsClient)
 	handler := globalHandler
-	delegateErr := sys.RegisterSyscallHandlers(
+	delegateErr := sys.RegisterSyscallHandlersWithRing(1,
 		sysid.Write, sysid.Read, sysid.Openat, sysid.Close,
 		sysid.Lseek, sysid.Fstat, sysid.Fstatat,
 		sysid.Mkdirat, sysid.Unlinkat, sysid.Renameat,

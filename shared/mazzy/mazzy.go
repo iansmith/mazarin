@@ -17,7 +17,7 @@ const (
 	SysDebugPrint      = MazzySyscallBase + 6  // 0x1006 - Debug print arguments
 	SysGetFramebuffer  = MazzySyscallBase + 7  // 0x1007 - Get framebuffer info
 	SysWaitKernelAsync = MazzySyscallBase + 8  // 0x1008 - Wait for kernel async message
-	// slot 9 freed (was RegisterAsyncPreempt)
+	SysUringSetup            = MazzySyscallBase + 9  // 0x1009 - Create additional uring ring (ring 1 or 2)
 	SysWaitSoftIRQ       = MazzySyscallBase + 10 // 0x100A - Wait for soft IRQ events on a slot
 	SysRegisterSoftIRQ   = MazzySyscallBase + 11 // 0x100B - Register an IRQ on a soft IRQ slot
 	SysQueryInputDevices = MazzySyscallBase + 12 // 0x100C - Query available input devices

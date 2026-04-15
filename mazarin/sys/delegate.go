@@ -143,12 +143,20 @@ func NewSyscallRequest(sysID sysid.ID, callerSID, callerTID int16, args [6]uint6
 }
 
 // RegisterSyscallHandlers registers the calling shepherd as the handler for
-// the given syscalls without starting a recv goroutine. The handler receives
-// delegated requests via its uring Dispatcher (ProtoFSDelegateReq).
+// the given syscalls on ring 0. The handler receives delegated requests via
+// its uring Dispatcher (ProtoFSDelegateReq).
 func RegisterSyscallHandlers(ids ...sysid.ID) error {
+	return RegisterSyscallHandlersWithRing(0, ids...)
+}
+
+// RegisterSyscallHandlersWithRing registers the calling shepherd as the handler
+// for the given syscalls, specifying which ring index should receive delegate
+// requests. Ring 0 is the default; use 1 or 2 for additional rings created
+// via uring.Setup.
+func RegisterSyscallHandlersWithRing(ringIdx int, ids ...sysid.ID) error {
 	for _, id := range ids {
 		r1, _, errno := RawSyscall(mazzy.SysRegisterSyscallHandler,
-			uintptr(id), 0, 0, 0, 0, 0)
+			uintptr(id), uintptr(ringIdx), 0, 0, 0, 0)
 		if errno != 0 {
 			return errno
 		}

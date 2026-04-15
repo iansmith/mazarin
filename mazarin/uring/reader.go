@@ -15,13 +15,20 @@ type Handler func(msg *ipc.UringIPCMsg)
 // dispatch without depending on sysmon's retake polling.
 type Reader struct {
 	handler Handler
+	ringIdx int
 	done    chan struct{}
 }
 
-// NewReader creates a new uring reader. Call Start() to begin receiving.
+// NewReader creates a new uring reader on ring 0. Call Start() to begin receiving.
 func NewReader(handler Handler) *Reader {
+	return NewReaderWithRing(handler, 0)
+}
+
+// NewReaderWithRing creates a new uring reader on the specified ring index.
+func NewReaderWithRing(handler Handler, ringIdx int) *Reader {
 	return &Reader{
 		handler: handler,
+		ringIdx: ringIdx,
 		done:    make(chan struct{}),
 	}
 }
@@ -40,10 +47,9 @@ func (r *Reader) Start() {
 func (r *Reader) loop() {
 	defer close(r.done)
 
-	uartPuts("[uring:reader] loop started, calling Recv...\n")
 	var msg ipc.UringIPCMsg
 	for {
-		err := Recv(&msg)
+		err := RecvWithRing(&msg, r.ringIdx)
 		if err != nil {
 			uartPuts("[uring:reader] Recv error, exiting loop\n")
 			return
@@ -103,15 +109,22 @@ type DeathHandler func(deadSID int16)
 // Unregistered protocols are logged and dropped (no panic).
 type Dispatcher struct {
 	reader       *Reader
+	ringIdx      int
 	routes       map[uint32]typedRoute
 	deathHandler DeathHandler
 }
 
-// NewDispatcher creates a dispatcher that routes messages by protocol.
+// NewDispatcher creates a dispatcher on ring 0 that routes messages by protocol.
 // Register protocol channels with On() before calling Start().
 func NewDispatcher() *Dispatcher {
+	return NewDispatcherWithRing(0)
+}
+
+// NewDispatcherWithRing creates a dispatcher on the specified ring index.
+func NewDispatcherWithRing(ringIdx int) *Dispatcher {
 	return &Dispatcher{
-		routes: make(map[uint32]typedRoute),
+		ringIdx: ringIdx,
+		routes:  make(map[uint32]typedRoute),
 	}
 }
 
@@ -147,7 +160,7 @@ func (d *Dispatcher) Start() {
 	}
 	deathFn := d.deathHandler
 
-	d.reader = NewReader(func(msg *ipc.UringIPCMsg) {
+	d.reader = NewReaderWithRing(func(msg *ipc.UringIPCMsg) {
 		// Handle ProtoDeath with defer/recover to guarantee the reader
 		// continues even if the death handler panics.
 		if msg.Protocol == ipc.ProtoDeath {
@@ -179,7 +192,7 @@ func (d *Dispatcher) Start() {
 		} else {
 			route.ch <- typed
 		}
-	})
+	}, d.ringIdx)
 	d.reader.Start()
 }
 

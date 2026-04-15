@@ -9,14 +9,16 @@ import (
 
 // SyscallUringConnect connects to a target shepherd's IPC uring by uring ID.
 // arg0 = target uring ID (uint64)
+// arg1 = target ring index (0 = default, 1-2 = additional rings)
 // Returns: connection handle (small integer) on success, or negative errno.
 //
 // This syscall routes through KernelSVCWorker because the uring ID map lookup
 // may need heap access (runs on thread 0's growable stack).
 //
 //go:noinline
-func SyscallUringConnect(arg0, _, _, _, _, _ uint64) int64 {
+func SyscallUringConnect(arg0, arg1, _, _, _, _ uint64) int64 {
 	targetUringID := arg0
+	ringIdx := uint8(arg1)
 	if targetUringID == 0 {
 		return -22 // EINVAL — 0 is not a valid uring ID
 	}
@@ -29,6 +31,7 @@ func SyscallUringConnect(arg0, _, _, _, _, _ uint64) int64 {
 	req := uringConnectWorkRequest{
 		TargetUringID: targetUringID,
 		CallerSID:     int16(shepherd.PID),
+		TargetRingIdx: ringIdx,
 	}
 
 	ctxPtr := submitUringConnect(req)
@@ -42,12 +45,14 @@ func SyscallUringConnect(arg0, _, _, _, _, _ uint64) int64 {
 // SyscallUringSend sends a 128-byte message to a target shepherd's uring ring.
 // arg0 = target SID (int16)
 // arg1 = pointer to 128-byte message in caller's address space
+// arg2 = target ring index (0 = default, 1-2 = additional rings)
 // Returns: 0 on success, negative errno on failure.
 //
 //go:noinline
-func SyscallUringSend(arg0, arg1, _, _, _, _ uint64) int64 {
+func SyscallUringSend(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	targetSID := int16(arg0)
 	msgPtr := uintptr(arg1)
+	ringIdx := uint8(arg2)
 
 	if msgPtr == 0 {
 		return -14 // EFAULT
@@ -88,7 +93,7 @@ func SyscallUringSend(arg0, arg1, _, _, _, _ uint64) int64 {
 		msg.SenderID = shepherd.UringID
 	}
 
-	result, ctxPtr := uringSendKernel(callerSID, targetSID, msgKVA)
+	result, ctxPtr := uringSendKernel(callerSID, targetSID, ringIdx, msgKVA)
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 	}
@@ -97,11 +102,13 @@ func SyscallUringSend(arg0, arg1, _, _, _, _ uint64) int64 {
 
 // SyscallUringRecv blocks until a message arrives on the caller's IPC uring ring.
 // arg0 = pointer to 128-byte buffer in caller's address space
+// arg1 = ring index (0 = default, 1-2 = additional rings)
 // Returns: 0 on success (message written to buf), negative errno on failure.
 //
 //go:noinline
-func SyscallUringRecv(arg0, _, _, _, _, _ uint64) int64 {
+func SyscallUringRecv(arg0, arg1, _, _, _, _ uint64) int64 {
 	bufPtr := arg0
+	ringIdx := int(arg1)
 	if bufPtr == 0 {
 		return -14 // EFAULT
 	}
@@ -110,15 +117,15 @@ func SyscallUringRecv(arg0, _, _, _, _, _ uint64) int64 {
 	shepherdIdx := int(sid)
 
 	// Try to drain immediately
-	msgKVA, ok := drainUringIPCRing(sid)
+	msgKVA, ok := drainUringIPCRing(sid, ringIdx)
 	if ok {
 		result := copyUringMsgToUser(bufPtr, msgKVA)
-		advanceUringHead(sid)
+		advanceUringHead(sid, ringIdx)
 		return result
 	}
 
 	// Block until message arrives
-	ctxPtr := blockForUringRecv(shepherdIdx, bufPtr)
+	ctxPtr := blockForUringRecv(shepherdIdx, ringIdx, bufPtr)
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 		return -11 // Value overwritten by re-executed SVC on wake
@@ -127,10 +134,10 @@ func SyscallUringRecv(arg0, _, _, _, _, _ uint64) int64 {
 	// No other thread — WFI loop
 	for {
 		enableIRQsAndWait()
-		msgKVA, ok = drainUringIPCRing(sid)
+		msgKVA, ok = drainUringIPCRing(sid, ringIdx)
 		if ok {
 			result := copyUringMsgToUser(bufPtr, msgKVA)
-			advanceUringHead(sid)
+			advanceUringHead(sid, ringIdx)
 			return result
 		}
 	}
@@ -147,6 +154,30 @@ func SyscallUringRelease(arg0, _, _, _, _, _ uint64) int64 {
 	callerSID := getCurrentThreadSID()
 
 	return releaseUringConnection(handle, callerSID)
+}
+
+// SyscallUringSetup creates an additional uring ring (ring 1 or 2) for the
+// calling shepherd. Ring 0 is always created at shepherd startup.
+// arg0 = ring index to create (1 or 2)
+// Returns: 0 on success, negative errno on error.
+//
+//go:noinline
+func SyscallUringSetup(arg0, _, _, _, _, _ uint64) int64 {
+	ringIdx := int(arg0)
+	if ringIdx < 1 || ringIdx >= ipc.MaxRingsPerShepherd {
+		return -22 // EINVAL — ring 0 is auto-created; only 1 or 2 allowed
+	}
+
+	shepherd := proc.CurrentShepherd()
+	if shepherd == nil {
+		return -1 // EPERM
+	}
+
+	if !allocateUringIPCRing(shepherd, ringIdx) {
+		return -12 // ENOMEM
+	}
+
+	return 0
 }
 
 // copyUringMsgToUser copies a 128-byte message from kernel ring slot to userspace.

@@ -9,16 +9,16 @@ import (
 // Forward declarations for uring IPC functions in the main package.
 
 //go:linkname blockForUringRecv main.BlockForUringRecv
-func blockForUringRecv(shepherdIdx int, bufPtr uint64) uintptr
+func blockForUringRecv(shepherdIdx int, ringIdx int, bufPtr uint64) uintptr
 
 //go:linkname uringSendKernel main.UringSendKernel
-func uringSendKernel(senderSID, targetSID int16, msgKVA uintptr) (int64, uintptr)
+func uringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) (int64, uintptr)
 
 //go:linkname drainUringIPCRing main.drainUringIPCRing
-func drainUringIPCRing(sid int16) (uintptr, bool)
+func drainUringIPCRing(sid int16, ringIdx int) (uintptr, bool)
 
 //go:linkname advanceUringHead main.advanceUringHead
-func advanceUringHead(sid int16)
+func advanceUringHead(sid int16, ringIdx int)
 
 //go:linkname releaseUringConnection main.ReleaseUringConnection
 func releaseUringConnection(handle int, callerSID int16) int64
@@ -27,13 +27,14 @@ func releaseUringConnection(handle int, callerSID int16) int64
 type uringConnectWorkRequest struct {
 	TargetUringID uint64
 	CallerSID     int16
+	TargetRingIdx uint8
 }
 
 //go:linkname submitUringConnect main.SubmitUringConnect
 func submitUringConnect(req uringConnectWorkRequest) uintptr
 
 //go:linkname allocateUringIPCRing main.AllocUringIPCRing
-func allocateUringIPCRing(shepherd *proc.Shepherd) bool
+func allocateUringIPCRing(shepherd *proc.Shepherd, ringIdx int) bool
 
 //go:linkname registerUringID main.RegisterUringID
 func registerUringID(id uint64, sid int16)
