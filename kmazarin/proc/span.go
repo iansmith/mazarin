@@ -87,13 +87,58 @@ func (g *LockedSpanGroup) TryReserve(start, length uint64) uint64 {
 	return 0
 }
 
-// Add records a new VA reservation.
+// Add records a new VA reservation. Adjacent spans are coalesced to
+// avoid exhausting the fixed-size span table. This is critical because
+// the Go runtime's sysMap (MAP_FIXED) repeatedly splits reservation
+// spans — without coalescing, each heap growth consumes a slot and the
+// table fills up, causing a fatal OOM even with plenty of free pages.
 // Returns true on success, false if no free slots.
 //
 //go:nosplit
 func (g *LockedSpanGroup) Add(start, length uint64) bool {
 	g.acquireLock()
 
+	end := start + length
+	leftIdx := -1
+	rightIdx := -1
+
+	// Find adjacent spans to coalesce with.
+	for i := 0; i < SpansPerProcess; i++ {
+		if g.spans[i].inUse == 0 {
+			continue
+		}
+		spanEnd := g.spans[i].start + g.spans[i].length
+		if spanEnd == start {
+			leftIdx = i
+		}
+		if g.spans[i].start == end {
+			rightIdx = i
+		}
+	}
+
+	if leftIdx >= 0 && rightIdx >= 0 {
+		// Merge left + new + right into left, free right slot.
+		rightEnd := g.spans[rightIdx].start + g.spans[rightIdx].length
+		g.spans[leftIdx].length = rightEnd - g.spans[leftIdx].start
+		g.spans[rightIdx].clear()
+		g.releaseLock()
+		return true
+	}
+	if leftIdx >= 0 {
+		// Extend left neighbor to cover new range.
+		g.spans[leftIdx].length += length
+		g.releaseLock()
+		return true
+	}
+	if rightIdx >= 0 {
+		// Extend right neighbor backward to cover new range.
+		g.spans[rightIdx].start = start
+		g.spans[rightIdx].length += length
+		g.releaseLock()
+		return true
+	}
+
+	// No adjacent spans — allocate a free slot.
 	for i := 0; i < SpansPerProcess; i++ {
 		if g.spans[i].inUse == 0 {
 			g.spans[i].set(start, length)
