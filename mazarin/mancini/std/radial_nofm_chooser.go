@@ -126,6 +126,14 @@ func (c *RadialNOfMChooser) Select(k int) int {
 	return evicted
 }
 
+// ForceSelect clears all selections and selects only segment k.
+func (c *RadialNOfMChooser) ForceSelect(k int) {
+	if k < 0 || k >= len(c.labels) {
+		return
+	}
+	c.selected = []int{k}
+}
+
 // Unselect deselects segment k. If k is not currently selected, this is
 // a no-op and returns -1. Otherwise returns k.
 func (c *RadialNOfMChooser) Unselect(k int) int {
@@ -491,7 +499,8 @@ func radialDrawGrooves(canvas *image.RGBA, pal mancini.Palette,
 // radial line from the arc center through the segment midpoint: the
 // baseline follows the direction from inner to outer radius.
 func radialDrawContent(dc mancini.DrawContext, canvas *image.RGBA, pal mancini.Palette,
-	cx, cy, rOuter, rInner, startAngle, endAngle float64, face mancini.Face) {
+	cx, cy, rOuter, rInner, startAngle, endAngle float64,
+	face mancini.LatinTextFace) {
 
 	midAngle := (startAngle + endAngle) / 2
 	midR := (rInner + rOuter) / 2
