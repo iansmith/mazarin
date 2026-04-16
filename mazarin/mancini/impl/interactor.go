@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"strings"
 
 	"mazzy/mazarin/mancini"
 )
@@ -214,33 +213,42 @@ func (i *Interactor) Layout() *mancini.LayoutAttributes { return i.layout }
 func (i *Interactor) GetLayout() *mancini.LayoutAttributes { return i.layout }
 
 // Pick performs hit testing in this interactor's local coordinate frame.
-// It checks bounds, recurses into children (last-to-first for z-order),
-// and appends this interactor if hit. Returns front-to-back order
-// (deepest children first).
+// Returns front-to-back order (deepest children first).
 //
-// Concrete types (e.g., Scroller) may override Pick to apply coordinate
-// transforms before recursing into children.
+// The parent walks its children last-to-first (top z-order first). For
+// each child the parent pre-filters against that child's bounds in the
+// parent's coordinate frame: if the click does not overlap the child
+// there is no reason to recurse into it. Invisible children are also
+// skipped. When a child does overlap, the parent transforms the click
+// into the child's local frame (subtracting the child's x,y within the
+// parent) before recursing.
+//
+// A child's bounds may legitimately extend outside the parent's own
+// bounds (e.g. a GridTable divider whose marker overhangs above and
+// below the grid). The parent still recurses into such children based
+// on the child's own bounds — it does NOT pre-filter by its own bounds.
+//
+// Self is appended to the result only if the click is within this
+// interactor's local bounds and DetailedHit (if implemented) returns
+// true.
+//
+// Concrete types (e.g., Scroller) may override Pick to apply additional
+// coordinate transforms before recursing into children.
 func (i *Interactor) Pick(localX, localY int64) []mancini.Interactor {
 	lh := i.layout
 	if lh == nil {
-		return nil
-	}
-	iw, ih := lh.Width.Get(), lh.Height.Get()
-	if localX < 0 || localX >= iw || localY < 0 || localY >= ih {
-		if mancini.PickDebugEnabled() {
-			fmt.Printf("[pick] %s size=(%dx%d) MISS for local=(%d,%d)\n",
-				lh.Name(), iw, ih, localX, localY)
-		}
 		return nil
 	}
 	if !i.owner.Visible() {
 		return nil
 	}
 
+	iw, ih := lh.Width.Get(), lh.Height.Get()
+	ix, iy := lh.X.Get(), lh.Y.Get()
+
 	var result []mancini.Interactor
 
 	// Recurse into children (last-to-first for front-to-back z-order).
-	ix, iy := lh.X.Get(), lh.Y.Get()
 	if p, ok := i.owner.(mancini.Parent); ok {
 		children := p.GetChildren()
 		for j := len(children) - 1; j >= 0; j-- {
@@ -253,24 +261,37 @@ func (i *Interactor) Pick(localX, localY int64) []mancini.Interactor {
 			if clh == nil {
 				continue
 			}
+
+			// Child bounds in our (parent) local frame.
 			childRelX := clh.X.Get() - ix
 			childRelY := clh.Y.Get() - iy
+			cw, ch := clh.Width.Get(), clh.Height.Get()
+
+			// Pre-filter: skip if the click does not fall inside the
+			// child's bounds (child bounds may extend outside our own).
+			if localX < childRelX || localX >= childRelX+cw ||
+				localY < childRelY || localY >= childRelY+ch {
+				continue
+			}
+			// Skip invisible children — they cannot be pick targets.
+			if !child.Visible() {
+				continue
+			}
+
+			// Transform to the child's local frame and recurse.
 			childLocalX := localX - childRelX
 			childLocalY := localY - childRelY
-			if mancini.PickDebugEnabled() {
-				if strings.Contains(clh.Name(), "throb") {
-					fmt.Printf("[pick:detail] %s: childX=%d parentX=%d relX=%d localX=%d → childLocalX=%d | childY=%d parentY=%d relY=%d localY=%d → childLocalY=%d\n",
-						clh.Name(), clh.X.Get(), ix, childRelX, localX, childLocalX,
-						clh.Y.Get(), iy, childRelY, localY, childLocalY)
-				}
-			}
 			if picker, ok := child.(mancini.Picker); ok {
 				result = append(result, picker.Pick(childLocalX, childLocalY)...)
 			}
 		}
 	}
 
-	// DetailedHit for fine-grained testing (e.g., circular regions).
+	// Add self only if the click is within our own local bounds and,
+	// for interactors with a shape-based hit region, DetailedHit passes.
+	if localX < 0 || localX >= iw || localY < 0 || localY >= ih {
+		return result
+	}
 	if dh, ok := i.owner.(mancini.DetailedHit); ok {
 		if !dh.DetailedHit(localX, localY) {
 			if mancini.PickDebugEnabled() {
