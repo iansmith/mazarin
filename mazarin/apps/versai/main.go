@@ -161,14 +161,21 @@ func main() {
 	col.LayoutChildren()
 	fmt.Printf("[versai:timing] col + 4 margin+units: %v\n", time.Since(tUnit))
 
-	// 8. Publish Ready and announce to rachel with PlacementRightFull.
+	// 8. Publish Ready and announce to rachel.
+	// Compute right-anchored placement: top-margin from screen top,
+	// right edge inset from screen right by rachel's right border.
+	// (Rachel honors any non-zero (X, Y) the shepherd requests.)
+	const rightBorder = 60
+	const topBorder = 30
+	versaiX := int32(screenW - winW - rightBorder)
+	versaiY := int32(topBorder)
 	tAnnounce := time.Now()
 	_ = appLH.Bounds.Get()
 	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = readyAttr
 	// fmt.Printf("[versai] Ready=true\n")
 
-	app.AnnounceToWMWithPlacement(0, 0, int32(winW), int32(winH), wm.PlacementRightFull)
+	app.AnnounceToWM(versaiX, versaiY, int32(winW), int32(winH))
 	fmt.Printf("[versai:timing] announce: %v\n", time.Since(tAnnounce))
 
 	// 10. Wait for BackingStoreReady.
