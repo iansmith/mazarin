@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	trcHalfTicks = 20 // 2 seconds × 10Hz
+	trcHalfTicks = 10 // 1 second × 10Hz
 	trcFullTicks = 2 * trcHalfTicks
 )
 
