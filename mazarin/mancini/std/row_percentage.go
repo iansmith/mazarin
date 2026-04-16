@@ -18,8 +18,9 @@ type RowPercentage struct {
 	impl.Interactor
 	impl.Parent
 
-	Pal      mancini.Palette
-	Percents []float64 // percentage of width for each child position
+	Pal          mancini.Palette
+	ClipChildren bool      // clip each child to its cell bounds (prevents text overflow)
+	Percents     []float64 // percentage of width for each child position
 }
 
 // NewRowPercentage creates a RowPercentage with the given percentage
@@ -112,8 +113,17 @@ func (rp *RowPercentage) Draw(self mancini.Interactor, x, y, w, h int64, damage 
 		if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
 			cs.SetDC(dc)
 		}
-		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, curX, childY, childW, childH, damage)
+		if rp.ClipChildren {
+			cc := mancini.WithClip(dc, float64(curX), float64(childY),
+				float64(childW), float64(childH), 0, mancini.ClipRight)
+			if d, ok := child.(mancini.NewDrawer); ok {
+				d.Draw(child, curX, childY, childW, childH, damage)
+			}
+			cc.Flush()
+		} else {
+			if d, ok := child.(mancini.NewDrawer); ok {
+				d.Draw(child, curX, childY, childW, childH, damage)
+			}
 		}
 
 		curX += childW

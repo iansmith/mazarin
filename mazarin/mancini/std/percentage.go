@@ -2,6 +2,9 @@ package std
 
 // normalizePercents adjusts a percentage slice so it sums to exactly 100.
 //
+//   - A value of -1 means "absorb whatever is left." At most one -1 is
+//     allowed. The -1 entry receives 100 minus the sum of the other
+//     entries.
 //   - If the sum exceeds 100, all values are proportionally reduced. Any
 //     value that reaches zero (< 0.001) is discarded and the remaining
 //     values are re-normalized until the sum is 100 with no zero entries.
@@ -15,6 +18,29 @@ func normalizePercents(pcts []float64) []float64 {
 	// Copy so we don't mutate the caller's slice.
 	out := make([]float64, len(pcts))
 	copy(out, pcts)
+
+	// Handle -1 ("absorb remaining") entries.
+	flexIdx := -1
+	for i, v := range out {
+		if v < 0 {
+			flexIdx = i
+			break
+		}
+	}
+	if flexIdx >= 0 {
+		sum := 0.0
+		for i, v := range out {
+			if i != flexIdx {
+				sum += v
+			}
+		}
+		remainder := 100.0 - sum
+		if remainder < 0 {
+			remainder = 0
+		}
+		out[flexIdx] = remainder
+		return out
+	}
 
 	for {
 		sum := 0.0
