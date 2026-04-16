@@ -123,6 +123,17 @@ func NewLabelNamedColor(myName, parent string, theme mancini.Theme,
 	return NewLabelColor(lh, theme, text, fontSize, col)
 }
 
+// SetAlign replaces the label's text face with one using the given alignment.
+func (l *Label) SetAlign(align mancini.TextAlignmentParams) {
+	theme := l.Theme()
+	feature := mancini.None
+	if l.Bold {
+		feature = mancini.Bold
+	}
+	fc := theme.Font(feature, l.FontSize)
+	l.textFace = impl.NewLatinTextFace(fc, l.Bold, l.FontSize, align)
+}
+
 // resolveText returns the current display text.
 func (l *Label) resolveText() string {
 	if l.TextFunc != nil {

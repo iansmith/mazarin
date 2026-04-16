@@ -38,12 +38,13 @@ type TextAlignmentParams struct {
 }
 
 // LatinTextFace extends [Face] for Latin left-to-right text rendering.
-// [SetText] updates the text to render; [MeasureText] returns the
-// advance width without rasterization.
+// [SetText] updates the text to render; [Text] returns the current text;
+// [MeasureText] returns the advance width without rasterization.
 //
 // The standard implementation is [impl.LatinTextFaceImpl].
 type LatinTextFace interface {
 	Face
 	SetText(text string)
+	Text() string
 	MeasureText(text string) float64
 }

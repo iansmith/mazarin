@@ -76,6 +76,11 @@ func (f *LatinTextFaceImpl) SetText(text string) {
 	f.text = text
 }
 
+// Text returns the current text set on the face.
+func (f *LatinTextFaceImpl) Text() string {
+	return f.text
+}
+
 // MeasureText returns the advance width of text in pixels.
 func (f *LatinTextFaceImpl) MeasureText(text string) float64 {
 	if f.dc == nil {
