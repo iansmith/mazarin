@@ -705,6 +705,7 @@ func (a *DragAgent) dragEndResize(wi *WindowInteractor) {
 	// Re-render decorations at final size.
 	preRenderDecorations(ta)
 
+	dumpWindowGeometry("dragEndResize/preEndComposite", ta)
 	endDragComposite()
 
 	// Allocate final-size backing store.

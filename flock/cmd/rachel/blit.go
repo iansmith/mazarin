@@ -78,9 +78,12 @@ func faceScreenRect(ta *trackedApp) image.Rectangle {
 }
 
 // lightShadowPad is the shadow extent for focused window decoration.
-// neuRaised uses pad = maxOff + ceil(maxBlur*3) + 2.
-// Custom: maxOff=4, maxBlur=3 → pad = 4 + 9 + 2 = 15.
-var lightShadowPad = 15
+// With Inset (groove) focused decoration the shadow draws INWARD into the
+// face area, so no padding outside bsW × bsH is needed. Keep at 0 to
+// prevent blitWindow from reading past the per-row backing-store data
+// (which causes right/left edge gunk by pulling pixels from the next/prev
+// row's leftmost columns).
+var lightShadowPad = 0
 
 // windowVisibleRect returns the screen rectangle a window actually occupies.
 // Focused windows use the face rect expanded by the light shadow padding.
@@ -96,6 +99,41 @@ func windowVisibleRect(ta *trackedApp, focused bool) image.Rectangle {
 		)
 	}
 	return face
+}
+
+// dumpWindowGeometry prints diagnostic info about a tracked window's geometry.
+// Used to investigate edge artifacts: backing-store size vs face vs visible rect.
+func dumpWindowGeometry(reason string, ta *trackedApp) {
+	if ta == nil {
+		return
+	}
+	face := faceScreenRect(ta)
+	visFocused := windowVisibleRect(ta, true)
+	visUnfocused := windowVisibleRect(ta, false)
+	fmt.Printf("[rachel:geom] %s sid=%d title=%q ta.x=%d ta.y=%d bsW=%d bsH=%d "+
+		"appW=%d appH=%d lastBlitW=%d lastBlitH=%d "+
+		"face=(%d,%d)-(%d,%d) vis_focused=(%d,%d)-(%d,%d) vis_unfocused=(%d,%d)-(%d,%d) "+
+		"borders=L%d/R%d/T%d/B%d shadowTop=%d lightShadowPad=%d\n",
+		reason, ta.sid, ta.title, ta.x, ta.y, ta.bsWidth, ta.bsHeight,
+		ta.appWidth, ta.appHeight, ta.lastBlitAppW, ta.lastBlitAppH,
+		face.Min.X, face.Min.Y, face.Max.X, face.Max.Y,
+		visFocused.Min.X, visFocused.Min.Y, visFocused.Max.X, visFocused.Max.Y,
+		visUnfocused.Min.X, visUnfocused.Min.Y, visUnfocused.Max.X, visUnfocused.Max.Y,
+		borderLeft, borderRight, borderTop, borderBottom, shadowTop, lightShadowPad)
+}
+
+// dumpAllWindowGeometry prints geometry for every tracked window in z-order.
+func dumpAllWindowGeometry(reason string) {
+	fmt.Printf("[rachel:geom] === BEGIN dump (%s) zOrderLen=%d focus=%d ===\n",
+		reason, len(zOrder), mouseFocusSID)
+	for i, sid := range zOrder {
+		ta, ok := trackedApps[sid]
+		if !ok {
+			continue
+		}
+		dumpWindowGeometry(fmt.Sprintf("%s[z=%d]", reason, i), ta)
+	}
+	fmt.Printf("[rachel:geom] === END dump (%s) ===\n", reason)
 }
 
 // exposedRegion returns the set of non-overlapping rectangles that
@@ -291,6 +329,12 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 				fmt.Printf("[rachel:blit]   region[%d]: (%d,%d)-(%d,%d)\n", i, r.Min.X, r.Min.Y, r.Max.X, r.Max.Y)
 			}
 		}
+	}
+
+	// Geometry dump every 500th blit per process — shows whether bsHeight ever
+	// drifts from lastBlitAppH+borderTop+borderBottom (the symptom we're hunting).
+	if blitDbgCount%500 == 0 {
+		dumpWindowGeometry(fmt.Sprintf("blit#%d", blitDbgCount), ta)
 	}
 
 	bsW := int(ta.bsWidth)
@@ -667,7 +711,7 @@ func decorTimingReport() {
 
 func preRenderDecorations(ta *trackedApp) {
 	t0 := time.Now()
-	ta.decorFocused = renderDecorOnce(ta, mancini.Raised, mancini.Active)
+	ta.decorFocused = renderDecorOnce(ta, mancini.Inset, mancini.Active)
 	ta.decorUnfocused = renderDecorOnce(ta, mancini.Flush, mancini.Inactive)
 	renderDur := time.Since(t0)
 
@@ -850,6 +894,7 @@ func startDragComposite(sid int) {
 // endDragComposite cleans up after a titlebar drag ends.
 func endDragComposite() {
 	dragActive = false
+	dumpAllWindowGeometry("endDragComposite")
 	timedBlitAllWindows()
 }
 

@@ -163,6 +163,8 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 		// dispatch pipeline because an empty pick list means no agent fires.
 		if ev.Code >= BTN_LEFT && ev.Value == 1 {
 			if pickWindow(int64(mouseX), int64(mouseY)) < 0 {
+				fmt.Printf("[rachel:focus] background click at (%d,%d) — revoking focus\n",
+					mouseX, mouseY)
 				revokeFocus()
 				wmd.keyFwd.SetFocus(nil)
 				return
@@ -647,22 +649,47 @@ var (
 )
 
 // wallPlaceWindow computes (appX, appY, appW, appH) for a new window.
-// For PlacementRightFull (versai), it ignores the wall and anchors the
-// window to the right edge at full screen height, granting half the screen width.
-func wallPlaceWindow(placement, reqW, reqH int32) (appX, appY, appW, appH int32) {
+// If the shepherd specified an explicit position (reqX or reqY non-zero),
+// that position is honored directly. Otherwise the window is tiled by
+// the wall algorithm.
+//
+// The placement parameter is preserved for protocol compatibility but
+// no longer triggers special-cased layouts — shepherds compute their
+// own coordinates and rachel respects them.
+func wallPlaceWindow(placement, reqX, reqY, reqW, reqH int32) (appX, appY, appW, appH int32) {
+	_ = placement
 	dw, dh := int(displayWidth), int(displayHeight)
 
-	if placement == wm.PlacementRightFull {
-		// Right-anchored, full height. Use requested width if non-zero,
-		// otherwise default to half screen width.
-		if reqW > 0 {
-			appW = reqW
-		} else {
-			appW = int32(dw / 2)
+	// Clamp the requested app size so the FULL backing store (including
+	// titlebar + side/bottom borders) fits the screen. The shepherd
+	// requests its content size; rachel owns the decoration overhead and
+	// must guarantee the entire window — titlebar through bottom border —
+	// is visible at startup.
+	maxAppW := int32(dw - borderLeft - borderRight)
+	maxAppH := int32(dh - borderTop - borderBottom)
+	if reqW > maxAppW {
+		reqW = maxAppW
+	}
+	if reqH > maxAppH {
+		reqH = maxAppH
+	}
+
+	// Shepherd-specified placement: trust it, but clamp so the full bs
+	// stays on screen.
+	if reqX > 0 || reqY > 0 {
+		appX, appY, appW, appH = reqX, reqY, reqW, reqH
+		if appX < int32(borderLeft) {
+			appX = int32(borderLeft)
 		}
-		appH = int32(dh - borderTop - borderBottom)
-		appX = int32(dw - int(appW) - borderRight)
-		appY = int32(borderTop)
+		if appY < int32(borderTop) {
+			appY = int32(borderTop)
+		}
+		if int(appX)+int(appW)+borderRight > dw {
+			appX = int32(dw - int(appW) - borderRight)
+		}
+		if int(appY)+int(appH)+borderBottom > dh {
+			appY = int32(dh - int(appH) - borderBottom)
+		}
 		return
 	}
 
@@ -856,6 +883,15 @@ func pickWindow(x, y int64) int {
 		if !ok {
 			continue
 		}
+		// Check active overlay rect first — overlay is the app's real estate.
+		if ta.overlayActive {
+			ox := int64(ta.overlayScreenX)
+			oy := int64(ta.overlayScreenY)
+			if x >= ox && x < ox+int64(ta.overlayWidth) &&
+				y >= oy && y < oy+int64(ta.overlayHeight) {
+				return sid
+			}
+		}
 		ox := int64(ta.x) - int64(borderLeft)
 		oy := int64(ta.y) - int64(borderTop)
 		if x >= ox && x < ox+int64(ta.bsWidth) && y >= oy && y < oy+int64(ta.bsHeight) {
@@ -1003,6 +1039,8 @@ func revokeFocus() {
 	// If the losing app has an active overlay, tear it down.
 	if keyboardFocusSID >= 0 {
 		if ta, ok := trackedApps[keyboardFocusSID]; ok && ta.overlayActive {
+			fmt.Printf("[rachel:focus] revokeFocus tearing down overlay for SID %d\n",
+				keyboardFocusSID)
 			teardownOverlay(keyboardFocusSID, ta)
 		}
 	}
@@ -1233,7 +1271,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				}
 
 				// Compute placement based on hint.
-				appX, appY, appW, appH := wallPlaceWindow(msg.Placement, msg.Width, msg.Height)
+				appX, appY, appW, appH := wallPlaceWindow(msg.Placement, msg.X, msg.Y, msg.Width, msg.Height)
 
 				// Rachel owns the backing store. Compute total size including borders.
 				ta.appWidth = appW
@@ -1266,6 +1304,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				// Pre-render both focused and unfocused decorations.
 				// Apply focused state since new windows get focus immediately.
 				preRenderDecorations(ta)
+				dumpWindowGeometry("AppStart/postPreRender", ta)
 
 				// Share pages with the client shepherd.
 				bsVA := uintptr(unsafe.Pointer(&bsSlice[0]))
