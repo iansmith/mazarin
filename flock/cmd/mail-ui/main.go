@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	consoleCols   int   = 120
-	consoleRows   int   = 30
-	consoleFontSz int64 = 16
+	consoleCols int = 80
+	consoleRows int = 12
 )
 
 // MazEntryPoint holds a reference to MazarinMain to prevent DCE.
@@ -74,7 +73,8 @@ func MazarinMain() {
 	linuxapp.Bootstrap(inj, linuxapp.AppConfig[maildbio.MailDBIO]{
 		Title:   "MailDB",
 		WinW:    800,
-		WinH:    300,
+		WinH:    400,
+		Place:   func(_, sh, _, wh int) (int, int) { return 0, sh - wh },
 		BuildUI: buildUI,
 	})
 }
@@ -84,9 +84,9 @@ func MazarinMain() {
 func buildUI(a *linuxapp.App[maildbio.MailDBIO]) linuxapp.BuildResult {
 	pal := a.Pal
 
-	// Console fills the AppWindow.
+	// Console fills the AppWindow — use same font size as linux-ui.
 	console := std.NewConsole("console", "AppWindow", pal,
-		a.Fonts, consoleFontSz, consoleCols, consoleRows)
+		a.Fonts, a.FontSize, consoleCols, consoleRows)
 
 	// Initialize input dispatch.
 	a.AppWindow.InitInput()

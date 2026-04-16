@@ -39,6 +39,10 @@ type AppConfig[T any] struct {
 	// Rachel may adjust these in the BackingStoreReady response.
 	WinW, WinH int
 
+	// Place computes the requested screen position from screen and window
+	// dimensions. If nil, the window is centered on screen.
+	Place func(screenW, screenH, winW, winH int) (x, y int)
+
 	// BuildUI is called after the theme and AppWindow are created but
 	// before the WM handshake. It receives the fully configured App
 	// (carrying the typed injection value) and must create the interactor
@@ -194,8 +198,13 @@ func Bootstrap[T any](inj *Injection[T], cfg AppConfig[T]) {
 
 	screenW := int(screenWAttr.Get())
 	screenH := int(screenHAttr.Get())
-	initX := screenW/2 - winW/2
-	initY := screenH/2 - winH/2
+	var initX, initY int
+	if cfg.Place != nil {
+		initX, initY = cfg.Place(screenW, screenH, winW, winH)
+	} else {
+		initX = screenW/2 - winW/2
+		initY = screenH/2 - winH/2
+	}
 	appWin.AnnounceToWM(int32(initX), int32(initY), int32(winW), int32(winH))
 
 	// Wait for BackingStoreReady from rachel.

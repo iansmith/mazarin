@@ -78,6 +78,7 @@ func MazarinMain() {
 		Title: "Linux Console",
 		WinW:  800,
 		WinH:  400,
+		Place: func(_, sh, _, wh int) (int, int) { return 0, sh/2 - wh/2 },
 		BuildUI: buildUI,
 	})
 }
