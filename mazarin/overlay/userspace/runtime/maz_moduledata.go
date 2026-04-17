@@ -140,7 +140,7 @@ func buildCompleteTypemap(md *moduledata) {
 	mazIfaces := make(map[uintptr]*interfacetype)
 	for _, tl := range md.typelinks {
 		t := (*_type)(unsafe.Pointer(md.types + uintptr(tl)))
-		if t.Kind_&abi.KindMask == abi.Interface {
+		if t.Kind() == abi.Interface {
 			iface := (*interfacetype)(unsafe.Pointer(t))
 			mazIfaces[uintptr(unsafe.Pointer(iface))] = iface
 		}
@@ -201,6 +201,11 @@ func buildCompleteTypemap(md *moduledata) {
 var mazWriteBarriers [16]uintptr
 var mazWriteBarrierCount int32
 
+// mazWriteBarrierLastVal tracks the last value written by syncMazWriteBarriers,
+// so we can log only on transitions instead of every STW exit.
+var mazWriteBarrierLastVal bool
+var mazWriteBarrierSyncCount uint64
+
 // RegisterMazWriteBarrier registers a .maz module's runtime.writeBarrier
 // address for GC phase sync. Also performs an initial sync so the .maz
 // sees the correct state if loaded during an active GC cycle.
@@ -246,6 +251,15 @@ func syncMazWriteBarriers() {
 	for i := int32(0); i < n; i++ {
 		*(*bool)(unsafe.Pointer(mazWriteBarriers[i])) = val
 	}
+	mazWriteBarrierSyncCount++
+	if val != mazWriteBarrierLastVal {
+		// Transition — print so we can confirm the sync is firing in step
+		// with host GC phase changes. Use printlock-free print since we're
+		// in nosplit context just after STW exit.
+		print("[runtime] syncMazWriteBarriers: transition enabled=", val,
+			" n=", n, " calls=", mazWriteBarrierSyncCount, "\n")
+		mazWriteBarrierLastVal = val
+	}
 }
 
 // findHostInterface searches the host module's typelinks and itablinks for an
@@ -254,7 +268,7 @@ func findHostInterface(host *moduledata, target *_type) *interfacetype {
 	// Search typelinks first
 	for _, tl := range host.typelinks {
 		ht := (*_type)(unsafe.Pointer(host.types + uintptr(tl)))
-		if ht.Hash == target.Hash && ht.Kind_&abi.KindMask == abi.Interface {
+		if ht.Hash == target.Hash && ht.Kind() == abi.Interface {
 			seen := map[_typePair]struct{}{}
 			if typesEqual(target, ht, seen) {
 				return (*interfacetype)(unsafe.Pointer(ht))

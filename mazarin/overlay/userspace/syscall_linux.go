@@ -12,7 +12,7 @@
 package syscall
 
 import (
-	"internal/itoa"
+	"internal/strconv"
 	"runtime"
 	"slices"
 	"unsafe"
@@ -351,7 +351,7 @@ func Futimesat(dirfd int, path string, tv []Timeval) (err error) {
 func Futimes(fd int, tv []Timeval) (err error) {
 	// Believe it or not, this is the best we can do on Linux
 	// (and is what glibc does).
-	return Utimes("/proc/self/fd/"+itoa.Itoa(fd), tv)
+	return Utimes("/proc/self/fd/"+strconv.Itoa(fd), tv)
 }
 
 const ImplementsGetwd = true

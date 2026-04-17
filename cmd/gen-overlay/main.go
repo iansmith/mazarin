@@ -159,8 +159,6 @@ func buildKmazarinOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/sys_linux_arm64.s":  "sys_linux_arm64.s",
 		"runtime/tagptr_64bit.go":    "tagptr_64bit.go",
 		"runtime/traceback.go":        "traceback.go",
-		// "runtime/asm_arm64.s":       "asm_arm64.s",
-		// "runtime/panic.go":          "panic.go",
 	}
 
 	for goFile, patchFile := range runtimePatches {
@@ -196,8 +194,7 @@ func buildKmazarinAMD64Overlay(overlay *Overlay, goroot, patchesDir string) erro
 		"runtime/sys_linux_amd64.s":                    "sys_linux_amd64.s",
 		"runtime/tagptr_64bit.go":                      "tagptr_64bit.go",
 		"runtime/traceback.go":                         "traceback.go",
-		"runtime/panic.go":                             "panic.go",
-		"internal/runtime/syscall/asm_linux_amd64.s":   "asm_linux_amd64.s",
+		"internal/runtime/syscall/linux/asm_linux_amd64.s": "asm_linux_amd64.s",
 	}
 
 	for goFile, patchFile := range runtimePatches {

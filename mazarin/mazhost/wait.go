@@ -10,3 +10,9 @@ import "mazzy/mazarin/sys"
 func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 	return sys.WaitForShepherdReady(name, maxWaitSeconds)
 }
+
+// WaitForCoreServices waits for fs, rachel, and linux to all signal Ready.
+// See sys.WaitForCoreServices for the rationale.
+func WaitForCoreServices(maxWaitSeconds int) error {
+	return sys.WaitForCoreServices(maxWaitSeconds)
+}

@@ -79,15 +79,14 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	// Per-SID SVC counter for epoch diagnostics
 	sid := getCurrentThreadSID()
 	if sid >= 0 && sid < int16(len(SVCCountBySID)) {
-		atomic.AddUint64(&SVCCountBySID[sid], 1)
+		// Modulo is a no-op after the guard but lets the SSA prover chain
+		// the index fact, eliminating panicBounds64's 160-byte frame from
+		// the IRQ entry chain.
+		atomic.AddUint64(&SVCCountBySID[uint(sid)%uint(len(SVCCountBySID))], 1)
 	}
 	// Per-syscall-number counter for SID 0 (kernel threads).
 	if sid == 0 {
-		idx := syscallNum
-		if idx >= 256 {
-			idx = 255
-		}
-		atomic.AddUint64(&SID0SyscallCounts[idx], 1)
+		atomic.AddUint64(&SID0SyscallCounts[uint(syscallNum)%uint(len(SID0SyscallCounts))], 1)
 	}
 
 	// Record entry time for kernel time accounting
@@ -105,17 +104,21 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 			klog.Errf("[UNK:%x]\n", syscallNum)
 			result = -38 // ENOSYS
 		} else {
+			// Modulo is a no-op after the guard above but lets the SSA prover
+			// chain the index fact through every array access below, eliminating
+			// runtime.panicBounds64's 160-byte frame from the IRQ entry chain.
+			sysIdx := uint(sysID) % uint(NumSyscallIDs)
 			// Per-SysID counter for all shepherd syscalls.
-			atomic.AddUint64(&SysIDCounts[sysID], 1)
+			atomic.AddUint64(&SysIDCounts[sysIdx], 1)
 			// Check if this syscall is delegated to a userspace shepherd.
 			// Magic fds (epoll instance, eventfd) are never delegated — the linux
 			// shepherd doesn't know about them and would return errors.
 			callerSID := getCurrentThreadSID()
 			if IsDelegated(sysID, callerSID) && !IsMagicFdSyscall(sysID, arg0) {
-					atomic.AddUint64(&SysIDDelegated[sysID], 1)
+					atomic.AddUint64(&SysIDDelegated[sysIdx], 1)
 					result = DelegateSyscall(sysID, arg0, arg1, arg2, arg3, arg4, arg5)
 			} else {
-				handler := syscallTable[sysID]
+				handler := syscallTable[sysIdx]
 				if handler == nil {
 					klog.Errf("[NIL:%x]\n", syscallNum)
 					result = -38 // ENOSYS

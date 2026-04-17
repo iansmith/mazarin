@@ -665,8 +665,20 @@ func findSourceFiles(runtimeDir string) ([]string, error) {
 	}
 
 	err := filepath.Walk(runtimeDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
 			return err
+		}
+		if info.IsDir() {
+			// Skip directories that `go build` ignores: leading "_" or ".",
+			// and the conventional "testdata" name. Go 1.26 added
+			// runtime/_mkmalloc/, a generator tool whose files are not part
+			// of the runtime package — walking into it pollutes the overlay
+			// with stubs in unrelated packages (e.g. astutil).
+			name := info.Name()
+			if path != runtimeDir && (strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") || name == "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 
 		// Only .go and .s files

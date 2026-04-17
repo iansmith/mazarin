@@ -151,16 +151,18 @@ func handleList(db *badger.DB, respCh chan<- shared.Response) {
 func main() {
 	fmt.Println("[maildb] main() entered")
 
-	// 1. Wait for fs, rachel, and fti.
-	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
-		panic(fmt.Sprintf("[maildb] FATAL: fs: %v", err))
+	// 1. Wait for core services, then fti.
+	if err := sys.WaitForCoreServices(20); err != nil {
+		panic(fmt.Sprintf("[maildb] FATAL: core services: %v", err))
 	}
-	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
-		panic(fmt.Sprintf("[maildb] FATAL: rachel: %v", err))
-	}
-	if err := sys.WaitForShepherdReady("fti", 10); err != nil {
+	if err := sys.WaitForShepherdReady("fti", 20); err != nil {
 		panic(fmt.Sprintf("[maildb] FATAL: fti: %v", err))
 	}
+	scratch, err := sys.SetupScratchDir(true)
+	if err != nil {
+		panic(fmt.Sprintf("[maildb] FATAL: scratchdir: %v", err))
+	}
+	fmt.Printf("[maildb] scratch dir: %s\n", scratch)
 	rachelSID := sys.MustGetShepherdByName("rachel")
 	fsSID := sys.MustGetShepherdByName("fs")
 	ftiSID := sys.MustGetShepherdByName("fti")

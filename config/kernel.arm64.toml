@@ -4,7 +4,7 @@ timezone = "America/New_York"
 
 # Memory
 kernel_budget_mb = 64
-go_mem_limit = 24
+go_mem_limit = 256
 kernel_mem_limit = 24
 
 # GC tuning — set very high so GOMEMLIMIT is the governor.

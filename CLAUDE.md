@@ -26,13 +26,20 @@ This is enforced by hooks in `.claude/settings.local.json` but read this anyway.
 
 ```bash
 export GOTOOLCHAIN=auto
-export GO=/Users/iansmith/sdk/go1.25.5/bin/go
+export GO=/opt/homebrew/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 export QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
 ```
 
+> **Migration in progress (2026-04-16):** `GO` now points at stock homebrew Go
+> 1.26.2. Until the runtime-patches overlay rebase (Phase 2) is complete, the
+> build will fail with `internal/itoa` import errors from
+> `runtime-patches/syscall/syscall_linux.go`. The legacy patched tree
+> `bin/old.go.1.25.5/bin/go` (Go 1.24.4) still works and remains on disk as a
+> bisection fallback until Phase 5.
+
 - **GOTOOLCHAIN=auto** - Required. Ensures the correct Go version is used.
-- **GO** - Path to Go binary (>= 1.24 required, 1.25.5 recommended)
+- **GO** - Path to Go binary (>= 1.24 required, 1.26.2 stock homebrew recommended)
 - **QEMU** - Path to qemu-system-aarch64 (>= 10.2 required)
 - **QEMU_X86_64** - Path to qemu-system-x86_64 (required for x86_64 runs)
 
@@ -57,7 +64,7 @@ $GO tool task run-riscv64
 $GO tool task run TIMEOUT=30
 
 # Or export once and use throughout session:
-export GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
+export GOTOOLCHAIN=auto GO=/opt/homebrew/bin/go QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 $GO tool task clean
 $GO tool task run TIMEOUT=10
 ```
@@ -86,7 +93,7 @@ If GO or QEMU are not set, the build will attempt to find them via `which`. If f
 **On this system (Homebrew installation):**
 ```bash
 export GOTOOLCHAIN=auto
-export GO=/Users/iansmith/sdk/go1.25.5/bin/go
+export GO=/opt/homebrew/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 export QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
 ```
@@ -135,7 +142,7 @@ All build and run operations go through `$GO tool task`. See `design/TASK.md` fo
 ```bash
 # 1. Set environment (once per session)
 export GOTOOLCHAIN=auto
-export GO=/Users/iansmith/sdk/go1.25.5/bin/go
+export GO=/opt/homebrew/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 export QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
 

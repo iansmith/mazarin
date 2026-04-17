@@ -65,19 +65,17 @@ func main() {
 	attr.Init()
 	mancini.Init()
 
-	// 2. Wait for fs (file operations), rachel (window manager + fontsvc), and
-	// linux (Write delegate handler). Clocks must not issue any write() syscalls
-	// before linux has entered its event loop, or the delegate channel fills up
-	// and deadlocks the system.
-	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
-		panic(fmt.Sprintf("[clocks] FATAL: fs: %v", err))
+	// 2. Wait for core services (fs, rachel, linux). Clocks must not issue any
+	// write() syscalls before linux has entered its event loop, or the delegate
+	// channel fills up and deadlocks the system.
+	if err := sys.WaitForCoreServices(20); err != nil {
+		panic(fmt.Sprintf("[clocks] FATAL: core services: %v", err))
 	}
-	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
-		panic(fmt.Sprintf("[clocks] FATAL: rachel: %v", err))
+	scratch, err := sys.SetupScratchDir(true)
+	if err != nil {
+		panic(fmt.Sprintf("[clocks] FATAL: scratchdir: %v", err))
 	}
-	if err := sys.WaitForShepherdReady("linux", 10); err != nil {
-		panic(fmt.Sprintf("[clocks] FATAL: linux: %v", err))
-	}
+	fmt.Printf("[clocks] scratch dir: %s\n", scratch)
 	rachelSID = sys.MustGetShepherdByName("rachel")
 	fc := fontcache.New(rachelSID)
 

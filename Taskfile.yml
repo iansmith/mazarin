@@ -25,6 +25,17 @@
 
 version: '3'
 
+# Go 1.26+ enables RandomizedHeapBase64 by default. It is incompatible with
+# kmazarin (kernel heap arenas crash in setSpans) and with .maz dynamic loading
+# (host-shepherd heap layout assumptions in textshape glyph cache). Disable
+# globally for every Go build invoked via Taskfile.
+#
+# GreenTeaGC is also disabled while we debug Go 1.26.2 migration issues —
+# keeps the GC behavior closer to the prior (1.24.4) baseline so heap-shape
+# regressions don't get tangled with shepherd boot bugs.
+env:
+  GOEXPERIMENT: norandomizedheapbase64,nogreenteagc
+
 includes:
   # Build tools
   gen-overlay:  {taskfile: ./cmd/gen-overlay/Taskfile.yml}

@@ -1,8 +1,18 @@
 package main
 
 import (
+	"path"
+
 	"mazzy/shared/dlist"
 )
+
+// AT_FDCWD is the special dirfd value meaning "use the caller's CWD".
+// Linux defines this as -100; *at-family syscalls accept it in lieu of a real fd.
+const AT_FDCWD = -100
+
+// AT_REMOVEDIR makes unlinkat behave like rmdir (mandatory for removing
+// directories; refusing to remove non-directories).
+const AT_REMOVEDIR = 0x200
 
 // MaxFDs is the maximum number of open file descriptors.
 const MaxFDs = 256
@@ -96,19 +106,60 @@ func (t *fdTable) free(fd int) {
 	}
 }
 
-// resolvePath converts a possibly-relative path to absolute using the CWD.
-// Paths starting with '/' are returned as-is. Empty paths return an error-
+// resolvePath converts a possibly-relative path to absolute using the CWD,
+// then canonicalizes (collapses `//`, eliminates `.` and `..`). Paths
+// starting with '/' are normalized as-is. Empty paths return an error-
 // signaling empty string.
-func (t *fdTable) resolvePath(path string) string {
-	if len(path) == 0 {
+//
+// This is the legacy entry point used by handlers that don't take a dirfd
+// (chdir on a path string). New *at-family handlers should use resolveAt.
+func (t *fdTable) resolvePath(p string) string {
+	if len(p) == 0 {
 		return ""
 	}
-	if path[0] == '/' {
-		return path
+	if p[0] != '/' {
+		if t.cwd == "/" {
+			p = "/" + p
+		} else {
+			p = t.cwd + "/" + p
+		}
 	}
-	// Relative path — prepend CWD.
-	if t.cwd == "/" {
-		return "/" + path
+	return path.Clean(p)
+}
+
+// resolveAt resolves a (dirfd, path) pair to a canonical absolute path,
+// applying Linux *at-family rules:
+//   - empty path → EINVAL (callers that want AT_EMPTY_PATH must check it
+//     before calling resolveAt; we don't implement AT_EMPTY_PATH here)
+//   - absolute path → ignore dirfd, just normalize
+//   - dirfd == AT_FDCWD → resolve relative to the caller's CWD
+//   - dirfd >= 0 → look up the FD; must be an open directory; resolve
+//     relative to that directory's stored absolute path
+//
+// On error returns ("", -errno).
+func (t *fdTable) resolveAt(dirfd int32, p string) (string, int64) {
+	if len(p) == 0 {
+		return "", -22 // EINVAL
 	}
-	return t.cwd + "/" + path
+	if p[0] == '/' {
+		return path.Clean(p), 0
+	}
+	if dirfd == AT_FDCWD {
+		return t.resolvePath(p), 0
+	}
+	e := t.get(int(dirfd))
+	if e == nil || e.kind == fdKindNone {
+		return "", -9 // EBADF
+	}
+	if e.kind != fdKindDir {
+		return "", -20 // ENOTDIR
+	}
+	base := e.path
+	if base == "" {
+		base = "/"
+	}
+	if base == "/" {
+		return path.Clean("/" + p), 0
+	}
+	return path.Clean(base + "/" + p), 0
 }

@@ -51,6 +51,25 @@ func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 	return ErrNoShepherd
 }
 
+// WaitForCoreServices waits for the three core service shepherds — fs, rachel,
+// and linux — to all signal Ready. Returns the first error encountered. Every
+// "ordinary" shepherd must call this before issuing path syscalls, font
+// requests, or window operations. The core services themselves cannot use
+// this (would self-deadlock): fs waits for rachel+linux directly, linux waits
+// for fs+rachel, rachel waits for fs.
+func WaitForCoreServices(maxWaitSeconds int) error {
+	if err := WaitForShepherdReady("fs", maxWaitSeconds); err != nil {
+		return err
+	}
+	if err := WaitForShepherdReady("rachel", maxWaitSeconds); err != nil {
+		return err
+	}
+	if err := WaitForShepherdReady("linux", maxWaitSeconds); err != nil {
+		return err
+	}
+	return nil
+}
+
 func itoa(v int64) string {
 	if v == 0 {
 		return "0"

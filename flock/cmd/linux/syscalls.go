@@ -313,18 +313,13 @@ func (h *syscallHandler) sysFlock(req sys.SyscallRequest) {
 
 func (h *syscallHandler) sysOpenat(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT
-	path := req.PathString()
-	if path == "" {
-		req.Reply(EINVAL)
+	absPath, e := fdt.resolveAt(int32(req.Args[0]), req.PathString())
+	if e != 0 {
+		req.Reply(e)
 		return
 	}
 	flags := int32(req.Args[2])
 	mode := uint32(req.Args[3])
-	absPath := fdt.resolvePath(path)
-	if absPath == "" {
-		req.Reply(EINVAL)
-		return
-	}
 
 	handle, ftype, size, err := h.fs.Open(absPath, uint32(flags), mode)
 	if err != nil {
@@ -392,13 +387,11 @@ func (h *syscallHandler) sysFstat(req sys.SyscallRequest) {
 
 func (h *syscallHandler) sysFstatat(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT
-	path := req.PathString()
-	if path == "" {
-		req.Reply(EINVAL)
+	absPath, e := fdt.resolveAt(int32(req.Args[0]), req.PathString())
+	if e != 0 {
+		req.Reply(e)
 		return
 	}
-
-	absPath := fdt.resolvePath(path)
 	fsErr, err := h.fs.Stat(absPath)
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
@@ -420,12 +413,11 @@ func (h *syscallHandler) sysFstatat(req sys.SyscallRequest) {
 
 func (h *syscallHandler) sysMkdirat(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT
-	path := req.PathString()
-	if path == "" {
-		req.Reply(EINVAL)
+	absPath, e := fdt.resolveAt(int32(req.Args[0]), req.PathString())
+	if e != 0 {
+		req.Reply(e)
 		return
 	}
-	absPath := fdt.resolvePath(path)
 	if err := h.fs.Mkdir(absPath, uint32(req.Args[2])); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -435,12 +427,33 @@ func (h *syscallHandler) sysMkdirat(req sys.SyscallRequest) {
 
 func (h *syscallHandler) sysUnlinkat(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT
-	path := req.PathString()
-	if path == "" {
-		req.Reply(EINVAL)
+	absPath, e := fdt.resolveAt(int32(req.Args[0]), req.PathString())
+	if e != 0 {
+		req.Reply(e)
 		return
 	}
-	absPath := fdt.resolvePath(path)
+	flags := uint32(req.Args[2])
+
+	// Linux distinguishes unlink (rejects directories) from rmdir (requires
+	// a directory). ext2.Remove handles both, so we stat first and enforce
+	// the AT_REMOVEDIR contract here. Without this Go's os.Remove cannot
+	// detect that it should fall back to rmdir on a directory target.
+	isDir, _, rerr := h.fs.Resolve(absPath)
+	if rerr != nil {
+		req.Reply(int64(errToErrno(rerr)))
+		return
+	}
+	if (flags & AT_REMOVEDIR) != 0 {
+		if !isDir {
+			req.Reply(ENOTDIR)
+			return
+		}
+	} else {
+		if isDir {
+			req.Reply(EISDIR)
+			return
+		}
+	}
 	if err := h.fs.Remove(absPath); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -556,12 +569,11 @@ func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
 
 func (h *syscallHandler) sysFaccessat(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT
-	path := req.PathString()
-	if path == "" {
-		req.Reply(EINVAL)
+	absPath, e := fdt.resolveAt(int32(req.Args[0]), req.PathString())
+	if e != 0 {
+		req.Reply(e)
 		return
 	}
-	absPath := fdt.resolvePath(path)
 	if err := h.fs.Access(absPath); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -571,12 +583,11 @@ func (h *syscallHandler) sysFaccessat(req sys.SyscallRequest) {
 
 func (h *syscallHandler) sysFchmodat(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT
-	path := req.PathString()
-	if path == "" {
-		req.Reply(EINVAL)
+	absPath, e := fdt.resolveAt(int32(req.Args[0]), req.PathString())
+	if e != 0 {
+		req.Reply(e)
 		return
 	}
-	absPath := fdt.resolvePath(path)
 	if err := h.fs.SetMode(absPath, uint32(req.Args[2])); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -586,12 +597,11 @@ func (h *syscallHandler) sysFchmodat(req sys.SyscallRequest) {
 
 func (h *syscallHandler) sysUtimensat(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT
-	path := req.PathString()
-	if path == "" {
-		req.Reply(EINVAL)
+	absPath, e := fdt.resolveAt(int32(req.Args[0]), req.PathString())
+	if e != 0 {
+		req.Reply(e)
 		return
 	}
-	absPath := fdt.resolvePath(path)
 	if err := h.fs.SetTimes(absPath); err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return

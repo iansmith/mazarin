@@ -39,9 +39,22 @@ func decodeIndexReqWithSID(msg *ipc.UringIPCMsg) any {
 }
 
 func main() {
-	// Ensure parent directory exists and clean stale index from previous boot.
-	os.MkdirAll("/tmp/data/fti", 0755)
-	os.RemoveAll("/tmp/data/fti/bleve")
+	fmt.Println("[fti] main() entered")
+
+	// Wait for core services before issuing any path syscalls.
+	if err := sys.WaitForCoreServices(20); err != nil {
+		panic(fmt.Sprintf("[fti] FATAL: core services: %v", err))
+	}
+	scratch, err := sys.SetupScratchDir(true)
+	if err != nil {
+		panic(fmt.Sprintf("[fti] FATAL: scratchdir: %v", err))
+	}
+	fmt.Printf("[fti] scratch dir: %s\n", scratch)
+
+	// Bleve index lives inside the per-shepherd scratch dir so fti is fully
+	// self-contained and doesn't depend on rachel pre-creating /tmp/data/fti.
+	blevePath := scratch + "/bleve"
+	os.RemoveAll(blevePath) // clean stale index from previous boot
 
 	// Register async error callback so persister/merger crashes are visible.
 	scorch.RegistryAsyncErrorCallbacks["log"] = func(err error, path string) {
@@ -50,7 +63,7 @@ func main() {
 
 	// Create bleve index with per-type document mappings.
 	mapping := buildIndexMapping()
-	index, err := bleve.NewUsing("/tmp/data/fti/bleve", mapping, "scorch", "scorch", map[string]interface{}{
+	index, err := bleve.NewUsing(blevePath, mapping, "scorch", "scorch", map[string]interface{}{
 		"asyncErrorCallbackName": "log",
 	})
 	if err != nil {

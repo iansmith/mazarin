@@ -62,34 +62,38 @@ func (q *StaticQueue[T]) Push(value T) {
 //
 //go:nosplit
 func (q *StaticQueue[T]) PushNoDuplicate(value T) bool {
+	n := len(q.Data)
+	if n == 0 || len(q.InUse) < n {
+		panic("StaticQueue corruption: Data/InUse length mismatch")
+	}
+	data := q.Data[:n:n]
+	inUse := q.InUse[:n:n]
+
 	// Check for duplicates first
-	for i := 0; i < len(q.Data); i++ {
-		if q.InUse[i] && q.Data[i] == value {
-			// Already in queue - silently ignore
+	for i := 0; i < n; i++ {
+		if inUse[i] && data[i] == value {
 			return false
 		}
 	}
 
-	if q.count >= len(q.Data) {
+	if q.count >= n {
 		panic("StaticQueue overflow: capacity exceeded")
 	}
 
-	// Find next free slot from tail
-	attempts := 0
-	for q.InUse[q.tail] && attempts < len(q.Data) {
-		q.tail = (q.tail + 1) % len(q.Data)
-		attempts++
+	un := uint(n)
+	tail := uint(q.tail)
+	for attempts := 0; attempts < n; attempts++ {
+		t := tail % un
+		if !inUse[t] {
+			data[t] = value
+			inUse[t] = true
+			q.tail = int((t + 1) % un)
+			q.count++
+			return true
+		}
+		tail++
 	}
-
-	if attempts >= len(q.Data) {
-		panic("StaticQueue overflow: no free slots")
-	}
-
-	q.Data[q.tail] = value
-	q.InUse[q.tail] = true
-	q.tail = (q.tail + 1) % len(q.Data)
-	q.count++
-	return true
+	panic("StaticQueue overflow: no free slots")
 }
 
 // Pop removes and returns the front element, skipping holes.
@@ -101,22 +105,27 @@ func (q *StaticQueue[T]) Pop() T {
 		panic("StaticQueue underflow: pop from empty queue")
 	}
 
-	// Skip holes to find next valid element
-	attempts := 0
-	for !q.InUse[q.head] && attempts < len(q.Data) {
-		q.head = (q.head + 1) % len(q.Data)
-		attempts++
+	n := len(q.Data)
+	if n == 0 || len(q.InUse) < n {
+		panic("StaticQueue corruption: Data/InUse length mismatch")
 	}
+	data := q.Data[:n:n]
+	inUse := q.InUse[:n:n]
 
-	if attempts >= len(q.Data) || !q.InUse[q.head] {
-		panic("StaticQueue corruption: count > 0 but no valid elements")
+	un := uint(n)
+	head := uint(q.head)
+	for attempts := 0; attempts < n; attempts++ {
+		h := head % un
+		if inUse[h] {
+			value := data[h]
+			inUse[h] = false
+			q.head = int((h + 1) % un)
+			q.count--
+			return value
+		}
+		head++
 	}
-
-	value := q.Data[q.head]
-	q.InUse[q.head] = false
-	q.head = (q.head + 1) % len(q.Data)
-	q.count--
-	return value
+	panic("StaticQueue corruption: count > 0 but no valid elements")
 }
 
 // Pluck finds and removes an element from the queue by value.
@@ -124,12 +133,17 @@ func (q *StaticQueue[T]) Pop() T {
 // Creates a "hole" in the queue which is skipped by Pop.
 //
 //go:nosplit
+//go:noinline
 func (q *StaticQueue[T]) Pluck(value T) bool {
-	// Scan entire buffer looking for matching value
-	for i := 0; i < len(q.Data); i++ {
-		if q.InUse[i] && q.Data[i] == value {
-			// Found it - mark as hole
-			q.InUse[i] = false
+	n := len(q.Data)
+	if n == 0 || len(q.InUse) < n {
+		return false
+	}
+	data := q.Data[:n:n]
+	inUse := q.InUse[:n:n]
+	for i := 0; i < n; i++ {
+		if inUse[i] && data[i] == value {
+			inUse[i] = false
 			q.count--
 			return true
 		}
@@ -188,32 +202,39 @@ func (q *StaticQueue[T]) PluckAt(idx int) {
 //
 //go:nosplit
 func (q *StaticQueue[T]) PushHeadNoDuplicate(value T) bool {
-	for i := 0; i < len(q.Data); i++ {
-		if q.InUse[i] && q.Data[i] == value {
+	n := len(q.Data)
+	if n == 0 || len(q.InUse) < n {
+		panic("StaticQueue corruption: Data/InUse length mismatch")
+	}
+	data := q.Data[:n:n]
+	inUse := q.InUse[:n:n]
+
+	for i := 0; i < n; i++ {
+		if inUse[i] && data[i] == value {
 			return false
 		}
 	}
 
-	if q.count >= len(q.Data) {
+	if q.count >= n {
 		panic("StaticQueue overflow: capacity exceeded")
 	}
 
-	newHead := (q.head - 1 + len(q.Data)) % len(q.Data)
-	attempts := 0
-	for q.InUse[newHead] && attempts < len(q.Data) {
-		newHead = (newHead - 1 + len(q.Data)) % len(q.Data)
-		attempts++
+	un := uint(n)
+	// Walk backward from head-1 using uint arithmetic. Underflow wraps to a
+	// large uint, which becomes < n once reduced by % un.
+	cursor := uint(q.head) + un - 1
+	for attempts := 0; attempts < n; attempts++ {
+		nh := cursor % un
+		if !inUse[nh] {
+			data[nh] = value
+			inUse[nh] = true
+			q.head = int(nh)
+			q.count++
+			return true
+		}
+		cursor += un - 1
 	}
-
-	if attempts >= len(q.Data) {
-		panic("StaticQueue overflow: no free slots for PushHeadNoDuplicate")
-	}
-
-	q.Data[newHead] = value
-	q.InUse[newHead] = true
-	q.head = newHead
-	q.count++
-	return true
+	panic("StaticQueue overflow: no free slots for PushHeadNoDuplicate")
 }
 
 // PopBack removes and returns the back element (for work stealing).
@@ -228,23 +249,27 @@ func (q *StaticQueue[T]) PopBack() T {
 		panic("StaticQueue underflow: popback from empty queue")
 	}
 
-	// Find the last valid element by scanning backward from tail
-	// tail points to the next slot to fill, so last valid is before it
-	idx := (q.tail - 1 + len(q.Data)) % len(q.Data)
-	attempts := 0
-	for !q.InUse[idx] && attempts < len(q.Data) {
-		idx = (idx - 1 + len(q.Data)) % len(q.Data)
-		attempts++
+	n := len(q.Data)
+	if n == 0 || len(q.InUse) < n {
+		panic("StaticQueue corruption: Data/InUse length mismatch")
 	}
+	data := q.Data[:n:n]
+	inUse := q.InUse[:n:n]
 
-	if attempts >= len(q.Data) || !q.InUse[idx] {
-		panic("StaticQueue corruption: count > 0 but no valid elements in PopBack")
+	un := uint(n)
+	// Walk backward from tail-1; underflow into large uint wraps via % un.
+	cursor := uint(q.tail) + un - 1
+	for attempts := 0; attempts < n; attempts++ {
+		idx := cursor % un
+		if inUse[idx] {
+			value := data[idx]
+			inUse[idx] = false
+			q.count--
+			return value
+		}
+		cursor += un - 1
 	}
-
-	value := q.Data[idx]
-	q.InUse[idx] = false
-	q.count--
-	return value
+	panic("StaticQueue corruption: count > 0 but no valid elements in PopBack")
 }
 
 // PushHead adds value to the FRONT of the queue (priority insertion).

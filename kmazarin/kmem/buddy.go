@@ -175,7 +175,13 @@ func buddyInsertFree(pa uintptr, order int) {
 //
 //go:nosplit
 func buddyRemoveFree(order int) uintptr {
-	pa := buddyAlloc.freeList[order]
+	if order < 0 || order >= MaxOrder {
+		return 0
+	}
+	// Modulo is a no-op after the guard but lets the SSA prover chain the
+	// fact, eliminating panicBounds64's 160-byte frame from the IRQ chain.
+	idx := uint(order) % uint(MaxOrder)
+	pa := buddyAlloc.freeList[idx]
 	if pa == 0 {
 		return 0
 	}
@@ -186,8 +192,8 @@ func buddyRemoveFree(order int) uintptr {
 	if next != 0 && (next < buddyAlloc.poolStart || next >= buddyAlloc.poolEnd) {
 		buddyCorruptionHalt(next, pa, order)
 	}
-	buddyAlloc.freeList[order] = next
-	buddyAlloc.freeCount[order]--
+	buddyAlloc.freeList[idx] = next
+	buddyAlloc.freeCount[idx]--
 	return pa
 }
 

@@ -890,16 +890,15 @@ func main() {
 	attr.Init()
 	mancini.Init()
 
-	// 2. Wait for required shepherds.
-	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
-		panic(fmt.Sprintf("[calc] FATAL: fs: %v", err))
+	// 2. Wait for core services.
+	if err := sys.WaitForCoreServices(20); err != nil {
+		panic(fmt.Sprintf("[calc] FATAL: core services: %v", err))
 	}
-	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
-		panic(fmt.Sprintf("[calc] FATAL: rachel: %v", err))
+	scratch, err := sys.SetupScratchDir(true)
+	if err != nil {
+		panic(fmt.Sprintf("[calc] FATAL: scratchdir: %v", err))
 	}
-	if err := sys.WaitForShepherdReady("linux", 10); err != nil {
-		panic(fmt.Sprintf("[calc] FATAL: linux: %v", err))
-	}
+	fmt.Printf("[calc] scratch dir: %s\n", scratch)
 	rachelSID = sys.MustGetShepherdByName("rachel")
 	fc := fontcache.New(rachelSID)
 

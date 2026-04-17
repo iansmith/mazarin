@@ -244,10 +244,12 @@ func GetCPUID() uint64 {
 func GetPerCPU() *PerCPU {
 	cpuID := GetCPUID()
 	if cpuID >= MaxCPUs {
-		// Safeguard: cap to MaxCPUs-1 if system has more CPUs than expected
 		cpuID = MaxCPUs - 1
 	}
-	return &perCPUData[cpuID]
+	// Modulo is a no-op after the clamp (cpuID is already < MaxCPUs), but it
+	// gives the SSA prover a fact it can chain into the slice index, so no
+	// runtime.panicBounds64 frame is generated on the IRQ path.
+	return &perCPUData[uint(cpuID)%uint(MaxCPUs)]
 }
 
 // GetPerCPUByID returns the per-CPU data for a specific CPU ID.
@@ -258,7 +260,7 @@ func GetPerCPUByID(cpuID uint64) *PerCPU {
 	if cpuID >= MaxCPUs {
 		cpuID = MaxCPUs - 1
 	}
-	return &perCPUData[cpuID]
+	return &perCPUData[uint(cpuID)%uint(MaxCPUs)]
 }
 
 // CurrentThread returns the thread currently running on this CPU.

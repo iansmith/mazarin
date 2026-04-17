@@ -63,17 +63,19 @@ func main() {
 	mancini.Init()
 	fmt.Printf("[mail:timing] attr+mancini init: %v\n", time.Since(t0))
 
-	// 2. Wait for dependencies.
+	// 2. Wait for core services, then maildb.
 	tDep := time.Now()
-	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
-		panic(fmt.Sprintf("[mail] FATAL: fs: %v", err))
+	if err := sys.WaitForCoreServices(20); err != nil {
+		panic(fmt.Sprintf("[mail] FATAL: core services: %v", err))
 	}
-	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
-		panic(fmt.Sprintf("[mail] FATAL: rachel: %v", err))
-	}
-	if err := sys.WaitForShepherdReady("maildb", 10); err != nil {
+	if err := sys.WaitForShepherdReady("maildb", 20); err != nil {
 		panic(fmt.Sprintf("[mail] FATAL: maildb: %v", err))
 	}
+	scratch, err := sys.SetupScratchDir(true)
+	if err != nil {
+		panic(fmt.Sprintf("[mail] FATAL: scratchdir: %v", err))
+	}
+	fmt.Printf("[mail] scratch dir: %s\n", scratch)
 	fmt.Printf("[mail:timing] wait deps: %v\n", time.Since(tDep))
 
 	rachelSID = sys.MustGetShepherdByName("rachel")

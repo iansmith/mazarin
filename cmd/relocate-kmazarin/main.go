@@ -278,7 +278,10 @@ func relocateDataSections(data []byte, f *elf.File, kmazarinBase, kmazarinEnd ui
 	//
 	// NOTE: .bss and .noptrbss are NOBITS (no file data) — they are zero-initialized
 	// at runtime and contain no pointers in the ELF file.
-	sections := []string{".text", ".data", ".rodata", ".noptrdata", ".go.buildinfo", ".typelink", ".itablink"}
+	// Go 1.26 split firstmoduledata into its own .go.module section. Without
+	// scanning it, the runtime reads zeros from firstmoduledata.pcHeader and
+	// throws "invalid function symbol table" at startup.
+	sections := []string{".text", ".data", ".rodata", ".noptrdata", ".go.buildinfo", ".go.module", ".typelink", ".itablink"}
 
 	// .gopclntab is NOT blindly pointer-scanned. In Go 1.18+, it uses offsets
 	// (not absolute addresses) for everything except pcHeader.textStart. Blind
