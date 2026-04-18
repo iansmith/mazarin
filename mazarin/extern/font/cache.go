@@ -11,7 +11,7 @@ import (
 
 // buildGlyphCache populates the cache buffer with header, glyph map, and
 // glyph data. Returns the number of glyphs rendered. The algorithm and
-// binary layout match flock/cmd/fontsvc/main.go exactly.
+// binary layout match maz/fontsvc/main.go exactly.
 func buildGlyphCache(cache []byte, face font.Face, metrics font.Metrics,
 	fontID uint32, pointSize int32) uint32 {
 

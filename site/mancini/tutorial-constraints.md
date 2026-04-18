@@ -160,7 +160,7 @@ on screen, the sibling's height changes too.
 
 ## Step 1: Write the Custom Constraint
 
-Create a file `flock/cmd/demo/average_y.vgo`:
+Create a file `maz/demo/average_y.vgo`:
 
 ```go
 func averageY() int64 {
@@ -211,7 +211,7 @@ Ready is true.
 
 ### The Code
 
-Create `flock/cmd/demo/main.go`:
+Create `maz/demo/main.go`:
 
 ```go
 package main
@@ -798,7 +798,7 @@ system sleeps until the next poke.
 > and boot sequence.  If you are using mancini in another context,
 > adapt the build steps accordingly.
 
-Create `flock/cmd/demo/Taskfile.yml` by copying from clocks:
+Create `maz/demo/Taskfile.yml` by copying from clocks:
 
 ```yaml
 version: '3'
@@ -808,7 +808,7 @@ tasks:
     desc: Build demo (constraint tutorial, ARM64)
     deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
     sources:
-      - 'flock/cmd/demo/**/*'
+      - 'maz/demo/**/*'
       - 'mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
@@ -816,7 +816,7 @@ tasks:
       - '{{.BUILD_DIR}}/demo.elf'
     cmds:
       - '{{.GO}} tool go-echo "Building demo..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.BUILD_DIR}}/demo.elf ./flock/cmd/demo'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.BUILD_DIR}}/demo.elf ./maz/demo'
       - '{{.GO}} tool go-echo "Demo built at {{.BUILD_DIR}}/demo.elf"'
 ```
 

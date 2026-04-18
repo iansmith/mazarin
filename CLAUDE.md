@@ -110,7 +110,7 @@ This project uses a single Go module (`mazzy`). Build is managed by Taskfile (`T
 - `cmd/` - Build tools (used via `go tool <name>`)
 - `diplomat/` - Diplomat UEFI bootloader (multi-arch: ARM64, x86_64, RISC-V)
 - `kmazarin/` - Kmazarin kernel (Go kernel, multi-arch)
-- `flock/` - Userspace programs (shepherd, helloworld, etc.)
+- `maz/` - Userspace programs (shepherd, helloworld, etc.)
 - `mazarin/` - Shared userspace libraries
 - `shared/` - Shared packages
 

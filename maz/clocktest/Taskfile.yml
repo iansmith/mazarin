@@ -1,0 +1,50 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build clocktest (kernel time constraint demo, ARM64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - 'maz/clocktest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.CLOCKTEST_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building clocktest..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKTEST_ELF}} ./maz/clocktest'
+      - '{{.GO}} tool go-echo "Clocktest built at {{.CLOCKTEST_ELF}}"'
+
+  x86_64:
+    desc: Build clocktest (x86_64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - 'maz/clocktest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.CLOCKTEST_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building clocktest for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKTEST_AMD64_ELF}} ./maz/clocktest'
+      - '{{.GO}} tool go-echo "Clocktest x86_64 built at {{.CLOCKTEST_AMD64_ELF}}"'
+
+  riscv64:
+    desc: Build clocktest (RISC-V 64-bit)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - 'maz/clocktest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.CLOCKTEST_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building clocktest for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKTEST_RISCV64_ELF}} ./maz/clocktest'
+      - '{{.GO}} tool go-echo "Clocktest RISC-V 64-bit built at {{.CLOCKTEST_RISCV64_ELF}}"'

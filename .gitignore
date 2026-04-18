@@ -32,7 +32,7 @@ bin/
 .claude/
 
 # Built .maz binaries
-fat32
+/fat32
 
 # Task checksum cache
 .task/
@@ -77,13 +77,13 @@ fonts/
 /fix-go-elf
 /mkfat32
 /mkext2
-elf2pe
-relocate-kmazarin
-go-start
-gen-ast-stubs
+/elf2pe
+/relocate-kmazarin
+/go-start
+/gen-ast-stubs
 /gen-overlay
-maz-reloc
-helloworld
+/maz-reloc
+/helloworld
 
 # Stray shepherd/tool binaries
 /fs
@@ -98,4 +98,4 @@ helloworld
 # Old directories (should be removed)
 src/
 flash/
-enable-mazzy
+/enable-mazzy

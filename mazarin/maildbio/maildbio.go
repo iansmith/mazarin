@@ -5,7 +5,7 @@
 // ResponseChannel.
 package maildbio
 
-import "mazzy/flock/cmd/maildb/shared"
+import "mazzy/maz/maildb/shared"
 
 // MailDBIO is the injection interface between the maildb shepherd and mail-ui.
 //

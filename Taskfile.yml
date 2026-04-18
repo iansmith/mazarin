@@ -43,25 +43,24 @@ includes:
   mkesp:        {taskfile: ./cmd/mkesp/Taskfile.yml}
   mktestkernel: {taskfile: ./cmd/mktestkernel/Taskfile.yml}
   # Shepherds
-  rachel:       {taskfile: ./flock/cmd/rachel/Taskfile.yml}
-  linux:        {taskfile: ./flock/cmd/linux/Taskfile.yml}
-  fs:           {taskfile: ./flock/cmd/fs/Taskfile.yml}
-  maildb:       {taskfile: ./flock/cmd/maildb/Taskfile.yml}
-  fti:          {taskfile: ./flock/cmd/fti/Taskfile.yml}
+  rachel:       {taskfile: ./maz/rachel/Taskfile.yml}
+  linux:        {taskfile: ./maz/linux/Taskfile.yml}
+  fs:           {taskfile: ./maz/fs/Taskfile.yml}
+  maildb:       {taskfile: ./maz/maildb/Taskfile.yml}
+  fti:          {taskfile: ./maz/fti/Taskfile.yml}
   # .maz programs
-  mail-ui:      {taskfile: ./flock/cmd/mail-ui/Taskfile.yml}
-  helloworld:   {taskfile: ./flock/cmd/helloworld/Taskfile.yml}
-  prefs:        {taskfile: ./flock/cmd/prefs/Taskfile.yml}
-  fontsvc:      {taskfile: ./flock/cmd/fontsvc/Taskfile.yml}
-  keymapper:    {taskfile: ./flock/cmd/keymapper/Taskfile.yml}
-  linux-ui:     {taskfile: ./flock/cmd/linux-ui/Taskfile.yml}
+  mail-ui:      {taskfile: ./maz/mail-ui/Taskfile.yml}
+  helloworld:   {taskfile: ./maz/helloworld/Taskfile.yml}
+  prefs:        {taskfile: ./maz/prefs/Taskfile.yml}
+  fontsvc:      {taskfile: ./maz/fontsvc/Taskfile.yml}
+  keymapper:    {taskfile: ./maz/keymapper/Taskfile.yml}
+  linux-ui:     {taskfile: ./maz/linux-ui/Taskfile.yml}
   # Test programs
-  sievetest:    {taskfile: ./flock/cmd/sievetest/Taskfile.yml}
-  attrtest:     {taskfile: ./flock/cmd/attrtest/Taskfile.yml}
-  handletest:   {taskfile: ./flock/cmd/handletest/Taskfile.yml}
-  clocktest:    {taskfile: ./flock/cmd/clocktest/Taskfile.yml}
+  attrtest:     {taskfile: ./maz/attrtest/Taskfile.yml}
+  handletest:   {taskfile: ./maz/handletest/Taskfile.yml}
+  clocktest:    {taskfile: ./maz/clocktest/Taskfile.yml}
   # Shepherds (clocks)
-  clocks:       {taskfile: ./flock/cmd/clocks/Taskfile.yml}
+  clocks:       {taskfile: ./maz/clocks/Taskfile.yml}
   # Shepherds (versai)
   versai:       {taskfile: ./mazarin/apps/versai/Taskfile.yml}
   # Shepherds (calc)
@@ -108,7 +107,6 @@ vars:
   KMAZARIN_ELF: '{{.BUILD_DIR}}/kmazarin.elf'
   KMAZARIN_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-overlay.json'
   USERSPACE_OVERLAY_JSON: '{{.BUILD_DIR}}/userspace-overlay.json'
-  SIEVETEST_ELF: '{{.BUILD_DIR}}/sievetest.elf'
   ATTRTEST_ELF: '{{.BUILD_DIR}}/attrtest.elf'
   HANDLETEST_ELF: '{{.BUILD_DIR}}/handletest.elf'
   CLOCKTEST_ELF: '{{.BUILD_DIR}}/clocktest.elf'
@@ -151,7 +149,6 @@ vars:
   MAILDB_AMD64_ELF: '{{.BUILD_DIR}}/maildb-amd64.elf'
   FTI_AMD64_ELF: '{{.BUILD_DIR}}/fti-amd64.elf'
   FS_AMD64_ELF: '{{.BUILD_DIR}}/fs-amd64.elf'
-  SIEVETEST_AMD64_ELF: '{{.BUILD_DIR}}/sievetest-amd64.elf'
   ATTRTEST_AMD64_ELF: '{{.BUILD_DIR}}/attrtest-amd64.elf'
   HANDLETEST_AMD64_ELF: '{{.BUILD_DIR}}/handletest-amd64.elf'
   CLOCKTEST_AMD64_ELF: '{{.BUILD_DIR}}/clocktest-amd64.elf'
@@ -167,7 +164,6 @@ vars:
   MAILDB_RISCV64_ELF: '{{.BUILD_DIR}}/maildb-riscv64.elf'
   FTI_RISCV64_ELF: '{{.BUILD_DIR}}/fti-riscv64.elf'
   FS_RISCV64_ELF: '{{.BUILD_DIR}}/fs-riscv64.elf'
-  SIEVETEST_RISCV64_ELF: '{{.BUILD_DIR}}/sievetest-riscv64.elf'
   ATTRTEST_RISCV64_ELF: '{{.BUILD_DIR}}/attrtest-riscv64.elf'
   HANDLETEST_RISCV64_ELF: '{{.BUILD_DIR}}/handletest-riscv64.elf'
   CLOCKTEST_RISCV64_ELF: '{{.BUILD_DIR}}/clocktest-riscv64.elf'
@@ -214,6 +210,22 @@ vars:
   # Runtime patches directory
   RUNTIME_PATCHES_DIR: runtime-patches
   USERSPACE_OVERLAY_DIR: mazarin/overlay/userspace
+
+  # Mazlink — patched cmd/link that emits plugin-shape ELF without cgo.
+  # mazgo is the companion patched cmd/go that stops auto-importing runtime/cgo
+  # for plugin mode. Both are built from the same patches tree and overlay.
+  # See design/GO-PLUGIN-SPIKE.md and mazlink-patches/README.md.
+  MAZLINK_PATCHES_DIR: mazlink-patches
+  MAZLINK_OVERLAY_JSON: '{{.BUILD_DIR}}/mazlink-overlay.json'
+  MAZLINK_BIN: bin/mazlink
+  MAZGO_BIN: bin/mazgo
+  # Cross-compiled variants used inside the container smoke test. Docker on
+  # Apple Silicon defaults to linux/arm64; linux/amd64 is built for completeness
+  # (and for running under `--platform linux/amd64` emulation when needed).
+  MAZLINK_BIN_LINUX_AMD64: bin/mazlink.linux-amd64
+  MAZGO_BIN_LINUX_AMD64: bin/mazgo.linux-amd64
+  MAZLINK_BIN_LINUX_ARM64: bin/mazlink.linux-arm64
+  MAZGO_BIN_LINUX_ARM64: bin/mazgo.linux-arm64
   MAZ_EXIT_OVERLAY_DIR: mazarin/overlay/maz
   MAZ_EXIT_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-exit-overlay.json'
 
@@ -258,8 +270,8 @@ tasks:
     deps: [merged-shepherd-overlay, mazarin:userspace-overlay]
     cmds:
       - '{{.GO}} tool go-echo "Type-checking shepherds (ARM64)..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.MERGED_SHEPHERD_OVERLAY_JSON}} -o /dev/null ./flock/cmd/rachel ./flock/cmd/linux ./flock/cmd/fs'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.USERSPACE_OVERLAY_JSON}} -o /dev/null ./flock/cmd/clocks'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.MERGED_SHEPHERD_OVERLAY_JSON}} -o /dev/null ./maz/rachel ./maz/linux ./maz/fs'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.USERSPACE_OVERLAY_JSON}} -o /dev/null ./maz/clocks'
       - '{{.GO}} tool go-echo "Type-check passed"'
 
   # ===========================================================================
@@ -273,6 +285,159 @@ tasks:
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}'
     status:
       - '{{.GO}} tool go-test -d {{.BUILD_DIR}}'
+
+  bin-dir:
+    run: once
+    desc: Create bin directory
+    cmds:
+      - '{{.GO}} tool go-mkdir bin'
+    status:
+      - '{{.GO}} tool go-test -d bin'
+
+  # ===========================================================================
+  # Mazlink — patched Go linker for plugin-shape output (no cgo)
+  # ===========================================================================
+
+  mazlink-overlay:
+    run: once
+    desc: Generate overlay JSON from mazlink-patches/ onto stock cmd/link sources
+    deps: [build-dir]
+    sources:
+      - '{{.MAZLINK_PATCHES_DIR}}/**/*'
+    generates:
+      - '{{.MAZLINK_OVERLAY_JSON}}'
+    cmds:
+      - '{{.GO}} tool gen-overlay -type mazlink -patches {{.MAZLINK_PATCHES_DIR}} -o {{.MAZLINK_OVERLAY_JSON}}'
+
+  # mazlink/mazgo must be built WITHOUT the top-level GOEXPERIMENT vars
+  # (nogreenteagc,norandomizedheapbase64). Those flags are for kmazarin and
+  # userspace shepherds; baking them into the linker binary changes the tool's
+  # reported Go version string (to "go1.26.2-X:..."), which the stock `compile`
+  # tool inside the container then refuses with a version mismatch. Unsetting
+  # GOEXPERIMENT here is explicit and local — it does not affect any other
+  # Taskfile target.
+  mazlink-build:
+    run: once
+    desc: Build bin/mazlink — stock cmd/link with mazlink-patches/ overlayed
+    deps: [bin-dir, mazlink-overlay]
+    env:
+      GOEXPERIMENT: ''
+    cmds:
+      - '{{.GO}} tool go-echo "Building bin/mazlink (stock cmd/link + mazlink-patches overlay)..."'
+      - '{{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZLINK_BIN}} cmd/link'
+    status:
+      - test -f {{.MAZLINK_BIN}}
+
+  mazgo-build:
+    run: once
+    desc: Build bin/mazgo — stock cmd/go with mazlink-patches/ overlayed (plugin mode no longer forces cgo)
+    deps: [bin-dir, mazlink-overlay]
+    env:
+      GOEXPERIMENT: ''
+    cmds:
+      - '{{.GO}} tool go-echo "Building bin/mazgo (stock cmd/go + mazlink-patches overlay)..."'
+      - '{{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZGO_BIN}} cmd/go'
+    status:
+      - test -f {{.MAZGO_BIN}}
+
+  mazlink-linux-amd64:
+    run: once
+    desc: Cross-compile bin/mazlink.linux-amd64 (used inside container smoke test)
+    deps: [bin-dir, mazlink-overlay]
+    env:
+      GOEXPERIMENT: ''
+    cmds:
+      - '{{.GO}} tool go-echo "Cross-compiling mazlink for linux/amd64..."'
+      - 'GOOS=linux GOARCH=amd64 {{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZLINK_BIN_LINUX_AMD64}} cmd/link'
+    status:
+      - test -f {{.MAZLINK_BIN_LINUX_AMD64}}
+
+  mazgo-linux-amd64:
+    run: once
+    desc: Cross-compile bin/mazgo.linux-amd64 (used inside container smoke test)
+    deps: [bin-dir, mazlink-overlay]
+    env:
+      GOEXPERIMENT: ''
+    cmds:
+      - '{{.GO}} tool go-echo "Cross-compiling mazgo for linux/amd64..."'
+      - 'GOOS=linux GOARCH=amd64 {{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZGO_BIN_LINUX_AMD64}} cmd/go'
+    status:
+      - test -f {{.MAZGO_BIN_LINUX_AMD64}}
+
+  mazlink-linux-arm64:
+    run: once
+    desc: Cross-compile bin/mazlink.linux-arm64 (priority target — matches Apple Silicon docker default)
+    deps: [bin-dir, mazlink-overlay]
+    env:
+      GOEXPERIMENT: ''
+    cmds:
+      - '{{.GO}} tool go-echo "Cross-compiling mazlink for linux/arm64..."'
+      - 'GOOS=linux GOARCH=arm64 {{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZLINK_BIN_LINUX_ARM64}} cmd/link'
+    status:
+      - test -f {{.MAZLINK_BIN_LINUX_ARM64}}
+
+  mazgo-linux-arm64:
+    run: once
+    desc: Cross-compile bin/mazgo.linux-arm64 (priority target — matches Apple Silicon docker default)
+    deps: [bin-dir, mazlink-overlay]
+    env:
+      GOEXPERIMENT: ''
+    cmds:
+      - '{{.GO}} tool go-echo "Cross-compiling mazgo for linux/arm64..."'
+      - 'GOOS=linux GOARCH=arm64 {{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZGO_BIN_LINUX_ARM64}} cmd/go'
+    status:
+      - test -f {{.MAZGO_BIN_LINUX_ARM64}}
+
+  mazlink-clean:
+    desc: Remove all mazlink/mazgo binaries and overlay (forces rebuild on next build)
+    cmds:
+      - '{{.GO}} tool go-rm -f {{.MAZLINK_BIN}} {{.MAZGO_BIN}} {{.MAZLINK_BIN_LINUX_AMD64}} {{.MAZGO_BIN_LINUX_AMD64}} {{.MAZLINK_BIN_LINUX_ARM64}} {{.MAZGO_BIN_LINUX_ARM64}} {{.MAZLINK_OVERLAY_JSON}}'
+
+  mazlink-smoke-image:
+    run: once
+    desc: Build mazlink-smoke Docker image (alpine + go 1.26.2 + gcc)
+    sources:
+      - smoke/Dockerfile
+    cmds:
+      - docker build -t mazlink-smoke:latest smoke
+
+  # elf-diff binaries — cross-compiled per target arch for the container smoke
+  # test. Used to compare plugin.so (stock cgo reference) against plugin.maz
+  # (mazlink candidate) structurally.
+  elf-diff-linux-amd64:
+    run: once
+    desc: Cross-compile bin/elf-diff.linux-amd64 for use inside the smoke container
+    deps: [bin-dir]
+    env:
+      GOEXPERIMENT: ''
+    cmds:
+      - 'GOOS=linux GOARCH=amd64 CGO_ENABLED=0 {{.GO}} build -o bin/elf-diff.linux-amd64 ./cmd/elf-diff'
+    status:
+      - test -f bin/elf-diff.linux-amd64
+
+  elf-diff-linux-arm64:
+    run: once
+    desc: Cross-compile bin/elf-diff.linux-arm64 for use inside the smoke container
+    deps: [bin-dir]
+    env:
+      GOEXPERIMENT: ''
+    cmds:
+      - 'GOOS=linux GOARCH=arm64 CGO_ENABLED=0 {{.GO}} build -o bin/elf-diff.linux-arm64 ./cmd/elf-diff'
+    status:
+      - test -f bin/elf-diff.linux-arm64
+
+  mazlink-smoke:
+    desc: Linux container smoke test — build plugin.maz via mazlink, elf-diff against stock plugin.so, host loads it (arch auto-detected)
+    deps:
+      - mazlink-linux-amd64
+      - mazgo-linux-amd64
+      - mazlink-linux-arm64
+      - mazgo-linux-arm64
+      - elf-diff-linux-amd64
+      - elf-diff-linux-arm64
+      - mazlink-smoke-image
+    cmds:
+      - docker run --rm -v "$(pwd):/work" -w /work mazlink-smoke:latest /work/smoke/run-smoke.sh
 
   # ===========================================================================
   # Overlay Generation
@@ -545,7 +710,7 @@ tasks:
       - '{{.GO}} tool go-echo "Fonts base image created at {{.FONTS_BASE_IMAGE}}"'
 
   disk-arm64:
-    desc: Create ext2 disk image with ARM64 flock binaries and kmazarin kernel
+    desc: Create ext2 disk image with ARM64 maz binaries and kmazarin kernel
     deps: [rachel:arm64, linux:arm64, fs:arm64, handletest:arm64, clocktest:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, kmazarin:arm64, convert-boot-image]
     method: checksum
     vars:
@@ -587,7 +752,7 @@ tasks:
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
-    desc: Create ext2 disk image with x86_64 flock binaries and kmazarin kernel
+    desc: Create ext2 disk image with x86_64 maz binaries and kmazarin kernel
     deps: [rachel:x86_64, linux:x86_64, fs:x86_64, handletest:x86_64, clocktest:x86_64, clocks:x86_64, mail-app:x86_64, helloworld:amd64, prefs:amd64, fontsvc:amd64, keymapper:amd64, linux-ui:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64, kmazarin:x86_64, convert-boot-image]
     method: checksum
     vars:
@@ -641,7 +806,7 @@ tasks:
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   disk-riscv64:
-    desc: Create ext2 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
+    desc: Create ext2 disk image with RISC-V 64-bit maz binaries and kmazarin kernel
     deps: [rachel:riscv64, linux:riscv64, fs:riscv64, handletest:riscv64, clocktest:riscv64, clocks:riscv64, mail-app:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64, keymapper:riscv64, linux-ui:riscv64, fti:riscv64, maildb:riscv64, mail-ui:riscv64, kmazarin:riscv64, convert-boot-image]
     method: checksum
     vars:

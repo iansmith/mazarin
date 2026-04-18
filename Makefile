@@ -252,7 +252,7 @@ priest-elf: $(USERSPACE_OVERLAY) | $(BUILD_DIR)
 		GOOS=$(GOOS) \
 		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) \
 			-o $(PRIEST_BINARY) \
-			./flock/cmd/priest
+			./maz/priest
 	@echo "Priest built at $(PRIEST_BINARY)"
 
 # Helloworld - test program (uses userspace overlay for syscall routing)
@@ -270,7 +270,7 @@ helloworld-elf: $(USERSPACE_OVERLAY) | $(BUILD_DIR)
 		GOOS=$(GOOS) \
 		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) \
 			-o $(HELLOWORLD_BINARY) \
-			./flock/cmd/helloworld
+			./maz/helloworld
 	@echo "Helloworld built at $(HELLOWORLD_BINARY) ($$(ls -lh $(HELLOWORLD_BINARY) | awk '{print $$5}'))"
 
 # Build priest (includes Go version check)
@@ -291,7 +291,7 @@ priest2-elf: $(USERSPACE_OVERLAY) | $(BUILD_DIR)
 		GOOS=$(GOOS) \
 		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) \
 			-o $(PRIEST2_BINARY) \
-			./flock/cmd/priest2
+			./maz/priest2
 	@echo "Priest2 built at $(PRIEST2_BINARY) ($$(ls -lh $(PRIEST2_BINARY) | awk '{print $$5}'))"
 
 # Build priest2 (includes Go version check)
@@ -337,7 +337,7 @@ helloworld-thin-elf: $(THIN_OVERLAY_JSON) | $(BUILD_DIR)
 		GOOS=$(GOOS) \
 		$(GO) build -overlay=$(abspath $(THIN_OVERLAY_JSON)) $(GCFLAGS) \
 			-o $(HELLOWORLD_THIN_BINARY) \
-			./flock/cmd/helloworld
+			./maz/helloworld
 	@echo "Helloworld-thin built at $(HELLOWORLD_THIN_BINARY) ($$(ls -lh $(HELLOWORLD_THIN_BINARY) | awk '{print $$5}'))"
 
 # Build helloworld-thin (includes Go version check)
@@ -365,7 +365,7 @@ helloworld-maz-elf: | $(BUILD_DIR)
 		GOOS=$(GOOS) \
 		$(GO) build $(GCFLAGS) \
 			-o $(HELLOWORLD_MAZ_BINARY) \
-			./flock/cmd/helloworld
+			./maz/helloworld
 	@echo "Helloworld.maz built at $(HELLOWORLD_MAZ_BINARY) ($$(ls -lh $(HELLOWORLD_MAZ_BINARY) | awk '{print $$5}'))"
 
 # Build helloworld.maz (includes Go version check)
@@ -374,7 +374,7 @@ helloworld-maz: check-go-version helloworld-maz-elf
 # =========================================
 # Disk Image for VirtIO Block
 # =========================================
-# FAT32 disk image containing flock binaries for kmazarin to load
+# FAT32 disk image containing maz binaries for kmazarin to load
 # Uses PHONY ELF targets to ensure binaries are always rebuilt first
 
 DISK_IMAGE = $(BUILD_DIR)/disk.img
@@ -386,7 +386,7 @@ disk-image: priest-elf priest2-elf helloworld-maz-elf | $(BUILD_DIR)
 	@GOTOOLCHAIN=local $(GO) tool mkfat32 -o $(DISK_IMAGE) $(PRIEST_BINARY) $(PRIEST2_BINARY) $(HELLOWORLD_MAZ_BINARY)
 	@echo "Disk image created at $(DISK_IMAGE) ($$(ls -lh $(DISK_IMAGE) | awk '{print $$5}'))"
 
-# Build disk image (includes flock programs)
+# Build disk image (includes maz programs)
 disk: check-go-version disk-image
 
 # Default: build both

@@ -1,6 +1,6 @@
 # PriestSieve Source Code
 
-Source: `flock/cmd/priestsieve/main.go`
+Source: `maz/priestsieve/main.go`
 
 ```go
 // priestsieve is a prime number sieve test program for Mazzy userspace.
