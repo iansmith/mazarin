@@ -1,0 +1,37 @@
+# Mazlink dlopen — host-resident packages.
+#
+# Every Go import path listed here is resolved against the host at
+# plugin load time (via UNDEF dynsym + JUMP_SLOT/GLOB_DAT relocations)
+# rather than shipped inside the plugin image. Anything NOT listed
+# here ships as ordinary code inside each plugin's own ELF.
+#
+# Format:
+#   - one import path per line
+#   - trailing "/..." means "this package and all subpackages"
+#   - "#" starts a line comment; blank lines ignored
+#
+# Read by: mazlink's internal linker at build time (via
+# -dlopen-host-packages=<path>), and by the host-export side to decide
+# which symbols to mark GLOBAL+DEFINED in the host binary's dynsym.
+#
+# See design/MAZARIN-DLOPEN.md §2 for the full rationale and §6 for the
+# expansion rules — every addition beyond this starting set should come
+# with a short note here explaining what drove it.
+
+# ---------------------------------------------------------------------
+# Phase 2 — minimum viable set.
+#
+# Kills every runtime-singleton goroutine (forcegchelper, sysmon,
+# bgsweep, bgscavenge, runfinq, gcBgMarkWorker, templateThread) and
+# ensures atomic CAS primitives are identical between host and plugin
+# when they operate on shared memory.
+# ---------------------------------------------------------------------
+
+runtime
+internal/runtime/...
+internal/abi
+internal/cpu
+internal/bytealg
+internal/goarch
+internal/goos
+internal/goexperiment

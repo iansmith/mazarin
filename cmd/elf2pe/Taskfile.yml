@@ -1,0 +1,12 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the ELF to PE converter
+    deps: [':build-dir']
+    sources:
+      - 'cmd/elf2pe/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/elf2pe'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/elf2pe ./cmd/elf2pe'

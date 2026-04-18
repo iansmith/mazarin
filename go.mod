@@ -162,6 +162,7 @@ tool (
 	github.com/go-task/task/v3/cmd/task
 	mazzy/cmd/check-version
 	mazzy/cmd/compile-constraints
+	mazzy/cmd/elf-diff
 	mazzy/cmd/fix-go-elf
 	mazzy/cmd/gen-ast-stubs
 	mazzy/cmd/gen-overlay

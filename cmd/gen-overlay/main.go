@@ -42,6 +42,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  diplomat         - UEFI bootloader runtime patches (Windows→UEFI, deprecated)\n")
 		fmt.Fprintf(os.Stderr, "  diplomat-linux   - UEFI bootloader runtime patches (Linux→UEFI)\n")
 		fmt.Fprintf(os.Stderr, "  maz-exit         - Maz-specific patches (os.Exit → panic)\n")
+		fmt.Fprintf(os.Stderr, "  mazlink          - Mazlink patches against stock cmd/link (walk patches tree)\n")
 		fmt.Fprintf(os.Stderr, "  merge            - Merge two overlay JSONs (extra overwrites base for same keys)\n\n")
 		flag.PrintDefaults()
 	}
@@ -107,6 +108,8 @@ func main() {
 		err = buildCardinalLinuxOverlay(&overlay, goroot, absPatchesDir)
 	case "diplomat-linux":
 		err = buildDiplomatLinuxOverlay(&overlay, goroot, absPatchesDir)
+	case "mazlink":
+		err = buildMazlinkOverlay(&overlay, goroot, absPatchesDir)
 	default:
 		fmt.Fprintf(os.Stderr, "gen-overlay: unknown type: %s\n", *overlayType)
 		os.Exit(1)
@@ -383,6 +386,48 @@ func mergeOverlays(basePath, extraPath, outputPath string) error {
 		len(base.Replace)+len(extra.Replace)-len(merged.Replace))
 
 	return os.WriteFile(outputPath, data, 0644)
+}
+
+// buildMazlinkOverlay walks the mazlink patches directory tree and maps every
+// file under it to the corresponding path under $GOROOT/src/. The patches tree
+// mirrors the GOROOT src layout, so mazlink-patches/cmd/link/internal/ld/config.go
+// maps to $GOROOT/src/cmd/link/internal/ld/config.go. An empty patches tree is
+// valid and produces an empty overlay — useful for bootstrap verification.
+func buildMazlinkOverlay(overlay *Overlay, goroot, patchesDir string) error {
+	srcRoot := filepath.Join(goroot, "src")
+	return filepath.Walk(patchesDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			// The policy/ subtree is runtime input to mazlink (e.g.
+			// dlopen-host-packages.txt), not an overlay onto GOROOT source.
+			// Don't descend into it; don't try to map it.
+			rel, rerr := filepath.Rel(patchesDir, path)
+			if rerr == nil && (rel == "policy" || strings.HasPrefix(rel, "policy"+string(filepath.Separator))) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Skip documentation and editor scratch files that live alongside the
+		// patches but are not themselves overlays.
+		base := filepath.Base(path)
+		if base == "README.md" || strings.HasSuffix(base, ".md") ||
+			strings.HasPrefix(base, ".") || strings.HasSuffix(base, "~") {
+			return nil
+		}
+		rel, err := filepath.Rel(patchesDir, path)
+		if err != nil {
+			return err
+		}
+		gorootPath := filepath.Join(srcRoot, rel)
+		// Missing GOROOT counterpart is fine: Go's -overlay supports adding
+		// brand-new files (the "original" path just needs to be where the
+		// overlay expects the synthetic file to live). mazdl.go is the first
+		// such addition; earlier mazlink work only replaced existing files.
+		overlay.Replace[gorootPath] = path
+		return nil
+	})
 }
 
 func buildDiplomatLinuxOverlay(overlay *Overlay, goroot, patchesDir string) error {

@@ -619,17 +619,6 @@ func simpleMain() {
 	unmapCardinal()
 	DisableTimerIRQ()
 
-	// =========================================================================
-	// USERSPACE TEST: Launch 6 sieve workers as separate threads
-	// =========================================================================
-	// This tests kernel thread scheduling fairness:
-	//   1. Load 6 separate sieve programs (sieve3-9) from FAT32 disk
-	//   2. Each runs as a separate OS thread (not goroutines)
-	//   3. Kernel scheduler distributes CPU time among them
-	//   4. Each prints primes as "ID:prime" (e.g., "3:20011")
-	//
-	// To switch back to goroutine test, comment out below and launch shepherdsieve.elf
-
 	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
 
 	// Parse embedded kernel config (no disk I/O — compiled into the binary).
