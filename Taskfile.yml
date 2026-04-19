@@ -90,8 +90,8 @@ vars:
   TARGET_GOOS: linux
   BUILD_DIR: build
 
-  # QEMU display: cocoa+full-screen on macOS, sdl everywhere else
-  DISPLAY: '{{if eq OS "darwin"}}cocoa,full-screen=on{{else}}sdl{{end}}'
+  # QEMU display: cocoa on macOS (windowed), sdl everywhere else
+  DISPLAY: '{{if eq OS "darwin"}}cocoa{{else}}sdl{{end}}'
 
   # QEMU RAM size — override with QEMU_RAM=512M or QEMU_RAM=4G to test different sizes
   QEMU_RAM: '{{env "QEMU_RAM" | default "2G"}}'

@@ -135,6 +135,21 @@ func SubI64(aURI, bURI string) *vm.Program {
 	return BindStrings(ProgSubDeref, "_a_", aURI, "_b_", bURI)
 }
 
+// AddSubI64 returns a constraint program that computes aURI + bURI - cURI.
+func AddSubI64(aURI, bURI, cURI string) *vm.Program {
+	return BindStrings(ProgAddSubDeref, "_a_", aURI, "_b_", bURI, "_c_", cURI)
+}
+
+// ScaleI64 returns a constraint program that computes
+// deref(sourceURI) * deref(numeratorURI) / deref(denominatorURI).
+// Division by zero returns 0.
+func ScaleI64(sourceURI, numeratorURI, denominatorURI string) *vm.Program {
+	return BindStrings(ProgScaleDeref,
+		"_source_", sourceURI,
+		"_numerator_", numeratorURI,
+		"_denominator_", denominatorURI)
+}
+
 // MaxI64 returns a constraint program that computes max(sourceURI, floor).
 func MaxI64(sourceURI string, floor int64) *vm.Program {
 	floorURI := constI64(floor)

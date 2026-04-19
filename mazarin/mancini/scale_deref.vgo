@@ -1,0 +1,6 @@
+func scaleDeref() int64 {
+	source := derefI64("_source_")
+	numerator := derefI64("_numerator_")
+	denominator := derefI64("_denominator_")
+	return source * numerator / denominator
+}

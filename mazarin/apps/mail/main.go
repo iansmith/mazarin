@@ -68,8 +68,9 @@ func main() {
 	if err := sys.WaitForCoreServices(20); err != nil {
 		panic(fmt.Sprintf("[mail] FATAL: core services: %v", err))
 	}
-	if err := sys.WaitForShepherdReady("maildb", 20); err != nil {
-		panic(fmt.Sprintf("[mail] FATAL: maildb: %v", err))
+	if err := sys.WaitForShepherdReady("maildb", 75); err != nil {
+		fmt.Printf("[mail] WARNING: maildb not ready (%v), continuing with test data only\n", err)
+		maildbSID = -1
 	}
 	scratch, err := sys.SetupScratchDir(true)
 	if err != nil {
@@ -150,28 +151,18 @@ func main() {
 	datePct := attr.ValueI64(mancini.LayoutURI("mail_grid", mancini.DataTypeInt64,
 		mancini.LayoutProp("col/date_pct")), 10)
 
-	// G — wrapped in a Raised LightWeight NeuBox for visual depth.
-	// A MarginParent insets the NeuBox by the shadow-pad amount on the
-	// sides so the soft shadows have room to render. Top and bottom
-	// margins are larger to provide a "bezel" area where Divider markers
-	// can overhang the grid edge.
-	gridPad := int64(theme.Style().Pad(mancini.LightWeight))
-	bezelH := int64(4) // matches Divider.Overhang; room for triangle marker
-	gridMargin := std.NewMarginParent("mail_grid_margin", "mail_c1",
-		bezelH, gridPad, bezelH, gridPad, 0, "", theme, pal)
-	_ = gridMargin
-
-	gridBoxLH := mancini.NewLayoutAttributes("mail_grid_box", "mail_grid_margin")
-	gridBox := std.NewNeuBoxStyled(gridBoxLH, theme,
-		mancini.Raised, mancini.LightWeight, 8)
-	_ = gridBox
-
-	grid := std.NewGridTable("mail_grid", "mail_grid_box", pal, theme,
-		chooser.ValueURI(),
+	// G — GridFrame wraps the grid, its NeuBox, and column Divider markers
+	// in a single parent whose height includes the bezel overhang strips
+	// above and below the content. Dividers live within its bounds; no
+	// clip escaping needed. Side padding is handled internally.
+	bezelH := int64(32) // matches Divider.Overhang
+	gridFrame := std.NewGridFrame("mail_grid", "mail_c1", pal, theme,
+		bezelH, chooser.ValueURI(),
 		[]string{"Sender", "Subject", "Date"},
 		[]float64{35, -1, 10},
 		[]string{senderPct.URI(), datePct.URI()},
 		[]*attr.Attribute[int64]{senderPct, datePct})
+	_ = gridFrame
 
 	// SC band — MarginParent (4px on all sides) child of C1 (gets 3%),
 	// with the SC Panel as its single child. Chooser is parented to mail_sc.
@@ -189,9 +180,8 @@ func main() {
 
 	// Populate with test data.
 	for _, row := range testMailRows() {
-		grid.AddRow(row)
+		gridFrame.AddRow(row)
 	}
-	_ = grid
 
 	// T — Panel placeholder for message body, child of C1. Uses the
 	// shared pal so the background matches the grid above. Will be

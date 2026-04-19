@@ -27,6 +27,11 @@ type DynamicLabel struct {
 	Transparent bool
 	textFace    mancini.LatinTextFace
 
+	// padXAttr / padYAttr drive interior padding in pixels. Both default to
+	// value-attrs with 0; call SetPaddingAttrs to bind them to a shared source.
+	padXAttr *attr.Attribute[int64]
+	padYAttr *attr.Attribute[int64]
+
 	fontSizeAttr *attr.Attribute[int64]
 	lastFontSize int64
 	align        mancini.TextAlignmentParams
@@ -61,6 +66,9 @@ func NewDynamicLabel(myName, parent string, theme mancini.Theme,
 	align := mancini.TextAlignmentParams{HAlign: mancini.HAlignLeft}
 	fc := theme.Font(mancini.None, fontSize)
 
+	padXURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutProp("padX"))
+	padYURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutProp("padY"))
+
 	dl := &DynamicLabel{
 		Text:         text,
 		Color:        theme.Palette().Text(),
@@ -69,6 +77,8 @@ func NewDynamicLabel(myName, parent string, theme mancini.Theme,
 		lastFontSize: fontSize,
 		align:        align,
 		textFace:     impl.NewLatinTextFace(fc, false, fontSize, align),
+		padXAttr:     attr.ValueI64(padXURI, 0),
+		padYAttr:     attr.ValueI64(padYURI, 0),
 	}
 	dl.ThemedInteractor.Initialize(dl, lh, theme)
 
@@ -121,6 +131,20 @@ func (dl *DynamicLabel) rebuildFace() {
 	lh.Height.Set(fontSize + 4)
 }
 
+// SetPaddingAttrs binds the label's X and Y interior padding to the given
+// attribute URIs via identity constraints, making padding constrainable from
+// any source in the constraint network. Empty URI leaves that axis unchanged.
+func (dl *DynamicLabel) SetPaddingAttrs(padXURI, padYURI string) {
+	if padXURI != "" {
+		attr.SwapToConstraint(dl.padXAttr,
+			mancini.BindStrings(mancini.ProgIdentityI64, "_source_", padXURI))
+	}
+	if padYURI != "" {
+		attr.SwapToConstraint(dl.padYAttr,
+			mancini.BindStrings(mancini.ProgIdentityI64, "_source_", padYURI))
+	}
+}
+
 // SetAlign replaces the label's text alignment.
 func (dl *DynamicLabel) SetAlign(align mancini.TextAlignmentParams) {
 	dl.align = align
@@ -151,7 +175,9 @@ func (dl *DynamicLabel) Draw(self mancini.Interactor, x, y, w, h int64, damage i
 	dc := self.DC()
 	dc.SetColor(dl.Color)
 	dl.textFace.SetText(dl.Text)
-	dl.textFace.DrawFace(dc, float64(x), float64(y), float64(w), float64(h))
+	px := dl.padXAttr.Get()
+	py := dl.padYAttr.Get()
+	dl.textFace.DrawFace(dc, float64(x+px), float64(y+py), float64(w-2*px), float64(h-2*py))
 	dl.SnapshotDamage()
 	dl.ClearDamage()
 	drawPerf.LabelNs.Add(nanotime() - tl)

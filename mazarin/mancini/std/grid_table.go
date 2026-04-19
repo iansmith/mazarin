@@ -6,6 +6,7 @@ import (
 
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mancini/impl"
 )
 
 // GridRow is the interface that each row's data must satisfy.
@@ -14,6 +15,244 @@ type GridRow interface {
 	Sender() string
 	Subject() string
 	Date() string
+}
+
+// GridFrame is a simple parent interactor that wraps a [GridTable] together
+// with its visual chrome: side-padded margin, raised NeuBox, and column-
+// boundary [Divider] markers. The frame's height spans the full area
+// including the Divider overhang strips above and below the content, so
+// Dividers live within normal child bounds — no clip escaping needed.
+//
+// Draw order is strictly: grid subtree first (content area only), then
+// Dividers last so they always appear on top of the grid content.
+//
+// Column widths are controlled by the same split-attribute mechanism as
+// [GridTable]. Drag a Divider marker to resize columns.
+type GridFrame struct {
+	impl.Interactor
+	impl.Parent
+
+	Pal      mancini.Palette
+	Overhang int64
+
+	grid     *GridTable
+	dividers []*Divider
+}
+
+// NewGridFrame creates a fully-wired grid frame. myName is the GridFrame
+// itself; internal names are myName+"_margin", myName+"_box", myName+"_tbl",
+// and myName+"_divN".
+//
+// overhang is the height in pixels of the bezel area above and below the
+// grid content where Divider triangle markers are drawn.
+//
+// splitSrcAttrs are the writable value attributes the Dividers write during
+// drag operations. They must correspond 1-to-1 with the non-flex entries in
+// splitURIs (same order, skipping any -1 flex columns).
+func NewGridFrame(myName, parent string, pal mancini.Palette, theme mancini.Theme,
+	overhang int64, fontSizeURI string,
+	headers []string, percents []float64, splitURIs []string,
+	splitSrcAttrs []*attr.Attribute[int64]) *GridFrame {
+
+	if myName == "" {
+		myName = mancini.DefaultName("gridframe")
+	}
+
+	lh := mancini.NewLayoutAttributes(myName, parent)
+
+	gf := &GridFrame{
+		Pal:      pal,
+		Overhang: overhang,
+	}
+	gf.Interactor.Initialize(gf, lh)
+	gf.Parent.Initialize(true, &gf.Interactor)
+
+	gridPad := int64(theme.Style().Pad(mancini.LightWeight))
+
+	// Side-padding margin: no top/bottom overhang — GridFrame owns that.
+	gridMargin := NewMarginParent(myName+"_margin", myName,
+		0, gridPad, 0, gridPad, 0, "", theme, pal)
+	_ = gridMargin
+
+	// NeuBox for visual depth, child of the margin.
+	boxLH := mancini.NewLayoutAttributes(myName+"_box", myName+"_margin")
+	gridBox := NewNeuBoxStyled(boxLH, theme, mancini.Raised, mancini.LightWeight, 8)
+	_ = gridBox
+
+	// GridTable as child of the box (no dividers — GridFrame owns them).
+	grid := NewGridTable(myName+"_tbl", myName+"_box", pal, theme, fontSizeURI,
+		headers, percents, splitURIs)
+	gf.grid = grid
+
+	// Dividers at each column boundary where at least one adjacent column
+	// is non-flex. A boundary between two non-flex columns uses the LEFT
+	// column's splitAttr (normal drag). A boundary where the LEFT column
+	// is flex but the RIGHT is not uses the RIGHT column's splitAttr with
+	// inverted drag (dragging right narrows the right column).
+	splitMap := buildSplitMap(percents)
+	nCols := len(percents)
+	onDamage := func() {
+		// Damage the full frame so the blit region covers the old divider
+		// position in the bezel strips — not just the new position.
+		gf.FullDamage()
+		for _, lab := range grid.headerLabs {
+			if lab != nil {
+				lab.FullDamage()
+			}
+		}
+		for _, row := range grid.dataLabs {
+			for _, lab := range row {
+				if lab != nil {
+					lab.FullDamage()
+				}
+			}
+		}
+	}
+	for i := 0; i < nCols-1; i++ {
+		si := splitMap[i]
+		rightSI := splitMap[i+1]
+
+		var srcIdx int
+		var inverted bool
+		if si >= 0 {
+			srcIdx = si
+			inverted = false
+		} else if rightSI >= 0 {
+			srcIdx = rightSI
+			inverted = true
+		} else {
+			continue
+		}
+		if srcIdx >= len(splitSrcAttrs) {
+			continue
+		}
+
+		divName := fmt.Sprintf("%s_div%d", myName, i)
+		div := NewDivider(divName, myName, pal, i, splitSrcAttrs[srcIdx])
+		div.DragInverted = inverted
+		div.OnDamage = onDamage
+		gf.dividers = append(gf.dividers, div)
+	}
+
+	// Wire pixel-position constraints (ScaleI64 chains) then X-overlap constraints.
+	for _, div := range gf.dividers {
+		div.SetupPositionConstraints()
+	}
+	if len(gf.dividers) == 2 {
+		gf.dividers[0].OtherSplitAttr = gf.dividers[1].SplitAttr
+		gf.dividers[1].OtherSplitAttr = gf.dividers[0].SplitAttr
+		gf.dividers[0].SetupXConstraint(gf.dividers[1])
+		gf.dividers[1].SetupXConstraint(gf.dividers[0])
+	}
+
+	return gf
+}
+
+// AddRow appends a data row to the embedded GridTable.
+func (gf *GridFrame) AddRow(row GridRow) {
+	gf.grid.AddRow(row)
+}
+
+// Draw renders the frame. Grid subtree is drawn first in the content area
+// (y+Overhang to y+h-Overhang). Bezel strips are cleared to Surface color.
+// Dividers are drawn last so they appear on top of everything.
+func (gf *GridFrame) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
+	if !gf.Damaged(damage) {
+		return
+	}
+	dc := self.DC()
+	if dc == nil {
+		return
+	}
+
+	oh := gf.Overhang
+	contentY := y + oh
+	contentH := h - 2*oh
+	if contentH < 0 {
+		contentH = 0
+	}
+
+	// Draw grid subtree (margin → box → table) in the content area.
+	for _, child := range gf.GetChildren() {
+		if _, isDivider := child.(*Divider); isDivider {
+			continue
+		}
+		if l, ok := child.(mancini.Layouter); ok {
+			clh := l.GetLayout()
+			if clh != nil {
+				clh.X.Set(x)
+				clh.Y.Set(contentY)
+				if !clh.Width.IsConstraint() {
+					clh.Width.Set(w)
+				}
+				if !clh.Height.IsConstraint() {
+					clh.Height.Set(contentH)
+				}
+			}
+		}
+		if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
+			cs.SetDC(dc)
+		}
+		if d, ok := child.(mancini.NewDrawer); ok {
+			d.Draw(child, x, contentY, w, contentH, damage)
+		}
+	}
+
+	// Clear bezel strips to Surface color. Push/ResetClip bypasses the
+	// AppWindow PushDamageClip, which may be smaller than the full frame
+	// (content-only damage). Without the reset, FillRectangle is clipped to
+	// the content area and the NeuBox border pixel at (y+oh - 0.5) survives.
+	// +1 extends the clear to cover the border's anti-aliased bleed pixel.
+	// Extend clear by dangle so triangle tips that protrude into the content
+	// area (NeuBox margin) are also erased when a divider moves.
+	dangle := int64(0)
+	if len(gf.dividers) > 0 {
+		dangle = gf.dividers[0].Dangle
+	}
+	clearH := oh + dangle + 1
+	dc.Push()
+	dc.ResetClip()
+	dc.SetColor(gf.Pal.Surface())
+	dc.FillRectangle(float64(x), float64(y), float64(w), float64(clearH))
+	dc.FillRectangle(float64(x), float64(y+h-clearH+1), float64(w), float64(clearH))
+	dc.Pop()
+
+	// Draw Dividers last — on top of grid content, spanning full frame height.
+	// Use the GridTable's actual x and w (set by the subtree draw above) so
+	// the divider aligns with the column boundary inside the NeuBox padding,
+	// not with the outer GridFrame edge.
+	//
+	// Two-pass: set all raw positions first so paired-divider X constraints
+	// (which cross-read RawXAttr / RightXAttr) evaluate correctly, then draw.
+	gridX := gf.grid.X()
+	gridW := gf.grid.W()
+
+	// Pass 1: update parent geometry attrs (drives ScaleI64 position constraints)
+	// and set layout size. RawXAttr and RightXAttr are now constraint outputs —
+	// no imperative position computation needed here.
+	for _, div := range gf.dividers {
+		hw := div.TriHalfW
+		div.ParentXAttr.Set(gridX)
+		div.ParentWidthAttr.Set(gridW)
+		divLH := div.GetLayout()
+		if !divLH.X.IsConstraint() {
+			divLH.X.Set(div.RawXAttr.Get()) // single-divider fallback
+		}
+		divLH.Y.Set(y)
+		divLH.Width.Set(hw * 2)
+		divLH.Height.Set(h)
+	}
+
+	// Pass 2: draw using the (possibly constrained) X.
+	for _, div := range gf.dividers {
+		divLH := div.GetLayout()
+		actualDivX := divLH.X.Get()
+		divW := divLH.Width.Get()
+		div.SetDC(dc)
+		div.Draw(div, actualDivX, y, divW, h, damage)
+	}
+
+	gf.Interactor.SnapshotDamage()
 }
 
 // GridTable is a multi-column table built on [ColumnPercentage].
@@ -31,67 +270,73 @@ type GridRow interface {
 // Font size is driven by an attribute URI (typically from a
 // [CornerRadialChooser]). All labels are [DynamicLabel] instances
 // that react to font size changes via the constraint network.
+//
+// Use [NewGridFrame] for a complete grid with Divider markers and
+// a NeuBox wrapper. Use NewGridTable directly only when embedding
+// the table without the frame chrome.
 type GridTable struct {
 	ColumnPercentage // structural embedding for Interactor + Parent
 
 	Theme mancini.Theme
 
-	nCols          int                      // number of columns
-	flexIdx        int                      // index of the flex (-1) column, or -1 if none
-	splitAttrs     []*attr.Attribute[int64] // constraint attrs for each non-flex column
-	splitSrcAttrs  []*attr.Attribute[int64] // source value attrs (writable) for divider drag
-	splitMap       []int                    // splitMap[col] → index into splitAttrs, or -1 for flex
-	fontSizeURI    string                   // URI of the font size source attribute
+	nCols        int                      // number of columns
+	flexIdx      int                      // index of the flex (-1) column, or -1 if none
+	splitAttrs   []*attr.Attribute[int64] // constraint attrs for each non-flex column
+	splitMap     []int                    // splitMap[col] → index into splitAttrs, or -1 for flex
+	fontSizeURI  string                   // URI of the font size source attribute
 
-	rows       []GridRow        // data backing
+	rows       []GridRow
 	headerLabs []*DynamicLabel
 	dataLabs   [][]*DynamicLabel
 
-	// dividers are column-boundary indicators drawn after all rows.
-	// One divider per non-flex column boundary (between adjacent columns).
-	dividers []*Divider
-
-	// fontSizeAttr tracks font size for row height calculation.
 	fontSizeAttr *attr.Attribute[int64]
 	lastFontSize int64
+
+	// PadXAttr and PadYAttr drive the interior padding (in pixels) of every
+	// label cell. Other parts of the constraint network may swap these to
+	// constraint outputs to animate or theme label padding.
+	PadXAttr *attr.Attribute[int64]
+	PadYAttr *attr.Attribute[int64]
 }
 
 // gridURI returns an attribute URI for a grid-published value.
-// Uses the mancini layout URI scheme so the kernel accepts it.
 func gridURI(gridName, field string) string {
 	return mancini.LayoutURI(gridName, mancini.DataTypeInt64, mancini.LayoutProp("grid/"+field))
 }
 
+// buildSplitMap builds the splitMap array: splitMap[col] is the index
+// into the split attributes slice, or -1 for the flex column.
+func buildSplitMap(percents []float64) []int {
+	splitMap := make([]int, len(percents))
+	splitIdx := 0
+	for i, p := range percents {
+		if p < 0 {
+			splitMap[i] = -1
+		} else {
+			splitMap[i] = splitIdx
+			splitIdx++
+		}
+	}
+	return splitMap
+}
+
 // NewGridTable creates a grid table with the given column headers and
-// constraint-driven column percentages. Each entry in percents is
-// either a positive float64 (fixed percentage) paired with a URI in
-// splitURIs, or -1 (flex column, absorbs remainder — no URI needed).
+// constraint-driven column percentages. Each entry in percents is either
+// a positive float64 (fixed percentage) paired with a URI in splitURIs,
+// or -1 (flex column, absorbs remainder — no URI needed).
 //
 // splitURIs contains one URI string per non-flex column, in order.
 // Each URI must point to an int64 attribute holding the column's
-// percentage of the total width. The grid binds constraint attributes
-// to these URIs so column proportions update automatically.
+// percentage of the total width.
 //
-// splitSrcAttrs are the source value attributes corresponding to
-// splitURIs. These are passed to Divider children so they can write
-// updated percentages during drag operations. The grid's own
-// splitAttrs are constraint (read-only) copies.
+// fontSizeURI should point to an int64 attribute. All labels bind their
+// font size to this URI.
 //
-// fontSizeURI should point to an int64 attribute (e.g., from a
-// CornerRadialChooser's ValueURI()). All labels bind their font
-// size to this URI.
-//
-// Example for [Sender 35% | Subject flex | Date 10%]:
-//
-//	NewGridTable(name, parent, pal, theme, fontSizeURI,
-//	    []string{"Sender", "Subject", "Date"},
-//	    []float64{35, -1, 10},
-//	    []string{senderPctURI, datePctURI},
-//	    []*attr.Attribute[int64]{senderPct, datePct})
+// For a grid with Divider column-resize markers and a NeuBox wrapper,
+// use [NewGridFrame] instead.
 func NewGridTable(myName, parent string, pal mancini.Palette,
 	theme mancini.Theme, fontSizeURI string,
-	headers []string, percents []float64, splitURIs []string,
-	splitSrcAttrs []*attr.Attribute[int64]) *GridTable {
+	headers []string, percents []float64, splitURIs []string) *GridTable {
 
 	if myName == "" {
 		myName = mancini.DefaultName("grid")
@@ -104,23 +349,16 @@ func NewGridTable(myName, parent string, pal mancini.Palette,
 		mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHeight), 0)
 	lh.InitBounds(myName)
 
-	// Build split map: for each column, record its index into splitAttrs
-	// or -1 for the flex column.
 	nCols := len(percents)
 	flexIdx := -1
-	splitMap := make([]int, nCols)
-	splitIdx := 0
+	splitMap := buildSplitMap(percents)
 	for i, p := range percents {
 		if p < 0 {
 			flexIdx = i
-			splitMap[i] = -1
-		} else {
-			splitMap[i] = splitIdx
-			splitIdx++
 		}
 	}
 
-	// Create constraint attrs bound to the split URIs.
+	// Constraint attrs bound to the split URIs.
 	splitAttrs := make([]*attr.Attribute[int64], len(splitURIs))
 	for i, uri := range splitURIs {
 		prog := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", uri)
@@ -129,9 +367,7 @@ func NewGridTable(myName, parent string, pal mancini.Palette,
 		splitAttrs[i] = attr.ConstraintI64(attrURI, prog)
 	}
 
-	// Grid's own font size binding for row height calculation.
-	fsProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"_source_", fontSizeURI)
+	fsProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", fontSizeURI)
 	fsAttrURI := mancini.LayoutURI(myName, mancini.DataTypeInt64,
 		mancini.LayoutProp("fontSize"))
 	fontSizeAttr := attr.ConstraintI64(fsAttrURI, fsProg)
@@ -140,22 +376,25 @@ func NewGridTable(myName, parent string, pal mancini.Palette,
 		initialFS = 14
 	}
 
+	padXURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutProp("padX"))
+	padYURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutProp("padY"))
+
 	gt := &GridTable{
-		Theme:         theme,
-		nCols:         nCols,
-		flexIdx:       flexIdx,
-		splitAttrs:    splitAttrs,
-		splitSrcAttrs: splitSrcAttrs,
-		splitMap:      splitMap,
-		fontSizeURI:   fontSizeURI,
-		fontSizeAttr:  fontSizeAttr,
-		lastFontSize:  initialFS,
+		Theme:        theme,
+		nCols:        nCols,
+		flexIdx:      flexIdx,
+		splitAttrs:   splitAttrs,
+		splitMap:     splitMap,
+		fontSizeURI:  fontSizeURI,
+		fontSizeAttr: fontSizeAttr,
+		lastFontSize: initialFS,
+		PadXAttr:     attr.ValueI64(padXURI, 5),
+		PadYAttr:     attr.ValueI64(padYURI, 0),
 	}
 	gt.ColumnPercentage.Pal = pal
 	gt.Interactor.Initialize(gt, lh)
 	gt.Parent.Initialize(true, &gt.Interactor)
 
-	// Create header RowPercentage with initial percentages.
 	initPcts := gt.currentPercents()
 	hdrRowName := myName + "_hdr"
 	hdrRow := NewRowPercentage(hdrRowName, myName, pal, 0, 0, initPcts)
@@ -166,24 +405,8 @@ func NewGridTable(myName, parent string, pal mancini.Palette,
 	for i, hdr := range headers {
 		name := fmt.Sprintf("%s_hdr_%d", myName, i)
 		lab := NewDynamicLabelBold(name, hdrRowName, theme, hdr, fontSizeURI)
+		lab.SetPaddingAttrs(padXURI, padYURI)
 		gt.headerLabs[i] = lab
-	}
-
-	// Create dividers at each non-flex column boundary.
-	// A boundary exists between column i and column i+1 for each
-	// non-flex column (the divider controls column i's percentage).
-	// Dividers write to the source value attrs (not the constraint copies).
-	for i := 0; i < nCols-1; i++ {
-		si := splitMap[i]
-		if si < 0 {
-			continue // flex column — no draggable boundary on its right edge
-		}
-		if si >= len(splitSrcAttrs) {
-			continue
-		}
-		divName := fmt.Sprintf("%s_div%d", myName, i)
-		div := NewDivider(divName, myName, pal, i, splitSrcAttrs[si])
-		gt.dividers = append(gt.dividers, div)
 	}
 
 	return gt
@@ -197,7 +420,7 @@ func (gt *GridTable) currentPercents() []float64 {
 	for i := 0; i < gt.nCols; i++ {
 		si := gt.splitMap[i]
 		if si < 0 {
-			continue // flex — filled in below
+			continue
 		}
 		if si < len(gt.splitAttrs) {
 			v := float64(gt.splitAttrs[si].Get())
@@ -218,8 +441,7 @@ func (gt *GridTable) currentPercents() []float64 {
 	return pcts
 }
 
-// AddRow appends a data row to the grid and creates a RowPercentage
-// child with DynamicLabel interactors for each column.
+// AddRow appends a data row to the grid.
 func (gt *GridTable) AddRow(row GridRow) {
 	myName := gt.GetLayout().Name()
 	idx := len(gt.rows)
@@ -240,6 +462,7 @@ func (gt *GridTable) AddRow(row GridRow) {
 			text = cols[i]
 		}
 		lab := NewDynamicLabel(name, rowName, gt.Theme, text, gt.fontSizeURI)
+		lab.SetPaddingAttrs(gt.PadXAttr.URI(), gt.PadYAttr.URI())
 		labels[i] = lab
 	}
 	gt.dataLabs = append(gt.dataLabs, labels)
@@ -257,15 +480,13 @@ func (gt *GridTable) rowHeight() int64 {
 
 // Draw stacks the header row and data rows vertically with fixed row
 // heights, drawing alternating backgrounds and a separator line.
-// Column percentages are read from the split constraint attrs each
-// frame, so proportions update automatically.
+// Column percentages are read from the split constraint attrs each frame.
 func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
 	dc := self.DC()
 	if dc == nil {
 		return
 	}
 
-	// Clear background.
 	dc.SetColor(gt.Pal.Surface())
 	dc.FillRectangle(float64(x), float64(y), float64(w), float64(h))
 
@@ -274,7 +495,6 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 		return
 	}
 
-	// Read current column percentages from constraint attrs.
 	pcts := gt.currentPercents()
 
 	rh := gt.rowHeight()
@@ -283,11 +503,6 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 
 	rowIdx := 0
 	for _, child := range children {
-		// Skip dividers — they are drawn after all rows.
-		if _, isDivider := child.(*Divider); isDivider {
-			continue
-		}
-
 		if curY+rh > y+h {
 			break
 		}
@@ -298,7 +513,6 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 			rowH = headerH
 		}
 
-		// Background: header gets SurfaceTint, data rows alternate.
 		if isHeader {
 			dc.SetColor(gt.Pal.SurfaceTint())
 			dc.FillRectangle(float64(x), float64(curY), float64(w), float64(rowH))
@@ -309,12 +523,10 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 			dc.FillRectangle(float64(x), float64(curY), float64(w), float64(rowH))
 		}
 
-		// Update the RowPercentage child's column splits.
 		if rp, ok := child.(*RowPercentage); ok {
 			rp.Percents = pcts
 		}
 
-		// Position and draw the RowPercentage child.
 		childL, hasLayout := child.(mancini.Layouter)
 		if hasLayout {
 			clh := childL.GetLayout()
@@ -338,70 +550,11 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 
 		curY += rowH
 
-		// Separator line after header.
 		if isHeader {
 			dc.SetColor(gt.Pal.Text())
 			dc.FillRectangle(float64(x), float64(curY), float64(w), 1)
 			curY++
 		}
 		rowIdx++
-	}
-
-	// Draw dividers after all rows, with expanded clip for overhang.
-	gt.drawDividers(dc, x, y, w, h, pcts, damage)
-}
-
-// drawDividers positions and draws each Divider child. The divider's
-// X is set to the column boundary pixel, and its bounds extend above
-// and below the grid by Overhang pixels. A Push/Pop pair temporarily
-// expands the clip rectangle to allow the overhang drawing.
-func (gt *GridTable) drawDividers(dc mancini.DrawContext, x, y, w, h int64,
-	pcts []float64, damage image.Rectangle) {
-
-	if len(gt.dividers) == 0 {
-		return
-	}
-
-	for _, div := range gt.dividers {
-		// Compute the pixel X of this column boundary.
-		splitX := x
-		for col := 0; col <= div.ColIndex; col++ {
-			splitX += int64(float64(w) * pcts[col] / 100.0)
-		}
-
-		// Cache parent width for drag percentage math.
-		div.parentWidth = w
-
-		// Position the divider: centered on splitX, overhang above and below.
-		oh := div.Overhang
-		hw := div.TriHalfW
-		divX := splitX - hw
-		divY := y - oh
-		divW := hw * 2
-		divH := h + oh*2
-
-		lh := div.GetLayout()
-		lh.X.Set(divX)
-		lh.Y.Set(divY)
-		lh.Width.Set(divW)
-		lh.Height.Set(divH)
-
-		div.SetDC(dc)
-
-		// Dividers are decorative overlays drawn LAST, on top of
-		// everything else — they live partly in the bezel area outside
-		// the grid bounds. We must escape any clip established by
-		// parents (MarginParent, row clips, etc.) since dc.Clip() only
-		// INTERSECTS, never expands. So: Push state, ResetClip to drop
-		// the parent clip, then Clip to the divider's own bounds so we
-		// don't smear paint elsewhere. Pop restores the parent's clip.
-		dc.Push()
-		dc.ResetClip()
-		dc.DrawRectangle(float64(divX), float64(divY), float64(divW), float64(divH))
-		dc.Clip()
-
-		div.Draw(div, divX, divY, divW, divH, damage)
-
-		dc.Pop()
 	}
 }
