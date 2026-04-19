@@ -194,12 +194,17 @@ CGO_ENABLED=0 "${MAZGO}" build \
     "-ldflags=-linkmode=internal -dlopen-host-exports=${POLICY}" \
     -o /tmp/host-mazdl . || PHASE4_BUILT=0
 
+PHASE4_OK=0
 if [ "${PHASE4_BUILT}" = "1" ]; then
     file /tmp/host-mazdl
     echo
     if [ "${MAZLINK_BUILT}" = "1" ]; then
         echo "==> running host-mazdl against plugin.maz"
-        /tmp/host-mazdl /tmp/plugin.maz || echo "    [FAIL] host-mazdl exited non-zero"
+        if /tmp/host-mazdl /tmp/plugin.maz; then
+            PHASE4_OK=1
+        else
+            echo "    [FAIL] host-mazdl exited non-zero"
+        fi
     else
         echo "==> plugin.maz not built; skipping host-mazdl load test"
     fi
@@ -222,15 +227,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Load test: can the host actually dlopen plugin.maz and call Hello()?
+# Reference diagnostic: try stdlib plugin.Open on plugin.maz. Since Phase 2,
+# plugin.maz carries DT_NEEDED=mazarin-host (not a real shared object), so
+# this always fails — it's kept only as a reminder of how far the plugin has
+# diverged from the stdlib Go-plugin shape. Non-fatal.
 # ---------------------------------------------------------------------------
 if [ "${MAZLINK_BUILT}" = "1" ]; then
     echo
-    echo "==> running host against plugin.maz"
-    /tmp/host /tmp/plugin.maz
+    echo "==> running stdlib-plugin host against plugin.maz (diagnostic; expected to fail since DT_NEEDED=mazarin-host)"
+    /tmp/host /tmp/plugin.maz 2>&1 || true
 else
     echo
-    echo "==> plugin.maz was not built; skipping host load test"
-    echo "    (the build failure above enumerates the next mazlink gap)"
+    echo "==> plugin.maz was not built; skipping stdlib-plugin diagnostic"
+fi
+
+# ---------------------------------------------------------------------------
+# Overall smoke status: Phase 4 (host-mazdl) is the load-bearing check.
+# ---------------------------------------------------------------------------
+echo
+if [ "${PHASE4_OK}" = "1" ]; then
+    echo "==> SMOKE PASS (Phase 4 exits 1-4 ok)"
+    exit 0
+else
+    echo "==> SMOKE FAIL (Phase 4 did not complete)"
     exit 1
 fi

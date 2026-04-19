@@ -69,4 +69,5 @@ const (
 	SysAttrSwap               = MazzySyscallBase + 61 // 0x103D - Atomically swap attribute implementation
 	SysAttrDelete             = MazzySyscallBase + 62 // 0x103E - Delete attribute (EBUSY if has dependents)
 	SysDeathAck               = MazzySyscallBase + 63 // 0x103F - ACK shepherd death (linux shepherd → kernel)
+	SysGetOwnExports          = MazzySyscallBase + 64 // 0x1040 - Serialize caller's ELF symbol table into user buffer (mazdl.RegisterHost)
 )

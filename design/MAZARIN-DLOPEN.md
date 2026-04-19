@@ -153,6 +153,55 @@ from `.got.plt` and jump.
 indirect through GOT; there is a single authoritative copy of every
 host datum.
 
+### Host-policy funcvals (option A — landed 2026-04-18)
+
+Go emits an 8-byte `.data.rel.ro` object for every function that is
+taken as a value (`funcval`, name ends in `·f`, U+00B7 MIDDLE DOT +
+`f`). Its single field `.fn` holds the function's PC. Map types,
+interface tables, `reflect.Value.Call`, and compiler-generated
+closures read `.fn` and branch through it.
+
+**Problem:** When mazlink strips a host-policy package's code from
+the plugin, the `.text` symbol disappears but the funcval object in
+`.data.rel.ro` stays (other plugin code still references
+`&runtime.strhash·f` etc.). The original emission wrote the
+funcval's `.fn` as `R_*_RELATIVE` with addend = the *would-be*
+plugin-relative address of the stripped function, which lands in
+the zero-padding gap between the last real plugin `.text` function
+and `runtime.etext`. Any indirect call through the funcval (e.g.
+`runtime.mapassign_faststr` reading `maptype.Hasher`) branched into
+padding → `udf #0` / SIGILL.
+
+**Fix (landed):** In `adddynrel`'s `R_ADDR` case, before the generic
+`R_*_RELATIVE` fallback, check whether the target is `SDYNIMPORT`
+*and* its `DynimpLib` is `"mazarin-host"`. When both hold, the
+target is a host-policy symbol that `rewriteHostSymsAsDynimport`
+flipped, so emit the reloc as `R_AARCH64_GLOB_DAT` /
+`R_X86_64_GLOB_DAT` against the target's dynsym entry (adding it
+via `ld.Adddynsym` first). The dynamic loader (`mazdl.Open`) writes
+the host's real address at `r_offset` during its reloc pass. The
+`DynimpLib == "mazarin-host"` gate is load-bearing: it restricts the
+rewrite to symbols this policy pass explicitly stripped, so we don't
+accidentally promote unrelated `SDYNIMPORT` entries (static externs,
+anonymous type descriptors) that have no host counterpart. Home:
+- `mazlink-patches/cmd/link/internal/arm64/asm.go`
+- `mazlink-patches/cmd/link/internal/amd64/asm.go`
+
+**Name-mangling parity for host exports.** The plugin is built as
+`BuildModePlugin`, so `ld.mangleTypeSym` hashes every long `type:.*`
+symbol to a 6-byte base64 tag as its dynsym `extname` (e.g.
+`type:.eq.runtime._func` → `type:.C9kB2TSL`). The host is built as
+`BuildModeExe` and stock `mangleTypeSym` bails out for exe mode,
+so the host would export the unhashed name while the plugin looks
+up the hash → "unresolved symbol" at load time. Mazlink patches
+`mangleTypeSym` to also run when `-dlopen-host-exports` is set, so
+host and plugin dynsym names match. This is what turned up the
+`type:.C9kB2TSL` failure during Option A bring-up: the reloc was
+correct, the lookup name was not.
+
+See `memory/mazlink_funcval_dead_reloc_bug.md` for the full
+post-mortem and disassembly of the original SIGILL case.
+
 ### Symbol-versioning
 
 Not emitted in MVP. Host and plugin are built in lockstep from the
@@ -765,15 +814,37 @@ linker against a Phase-3 host, and resolves everything.
 - Host-side `mazdl.RegisterHost` called at userspace main.
 
 **Exit criterion:**
-1. `smoke/host` on amd64 and arm64 calls `mazdl.Open("plugin.maz")`,
-   receives handle, calls `h.Sym("Hello")`, invokes the returned
-   function pointer, gets `"hello from mazlink plugin"`.
+1. `smoke/host-mazdl` on amd64 and arm64 calls
+   `mazdl.Open("plugin.maz")`, receives handle, calls
+   `h.Sym("Hello")`, invokes the returned function pointer, gets
+   `"hello from mazlink plugin"`.
 2. `runtime.Stack` on the host shows **exactly one**
    `forcegchelper`, `sysmon`, `bgsweep`, `bgscavenge`, `runfinq`.
+   (`sysmon` runs on an M without a G so it doesn't appear in
+   `runtime.Stack`; the check covers the other four and requires
+   `count <= 1` each.)
 3. Plugin allocations visible in host `runtime.memstats`
-   (single heap).
+   (single heap). Smoke asserts `TotalAlloc` delta after
+   `stress(1000)` exceeds a threshold.
 4. 1000-iteration `Stress()` test runs clean with no panics or
    data races.
+
+**Status (2026-04-18):** arm64 passes all four exits via
+`$GO tool task mazlink-smoke` (see `smoke/host-mazdl/main.go` +
+`smoke/run-smoke.sh`). Option A for host-policy funcvals (see §3)
+landed on both arches and the loader-side `rewriteHostFuncvals`
+workaround has been removed from `mazdl/open.go`.
+
+**Open work to close Phase 4:**
+- **amd64 parity.** Exits #1-#4 must pass on amd64 as well. Option A
+  is already present in `mazlink-patches/cmd/link/internal/amd64/asm.go`
+  mirroring the arm64 block, but runtime validation on amd64 still
+  needs: reloc handler at `mazarin/mazdl/reloc_amd64.go` (apply
+  `R_X86_64_{RELATIVE,GLOB_DAT,JUMP_SLOT,64}`) and a container arch
+  toggle in the `mazlink-smoke` task so the x86_64 image actually
+  runs on an arm64 host. The smoke Dockerfile already cross-builds
+  both arches; the `mazlink-smoke` task only runs the container
+  matching the host arch today.
 
 **Scope:** ~1500 LOC across mazdl + kernel syscall.
 
@@ -955,7 +1026,9 @@ Tracking-grade list to tick off per phase.
 - [ ] **Phase 1:** policy file + this doc reviewed and approved.
 - [x] **Phase 2:** `nm plugin.maz | grep ' T runtime\.'` returns empty on amd64 and arm64 (2026-04-18).
 - [x] **Phase 3:** `smoke/host-probe` exports 3292 `runtime.*` as `GLOBAL DEFAULT FUNC` on arm64; kmazarin/shepherd Taskfile wiring deferred to Phase 4 (2026-04-18).
-- [ ] **Phase 4:** `mazdl.Open` loads `smoke/plugin` successfully; singleton-goroutine assertions pass.
+- [x] **Phase 4 (arm64):** `mazdl.Open` loads `smoke/plugin` successfully; exits #1-#4 green under `$GO tool task mazlink-smoke` with mazlink option A alone — no loader-side workaround (2026-04-18).
+- [ ] **Phase 4 (amd64):** same four exits on amd64; mazlink option A is present in `amd64/asm.go` but runtime validation still needs `reloc_amd64.go` + container arch toggle in `mazlink-smoke`.
+- [x] **Phase 4 cleanup:** mazlink option A lands on both arches; `rewriteHostFuncvals` removed from `mazdl/open.go` (2026-04-18).
 - [ ] **Phase 5:** `SysLoadMaz` deleted; all existing flocks load via `mazdl`; stability-test clean on amd64 + arm64.
 - [ ] **Phase 6:** policy file has grown by at most 3 packages beyond Phase-2 starting set without issues justifying each.
 - [ ] **Phase 7:** riscv64 plugin-shape lands (separate tracking doc).

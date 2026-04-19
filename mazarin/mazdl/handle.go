@@ -111,3 +111,8 @@ type symEntry struct {
 	addr   uintptr
 	module *Handle
 }
+
+// hostSoname is the sentinel DT_NEEDED token stamped into every plugin by
+// mazlink's Phase-2 plugin mode. It is not a filesystem path — mazdl
+// rejects any plugin whose DT_NEEDED list is not exactly [hostSoname].
+const hostSoname = "mazarin-host"

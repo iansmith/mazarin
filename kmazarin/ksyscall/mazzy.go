@@ -7,7 +7,7 @@ import (
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
 // Indexed by (syscallNum - mazzy.MazzySyscallBase).
-var mazzySyscallTable = [64]SyscallHandler{
+var mazzySyscallTable = [65]SyscallHandler{
 	0: SyscallGetTime,              // GetTime = 0x1000
 	1: SyscallSubscribeDeaths,      // SubscribeDeaths = 0x1001
 	2: SyscallFreePages,            // FreePages = 0x1002
@@ -69,6 +69,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	61: SyscallAttrSwap,              // AttrSwap = 0x103D
 	62: SyscallAttrDelete,            // AttrDelete = 0x103E
 	63: SyscallDeathAck,              // DeathAck = 0x103F
+	64: SyscallGetOwnExports,        // GetOwnExports = 0x1040
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

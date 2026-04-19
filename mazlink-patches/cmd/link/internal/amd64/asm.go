@@ -401,6 +401,36 @@ func adddynrel(target *ld.Target, ldr *loader.Loader, syms *ld.ArchSyms, s loade
 			}
 		}
 
+		if target.IsElf() && targType == sym.SDYNIMPORT &&
+			ldr.SymDynimplib(targ) == "mazarin-host" {
+			// mazlink option A (design/MAZARIN-DLOPEN.md §3 "Host-policy
+			// funcvals"): the target is a host-policy symbol that
+			// rewriteHostSymsAsDynimport flipped to SDYNIMPORT. Its body
+			// was stripped and it has no address in the plugin image, so
+			// emitting R_X86_64_RELATIVE with addend=addr(targ) would
+			// bake a placeholder address (often landing in the zero-
+			// filled tail of .text) into the plugin and cause an
+			// indirect call through that slot to SIGILL at load time.
+			// Instead emit R_X86_64_GLOB_DAT against targ's dynsym
+			// entry so the dynamic loader (mazdl) writes the host's
+			// real address at r_offset when it binds the plugin.
+			//
+			// Mirror of the arm64 block in arm64/asm.go — see there for
+			// the canonical commentary on the funcval case.
+			ld.Adddynsym(ldr, target, syms, targ)
+			if r.Siz() != 8 {
+				ldr.Errorf(s, "mazlink: unexpected R_ADDR size %d for SDYNIMPORT %s",
+					r.Siz(), ldr.SymName(targ))
+				return false
+			}
+			rela := ldr.MakeSymbolUpdater(syms.Rela)
+			rela.AddAddrPlus(target.Arch, s, int64(r.Off()))
+			rela.AddUint64(target.Arch,
+				elf.R_INFO(uint32(ldr.SymDynid(targ)), uint32(elf.R_X86_64_GLOB_DAT)))
+			rela.AddUint64(target.Arch, uint64(r.Add()))
+			return true
+		}
+
 		if target.IsElf() {
 			// Generate R_X86_64_RELATIVE relocations for best
 			// efficiency in the dynamic linker.
@@ -451,17 +481,17 @@ func adddynrel(target *ld.Target, ldr *loader.Loader, syms *ld.ArchSyms, s loade
 			return true
 		}
 		// mazlink: in plugin mode -dynlink emits R_GOTPCREL for every
-		// cross-TU package-level reference. Stock cmd/link leaves these
-		// unhandled (comment above says "only needed for external mode")
-		// because stock Go requires external linking for -buildmode=plugin.
-		// For internal plugin linking we must handle them ourselves:
-		// AddGotSym emits a GOT slot + R_X86_64_GLOB_DAT dynamic reloc so
-		// dlopen fills the slot with &sym at load time. Then we rewrite
-		// the reloc to a PC-relative reference into the GOT.
-		if targType == sym.SDYNIMPORT {
-			ldr.Errorf(s, "unexpected R_GOTPCREL relocation for dynamic symbol %s", ldr.SymName(targ))
-			return false
-		}
+		// cross-TU package-level reference — including SDYNIMPORT host-
+		// policy symbols (e.g. runtime.writeBarrier) that
+		// rewriteHostSymsAsDynimport flipped. Stock cmd/link leaves these
+		// unhandled because stock Go requires external linking for
+		// -buildmode=plugin. For internal plugin linking we must handle
+		// them ourselves: AddGotSym emits a GOT slot + R_X86_64_GLOB_DAT
+		// dynamic reloc so dlopen (mazdl) fills the slot with the
+		// resolved address at load time. Then we rewrite the reloc to a
+		// PC-relative reference into the GOT. This is the direct parallel
+		// of the arm64 R_ARM64_GOTPCREL handler, which also lets SDYNIMPORT
+		// flow through uniformly.
 		su := ldr.MakeSymbolUpdater(s)
 		if target.IsElf() {
 			ld.AddGotSym(target, ldr, syms, targ, uint32(elf.R_X86_64_GLOB_DAT))

@@ -1,3 +1,5 @@
+//go:build linux && !mazhost
+
 package mazdl
 
 import (
@@ -46,11 +48,6 @@ func hostLoadBase(f *elf.File, exePath string) (uintptr, error) {
 	}
 	return 0, errorf("RegisterHost", exePath, "", "exe not found in /proc/self/maps")
 }
-
-// hostSoname is the sentinel DT_NEEDED token stamped into every plugin by
-// mazlink's Phase-2 plugin mode. It is not a filesystem path — mazdl
-// rejects any plugin whose DT_NEEDED list is not exactly [hostSoname].
-const hostSoname = "mazarin-host"
 
 // RegisterHost reads the current process's own binary, extracts every
 // GLOBAL DEFINED FUNC/OBJECT entry from .dynsym (these are the symbols

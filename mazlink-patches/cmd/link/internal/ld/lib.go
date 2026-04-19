@@ -1011,7 +1011,17 @@ func (ctxt *Link) linksetup() {
 // those programs loaded dynamically in multiple parts need these
 // symbols to have entries in the symbol table.
 func (ctxt *Link) mangleTypeSym() {
-	if ctxt.BuildMode != BuildModeShared && !ctxt.linkShared && ctxt.BuildMode != BuildModePlugin && !ctxt.CanUsePlugins() {
+	// mazlink: when this host exports symbols to plugins via
+	// -dlopen-host-exports, it must mangle type-symbol names so its dynsym
+	// matches the plugin's dynsym (plugins are BuildModePlugin and therefore
+	// mangle). The plugin side (-dlopen-host-packages) is already covered
+	// because it *is* BuildModePlugin. Without this, host exports
+	// "type:.eq.runtime._func" while the plugin looks up "type:.<hash6>" —
+	// they never bind and load fails with "unresolved symbol".
+	// See design/MAZARIN-DLOPEN.md §3 "Host-policy funcvals".
+	if *flagDlopenHostExports == "" &&
+		ctxt.BuildMode != BuildModeShared && !ctxt.linkShared &&
+		ctxt.BuildMode != BuildModePlugin && !ctxt.CanUsePlugins() {
 		return
 	}
 

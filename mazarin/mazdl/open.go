@@ -1,9 +1,8 @@
 package mazdl
 
 import (
+	"bytes"
 	"debug/elf"
-	"errors"
-	"strings"
 	"unsafe"
 )
 
@@ -38,18 +37,34 @@ import (
 // not roll back; the caller should treat a failed Open as a terminal
 // condition and exit.
 func Open(filename string) (*Handle, error) {
+	f, err := elf.Open(filename)
+	if err != nil {
+		return nil, errorf("Open", filename, "", "elf.Open: %v", err)
+	}
+	defer f.Close()
+	return openFromELF(filename, f)
+}
+
+// OpenBytes is the in-memory variant of Open. The caller supplies the
+// plugin ELF bytes directly — useful on Mazarin where files come from
+// sys.LoadFile (fs.maz delegate) or the disk shepherd's block-device
+// layer rather than a POSIX filesystem. Behavior is otherwise identical
+// to Open.
+func OpenBytes(name string, data []byte) (*Handle, error) {
+	f, err := elf.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return nil, errorf("Open", name, "", "elf.NewFile: %v", err)
+	}
+	return openFromELF(name, f)
+}
+
+func openFromELF(filename string, f *elf.File) (*Handle, error) {
 	modulesMu.Lock()
 	defer modulesMu.Unlock()
 
 	if _, ok := modules[hostSoname]; !ok {
 		return nil, errorf("Open", filename, "", "RegisterHost must be called before Open")
 	}
-
-	f, err := elf.Open(filename)
-	if err != nil {
-		return nil, errorf("Open", filename, "", "elf.Open: %v", err)
-	}
-	defer f.Close()
 
 	if f.Type != elf.ET_DYN {
 		return nil, errorf("Open", filename, "", "expected ET_DYN, got %v", f.Type)
@@ -152,15 +167,6 @@ func Open(filename string) (*Handle, error) {
 	}
 	if err := applySymbolRelocs(relocBase, relaPlt, dynsyms); err != nil {
 		return nil, err
-	}
-
-	// Rewrite runtime funcvals that mazlink emitted with a dead RELATIVE
-	// reloc into the zero-padding gap at the end of the plugin's .text.
-	// See memory/mazlink_funcval_dead_reloc_bug.md and
-	// design/MAZDL-PHASE4-CONTINUATION.md. Option B: loader-side patch
-	// until mazlink option A lands.
-	if err := rewriteHostFuncvals(f, relocBase); err != nil {
-		return nil, errorf("Open", filename, "", "rewriteHostFuncvals: %v", err)
 	}
 
 	// Step 7: per-segment permission flip. We compute each segment's
@@ -267,48 +273,3 @@ const pageSize = 4096
 func pageDown(v uintptr) uintptr { return v &^ (pageSize - 1) }
 func pageUp(v uintptr) uintptr   { return (v + pageSize - 1) &^ (pageSize - 1) }
 
-// rewriteHostFuncvals walks the plugin's full symbol table looking for
-// Go funcvals — 8-byte STT_OBJECT symbols whose name ends in "·f" (the
-// compiler-generated funcval naming convention, U+00B7 middle dot +
-// lowercase f). For each one whose underlying function (the name minus
-// "·f") is exported by the host, it overwrites the .fn field with the
-// host function's address.
-//
-// Why this exists: when mazlink strips a host-policy package's code
-// from the plugin, it leaves the per-function funcval objects behind in
-// .data.rel.ro with an R_AARCH64_RELATIVE reloc whose addend points at
-// the placeholder plugin address where the stripped function used to
-// live — i.e. the zero-filled padding between the last real plugin
-// .text function and runtime.etext. Any indirect call through that
-// funcval (e.g. a map type's Hasher, read inside runtime.mapassign_faststr)
-// branches into the padding and SIGILLs on `udf #0`.
-//
-// The correct fix is in mazlink (option A: emit GLOB_DAT/ABS64 against
-// the host's UNDEF host-policy symbol instead of RELATIVE). This loader
-// patch is option B — a localized workaround that unblocks Phase 4 while
-// option A is designed and landed.
-func rewriteHostFuncvals(f *elf.File, relocBase uintptr) error {
-	symtab, err := f.Symbols()
-	if err != nil {
-		if errors.Is(err, elf.ErrNoSymbols) {
-			return nil
-		}
-		return err
-	}
-	const fvSuffix = "\u00b7f"
-	for _, s := range symtab {
-		if elf.ST_TYPE(s.Info) != elf.STT_OBJECT || s.Size != 8 {
-			continue
-		}
-		if !strings.HasSuffix(s.Name, fvSuffix) {
-			continue
-		}
-		hostName := strings.TrimSuffix(s.Name, fvSuffix)
-		e, ok := globalSyms[hostName]
-		if !ok {
-			continue
-		}
-		*(*uint64)(unsafe.Pointer(relocBase + uintptr(s.Value))) = uint64(e.addr)
-	}
-	return nil
-}

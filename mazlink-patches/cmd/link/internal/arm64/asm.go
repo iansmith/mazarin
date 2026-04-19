@@ -442,6 +442,51 @@ func adddynrel(target *ld.Target, ldr *loader.Loader, syms *ld.ArchSyms, s loade
 			}
 		}
 
+		if target.IsElf() && targType == sym.SDYNIMPORT &&
+			ldr.SymDynimplib(targ) == "mazarin-host" {
+			// mazlink option A (design/MAZARIN-DLOPEN.md §3 "Host-policy
+			// funcvals"): the target is a host-policy symbol that
+			// rewriteHostSymsAsDynimport flipped to SDYNIMPORT. Its body
+			// was stripped and it has no address in the plugin image, so
+			// emitting R_AARCH64_RELATIVE with addend=addr(targ) would
+			// bake a placeholder address (often landing in the zero-
+			// filled tail of .text) into the plugin and cause an
+			// indirect call through that slot to SIGILL at load time.
+			// Instead emit R_AARCH64_GLOB_DAT against targ's dynsym
+			// entry so the dynamic loader (mazdl) writes the host's
+			// real address at r_offset when it binds the plugin.
+			//
+			// The DynimpLib=="mazarin-host" gate restricts the rewrite to
+			// symbols our policy pass explicitly stripped — other
+			// SDYNIMPORT symbols (static-only externs, anonymous type
+			// descriptors marked UNDEF by Go's own object loader, etc.)
+			// don't have matching host dynsym entries and would produce
+			// load-time "unresolved symbol" errors. Only policy-stripped
+			// symbols are guaranteed to be exported by the host via
+			// emitHostExportsDynsym.
+			//
+			// This is the canonical funcval case: runtime.strhash·f (an
+			// 8-byte STT_OBJECT in .data.rel.ro) holds a single .fn
+			// pointer to runtime.strhash. The funcval object itself
+			// stays in the plugin (other plugin code references its
+			// address, e.g. maptype.Hasher), only the .fn field's
+			// content needs host binding. The same path handles any
+			// other data slot whose value is a pointer to a host-
+			// policy-stripped symbol.
+			ld.Adddynsym(ldr, target, syms, targ)
+			if r.Siz() != 8 {
+				ldr.Errorf(s, "mazlink: unexpected R_ADDR size %d for SDYNIMPORT %s",
+					r.Siz(), ldr.SymName(targ))
+				return false
+			}
+			rela := ldr.MakeSymbolUpdater(syms.Rela)
+			rela.AddAddrPlus(target.Arch, s, int64(r.Off()))
+			rela.AddUint64(target.Arch,
+				elf.R_INFO(uint32(ldr.SymDynid(targ)), uint32(elf.R_AARCH64_GLOB_DAT)))
+			rela.AddUint64(target.Arch, uint64(r.Add()))
+			return true
+		}
+
 		if target.IsElf() {
 			// Generate R_AARCH64_RELATIVE relocations for best
 			// efficiency in the dynamic linker.

@@ -395,11 +395,19 @@ tasks:
 
   mazlink-smoke-image:
     run: once
-    desc: Build mazlink-smoke Docker image (alpine + go 1.26.2 + gcc)
+    desc: Build mazlink-smoke Docker image (alpine + go 1.26.2 + gcc) for host arch
     sources:
       - smoke/Dockerfile
     cmds:
       - docker build -t mazlink-smoke:latest smoke
+
+  mazlink-smoke-image-amd64:
+    run: once
+    desc: Build mazlink-smoke Docker image for linux/amd64 (runs under QEMU on arm64 hosts)
+    sources:
+      - smoke/Dockerfile
+    cmds:
+      - docker build --platform linux/amd64 -t mazlink-smoke:amd64 smoke
 
   # elf-diff binaries — cross-compiled per target arch for the container smoke
   # test. Used to compare plugin.so (stock cgo reference) against plugin.maz
@@ -438,6 +446,16 @@ tasks:
       - mazlink-smoke-image
     cmds:
       - docker run --rm -v "$(pwd):/work" -w /work mazlink-smoke:latest /work/smoke/run-smoke.sh
+
+  mazlink-smoke-amd64:
+    desc: Linux container smoke test forced to linux/amd64 (via QEMU on arm64 hosts) — exercises amd64 mazlink/mazdl path
+    deps:
+      - mazlink-linux-amd64
+      - mazgo-linux-amd64
+      - elf-diff-linux-amd64
+      - mazlink-smoke-image-amd64
+    cmds:
+      - docker run --rm --platform linux/amd64 -v "$(pwd):/work" -w /work mazlink-smoke:amd64 /work/smoke/run-smoke.sh
 
   # ===========================================================================
   # Overlay Generation
