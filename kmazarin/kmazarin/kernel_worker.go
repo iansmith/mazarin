@@ -22,7 +22,7 @@ import (
 )
 
 // SVCWorker is the interface each subsystem implements. The type parameter R
-// is the per-subsystem request struct (e.g. LoadMazWorkRequest).
+// is the per-subsystem request struct (e.g. RunShepherdWorkRequest).
 type SVCWorker[R any] interface {
 	Do(req *R) int64
 }
@@ -216,18 +216,6 @@ func wakeBlockedThread(tid int32, result int64) {
 
 // --- Worker implementations (one per subsystem) ---
 
-type loadMazWorkerImpl struct{}
-
-func (loadMazWorkerImpl) Do(req *ksyscall.LoadMazWorkRequest) int64 {
-	return ksyscall.DoLoadMazWork(req)
-}
-
-type runMazWorkerImpl struct{}
-
-func (runMazWorkerImpl) Do(req *ksyscall.RunMazWorkRequest) int64 {
-	return ksyscall.DoRunMazWork(req)
-}
-
 type runShepherdWorkerImpl struct{}
 
 func (runShepherdWorkerImpl) Do(req *ksyscall.RunShepherdWorkRequest) int64 {
@@ -249,8 +237,6 @@ func (uringConnectWorkerImpl) Do(req *UringConnectWorkRequest) int64 {
 // --- Global instances ---
 
 var (
-	loadMazKW      *KernelSVCWorker[ksyscall.LoadMazWorkRequest]
-	runMazKW       *KernelSVCWorker[ksyscall.RunMazWorkRequest]
 	runShepherdKW  *KernelSVCWorker[ksyscall.RunShepherdWorkRequest]
 	epollKW        *KernelSVCWorker[ksyscall.EpollWorkRequest]
 	uringConnectKW *KernelSVCWorker[UringConnectWorkRequest]
@@ -259,24 +245,12 @@ var (
 // initKernelWorkers creates all kernel SVC workers.
 // Called from simpleMain before entering KernelIdleLoop.
 func initKernelWorkers() {
-	loadMazKW = NewKernelSVCWorker("LoadMaz", loadMazWorkerImpl{})
-	runMazKW = NewKernelSVCWorker("RunMaz", runMazWorkerImpl{})
 	runShepherdKW = NewKernelSVCWorker("RunShepherd", runShepherdWorkerImpl{})
 	epollKW = NewKernelSVCWorker("Epoll", epollWorkerImpl{})
 	uringConnectKW = NewKernelSVCWorker("UringConnect", uringConnectWorkerImpl{})
 }
 
 // --- Linkname bridge wrappers (ksyscall → main) ---
-
-// SubmitLoadMaz is the linkname target for ksyscall.submitLoadMaz.
-func SubmitLoadMaz(req ksyscall.LoadMazWorkRequest) uintptr {
-	return loadMazKW.Submit(req)
-}
-
-// SubmitRunMaz is the linkname target for ksyscall.submitRunMaz.
-func SubmitRunMaz(req ksyscall.RunMazWorkRequest) uintptr {
-	return runMazKW.Submit(req)
-}
 
 // SubmitRunShepherd is the linkname target for ksyscall.submitRunShepherd.
 func SubmitRunShepherd(req ksyscall.RunShepherdWorkRequest) uintptr {
@@ -298,8 +272,8 @@ func SubmitUringConnect(req UringConnectWorkRequest) uintptr {
 //
 //go:nosplit
 func hasPendingKernelWork() bool {
-	if loadMazKW == nil {
+	if runShepherdKW == nil {
 		return false // called before initKernelWorkers
 	}
-	return loadMazKW.Pending() || runMazKW.Pending() || runShepherdKW.Pending() || uringConnectKW.Pending()
+	return runShepherdKW.Pending() || uringConnectKW.Pending()
 }

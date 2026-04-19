@@ -431,7 +431,8 @@ func findSymbolAddress(elfData []byte, hdr *elf64Header, symbolName string) uint
 }
 
 // buildSymbolTable builds a complete name → VA address map from an ELF's .symtab.
-// This is used to cache the shepherd's symbols for SysLoadMaz import resolution.
+// This is used to cache the shepherd's symbols for SysGetOwnExports /
+// mazdl host-export registration (mazarin/mazdl/host_register_mazarin.go).
 // Only includes FUNC and OBJECT symbols with non-zero values.
 func buildSymbolTable(elfData []byte, hdr *elf64Header) map[string]uint64 {
 	result := make(map[string]uint64)

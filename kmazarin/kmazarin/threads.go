@@ -1411,8 +1411,6 @@ func KernelIdleLoop() {
 
 		// Relay pending SVC work requests to worker goroutines.
 		// Each Relay converts an atomic flag to a channel send.
-		loadMazKW.Relay()
-		runMazKW.Relay()
 		runShepherdKW.Relay()
 		epollKW.Relay()
 		uringConnectKW.Relay()
@@ -3346,7 +3344,7 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 }
 
 // Thread0HasPendingWork returns true if the current thread is thread 0
-// AND there is pending kernel dispatch work (LoadMaz/RunMaz/RunShepherd).
+// AND there is pending kernel dispatch work (RunShepherd/UringConnect).
 // Used by SyscallSchedYield to skip OS-level thread switches so that
 // Go's internal goroutine scheduler can reach the dispatcher goroutine.
 //

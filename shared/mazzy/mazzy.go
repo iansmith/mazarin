@@ -26,7 +26,7 @@ const (
 	SysSetScanoutOffset  = MazzySyscallBase + 15 // 0x100F - Set scanout Y offset for hardware scrolling
 	SysTransferPages     = MazzySyscallBase + 16 // 0x1010 - Transfer pages between shepherds
 	SysMapSharedPage     = MazzySyscallBase + 17 // 0x1011 - Map shared page from another shepherd
-	SysLoadMaz           = MazzySyscallBase + 18 // 0x1012 - Load .maz PIE ELF into shepherd's address space
+	// slot 18 freed (was SysLoadMaz — retired with mazdl/Phase 5)
 	SysUringConnect      = MazzySyscallBase + 19 // 0x1013 - Connect to target shepherd's IPC uring
 	SysUringSend         = MazzySyscallBase + 20 // 0x1014 - Send 128-byte message to target's ring
 	SysUringRecv         = MazzySyscallBase + 21 // 0x1015 - Block until message arrives on own ring
@@ -39,7 +39,7 @@ const (
 	SysShepherdInfo           = MazzySyscallBase + 28 // 0x101C - Get info about running shepherds
 	SysSetReady               = MazzySyscallBase + 29 // 0x101D - Signal shepherd is ready
 	SysLoadFile               = MazzySyscallBase + 30 // 0x101E - Load file via fs delegate
-	SysRunMaz                 = MazzySyscallBase + 31 // 0x101F - Load .maz ELF from caller's pages
+	// slot 31 freed (was SysRunMaz — retired with mazdl/Phase 5)
 	SysRunShepherd            = MazzySyscallBase + 32 // 0x1020 - Create new shepherd from caller's pages
 	SysAttrCreate             = MazzySyscallBase + 33 // 0x1021 - Create attribute with URI
 	SysAttrWrite              = MazzySyscallBase + 34 // 0x1022 - Write value by slot index

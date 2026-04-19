@@ -70,12 +70,12 @@ type Shepherd struct {
 	SignalActions [SignalNSIG]ShepherdSignalAction
 
 	// SymbolTable caches the shepherd's ELF symbol name → VA address mapping.
-	// Built during SyscallLaunch so that SysLoadMaz can resolve .maz imports
-	// against the shepherd's real functions at load time.
+	// Built during SyscallLaunch. Consumed by SysGetOwnExports, which serializes
+	// it to userspace so mazdl can register the shepherd's host exports for
+	// plugin binding (see mazarin/mazdl/host_register_mazarin.go).
 	SymbolTable map[string]uint64
 
 	// HighestVA tracks the highest VA address used by the shepherd's loaded segments.
-	// Used by SysLoadMaz to determine where to place .maz segments.
 	HighestVA uint64
 
 	// EpollFd is the magic fd for the epoll instance (0x7ef when created, 0 = uninitialized).

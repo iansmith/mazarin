@@ -361,9 +361,8 @@ func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {
 // launchShepherd reads an ELF from ext2 and launches it as a new shepherd.
 // If path ends in ".maz", the generic shepherd.elf is launched with the
 // plugin path as its sole argument — the shepherd then loads the plugin
-// via mazdl.OpenBytes. Otherwise (legacy ET_EXEC shepherds still on the
-// kernel's SysLoadMaz path), the ELF bytes are handed to RunShepherd
-// directly.
+// via mazdl.OpenBytes. Otherwise (legacy ET_EXEC shepherds), the ELF
+// bytes are handed to RunShepherd directly.
 func launchShepherd(fsys *ext2.FileSystem, name, path string) {
 	if strings.HasSuffix(path, ".maz") {
 		launchPluginShepherd(fsys, name, path)

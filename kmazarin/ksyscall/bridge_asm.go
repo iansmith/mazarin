@@ -32,11 +32,6 @@ func saveAndDisableIRQs() uint64
 //go:linkname restoreIRQs main.RestoreIRQs
 func restoreIRQs(savedDAIF uint64)
 
-// submitRunMaz submits a RunMaz request to the kernel worker goroutine.
-//
-//go:linkname submitRunMaz main.SubmitRunMaz
-func submitRunMaz(req RunMazWorkRequest) uintptr
-
 // submitRunShepherd submits a RunShepherd request to the kernel worker goroutine.
 //
 //go:linkname submitRunShepherd main.SubmitRunShepherd
