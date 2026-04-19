@@ -35,3 +35,20 @@ internal/bytealg
 internal/goarch
 internal/goos
 internal/goexperiment
+
+# ---------------------------------------------------------------------
+# mazdl / mazhost — the one-generic-shepherd must own all plugin loading.
+#
+# Rationale: mazdl carries package state (modules, globalSyms, modulesMu)
+# that tracks every loaded .maz in the process. If each plugin carried
+# its own copy of mazdl, plugin-side calls to mazhost.LoadMazBootstrap
+# would populate a *different* module table than the one the shepherd
+# seeded via RegisterHost — plugin-of-a-plugin would fail to resolve
+# host runtime symbols. Making mazdl/mazhost host-resident keeps a
+# single shared registry: the generic shepherd publishes the runtime,
+# and any subsequent plugin load (rachel → fontsvc, fs → ...) walks the
+# same map.
+# ---------------------------------------------------------------------
+
+mazzy/mazarin/mazdl
+mazzy/mazarin/mazhost

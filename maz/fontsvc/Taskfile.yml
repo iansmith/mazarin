@@ -2,41 +2,55 @@ version: '3'
 
 tasks:
   arm64:
-    desc: Build fontsvc.maz (PIE + thin stubs, dynamically linked)
+    desc: Build fontsvc.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
     run: once
-    deps: [':check-env', ':maz-overlay']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
       - 'maz/fontsvc/**/*.go'
       - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_JSON}}'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
       - '{{.FONTSVC_MAZ}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building fontsvc.maz (PIE + thin stubs)..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FONTSVC_MAZ}} ./maz/fontsvc'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.FONTSVC_MAZ}} {{.THIN_MANIFEST}}'
+      - '{{.GO}} tool go-echo "Building fontsvc.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.FONTSVC_MAZ}} ./maz/fontsvc
       - '{{.GO}} tool go-echo "fontsvc.maz ready at {{.FONTSVC_MAZ}}"'
 
   amd64:
-    desc: Build fontsvc.maz for x86_64 (PIE + thin stubs, dynamically linked)
+    desc: Build fontsvc.maz for x86_64 via mazgo
     run: once
-    deps: [':check-env', ':maz-overlay-amd64']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
       - 'maz/fontsvc/**/*.go'
       - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_AMD64_JSON}}'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
       - '{{.FONTSVC_MAZ_AMD64}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building fontsvc.maz for x86_64 (PIE + thin stubs)..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.FONTSVC_MAZ_AMD64}} ./maz/fontsvc'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.FONTSVC_MAZ_AMD64}} {{.THIN_MANIFEST_AMD64}}'
+      - '{{.GO}} tool go-echo "Building fontsvc.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.FONTSVC_MAZ_AMD64}} ./maz/fontsvc
       - '{{.GO}} tool go-echo "fontsvc.maz (x86_64) ready at {{.FONTSVC_MAZ_AMD64}}"'
 
   riscv64:
-    desc: Build fontsvc.maz for RISC-V 64-bit (fixed-address slot 3, thin stubs)
+    desc: Build fontsvc.maz for RISC-V 64-bit (legacy thin-stub toolchain — mazlink/mazgo not yet ported)
     run: once
     deps: [':check-env', ':maz-overlay']
     sources:

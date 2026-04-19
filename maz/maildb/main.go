@@ -148,6 +148,16 @@ func handleList(db *badger.DB, respCh chan<- shared.Response) {
 	fmt.Printf("[maildb] list: sent %d messages\n", total)
 }
 
+// MazarinMain is the .maz plugin entry point. Identical semantics to main();
+// the dual spelling lets maildb build both as legacy ET_EXEC (uses main) and
+// as a .maz plugin (uses MazarinMain via mazdl).
+//
+// MazEntryPoint keeps the symbol alive in plugin builds — without this
+// reference the linker would drop it.
+var MazEntryPoint func() = MazarinMain
+
+func MazarinMain() { main() }
+
 func main() {
 	fmt.Println("[maildb] main() entered")
 

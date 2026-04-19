@@ -6,20 +6,28 @@ import (
 	"mazzy/kmazarin/proc"
 )
 
-// MaxTransferPages is the maximum number of pages that can be transferred in a single call.
-// PAs are stored in a stack array (32KB at 4096 entries). This function is not nosplit,
-// so Go will grow the goroutine stack as needed.
-const MaxTransferPages = 4096
+// MaxTransferPages is the outer sanity ceiling on a single TransferPages call
+// (32768 pages == 128 MB). The work is chunked internally — see transferChunkPages.
+const MaxTransferPages = 32768
+
+// transferChunkPages is the per-iteration validate+transfer batch size. IRQs are
+// disabled for each chunk only, not across the full transfer, so a large transfer
+// doesn't hold off timer IRQs for the whole duration.
+const transferChunkPages = 4096
 
 // SyscallTransferPages transfers ownership of contiguous pages from the calling
 // shepherd to a target shepherd. The pages are unmapped from the caller's address space,
 // their ownership is updated, and they are mapped into the target's address space.
 //
+// Large transfers are chunked internally. The target VA range is allocated once up
+// front and remains contiguous; each chunk validates+transfers under IRQs-disabled,
+// with IRQs re-enabled between chunks.
+//
 // Args:
 //
 //	arg0 = targetPID (shepherd to transfer pages to)
 //	arg1 = sourceVA  (start of contiguous page range in caller's address space)
-//	arg2 = numPages  (number of 4KB pages to transfer, 1..256)
+//	arg2 = numPages  (number of 4KB pages to transfer, 1..MaxTransferPages)
 //	arg3 = elfFlags  (ELF permission flags for target mapping; 0 = RW)
 //
 // Returns: target VA base on success, or negative errno on failure.
@@ -29,29 +37,23 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	numPages := int(arg2)
 	elfFlags := uint32(arg3)
 
-	// Validate numPages
 	if numPages < 1 || numPages > MaxTransferPages {
 		return -22 // EINVAL
 	}
-
-	// Validate sourceVA is page-aligned
 	if sourceVA&(kmem.PageSize-1) != 0 {
 		return -22 // EINVAL
 	}
 
-	// Get caller shepherd
 	callerShepherd := proc.CurrentShepherd()
 	if callerShepherd == nil {
 		return -1 // EPERM — kernel context
 	}
 	callerSID := int16(callerShepherd.PID)
 
-	// Can't transfer to self
 	if targetPID == callerSID {
 		return -22 // EINVAL
 	}
 
-	// Look up target shepherd
 	targetShepherd := proc.FindShepherdBySID(proc.ShepherdId(targetPID))
 	if targetShepherd == nil {
 		return -3 // ESRCH — no such process
@@ -62,66 +64,68 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 	sourceL0PA := callerShepherd.PageTableL0PA
 
-	// Disable IRQs across both passes to prevent async preemption between
-	// page validation (Pass 1) and ownership transfer (Pass 2). Without this,
-	// a timer IRQ could trigger goroutine preemption, allowing another goroutine
-	// to call exit_group — CleanupShepherdPages would free pages that Pass 1
-	// already validated, causing use-after-free in Pass 2.
-	savedDAIF := saveAndDisableIRQs()
-
-	// Pass 1: Validate all pages exist and are owned by caller.
-	// Store resolved PAs in stack array.
-	var pas [MaxTransferPages]uintptr
-	for i := 0; i < numPages; i++ {
-		va := sourceVA + uintptr(i)*kmem.PageSize
-		pa := kmem.DemandMapUserPage(va, sourceL0PA)
-		if pa == 0 {
-			restoreIRQs(savedDAIF)
-			klog.Errf("[IPC] TransferPages: page not mapped at VA %x\n", uint64(va))
-			return -14 // EFAULT
-		}
-		// Strip page offset (WalkUserPageTableWithL0 may include offset bits)
-		pa = pa &^ (kmem.PageSize - 1)
-		desc := kmem.GetPageDescriptor(pa)
-		if desc == nil || desc.Owner != callerSID {
-			restoreIRQs(savedDAIF)
-			klog.Errf("[IPC] TransferPages: page not owned by caller at PA %x\n", uint64(pa))
-			return -1 // EPERM
-		}
-		pas[i] = pa
-	}
-
-	// Allocate target VA range
+	// Allocate the entire target VA range up front so the caller sees a
+	// single contiguous region. bumpAllocForShepherd is monotonic, so we
+	// cannot recover this range on partial failure (see rollback note below).
 	totalSize := uint64(numPages) * uint64(kmem.PageSize)
 	targetVABase := bumpAllocForShepherd(targetShepherd, totalSize)
 	if targetVABase == 0 {
-		restoreIRQs(savedDAIF)
 		return -12 // ENOMEM
 	}
-
-	// Add span to target shepherd
 	targetShepherd.Spans.Add(targetVABase, totalSize)
 
-	// Pass 2: Transfer — unmap from source, change ownership, map into target
-	for i := 0; i < numPages; i++ {
-		va := sourceVA + uintptr(i)*kmem.PageSize
-		pa := pas[i]
+	// Reusable PA scratch buffer for per-chunk Pass 1 → Pass 2 hand-off.
+	// Heap-allocated (this function is not nosplit) to avoid a large stack array.
+	pas := make([]uintptr, transferChunkPages)
 
-		// Unmap from caller
-		kmem.UnmapUserPageWithL0(va, sourceL0PA)
+	for chunkStart := 0; chunkStart < numPages; chunkStart += transferChunkPages {
+		chunkN := transferChunkPages
+		if chunkStart+chunkN > numPages {
+			chunkN = numPages - chunkStart
+		}
 
-		// Transfer ownership
-		kmem.TransferPageOwnership(pa, callerSID, targetPID)
+		// Disable IRQs across this chunk's two passes to prevent async preemption
+		// from letting another goroutine call exit_group between validate and
+		// transfer — CleanupShepherdPages would free pages that Pass 1 already
+		// validated, causing use-after-free in Pass 2.
+		savedDAIF := saveAndDisableIRQs()
 
-		// Map into target
-		targetVA := uintptr(targetVABase) + uintptr(i)*kmem.PageSize
-		kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags)
+		// Pass 1: validate every page in this chunk is mapped and owned by caller.
+		for i := 0; i < chunkN; i++ {
+			va := sourceVA + uintptr(chunkStart+i)*kmem.PageSize
+			pa := kmem.DemandMapUserPage(va, sourceL0PA)
+			if pa == 0 {
+				restoreIRQs(savedDAIF)
+				klog.Errf("[IPC] TransferPages: page not mapped at VA %x (chunk %d)\n", uint64(va), chunkStart)
+				// Fail-stop: target VA range and any already-transferred chunks
+				// are leaked. TODO: best-effort rollback.
+				return -14 // EFAULT
+			}
+			pa = pa &^ (kmem.PageSize - 1)
+			desc := kmem.GetPageDescriptor(pa)
+			if desc == nil || desc.Owner != callerSID {
+				restoreIRQs(savedDAIF)
+				klog.Errf("[IPC] TransferPages: page not owned by caller at PA %x (chunk %d)\n", uint64(pa), chunkStart)
+				return -1 // EPERM
+			}
+			pas[i] = pa
+		}
+
+		// Pass 2: unmap from source, transfer ownership, map into target.
+		for i := 0; i < chunkN; i++ {
+			va := sourceVA + uintptr(chunkStart+i)*kmem.PageSize
+			pa := pas[i]
+			kmem.UnmapUserPageWithL0(va, sourceL0PA)
+			kmem.TransferPageOwnership(pa, callerSID, targetPID)
+			targetVA := uintptr(targetVABase) + uintptr(chunkStart+i)*kmem.PageSize
+			kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags)
+		}
+
+		restoreIRQs(savedDAIF)
 	}
 
-	// Remove source span
+	// Remove the source span once after all chunks succeed.
 	callerShepherd.Spans.Remove(uint64(sourceVA), totalSize)
-
-	restoreIRQs(savedDAIF)
 
 	return int64(targetVABase)
 }

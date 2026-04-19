@@ -43,6 +43,7 @@ includes:
   mkesp:        {taskfile: ./cmd/mkesp/Taskfile.yml}
   mktestkernel: {taskfile: ./cmd/mktestkernel/Taskfile.yml}
   # Shepherds
+  shepherd:     {taskfile: ./maz/shepherd/Taskfile.yml}
   rachel:       {taskfile: ./maz/rachel/Taskfile.yml}
   linux:        {taskfile: ./maz/linux/Taskfile.yml}
   fs:           {taskfile: ./maz/fs/Taskfile.yml}
@@ -136,14 +137,20 @@ vars:
   KEYMAPPER_MAZ_AMD64: '{{.BUILD_DIR}}/keymapper-amd64.maz'
   LINUX_UI_MAZ_AMD64: '{{.BUILD_DIR}}/linux-ui-amd64.maz'
   MAIL_UI_MAZ_AMD64: '{{.BUILD_DIR}}/mail-ui-amd64.maz'
+  SHEPHERD_ELF: '{{.BUILD_DIR}}/shepherd.elf'
+  RACHEL_MAZ: '{{.BUILD_DIR}}/rachel.maz'
   RACHEL_ELF: '{{.BUILD_DIR}}/rachel.elf'
   LINUX_ELF: '{{.BUILD_DIR}}/linux.elf'
+  LINUX_MAZ: '{{.BUILD_DIR}}/linux.maz'
   MAILDB_ELF: '{{.BUILD_DIR}}/maildb.elf'
+  MAILDB_MAZ: '{{.BUILD_DIR}}/maildb.maz'
   FTI_ELF: '{{.BUILD_DIR}}/fti.elf'
   FS_ELF: '{{.BUILD_DIR}}/fs.elf'
   DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
 
   # x86_64 userspace programs
+  SHEPHERD_AMD64_ELF: '{{.BUILD_DIR}}/shepherd-amd64.elf'
+  RACHEL_MAZ_AMD64: '{{.BUILD_DIR}}/rachel-amd64.maz'
   RACHEL_AMD64_ELF: '{{.BUILD_DIR}}/rachel-amd64.elf'
   LINUX_AMD64_ELF: '{{.BUILD_DIR}}/linux-amd64.elf'
   MAILDB_AMD64_ELF: '{{.BUILD_DIR}}/maildb-amd64.elf'
@@ -219,6 +226,12 @@ vars:
   MAZLINK_OVERLAY_JSON: '{{.BUILD_DIR}}/mazlink-overlay.json'
   MAZLINK_BIN: bin/mazlink
   MAZGO_BIN: bin/mazgo
+  MAZGO_TOOLEXEC_BIN: bin/mazgo-toolexec
+  # Host-packages policy: the file listing Go packages the plugin should resolve
+  # against the shepherd at load time (via UNDEF dynsym). Same file used by the
+  # smoke test. Production plugin Taskfiles feed this into mazlink via
+  # -dlopen-host-packages.
+  DLOPEN_HOST_POLICY: mazlink-patches/policy/dlopen-host-packages.txt
   # Cross-compiled variants used inside the container smoke test. Docker on
   # Apple Silicon defaults to linux/arm64; linux/amd64 is built for completeness
   # (and for running under `--platform linux/amd64` emulation when needed).
@@ -339,6 +352,20 @@ tasks:
       - '{{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZGO_BIN}} cmd/go'
     status:
       - test -f {{.MAZGO_BIN}}
+
+  mazgo-toolexec-build:
+    run: once
+    desc: Build bin/mazgo-toolexec — -toolexec wrapper that swaps mazlink in for stock `link`
+    deps: [bin-dir]
+    env:
+      GOEXPERIMENT: ''
+    sources:
+      - 'cmd/mazgo-toolexec/**/*.go'
+    generates:
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building bin/mazgo-toolexec..."'
+      - '{{.GO}} build -o {{.MAZGO_TOOLEXEC_BIN}} ./cmd/mazgo-toolexec'
 
   mazlink-linux-amd64:
     run: once
@@ -729,14 +756,15 @@ tasks:
 
   disk-arm64:
     desc: Create ext2 disk image with ARM64 maz binaries and kmazarin kernel
-    deps: [rachel:arm64, linux:arm64, fs:arm64, handletest:arm64, clocktest:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, kmazarin:arm64, convert-boot-image]
+    deps: [shepherd:arm64, rachel:arm64, linux:arm64, fs:arm64, handletest:arm64, clocktest:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, kmazarin:arm64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
         sh: test -d "{{.FONTS_DIR}}" && echo "-dir /fonts={{.FONTS_DIR}}" || echo ""
     sources:
-      - '{{.RACHEL_ELF}}'
-      - '{{.LINUX_ELF}}'
+      - '{{.SHEPHERD_ELF}}'
+      - '{{.RACHEL_MAZ}}'
+      - '{{.LINUX_MAZ}}'
       - '{{.FS_ELF}}'
       - '{{.HANDLETEST_ELF}}'
       - '{{.CLOCKTEST_ELF}}'
@@ -751,6 +779,7 @@ tasks:
       - '{{.LINUX_UI_MAZ}}'
       - '{{.FTI_ELF}}'
       - '{{.MAILDB_ELF}}'
+      - '{{.MAILDB_MAZ}}'
       - '{{.MAIL_UI_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
@@ -766,7 +795,7 @@ tasks:
       - '{{.GO}} tool go-cp config/startup.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/startup.toml'
       - '{{.GO}} tool go-cp config/rachel.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.RACHEL_ELF}} {{.LINUX_ELF}} {{.FS_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.CLOCKS_ELF}} {{.VERSAI_ELF}} {{.CALC_ELF}} {{.MAIL_ELF}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.LINUX_UI_MAZ}} {{.FTI_ELF}} {{.MAILDB_ELF}} {{.MAIL_UI_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
+      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.SHEPHERD_ELF}} {{.RACHEL_MAZ}} {{.LINUX_MAZ}} {{.FS_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.CLOCKS_ELF}} {{.VERSAI_ELF}} {{.CALC_ELF}} {{.MAIL_ELF}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.LINUX_UI_MAZ}} {{.FTI_ELF}} {{.MAILDB_ELF}} {{.MAILDB_MAZ}} {{.MAIL_UI_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:

@@ -2,43 +2,57 @@ version: '3'
 
 tasks:
   arm64:
-    desc: Build rachel input event handler shepherd (ARM64)
+    desc: Build rachel.maz via mazgo (ET_DYN plugin, UNDEF runtime loaded by generic shepherd)
     run: once
-    deps: [':check-env', ':merged-shepherd-overlay']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
-      - 'maz/**/*.go'
-      - 'maz/**/*.s'
+      - 'maz/rachel/**/*.go'
+      - 'maz/rachel/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.RACHEL_ELF}}'
+      - '{{.RACHEL_MAZ}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building rachel for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.RACHEL_ELF}} ./maz/rachel'
-      - '{{.GO}} tool go-echo "Rachel ARM64 built at {{.RACHEL_ELF}}"'
+      - '{{.GO}} tool go-echo "Building rachel.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.RACHEL_MAZ}} ./maz/rachel
+      - '{{.GO}} tool go-echo "rachel.maz ready at {{.RACHEL_MAZ}}"'
 
   x86_64:
-    desc: Build rachel input event handler shepherd (x86_64)
+    desc: Build rachel.maz for x86_64 via mazgo
     run: once
-    deps: [':check-env', ':merged-shepherd-overlay-amd64']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
-      - 'maz/**/*.go'
-      - 'maz/**/*.s'
+      - 'maz/rachel/**/*.go'
+      - 'maz/rachel/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.RACHEL_AMD64_ELF}}'
+      - '{{.RACHEL_MAZ_AMD64}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building rachel for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_AMD64_ELF}} ./maz/rachel'
-      - '{{.GO}} tool go-echo "Rachel x86_64 built at {{.RACHEL_AMD64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building rachel.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.RACHEL_MAZ_AMD64}} ./maz/rachel
+      - '{{.GO}} tool go-echo "rachel.maz (x86_64) ready at {{.RACHEL_MAZ_AMD64}}"'
 
   riscv64:
-    desc: Build rachel input event handler shepherd (RISC-V 64-bit)
+    desc: Build rachel shepherd (RISC-V 64-bit) — legacy ET_EXEC, stays on SysLoadMaz until Phase 7
     run: once
     deps: [':check-env', ':merged-shepherd-overlay-riscv64']
     sources:

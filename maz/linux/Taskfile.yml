@@ -2,25 +2,32 @@ version: '3'
 
 tasks:
   arm64:
-    desc: Build linux shepherd (ARM64)
+    desc: Build linux.maz via mazgo (ET_DYN plugin, UNDEF runtime loaded by generic shepherd)
     run: once
-    deps: [':check-env', ':merged-shepherd-overlay']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
-      - 'maz/**/*.go'
-      - 'maz/**/*.s'
+      - 'maz/linux/**/*.go'
+      - 'maz/linux/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.LINUX_ELF}}'
+      - '{{.LINUX_MAZ}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building linux for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.LINUX_ELF}} ./maz/linux'
-      - '{{.GO}} tool go-echo "Stdio ARM64 built at {{.LINUX_ELF}}"'
+      - '{{.GO}} tool go-echo "Building linux.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.LINUX_MAZ}} ./maz/linux
+      - '{{.GO}} tool go-echo "linux.maz ready at {{.LINUX_MAZ}}"'
 
   x86_64:
-    desc: Build linux shepherd (x86_64)
+    desc: Build linux shepherd (x86_64) — legacy ET_EXEC, not yet converted to plugin
     run: once
     deps: [':check-env', ':merged-shepherd-overlay-amd64']
     sources:
@@ -38,7 +45,7 @@ tasks:
       - '{{.GO}} tool go-echo "Stdio x86_64 built at {{.LINUX_AMD64_ELF}}"'
 
   riscv64:
-    desc: Build linux shepherd (RISC-V 64-bit)
+    desc: Build linux shepherd (RISC-V 64-bit) — legacy ET_EXEC, stays on SysLoadMaz until Phase 7
     run: once
     deps: [':check-env', ':merged-shepherd-overlay-riscv64']
     sources:

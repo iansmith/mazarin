@@ -112,6 +112,48 @@ type symEntry struct {
 	module *Handle
 }
 
+// resolveGlobal looks up an UND symbol name in the global table, trying
+// both the plain name and the ".abi0"-suffixed variant in either
+// direction. Background:
+//
+//   - mazlink's host-export pass publishes the ABI0 copy of a function
+//     under name+".abi0" when an ABIInternal counterpart is also
+//     present, to avoid dynsym name collisions.
+//   - mazlink's plugin-side rewrite tags a plugin UND with ".abi0" when
+//     the reloc targets the ABI0 body (e.g. stack-based calls into
+//     assembly-declared functions like internal/runtime/syscall/linux.
+//     Syscall6), so PLT/JUMP_SLOT binds to the host's ABI0 entry point.
+//
+// The two cases don't always agree on which spelling is exported:
+//
+//   1. Plain-name plugin UND + host exports ABIInternal at plain name
+//      → direct hit.
+//   2. ".abi0"-tagged plugin UND + host has both ABIs and so exports
+//      name+".abi0" → direct hit.
+//   3. Plain-name plugin UND + host's ABIInternal was deadcoded, so only
+//      name+".abi0" exists → fall through to the ".abi0" lookup.
+//   4. ".abi0"-tagged plugin UND + host has ABI0 only, published at the
+//      plain name → fall through to the name-without-".abi0" lookup.
+//
+// All four paths converge on the correct symbol without the host having
+// to emit duplicate aliases. See
+// mazlink-patches/cmd/link/internal/ld/mazdl.go for the matching
+// emission logic.
+func resolveGlobal(name string) (symEntry, bool) {
+	if e, ok := globalSyms[name]; ok {
+		return e, true
+	}
+	if e, ok := globalSyms[name+".abi0"]; ok {
+		return e, true
+	}
+	if stripped, found := strings.CutSuffix(name, ".abi0"); found {
+		if e, ok := globalSyms[stripped]; ok {
+			return e, true
+		}
+	}
+	return symEntry{}, false
+}
+
 // hostSoname is the sentinel DT_NEEDED token stamped into every plugin by
 // mazlink's Phase-2 plugin mode. It is not a filesystem path — mazdl
 // rejects any plugin whose DT_NEEDED list is not exactly [hostSoname].

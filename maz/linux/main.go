@@ -321,8 +321,13 @@ func lineAccumulator(serialCh <-chan serial.SerialByte, delegateCh <-chan delega
 	}
 }
 
-func main() {
-	sys.UartWriteString("[linux] main() entered\n")
+// MazEntryPoint holds a reference to MazarinMain to prevent DCE of the
+// plugin entry point. The generic shepherd host looks up MazarinMain via
+// mazdl; without this reference the linker would drop the symbol.
+var MazEntryPoint func() = MazarinMain
+
+func MazarinMain() {
+	sys.UartWriteString("[linux] MazarinMain() entered\n")
 
 	// 1. Wait for fs (needed by syscallHandler for file operations).
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {

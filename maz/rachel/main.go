@@ -1542,7 +1542,12 @@ func copyFile(src, dst string) error {
 	return nil
 }
 
-func main() {
+// MazEntryPoint holds a reference to MazarinMain to prevent DCE of the
+// plugin entry point. The generic shepherd host looks up MazarinMain via
+// mazdl; without this reference the linker would drop the symbol.
+var MazEntryPoint func() = MazarinMain
+
+func MazarinMain() {
 	fmt.Printf("[rachel] Starting window manager\n")
 
 	// Initialize palette and desktop background early — everything that

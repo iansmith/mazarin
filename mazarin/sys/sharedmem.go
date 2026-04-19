@@ -9,7 +9,8 @@ import (
 // to a target shepherd. The pages are unmapped from the caller and mapped into the
 // target's address space. Returns the target VA base address.
 //
-// sourceVA must be page-aligned. numPages must be 1..256.
+// sourceVA must be page-aligned. numPages must be 1..MaxTransferPages
+// (see kmazarin/ksyscall/share_pages.go).
 // elfFlags controls target mapping permissions (0 = read-write).
 func TransferPages(targetPID int, sourceVA uintptr, numPages int, elfFlags uint32) (uintptr, error) {
 	r1, _, errno := syscall.RawSyscall6(

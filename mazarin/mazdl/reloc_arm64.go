@@ -77,7 +77,7 @@ func applySymbolRelocs(base uintptr, rela []byte, syms []elf.Symbol) error {
 		if sym.Section != elf.SHN_UNDEF {
 			symAddr = base + uintptr(sym.Value)
 		} else {
-			e, ok := globalSyms[sym.Name]
+			e, ok := resolveGlobal(sym.Name)
 			if !ok {
 				return errorf("Open", "", sym.Name, "unresolved symbol (reloc type %v at 0x%x)", rt, rOffset)
 			}

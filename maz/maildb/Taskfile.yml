@@ -2,25 +2,41 @@ version: '3'
 
 tasks:
   arm64:
-    desc: Build maildb shepherd (ARM64)
+    desc: Build maildb shepherd (ARM64) — both legacy ET_EXEC and new .maz plugin
     run: once
-    deps: [':check-env', ':merged-shepherd-overlay']
+    deps: [':check-env', ':merged-shepherd-overlay', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
+      - 'maz/maildb/**/*.go'
+      - 'maz/maildb/**/*.s'
       - 'maz/**/*.go'
       - 'maz/**/*.s'
       - 'mazarin/**/*.go'
       - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
       - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
       - '{{.MAILDB_ELF}}'
+      - '{{.MAILDB_MAZ}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building maildb for ARM64..."'
+      - '{{.GO}} tool go-echo "Building maildb for ARM64 (legacy ET_EXEC)..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.MAILDB_ELF}} ./maz/maildb'
-      - '{{.GO}} tool go-echo "maildb ARM64 built at {{.MAILDB_ELF}}"'
+      - '{{.GO}} tool go-echo "maildb ARM64 ET_EXEC built at {{.MAILDB_ELF}}"'
+      - '{{.GO}} tool go-echo "Building maildb.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.MAILDB_MAZ}} ./maz/maildb
+      - '{{.GO}} tool go-echo "maildb.maz ready at {{.MAILDB_MAZ}}"'
 
   x86_64:
-    desc: Build maildb shepherd (x86_64)
+    desc: Build maildb shepherd (x86_64) — legacy ET_EXEC, not yet converted to plugin
     run: once
     deps: [':check-env', ':merged-shepherd-overlay-amd64']
     sources:
@@ -38,7 +54,7 @@ tasks:
       - '{{.GO}} tool go-echo "maildb x86_64 built at {{.MAILDB_AMD64_ELF}}"'
 
   riscv64:
-    desc: Build maildb shepherd (RISC-V 64-bit)
+    desc: Build maildb shepherd (RISC-V 64-bit) — legacy ET_EXEC, stays on SysLoadMaz until Phase 7
     run: once
     deps: [':check-env', ':merged-shepherd-overlay-riscv64']
     sources:

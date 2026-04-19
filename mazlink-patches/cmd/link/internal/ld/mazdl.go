@@ -176,6 +176,20 @@ func rewriteHostSymsAsDynimport(ctxt *Link, p *HostPolicy) (converted int) {
 		if !hostPolicyRewritable(st) {
 			continue
 		}
+		// Don't flip hashed anonymous-type descriptors. `type:.<hash>` symbols
+		// are content-hashed names for types the plugin uses internally
+		// (interface method sets, closure envs, anon structs). They live in
+		// relro data and their hash is stable across compilation units, so
+		// the same type would mangle identically in the host and the plugin
+		// — BUT the host is free to not instantiate a type that the plugin
+		// happens to need, producing an unresolved dynsym at load time. Keep
+		// them local so the plugin's own copy fills its GOT/.rela.dyn slots
+		// directly (mazdl reloc code uses base + sym.Value whenever the
+		// dynsym entry's section is not SHN_UNDEF). Post-load, typelinks /
+		// itabs dedup unifies pointer identity against host types.
+		if name := ldr.SymName(i); strings.HasPrefix(name, "type:.") {
+			continue
+		}
 
 		// Record the pre-rewrite kind for the ELF type hint below.
 		wasText := st.IsText()
@@ -194,7 +208,23 @@ func rewriteHostSymsAsDynimport(ctxt *Link, p *HostPolicy) (converted int) {
 		// table, not by library-file resolution. DynimpLib is still required
 		// for elfdynhash to build .gnu.version_r entries consistently.
 		ldr.SetSymDynimplib(i, mazdlHostTag)
-		ldr.SetSymExtname(i, ldr.SymName(i))
+		// ABI-aware extname. A plugin reloc against an ABI0 text symbol
+		// (e.g. internal/runtime/syscall/linux.Syscall6 — declared in
+		// assembly, stack-based calling convention) MUST bind to the
+		// host's ABI0 body, not an ABIInternal wrapper. The host's
+		// emitHostExportsDynsym publishes ABIInternal at the plain name
+		// and ABI0 at name+".abi0"; mirror that choice here so the
+		// PLT/JUMP_SLOT resolves to the correct entry point. Without
+		// this, the plugin stores args on the stack but the wrapper it
+		// hits reads them from registers (happens to work — regs still
+		// hold the values) and returns results in registers R0-R2,
+		// while the plugin reads results from stack [sp+64/72/80] —
+		// garbled return values.
+		extname := ldr.SymName(i)
+		if wasText && ldr.SymVersion(i) == sym.SymVerABI0 {
+			extname += ".abi0"
+		}
+		ldr.SetSymExtname(i, extname)
 		ldr.SetSymDynimpvers(i, "")
 		if wasText {
 			ldr.SetSymElfType(i, elf.STT_FUNC)
@@ -276,6 +306,14 @@ func emitHostExportsDynsym(ctxt *Link, p *HostPolicy) (exported int) {
 			continue
 		}
 		name := ldr.SymName(i)
+		// Don't export hashed anonymous-type descriptors. Plugins keep their
+		// own local `type:.<hash>` copies (see rewriteHostSymsAsDynimport),
+		// so these would go unused in globalSyms and only inflate dynsym.
+		// Note we do still export *named* types like `type:runtime.mspan` —
+		// only the mangled `type:.<b64hash>` form is skipped.
+		if strings.HasPrefix(name, "type:.") {
+			continue
+		}
 		// Skip closures (function literals nested inside another function).
 		// Their pcln aux syms are co-owned with the outer function; marking
 		// them as independent dynamic exports roots them in deadcode but
@@ -285,24 +323,42 @@ func emitHostExportsDynsym(ctxt *Link, p *HostPolicy) (exported int) {
 		if strings.Contains(name, ".func") {
 			continue
 		}
-		// Skip ABI0 wrapper entry points for text symbols. The loader carries
-		// both an ABIInternal copy (version=1) AND an ABI0 adapter (version=0)
-		// of every exported function under the *same* SymName; the static
-		// symtab disambiguates by appending ".abi0" to the wrapper's name, but
-		// dynsym emission uses SymExtname verbatim and would publish two
-		// entries with identical names. When mazdl.Open populates its
-		// globalSyms map keyed by name, the second write wins — which happens
-		// to be the ABI0 wrapper. A plugin's ABIInternal call (arg in R0) then
-		// targets the wrapper, which loads its arg from the stack at [sp+40]
-		// and ignores R0 entirely, producing garbage (e.g. sync.init.1's
-		// unsafe.Sizeof(notifyList) becomes a stack pointer and the host's
-		// "bad notifyList size" check fires). Plugins built by mazgo are
-		// internal-linked ABIInternal top-to-bottom, so they never need the
-		// ABI0 adapter: export only the version=ABIInternal copy.
+		// Name-collision handling for ABI0 wrapper entry points.
+		//
+		// The loader may carry both an ABIInternal copy (version=1) AND an
+		// ABI0 adapter (version=0) of the same function under the same
+		// SymName. The static symtab disambiguates by appending ".abi0" to
+		// the wrapper name (see symtab.go:mangleABIName); dynsym emission
+		// uses SymExtname verbatim, so two entries would otherwise land in
+		// .dynsym under identical names. mazdl.Open populates globalSyms
+		// keyed by name, so whichever write lands second wins — and if the
+		// ABI0 wrapper wins, a plugin's ABIInternal call (arg in R0) hits
+		// the wrapper's "load arg from stack" prologue and garbles the
+		// argument.
+		//
+		// Plan: ABIInternal gets the plain name, ABI0 gets the ".abi0"
+		// suffix. Plugins ask for the plain name (mazgo emits UND entries
+		// by SymName without ABI mangling, since SDYNIMPORT isn't text and
+		// mangleABIName skips non-text), so they naturally bind to the
+		// ABIInternal wrapper when both are present. When the ABIInternal
+		// wrapper is absent or unreachable (e.g. runtime.morestack_noctxt —
+		// assembly-only, nothing calls it by ABIInternal name so deadcode
+		// drops the alt), the plugin's plain lookup misses; the mazdl
+		// loader then falls back to a `.abi0` suffix lookup in globalSyms.
+		// See mazarin/mazdl/reloc_*.go and host_register.go.
 		if st.IsText() && ldr.SymVersion(i) == sym.SymVerABI0 {
 			if alt := ldr.Lookup(name, sym.SymVerABIInternal); alt != 0 && ldr.SymType(alt).IsText() {
+				// Both variants present. Rename this one with the .abi0
+				// suffix so the ABIInternal copy keeps the plain name.
+				ldr.SetSymExtname(i, name+".abi0")
+				ldr.SetAttrCgoExportDynamic(i, true)
+				ctxt.dynexp = append(ctxt.dynexp, i)
+				exported++
 				continue
 			}
+			// ABI0-only: export under the plain name so plugin UND
+			// references resolve directly. Falls through to the default
+			// SetSymExtname-to-SymName path below.
 		}
 		if ldr.SymExtname(i) == "" {
 			ldr.SetSymExtname(i, ldr.SymName(i))

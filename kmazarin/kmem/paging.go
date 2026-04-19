@@ -1427,21 +1427,18 @@ func IsbSY() {
 // zeroPageSlow zeros a 4KB page using regular stores.
 // This is slower than Bzero4K but more reliable for debugging.
 //
+// NOTE (2026-04-19): Removed stale ZERO_GUARD that hardcoded the RISC-V
+// direct-boot kernel base (0x90000000-0x90400000) as the kmazarin range.
+// On ARM64 (Cardinal/diplomat) and amd64, kmazarin lives at completely
+// different PAs, so the guard fired spuriously on legitimate pool pages
+// once the buddy allocator advanced past 0x90000000. If a real "buddy
+// allocator returned a kmazarin code page" regression appears, recreate
+// the check in BuddyAlloc{,Typed} using the runtime-config KmazarinPhysAddr
+// and KmazarinSize — that is where the bad page would be coming from, not
+// here at zero-time.
+//
 //go:nosplit
 func zeroPageSlow(ptr uintptr) {
-	// DEBUG: Verify we're not zeroing a kmazarin code page via linear map.
-	// Linear map VA = PA + KernelMMIOOffset. Convert back to PA:
-	pa := ptr - constants.KernelMMIOOffset
-	// Kmazarin code is at PA 0x90000000 - ~0x90400000
-	if pa >= 0x90000000 && pa < 0x90400000 {
-		serial.RawUARTPuts("[ZERO_GUARD] ABORT: zeroing kmazarin code page! PA=0x")
-		serial.RawUARTHex64(uint64(pa))
-		serial.RawUARTPuts(" VA=0x")
-		serial.RawUARTHex64(uint64(ptr))
-		serial.RawUARTPuts("\r\n")
-		for {
-		} // Halt
-	}
 	// Zero 4KB in 8-byte chunks (512 iterations)
 	p := (*[512]uint64)(unsafe.Pointer(ptr))
 	for i := 0; i < 512; i++ {

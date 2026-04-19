@@ -36,7 +36,7 @@ path = "/fti.elf"
 
 [[shepherd]]
 name = "maildb"
-path = "/maildb.elf"
+path = "/maildb.maz"
 
 [[shepherd]]
 name = "mail"
