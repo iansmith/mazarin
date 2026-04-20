@@ -103,11 +103,6 @@ history (commits `706820f` through `2a4a092`) for per-phase detail.
   but the visual grid is not updated. `GridTable` lacks a `RemoveRow` method.
 - **Next step:** implement `GridTable.RemoveRow(idx int)` when mail needs it.
 
-### 4. Cosmetic: kmem log still prints "Constraint pages v2"
-- `logConstraintPagesInit` in `kmazarin/kmem/constraint.go:167` hardcodes `"v2"`
-  but the actual version written is now 3.
-- Trivial one-line fix; not worth a standalone commit.
-
 ---
 
 ## Decisions Made

@@ -164,7 +164,7 @@ func InitConstraintPages() bool {
 //
 //go:noinline
 func logConstraintPagesInit(pa uintptr) {
-	klog.Logf("[kmem] Constraint pages v2 at PA=0x%x (%d bytes)\n", uint64(pa), ConstraintTotalSize)
+	klog.Logf("[kmem] Constraint pages v%d at PA=0x%x (%d bytes)\n", ConstraintPageVersion, uint64(pa), ConstraintTotalSize)
 }
 
 // GetConstraintPagePA returns the PA of the constraint shared pages.
