@@ -92,21 +92,9 @@ func NewGridFrame(myName, parent string, pal mancini.Palette, theme mancini.Them
 	splitMap := buildSplitMap(percents)
 	nCols := len(percents)
 	onDamage := func() {
-		// Damage the full frame so the blit region covers the old divider
-		// position in the bezel strips — not just the new position.
-		gf.FullDamage()
-		for _, lab := range grid.headerLabs {
-			if lab != nil {
-				lab.FullDamage()
-			}
-		}
-		for _, row := range grid.dataLabs {
-			for _, lab := range row {
-				if lab != nil {
-					lab.FullDamage()
-				}
-			}
-		}
+		// Damage all leaf labels so the constraint chain sees dirty state
+		// and the blit region covers divider bezel strips and column content.
+		grid.DamageAll()
 	}
 	for i := 0; i < nCols-1; i++ {
 		si := splitMap[i]
@@ -149,8 +137,16 @@ func NewGridFrame(myName, parent string, pal mancini.Palette, theme mancini.Them
 }
 
 // AddRow appends a data row to the embedded GridTable.
-func (gf *GridFrame) AddRow(row GridRow) {
-	gf.grid.AddRow(row)
+// Returns a func() that damages this row's leaf labels — use it as the
+// row's OnLoaded callback to trigger a redraw when async data arrives.
+func (gf *GridFrame) AddRow(row GridRow) func() {
+	return gf.grid.AddRow(row)
+}
+
+// DamageAll marks every label in the grid as needing repaint.
+// Call this after batch-adding rows to force the first full draw.
+func (gf *GridFrame) DamageAll() {
+	gf.grid.DamageAll()
 }
 
 // Draw renders the frame. Grid subtree is drawn first in the content area
@@ -442,7 +438,16 @@ func (gt *GridTable) currentPercents() []float64 {
 }
 
 // AddRow appends a data row to the grid.
-func (gt *GridTable) AddRow(row GridRow) {
+// Returns a func() that calls FullDamage on this row's DynamicLabel leaves,
+// propagating through the constraint chain to trigger a redraw. Use it as the
+// row's OnLoaded callback. (RowPercentage.FullDamage is a no-op — it is a
+// parent with a constraint-based DamageRect, not a settable leaf.)
+//
+// Labels are pre-positioned at the expected row Y so that FullDamage()
+// immediately produces a damage rect in the correct grid area. Without
+// this, labels sit at Y=0 and PushDamageClip clips draws to the wrong region.
+// RowPercentage.Draw refines the exact column X positions on the next pass.
+func (gt *GridTable) AddRow(row GridRow) func() {
 	myName := gt.GetLayout().Name()
 	idx := len(gt.rows)
 	gt.rows = append(gt.rows, row)
@@ -451,7 +456,6 @@ func (gt *GridTable) AddRow(row GridRow) {
 	rowName := fmt.Sprintf("%s_r%d", myName, idx)
 	rp := NewRowPercentage(rowName, myName, gt.Pal, 0, 0, pcts)
 	rp.ClipChildren = true
-	_ = rp
 
 	cols := []string{row.Sender(), row.Subject(), row.Date()}
 	labels := make([]*DynamicLabel, len(pcts))
@@ -466,6 +470,64 @@ func (gt *GridTable) AddRow(row GridRow) {
 		labels[i] = lab
 	}
 	gt.dataLabs = append(gt.dataLabs, labels)
+
+	// Pre-position labels at the expected row Y so FullDamage() emits a
+	// damage rect in the correct grid area. The grid must have been laid
+	// out at least once (X/Y/W set by ColumnPercentage.Draw) for this to
+	// be meaningful; if W=0 the rect is empty and will be corrected on the
+	// next unconditional full draw.
+	gridY := gt.GetLayout().Y.Get()
+	gridX := gt.GetLayout().X.Get()
+	gridW := gt.GetLayout().Width.Get()
+	rh := gt.rowHeight()
+	rowY := gridY + (rh+2+1) + int64(idx)*rh // after header (rh+2) + separator (1)
+	for _, lab := range labels {
+		if lab == nil {
+			continue
+		}
+		labLH := lab.GetLayout()
+		labLH.Y.Set(rowY)
+		labLH.X.Set(gridX)
+		if !labLH.Width.IsConstraint() {
+			labLH.Width.Set(gridW)
+		}
+		if !labLH.Height.IsConstraint() {
+			labLH.Height.Set(rh) // must set height so FullDamage emits non-empty rect
+		}
+		lab.FullDamage()
+	}
+
+	return func() {
+		for _, lab := range labels {
+			if lab == nil {
+				continue
+			}
+			labLH := lab.GetLayout()
+			if !labLH.Height.IsConstraint() && labLH.Height.Get() == 0 {
+				labLH.Height.Set(rh)
+			}
+			lab.FullDamage()
+		}
+	}
+}
+
+// DamageAll calls FullDamage on every DynamicLabel leaf in the grid (header
+// and all data rows). Use this after dynamically adding rows to trigger a
+// full grid repaint — parent interactors like RowPercentage have constraint-
+// based DamageRect, so their FullDamage is a no-op; labels are the leaves.
+func (gt *GridTable) DamageAll() {
+	for _, lab := range gt.headerLabs {
+		if lab != nil {
+			lab.FullDamage()
+		}
+	}
+	for _, row := range gt.dataLabs {
+		for _, lab := range row {
+			if lab != nil {
+				lab.FullDamage()
+			}
+		}
+	}
 }
 
 // rowHeight returns the current row height based on the font size attribute.
@@ -525,6 +587,21 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 
 		if rp, ok := child.(*RowPercentage); ok {
 			rp.Percents = pcts
+		}
+
+		// Sync label text from live row data so async-loaded rows (e.g. MailRow)
+		// display their data as soon as it arrives without a separate update step.
+		if !isHeader {
+			dataIdx := rowIdx - 1
+			if dataIdx < len(gt.rows) && dataIdx < len(gt.dataLabs) {
+				row := gt.rows[dataIdx]
+				cols := [3]string{row.Sender(), row.Subject(), row.Date()}
+				for j, lab := range gt.dataLabs[dataIdx] {
+					if lab != nil && j < 3 {
+						lab.Text = cols[j]
+					}
+				}
+			}
 		}
 
 		childL, hasLayout := child.(mancini.Layouter)

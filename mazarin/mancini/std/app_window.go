@@ -297,7 +297,8 @@ func (w *AppWindow) DispatchAnimation(wmMsg any) bool {
 // drawing is clipped to the damaged region so unchanged pixels
 // are not overwritten.
 func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64, damage image.Rectangle) {
-	if !w.Damaged(damage) {
+	damaged := w.Damaged(damage)
+	if !damaged {
 		return
 	}
 	dc := self.DC()

@@ -1,6 +1,6 @@
 module mazzy
 
-go 1.25.5
+go 1.26.2
 
 require (
 	github.com/boxesandglue/boxesandglue v0.2.14

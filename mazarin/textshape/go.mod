@@ -1,6 +1,6 @@
 module mazarin/textshape
 
-go 1.25.5
+go 1.26.2
 
 require (
 	github.com/go-text/typesetting v0.3.4

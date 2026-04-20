@@ -49,6 +49,7 @@ var (
 	mailRows     []*MailRow
 	rowByReqId   = make(map[[16]byte]*MailRow)
 	reqCounter   uint64
+
 )
 
 // nextReqId returns a new unique [16]byte request ID using a counter + timestamp.
@@ -430,12 +431,13 @@ func handleCreateCollectionResp(resp *mailproto.RespCreateCollection) {
 			onCollectionExpired, onRowSelected)
 		mailRows = append(mailRows, row)
 		rowByReqId[reqId] = row
-		gridFrame.AddRow(row)
+		row.OnLoaded = gridFrame.AddRow(row)
 	}
 	fmt.Printf("[mail] added %d MailRows to grid\n", limit)
 }
 
-// handleKeyHeadersResp routes a RespKeyHeaders to the matching MailRow.
+// handleKeyHeadersResp routes a RespKeyHeaders to the matching MailRow and
+// marks the grid dirty so the new text is displayed on the next draw.
 func handleKeyHeadersResp(resp *mailproto.RespKeyHeaders) {
 	row, ok := rowByReqId[resp.RequestId]
 	if !ok {
@@ -443,7 +445,8 @@ func handleKeyHeadersResp(resp *mailproto.RespKeyHeaders) {
 		return
 	}
 	delete(rowByReqId, resp.RequestId)
-	row.HandleKeyHeadersResp(resp)
+	row.HandleKeyHeadersResp(resp) // fires row.OnLoaded → label FullDamage if successful
+	fmt.Printf("[mail] KeyHeaders loaded msgNum=%d sender=%q\n", row.MsgNum(), row.Sender())
 }
 
 // handleCollectionAdd handles an unsolicited CollectionAdd notification.
@@ -458,7 +461,7 @@ func handleCollectionAdd(notif *mailproto.CollectionAdd) {
 			onCollectionExpired, onRowSelected)
 		mailRows = append(mailRows, row)
 		rowByReqId[reqId] = row
-		gridFrame.AddRow(row)
+		row.OnLoaded = gridFrame.AddRow(row)
 	}
 }
 

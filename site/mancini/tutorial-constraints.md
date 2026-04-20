@@ -862,7 +862,7 @@ come after clocks or replace it.
 
 ```bash
 export GOTOOLCHAIN=auto
-export GO=/Users/iansmith/sdk/go1.25.5/bin/go
+export GO=/opt/homebrew/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 
 # Build everything including the demo

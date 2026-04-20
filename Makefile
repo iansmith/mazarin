@@ -9,9 +9,9 @@
 GO ?= go
 GOARCH = arm64
 GOOS = linux
-REQUIRED_GO_VERSION = 1.25.5
+REQUIRED_GO_VERSION = 1.26.2
 
-# Version check - verify Go version is exactly 1.25.5
+# Version check - verify Go version is exactly 1.26.2
 # This runs as a dependency of the main targets
 .PHONY: check-go-version
 check-go-version:

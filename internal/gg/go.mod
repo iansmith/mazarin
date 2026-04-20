@@ -1,6 +1,6 @@
 module github.com/fogleman/gg
 
-go 1.25.5
+go 1.26.2
 
 require (
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0

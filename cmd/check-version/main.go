@@ -106,7 +106,7 @@ func getGoVersion(goBin string) (version string, major, minor int, err error) {
 		return "", 0, 0, fmt.Errorf("failed to run go version: %v", err)
 	}
 
-	// Parse "go version go1.25.5 darwin/arm64"
+	// Parse "go version go1.26.2 darwin/arm64"
 	re := regexp.MustCompile(`go(\d+)\.(\d+)`)
 	matches := re.FindStringSubmatch(string(output))
 	if len(matches) < 3 {

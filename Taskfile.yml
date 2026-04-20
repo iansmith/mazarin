@@ -30,9 +30,8 @@ version: '3'
 # (host-shepherd heap layout assumptions in textshape glyph cache). Disable
 # globally for every Go build invoked via Taskfile.
 #
-# GreenTeaGC is also disabled while we debug Go 1.26.2 migration issues —
-# keeps the GC behavior closer to the prior (1.24.4) baseline so heap-shape
-# regressions don't get tangled with shepherd boot bugs.
+# GreenTeaGC is also disabled to keep GC behavior close to the prior baseline
+# so heap-shape regressions don't get tangled with shepherd boot bugs.
 env:
   GOEXPERIMENT: norandomizedheapbase64,nogreenteagc
 

@@ -16,7 +16,7 @@ import (
 
 // Page header magic for constraint shared pages.
 const ConstraintPageMagic = 0x4D415A46 // "MAZF"
-const ConstraintPageVersion = 2        // bumped from 1: now includes region table
+const ConstraintPageVersion = 3        // bumped from 2: CollCapacity widened to uint32 (per-query fixed collection slots)
 
 // --- Single source of truth: region capacities ---
 // Change ONLY these values to resize the constraint system.
@@ -25,7 +25,7 @@ const (
 	RegionEdgeCap     = 65535 // max edges (uint16 cap)
 	RegionBytecodeCap = 65535 // header field (uint16); actual limit is RegionBytecodeSize
 	RegionStringCap   = 4096  // max string slots
-	RegionCollCap     = 4096  // max collection elements
+	RegionCollCap     = 65536 // max collection elements — sized for 64 query slots × 1024 entries each
 	RegionTrieCap     = 16384 // max trie nodes
 )
 
@@ -85,8 +85,7 @@ type SharedPageHeader struct {
 	StringCapacity   uint16
 	_pad3            uint16
 	CollRegionOff    uint32
-	CollCapacity     uint16
-	_pad4            uint16
+	CollCapacity     uint32 // widened to uint32 for per-query fixed slots (may exceed 65535)
 	TrieRegionOff    uint32
 	TrieCapacity     uint16
 	_pad5            uint16

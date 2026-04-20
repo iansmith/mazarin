@@ -14,7 +14,7 @@ import (
 // Shared page magic and version expected by the client.
 const (
 	SharedPageMagic   = 0x4D415A46 // "MAZF"
-	SharedPageVersion = 2
+	SharedPageVersion = 3
 )
 
 // SharedPageHeaderSize is the size of the header at offset 0 of the mapping.
@@ -40,7 +40,7 @@ func NewPageRegionFromSharedMapping(base uintptr) *PageRegion {
 	//   edgeRegionOff:4, edgeCapacity:2, pad:2
 	//   bytecodeRegionOff:4, bytecodeCapacity:2, pad:2
 	//   stringRegionOff:4, stringCapacity:2, pad:2
-	//   collRegionOff:4, collCapacity:2, pad:2
+	//   collRegionOff:4, collCapacity:4            (v3: widened from uint16+pad)
 	//   trieRegionOff:4, trieCapacity:2, pad:2
 	off := 16
 
@@ -61,7 +61,7 @@ func NewPageRegionFromSharedMapping(base uintptr) *PageRegion {
 	off += 8
 
 	collOff := binary.LittleEndian.Uint32(hdr[off : off+4])
-	collCap := binary.LittleEndian.Uint16(hdr[off+4 : off+6])
+	collCap := binary.LittleEndian.Uint32(hdr[off+4 : off+8])
 	off += 8
 
 	_ = off // trieOff/trieCap read separately by trie walker

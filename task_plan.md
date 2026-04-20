@@ -13,7 +13,7 @@ Re-read before any coding session:
 - `/Users/iansmith/.claude/projects/-Users-iansmith-mazzy/memory/MEMORY.md` — auto-memory
 
 ## Current Phase
-Phase 3 — Maildb uring handlers (complete 2026-04-20)
+Phase 5 — Mail App Integration (complete 2026-04-20) — all phases done
 
 ## Code Locations
 - **maildb**:                  `maz/maildb/`
@@ -123,8 +123,8 @@ Wire new protocol into `mazarin/apps/mail/main.go`.
 - [x] Remove old requestInitialHeaders(), testRow, testMailRows(), handleMailResponse old handlers
 - [x] Removed `shared/mail` import; using `shared/mailproto` throughout
 - [x] Build verified: `task mail-app:arm64` passes clean
-- [ ] Verify end-to-end in QEMU (ARM64 HVF)
-- **Status:** complete (pending QEMU run)
+- [x] Verify end-to-end in QEMU (ARM64 HVF) — 90s stable, no errors, s15=7506 IPC confirms 50 RespKeyHeaders received
+- **Status:** complete
 
 ## Open Questions (resolved)
 - Extend ProtoMailReq/ProtoMailResp? **Yes** ✓

@@ -15,7 +15,8 @@ import (
 // indexHandler processes IndexDocument requests by reading content from
 // shared memory pages and feeding it to bleve.
 type indexHandler struct {
-	index bleve.Index
+	index     bleve.Index
+	corrupted bool // true after an unrecoverable bleve internal panic
 }
 
 func newIndexHandler(index bleve.Index) *indexHandler {
@@ -27,8 +28,23 @@ func newIndexHandler(index bleve.Index) *indexHandler {
 // IndexingCompleted (or IndexError) back to the sender.
 func (h *indexHandler) handleIndexDocument(req *fti.IndexDocument, senderSID int16) {
 	docId := fti.UnpackDocId(req)
+
+	if h.corrupted {
+		fmt.Printf("[fti] index corrupted, dropping document %s\n", docId)
+		h.sendError(int(senderSID), docId, "bleve index corrupted after internal panic")
+		return
+	}
+
 	fmt.Printf("[fti] indexDocument: id=%s type=%d bodyLen=%d pages=%d from SID=%d\n",
 		docId, req.DocType, req.BodyLen, req.NumPages, senderSID)
+
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[fti] PANIC in handleIndexDocument id=%s: %v — marking index corrupted\n", docId, r)
+			h.corrupted = true
+			h.sendError(int(senderSID), docId, fmt.Sprintf("bleve panic: %v", r))
+		}
+	}()
 
 	t0 := time.Now()
 

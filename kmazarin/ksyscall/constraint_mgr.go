@@ -17,6 +17,12 @@ import (
 // MaxQueryPatterns is the maximum number of registered find patterns.
 const MaxQueryPatterns = 64
 
+// MaxCollPerQuery is the max result entries written to a single query's
+// collection slot. Each query owns a fixed-size region of this many entries
+// (so writes are in-place and never exhaust a shared bump allocator).
+// Total collection-region demand = MaxQueryPatterns * MaxCollPerQuery * ValueSize.
+const MaxCollPerQuery = 1024
+
 // maxURILen is the maximum URI length accepted by syscalls.
 const maxURILen = 1024
 
@@ -24,12 +30,15 @@ const maxURILen = 1024
 const maxURISegments = 16
 
 // queryPattern holds a registered find pattern and its result attribute.
+// collOff is the byte offset of this query's dedicated collection region,
+// assigned once at registration and reused on every rewrite.
 type queryPattern struct {
 	pattern    [256]byte
 	patternLen uint16
 	resultSlot uint16
 	ownerSID   uint16
 	_pad       uint16
+	collOff    uint32
 }
 
 // KernelAttrManager manages the attribute graph in the shared constraint pages.
@@ -59,9 +68,10 @@ type KernelAttrManager struct {
 	trieBitmap   [kmem.RegionTrieCap / 8]byte
 
 	// Bump allocators (byte offsets into their regions, relative to region start)
-	edgeBumpOff      uint32 // next free byte in edge region
-	bytecodeBumpOff  uint32 // next free byte in bytecode region
-	collectionBumpOff uint32 // next free byte in collection region
+	edgeBumpOff     uint32 // next free byte in edge region
+	bytecodeBumpOff uint32 // next free byte in bytecode region
+	// (collection region is not bump-allocated: each query owns a fixed slot —
+	// see queryPattern.collOff and writeQueryCollection.)
 
 	// Generation counter (also written to shared page header)
 	generation uint64
@@ -78,6 +88,10 @@ type KernelAttrManager struct {
 
 // attrMgr is the singleton kernel attribute manager.
 var attrMgr KernelAttrManager
+
+// Compile-time assertion: the collection region must be large enough to hold
+// a dedicated fixed-size slot for every possible query pattern.
+var _ [kmem.RegionCollCap - MaxQueryPatterns*MaxCollPerQuery]struct{}
 
 // InitKernelAttrManager initializes the kernel attribute manager from the
 // shared constraint pages. Must be called after InitConstraintPages().

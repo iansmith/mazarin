@@ -187,7 +187,7 @@ repos are cloned as siblings as described above.
 | Variable | Purpose | Example (macOS/Homebrew) |
 |----------|---------|--------------------------|
 | `GOTOOLCHAIN` | Must be `auto`. Tells Go to select the right toolchain version. | `auto` |
-| `GO` | Path to the Go binary (>= 1.24). | `/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go` |
+| `GO` | Path to the Go binary (1.26.2). | `/opt/homebrew/Cellar/go/1.26.2/libexec/bin/go` |
 | `QEMU` | Path to `qemu-system-aarch64` (>= 10.2). | `/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64` |
 
 ### Optional — sibling repo paths
@@ -230,7 +230,7 @@ export QEMU=/path/to/qemu-system-aarch64
 **Example: macOS with Homebrew:**
 ```bash
 export GOTOOLCHAIN=auto
-export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
+export GO=/opt/homebrew/Cellar/go/1.26.2/libexec/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 ```
 

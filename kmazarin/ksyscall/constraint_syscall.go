@@ -408,7 +408,8 @@ func SyscallAttrRegisterQuery(patternBufPtr, patternLen, _, _, _, _ uint64) int6
 	node.Kind = flat.AttrKindValue
 	node.ValueType = flat.TypeCollection
 
-	// Store the pattern in the kernel-side registry.
+	// Store the pattern in the kernel-side registry and assign this query
+	// its dedicated fixed collection region (offset within collRegion).
 	q := &attrMgr.queries[attrMgr.queryCount]
 	for i := uint16(0); i < uint16(patternLen); i++ {
 		q.pattern[i] = patBuf[i]
@@ -416,18 +417,22 @@ func SyscallAttrRegisterQuery(patternBufPtr, patternLen, _, _, _, _ uint64) int6
 	q.patternLen = uint16(patternLen)
 	q.resultSlot = slot
 	q.ownerSID = uint16(pid)
+	q.collOff = uint32(attrMgr.queryCount) * MaxCollPerQuery * flat.ValueSize
 	attrMgr.queryCount++
 
 	// Evaluate the pattern against the current trie and write collection results.
 	patStr := unsafeStringFromBytes(patBuf[:patternLen])
-	var matchURIs [256]string
-	matchCount := attrMgr.trieMatchPatternURIs(patStr, matchURIs[:])
+	matchCount := attrMgr.trieMatchPatternURIs(patStr, matchURIScratch[:])
 
-
-	attrMgr.writeQueryCollection(q, matchURIs[:], matchCount)
+	attrMgr.writeQueryCollection(q, matchURIScratch[:], matchCount)
 
 	return int64(slot)
 }
+
+// matchURIScratch is a package-level reusable buffer for pattern-match
+// results. Sized at MaxCollPerQuery to keep stack frames small; single-
+// threaded kernel context means no concurrent-use race.
+var matchURIScratch [MaxCollPerQuery]string
 
 // SyscallAttrWriteResult writes a constraint evaluation result to a constraint slot.
 // Only constraint attributes are accepted (values are rejected).
@@ -688,10 +693,11 @@ func (mgr *KernelAttrManager) removeReverseEdge(depSlot, constraintSlot uint16) 
 	node.DependentsCount = uint16(newCount)
 }
 
-// writeQueryCollection writes matched URIs as a collection into a query's result slot.
-// Instead of allocating new string slots (which would exhaust the 512-slot string
-// region), we borrow the existing NameOffset from each attribute's node — the URI
-// is already stored there.
+// writeQueryCollection writes matched URIs into a query's dedicated collection
+// region. Each query owns a fixed-size slot (MaxCollPerQuery entries) assigned
+// at registration time, so writes are in-place and never exhaust a shared
+// allocator. We borrow the existing NameOffset from each attribute's node —
+// the URI is already stored in the string region from SyscallAttrCreate.
 func (mgr *KernelAttrManager) writeQueryCollection(q *queryPattern, uris []string, count int) {
 	node := mgr.node(q.resultSlot)
 
@@ -706,18 +712,14 @@ func (mgr *KernelAttrManager) writeQueryCollection(q *queryPattern, uris []strin
 		return
 	}
 
-	// Cap at 128 results to bound memory usage.
-	if count > 128 {
-		count = 128
+	// Cap at the per-query slot capacity.
+	if count > MaxCollPerQuery {
+		count = MaxCollPerQuery
 	}
 
 	// Look up each matched URI's attribute node and borrow its NameOffset
 	// (the URI string is already stored in the string region from SyscallAttrCreate).
-	type uriStr struct {
-		off uint32
-		len uint16
-	}
-	var strBuf [128]uriStr
+	collOff := q.collOff
 	actualCount := 0
 	for i := 0; i < count; i++ {
 		attrSlot, found := mgr.trieLookup(uris[i])
@@ -725,46 +727,28 @@ func (mgr *KernelAttrManager) writeQueryCollection(q *queryPattern, uris []strin
 			continue
 		}
 		attrNode := mgr.node(attrSlot)
-		strBuf[actualCount] = uriStr{off: attrNode.NameOffset, len: uint16(len(uris[i]))}
+		fv := flat.NewStr(flat.StrRef{
+			RegionOffset: attrNode.NameOffset,
+			Len:          uint16(len(uris[i])),
+		})
+		dst := mgr.baseVA + uintptr(mgr.collRegionOff) + uintptr(collOff) + uintptr(actualCount)*flat.ValueSize
+		*(*flat.Value)(unsafe.Pointer(dst)) = fv
 		actualCount++
 	}
-	count = actualCount
 
-	if count == 0 {
+	if actualCount == 0 {
 		node.SeqCounter++
 		node.CachedValue = flat.NewCollection(flat.CollRef{ElemType: flat.TypeStr})
 		node.SeqCounter++
 		return
 	}
-
-	// Bump-allocate collection entries in the collection region.
-	needed := uint32(count) * flat.ValueSize
-	collCapBytes := uint32(kmem.RegionCollCap) * flat.ValueSize
-	if mgr.collectionBumpOff+needed > collCapBytes {
-		// No room: write empty.
-		node.SeqCounter++
-		node.CachedValue = flat.NewCollection(flat.CollRef{ElemType: flat.TypeStr})
-		node.SeqCounter++
-		return
-	}
-
-	collOff := mgr.collectionBumpOff
-	for i := 0; i < count; i++ {
-		fv := flat.NewStr(flat.StrRef{
-			RegionOffset: strBuf[i].off,
-			Len:          strBuf[i].len,
-		})
-		dst := mgr.baseVA + uintptr(mgr.collRegionOff) + uintptr(collOff) + uintptr(i)*flat.ValueSize
-		*(*flat.Value)(unsafe.Pointer(dst)) = fv
-	}
-	mgr.collectionBumpOff += needed
 
 	// Write the collection ref to the result node.
 	node.SeqCounter++
 	node.CachedValue = flat.NewCollection(flat.CollRef{
 		ElemType:     flat.TypeStr,
 		RegionOffset: collOff,
-		Count:        uint16(count),
+		Count:        uint16(actualCount),
 	})
 	node.SeqCounter++
 }
@@ -794,11 +778,11 @@ func (mgr *KernelAttrManager) updateQueryResultsForURI(uri string) {
 			}
 		}
 		if match {
-			// Re-evaluate the full query and write updated collection results.
-			var matchURIs [256]string
-			matchCount := mgr.trieMatchPatternURIs(patStr, matchURIs[:])
+			// Re-evaluate the full query and write updated collection results
+			// into the query's dedicated fixed region (no bump allocation).
+			matchCount := mgr.trieMatchPatternURIs(patStr, matchURIScratch[:])
 
-			mgr.writeQueryCollection(q, matchURIs[:], matchCount)
+			mgr.writeQueryCollection(q, matchURIScratch[:], matchCount)
 
 			// Dirty-propagate from the query result slot so dependents know
 			// the collection changed.

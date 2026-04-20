@@ -30,6 +30,9 @@ type MailRow struct {
 	state   rowState
 	headers mailproto.KeyHeaderEntry
 
+	// OnLoaded is called after transitioning to rowLoaded so the caller can
+	// mark the containing RowPercentage as damaged and trigger a redraw.
+	OnLoaded            func()
 	onCollectionExpired func(collId uint32)
 	onRowSelected       func(collId, msgNum uint32)
 }
@@ -108,6 +111,9 @@ func (r *MailRow) HandleKeyHeadersResp(resp *mailproto.RespKeyHeaders) {
 	}
 
 	r.state = rowLoaded
+	if r.OnLoaded != nil {
+		r.OnLoaded()
+	}
 }
 
 // Select fires the onRowSelected callback. Called by the mail app on click.
