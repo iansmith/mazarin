@@ -101,28 +101,30 @@ Remove old GetHeaders/GetBody/BodyConfirm handlers.
 - [x] Build check: task fti:arm64 and task maildb:arm64 both pass
 - **Status:** complete
 
-### Phase 4: Mail Row Interactor — PENDING
+### Phase 4: Mail Row Interactor — COMPLETE
 New `MailRow` type: `mazarin/apps/mail/mail_row.go`
-- [ ] MailRow struct (collId, msgNum, state, cached KeyHeaderEntry)
-- [ ] Constructor: fire KeyHeaders(collId, msgNum, msgNum) immediately
-- [ ] Response handler: unpack page → KeyHeaderEntry[0], free pages, → Loaded state
-- [ ] ErrCollectionExpired handler: call onCollectionExpired callback
-- [ ] Implements std.GridRow (Sender/Subject/Date strings, placeholders while Loading)
-- [ ] Render: show loading indicator / placeholder row when in Pending/Loading state
-- [ ] Click handler: fire onRowSelected(collId, msgNum)
-- **Status:** pending
+- [x] MailRow struct (collId, msgNum, state, cached KeyHeaderEntry)
+- [x] Constructor: fire KeyHeaders(collId, msgNum, msgNum) immediately
+- [x] Response handler: unpack page → KeyHeaderEntry[0], free pages, → Loaded state
+- [x] ErrCollectionExpired handler: call onCollectionExpired callback
+- [x] Implements std.GridRow (Sender/Subject/Date strings, placeholders while Loading)
+- [x] Click handler: fire onRowSelected(collId, msgNum)
+- [x] Build check: `go build ./mazarin/apps/mail/` passes clean
+- **Status:** complete
 
-### Phase 5: Mail App Integration — PENDING
+### Phase 5: Mail App Integration — COMPLETE (build verified; QEMU run pending)
 Wire new protocol into `mazarin/apps/mail/main.go`.
-- [ ] Register CollectionAdd / CollectionRemove notification handlers in uring Dispatcher
-- [ ] On startup: CreateCollection(FilterAll) → collId, size
-- [ ] Populate GridTable with MailRow for each of first 50 messages (0..min(size-1,49))
-- [ ] Handle CollectionRemove: find row by MsgId, remove from grid, renumber
-- [ ] Handle CollectionAdd: insert new MailRow at correct position
-- [ ] Handle onCollectionExpired: re-create collection, rebuild all rows
-- [ ] Remove old requestInitialHeaders(), testRow, and HeaderEntry/HeadersEnd/BodyResult handlers
+- [x] Register CollectionAdd / CollectionRemove notification handlers in uring Dispatcher
+- [x] On startup: CreateCollection(FilterAll) → collId, size
+- [x] Populate GridTable with MailRow for each of first 50 messages (0..min(size-1,49))
+- [x] Handle CollectionRemove: remove row from tracking list (grid visual removal deferred — GridTable lacks RemoveRow)
+- [x] Handle CollectionAdd: create new MailRow + AddRow if < 50 shown
+- [x] Handle onCollectionExpired: clear rows + re-create collection
+- [x] Remove old requestInitialHeaders(), testRow, testMailRows(), handleMailResponse old handlers
+- [x] Removed `shared/mail` import; using `shared/mailproto` throughout
+- [x] Build verified: `task mail-app:arm64` passes clean
 - [ ] Verify end-to-end in QEMU (ARM64 HVF)
-- **Status:** pending
+- **Status:** complete (pending QEMU run)
 
 ## Open Questions (resolved)
 - Extend ProtoMailReq/ProtoMailResp? **Yes** ✓

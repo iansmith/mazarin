@@ -1,12 +1,15 @@
 // mail is a standalone shepherd that provides a mancini-based mail client.
-// It connects to maildb via uring IPC to fetch headers and message bodies.
+// It connects to maildb via uring IPC using the v2 mailproto HOT-collection
+// protocol. On startup it creates a FilterAll collection and populates the
+// grid with MailRow interactors that load their headers asynchronously.
 //
 // UI hierarchy:
-//   AppWindow
-//   └─ C1 (ColumnPercentage [30%, 10%, -1])
-//      ├─ G  (GridTable — Sender | Subject | Date)
-//      ├─ SC (Panel — small controls, throbber at far right)
-//      └─ T  (WebInteractor — message body placeholder)
+//
+//	AppWindow
+//	└─ C1 (ColumnPercentage [30%, 10%, -1])
+//	   ├─ G  (GridFrame — Sender | Subject | Date)
+//	   ├─ SC (Panel — small controls, throbber at far right)
+//	   └─ T  (Panel — message body placeholder)
 package main
 
 import (
@@ -27,7 +30,7 @@ import (
 	"mazzy/mazarin/uring"
 	mfont "mazzy/shared/font"
 	"mazzy/shared/ipc"
-	"mazzy/shared/mail"
+	"mazzy/shared/mailproto"
 	"mazzy/shared/wm"
 )
 
@@ -37,7 +40,26 @@ var (
 	app        *std.AppWindow
 	wmCh       = make(chan any, 128)
 	mailRespCh = make(chan any, 64)
+
+	// Grid frame — set in main, used by response handlers.
+	gridFrame *std.GridFrame
+
+	// Active collection state.
+	activeCollId uint32
+	mailRows     []*MailRow
+	rowByReqId   = make(map[[16]byte]*MailRow)
+	reqCounter   uint64
 )
+
+// nextReqId returns a new unique [16]byte request ID using a counter + timestamp.
+func nextReqId() [16]byte {
+	reqCounter++
+	var id [16]byte
+	n := uint64(time.Now().UnixNano())
+	*(*uint64)(unsafe.Pointer(&id[0])) = n
+	*(*uint64)(unsafe.Pointer(&id[8])) = reqCounter
+	return id
+}
 
 func startUringDispatcher(fc *fontcache.FontCache) {
 	d := uring.NewDispatcher()
@@ -45,7 +67,7 @@ func startUringDispatcher(fc *fontcache.FontCache) {
 		wmCh <- v
 	})
 	d.On(ipc.ProtoFontResponse, wm.DecodeFontResponse, fc.ReplyCh)
-	d.OnFunc(ipc.ProtoMailResp, mail.DecodeMailResp, func(v any) {
+	d.OnFunc(ipc.ProtoMailResp, mailproto.DecodeMailResp, func(v any) {
 		mailRespCh <- v
 	})
 	d.OnDeath(func(deadSID int16) {
@@ -69,7 +91,7 @@ func main() {
 		panic(fmt.Sprintf("[mail] FATAL: core services: %v", err))
 	}
 	if err := sys.WaitForShepherdReady("maildb", 75); err != nil {
-		fmt.Printf("[mail] WARNING: maildb not ready (%v), continuing with test data only\n", err)
+		fmt.Printf("[mail] WARNING: maildb not ready (%v), continuing without mail data\n", err)
 		maildbSID = -1
 	}
 	scratch, err := sys.SetupScratchDir(true)
@@ -151,24 +173,17 @@ func main() {
 	datePct := attr.ValueI64(mancini.LayoutURI("mail_grid", mancini.DataTypeInt64,
 		mancini.LayoutProp("col/date_pct")), 10)
 
-	// G — GridFrame wraps the grid, its NeuBox, and column Divider markers
-	// in a single parent whose height includes the bezel overhang strips
-	// above and below the content. Dividers live within its bounds; no
-	// clip escaping needed. Side padding is handled internally.
-	bezelH := int64(32) // matches Divider.Overhang
-	gridFrame := std.NewGridFrame("mail_grid", "mail_c1", pal, theme,
+	// G — GridFrame wraps the grid, its NeuBox, and column Divider markers.
+	bezelH := int64(32)
+	gridFrame = std.NewGridFrame("mail_grid", "mail_c1", pal, theme,
 		bezelH, chooser.ValueURI(),
 		[]string{"Sender", "Subject", "Date"},
 		[]float64{35, -1, 10},
 		[]string{senderPct.URI(), datePct.URI()},
 		[]*attr.Attribute[int64]{senderPct, datePct})
-	_ = gridFrame
 
 	// SC band — MarginParent (4px on all sides) child of C1 (gets 3%),
 	// with the SC Panel as its single child. Chooser is parented to mail_sc.
-	// Use the soft lavender/salmon tint (the color the WebInteractor used
-	// for its empty-HTML background) so the controls strip stands out.
-	// NOTE: passed without SwapRB to preserve the visual seen previously.
 	scPal := mctheme.NewDefaultPaletteWithColors(
 		color.NRGBA{R: 232, G: 230, B: 244, A: 255},
 		mancini.SwapRB(color.NRGBA{R: 30, G: 30, B: 30, A: 255}))
@@ -178,14 +193,7 @@ func main() {
 	sc := std.NewPanel("mail_sc", "mail_sc_margin", scPal, int64(winW), 0)
 	_ = sc
 
-	// Populate with test data.
-	for _, row := range testMailRows() {
-		gridFrame.AddRow(row)
-	}
-
-	// T — Panel placeholder for message body, child of C1. Uses the
-	// shared pal so the background matches the grid above. Will be
-	// swapped for a WebInteractor once a render engine is wired in.
+	// T — Panel placeholder for message body, child of C1.
 	bodyPanel := std.NewPanel("mail_web", "mail_c1", pal, int64(winW), 0)
 	_ = bodyPanel
 
@@ -253,13 +261,10 @@ func main() {
 	disp.Debug = true
 
 	// Position chooser at far right of SC panel.
-	// SC band is 3% of winH starting at 30% of winH, inset by 4px on all
-	// sides by MarginParent. chooser is 28x28, centered vertically in
-	// SC's inner area, 4px from SC's right edge (matching MarginParent).
 	chooserLH := chooser.GetLayout()
 	scInnerY := int64(winH)*30/100 + 4
 	scInnerH := int64(winH)*3/100 - 8
-	chooserLH.X.Set(int64(winW) - 32) // 4px right margin + 28px chooser width
+	chooserLH.X.Set(int64(winW) - 32)
 	chooserLH.Y.Set(scInnerY + (scInnerH-28)/2)
 	chooserLH.Width.Set(28)
 	chooserLH.Height.Set(28)
@@ -275,8 +280,8 @@ func main() {
 	fmt.Printf("[mail:timing] initial draw: %v\n", time.Since(t0))
 	fmt.Printf("[mail:timing] TOTAL startup: %v\n", time.Since(t0))
 
-	// 13. Request initial headers from maildb.
-	go requestInitialHeaders()
+	// 13. Request initial mail collection from maildb.
+	go requestCreateCollection()
 
 	// 14. Main event loop.
 	eagerCh := attr.OnEager()
@@ -292,7 +297,7 @@ func main() {
 	}
 
 	var clickTimer <-chan time.Time
-	throbTicker := time.NewTicker(100 * time.Millisecond) // 10Hz throbber animation
+	throbTicker := time.NewTicker(100 * time.Millisecond)
 	defer throbTicker.Stop()
 
 	for {
@@ -366,58 +371,124 @@ func main() {
 	}
 }
 
-// requestInitialHeaders sends a GetHeaders request to maildb for today's
-// date, requesting the 50 most recent messages.
-func requestInitialHeaders() {
-	var req mail.GetHeaders
-	req.Limit = 50
-	today := time.Now().UTC().Format("2006-01-02")
-	copy(req.Date[:], today)
-
-	msg := mail.EncodeGetHeaders(&req)
-	if err := uring.Send(maildbSID, &msg); err != nil {
-		fmt.Printf("[mail] GetHeaders send failed: %v\n", err)
+// requestCreateCollection sends CreateCollection(FilterAll, SortDesc) to maildb.
+func requestCreateCollection() {
+	if maildbSID <= 0 {
+		fmt.Println("[mail] maildb not available, skipping CreateCollection")
+		return
 	}
-	fmt.Printf("[mail] sent GetHeaders date=%s limit=%d\n", today, req.Limit)
+	reqId := nextReqId()
+	req := mailproto.CreateCollectionReq{
+		RequestId:  reqId,
+		FilterType: mailproto.FilterAll,
+		SortOrder:  mailproto.SortDesc,
+	}
+	msg := mailproto.EncodeCreateCollection(&req)
+	if err := uring.Send(maildbSID, &msg); err != nil {
+		fmt.Printf("[mail] CreateCollection send failed: %v\n", err)
+	}
+	fmt.Println("[mail] sent CreateCollection(FilterAll, SortDesc)")
 }
 
-// handleMailResponse processes responses from maildb.
+// handleMailResponse dispatches a decoded mailproto message to the right handler.
 func handleMailResponse(v any) {
 	switch resp := v.(type) {
-	case mail.HeaderEntry:
-		from, subject, _ := mail.UnpackHeaderEntry(&resp)
-		fmt.Printf("[mail] header: %s — %s (body=%d bytes)\n", from, subject, resp.BodyLen)
-	case mail.HeadersEnd:
-		fmt.Printf("[mail] headers complete: %d messages\n", resp.Count)
-	case mail.BodyResult:
-		fmt.Printf("[mail] body received: %d bytes in %d pages at VA 0x%x\n",
-			resp.BodyLen, resp.NumPages, resp.TargetVA)
-	case mail.ErrorResult:
-		errStr := string(resp.Msg[:resp.MsgLen])
-		fmt.Printf("[mail] error from maildb: %s\n", errStr)
+	case mailproto.RespCreateCollection:
+		handleCreateCollectionResp(&resp)
+	case mailproto.RespKeyHeaders:
+		handleKeyHeadersResp(&resp)
+	case mailproto.CollectionAdd:
+		handleCollectionAdd(&resp)
+	case mailproto.CollectionRemove:
+		handleCollectionRemove(&resp)
+	case mailproto.RespMarkRead:
+		fmt.Printf("[mail] MarkRead ack: errCode=%d\n", resp.ErrCode)
+	case mailproto.RespMarkDeleted:
+		fmt.Printf("[mail] MarkDeleted ack: errCode=%d newSize=%d\n", resp.ErrCode, resp.NewSize)
 	default:
-		fmt.Printf("[mail] unknown mail response: %T\n", v)
+		fmt.Printf("[mail] unhandled mail response: %T\n", v)
 	}
 }
 
-// testRow implements std.GridRow for static test data.
-type testRow struct {
-	sender  string
-	subject string
-	date    string
+// handleCreateCollectionResp receives the RespCreateCollection and populates
+// the grid with MailRow instances for the first 50 messages.
+func handleCreateCollectionResp(resp *mailproto.RespCreateCollection) {
+	if resp.ErrCode != mailproto.ErrNone {
+		fmt.Printf("[mail] CreateCollection failed: errCode=%d\n", resp.ErrCode)
+		return
+	}
+	activeCollId = resp.CollId
+	fmt.Printf("[mail] collection created: collId=%d size=%d\n", resp.CollId, resp.Size)
+
+	limit := int(resp.Size)
+	if limit > 50 {
+		limit = 50
+	}
+	for i := 0; i < limit; i++ {
+		reqId := nextReqId()
+		row := NewMailRow(maildbSID, activeCollId, uint32(i), reqId,
+			onCollectionExpired, onRowSelected)
+		mailRows = append(mailRows, row)
+		rowByReqId[reqId] = row
+		gridFrame.AddRow(row)
+	}
+	fmt.Printf("[mail] added %d MailRows to grid\n", limit)
 }
 
-func (r testRow) Sender() string  { return r.sender }
-func (r testRow) Subject() string { return r.subject }
-func (r testRow) Date() string    { return r.date }
-
-func testMailRows() []testRow {
-	return []testRow{
-		{"Alice <alice@example.com>", "Meeting notes from Monday", "Apr 14"},
-		{"Bob Smith <bob@corp.net>", "Q2 budget proposal attached", "Apr 13"},
-		{"GitHub <noreply@github.com>", "[mazarin] PR #42 merged", "Apr 12"},
-		{"Carol <carol@univ.edu>", "Re: constraint solver bug", "Apr 11"},
-		{"Dave's Bakery <news@daves.com>", "Your order is ready for pickup", "Apr 10"},
-		{"Eve <eve@security.io>", "TLS certificate expiring soon", "Apr 09"},
+// handleKeyHeadersResp routes a RespKeyHeaders to the matching MailRow.
+func handleKeyHeadersResp(resp *mailproto.RespKeyHeaders) {
+	row, ok := rowByReqId[resp.RequestId]
+	if !ok {
+		fmt.Printf("[mail] RespKeyHeaders: no matching row for requestId\n")
+		return
 	}
+	delete(rowByReqId, resp.RequestId)
+	row.HandleKeyHeadersResp(resp)
+}
+
+// handleCollectionAdd handles an unsolicited CollectionAdd notification.
+func handleCollectionAdd(notif *mailproto.CollectionAdd) {
+	if notif.CollId != activeCollId {
+		return
+	}
+	fmt.Printf("[mail] CollectionAdd: msgNum=%d newSize=%d\n", notif.MsgNum, notif.NewSize)
+	if len(mailRows) < 50 {
+		reqId := nextReqId()
+		row := NewMailRow(maildbSID, activeCollId, notif.MsgNum, reqId,
+			onCollectionExpired, onRowSelected)
+		mailRows = append(mailRows, row)
+		rowByReqId[reqId] = row
+		gridFrame.AddRow(row)
+	}
+}
+
+// handleCollectionRemove handles an unsolicited CollectionRemove notification.
+// The row is removed from the app tracking list. Visual removal from GridTable
+// is deferred until GridTable supports row removal.
+func handleCollectionRemove(notif *mailproto.CollectionRemove) {
+	if notif.CollId != activeCollId {
+		return
+	}
+	fmt.Printf("[mail] CollectionRemove: msgNum=%d newSize=%d\n", notif.MsgNum, notif.NewSize)
+	for i, row := range mailRows {
+		if row.MsgNum() == notif.MsgNum {
+			delete(rowByReqId, row.RequestId())
+			mailRows = append(mailRows[:i], mailRows[i+1:]...)
+			break
+		}
+	}
+}
+
+// onCollectionExpired is called by a MailRow when ErrCollectionExpired arrives.
+// It rebuilds the collection from scratch.
+func onCollectionExpired(collId uint32) {
+	fmt.Printf("[mail] collection %d expired, re-requesting\n", collId)
+	mailRows = mailRows[:0]
+	rowByReqId = make(map[[16]byte]*MailRow)
+	go requestCreateCollection()
+}
+
+// onRowSelected is called by a MailRow when the user selects it.
+func onRowSelected(collId, msgNum uint32) {
+	fmt.Printf("[mail] row selected: collId=%d msgNum=%d\n", collId, msgNum)
 }
