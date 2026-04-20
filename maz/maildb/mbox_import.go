@@ -248,6 +248,11 @@ func mboxImport(mboxDir string, tracker *ftiTracker, notify func(string)) (*badg
 	fmt.Printf("[maildb] mboxImport: badger flush complete, %d messages stored\n", count)
 	notify(fmt.Sprintf("Import complete: %d messages in database", count))
 
+	// Initialise persistent counters. All newly imported messages are unread.
+	if err := initCounters(db, count, count); err != nil {
+		fmt.Printf("[maildb] WARNING: initCounters failed: %v\n", err)
+	}
+
 	// Signal that no more fti requests will be enqueued.
 	tracker.close()
 

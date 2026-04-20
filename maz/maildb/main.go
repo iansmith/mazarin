@@ -6,7 +6,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"unsafe"
 
@@ -20,6 +19,7 @@ import (
 	"mazzy/shared/fti"
 	"mazzy/shared/ipc"
 	"mazzy/shared/mail"
+	"mazzy/shared/mailproto"
 	"mazzy/maz/maildb/shared"
 )
 
@@ -85,67 +85,54 @@ func decodeRawPayload(msg *ipc.UringIPCMsg) any {
 	return raw
 }
 
-// handleList sends all messages in reverse chronological order.
-// Uses the date-indexed keys ("date:<RFC3339>:<messageId>") for ordering.
-func handleList(db *badger.DB, respCh chan<- shared.Response) {
-	// First, count messages.
-	var total int
-	_ = db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.PrefetchValues = false
-		opts.Prefix = []byte("date:")
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		for it.Seek([]byte("date:")); it.Valid(); it.Next() {
-			total++
-		}
-		return nil
-	})
+// handleList sends messages in reverse chronological order using the
+// collection + MessageStore infrastructure.
+func handleList(cs *collectionStore, ms *MessageStore, respCh chan<- shared.Response) {
+	var filterArg [64]byte
+	coll, err := cs.createCollection(mailproto.FilterAll, mailproto.SortDesc, filterArg, -1)
+	if err != nil {
+		respCh <- shared.Response{Error: fmt.Sprintf("handleList: %v", err)}
+		return
+	}
 
+	total := coll.totalSize
 	resultCh := make(chan shared.MailMessage, 64)
 	respCh <- shared.Response{Total: total, Results: resultCh}
 
-	_ = db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = []byte("date:")
-		opts.Reverse = true
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		for it.Seek([]byte("date:\xff")); it.Valid(); it.Next() {
-			key := string(it.Item().Key())
-			// Key: "date:<RFC3339>:<messageId>" — extract messageId after 2nd colon.
-			if len(key) < 6 {
-				continue
-			}
-			rest := key[5:] // skip "date:"
-			colonIdx := -1
-			for i := 0; i < len(rest); i++ {
-				if rest[i] == ':' {
-					colonIdx = i
-					break
-				}
-			}
-			if colonIdx < 0 || colonIdx+1 >= len(rest) {
-				continue
-			}
-			msgID := rest[colonIdx+1:]
+	go func() {
+		defer close(resultCh)
+		if total == 0 {
+			return
+		}
 
-			item, err := txn.Get([]byte(msgID))
-			if err != nil {
-				continue
+		// Load up to the first 500 entries in windows of 128.
+		limit := total
+		if limit > 500 {
+			limit = 500
+		}
+		for start := 0; start < limit; start += maxWindowLoad {
+			end := start + maxWindowLoad - 1
+			if end >= limit {
+				end = limit - 1
 			}
-			var msg shared.MailMessage
-			_ = item.Value(func(val []byte) error {
-				return json.Unmarshal(val, &msg)
-			})
-			if msg.MessageId != "" {
-				resultCh <- msg
+			if err := cs.loadWindow(coll, uint32(start), uint32(end)); err != nil {
+				fmt.Printf("[maildb] handleList loadWindow error: %v\n", err)
+				return
+			}
+			for i := start; i <= end; i++ {
+				msgId, ok := coll.entries[uint32(i)]
+				if !ok || msgId == "" {
+					continue
+				}
+				headers, err := ms.LoadHeaders(msgId)
+				if err != nil {
+					continue
+				}
+				resultCh <- *headers
 			}
 		}
-		return nil
-	})
-	close(resultCh)
-	fmt.Printf("[maildb] list: sent %d messages\n", total)
+		fmt.Printf("[maildb] list: sent up to %d messages\n", limit)
+	}()
 }
 
 // MazarinMain is the .maz plugin entry point. Identical semantics to main();
@@ -299,8 +286,12 @@ func main() {
 	if ir.err != nil {
 		fmt.Printf("[maildb] import failed: %v\n", ir.err)
 	}
+	var ms *MessageStore
+	var cs *collectionStore
 	if ir.db != nil {
 		defer ir.db.Close()
+		ms = newMessageStore(ir.db)
+		cs = newCollectionStore(ir.db, ms)
 		// Enable the mail protocol handler now that the db is ready.
 		mh.mu.Lock()
 		mh.db = ir.db
@@ -315,12 +306,12 @@ func main() {
 	// 6. Enter query loop.
 	fmt.Println("[maildb] entering query loop")
 	for query := range queryCh {
-		if ir.db == nil {
+		if ir.db == nil || cs == nil {
 			respCh <- shared.Response{Error: "database not available"}
 			continue
 		}
 		if query == "list" {
-			handleList(ir.db, respCh)
+			handleList(cs, ms, respCh)
 		} else {
 			// Search queries will be forwarded to fti in a future phase.
 			respCh <- shared.Response{Error: "search not yet available (migrating to fti)"}

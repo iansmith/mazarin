@@ -27,10 +27,13 @@ const (
 const (
 	// Requests (shepherd -> fti)
 	MsgTypeIndexDocument uint32 = 1 // Index a document (content in shared pages)
+	MsgTypeSearchMail    uint32 = 2 // Search indexed mail (maildb → fti)
 
 	// Responses (fti -> shepherd)
 	MsgTypeIndexingCompleted uint32 = 10 // Indexing finished successfully
 	MsgTypeIndexError        uint32 = 11 // Indexing failed
+	MsgTypeSearchResult      uint32 = 20 // Search results (page transfer) or count-only
+	MsgTypeSearchError       uint32 = 21 // Search failed
 )
 
 // IndexDocument is the request to index a document. The actual content
@@ -114,6 +117,8 @@ func DecodeFTIReq(msg *ipc.UringIPCMsg) any {
 	switch msgType {
 	case MsgTypeIndexDocument:
 		return *(*IndexDocument)(unsafe.Pointer(&msg.Payload[4]))
+	case MsgTypeSearchMail:
+		return *(*SearchMail)(unsafe.Pointer(&msg.Payload[4]))
 	default:
 		return nil
 	}
@@ -127,6 +132,10 @@ func DecodeFTIResp(msg *ipc.UringIPCMsg) any {
 		return *(*IndexingCompleted)(unsafe.Pointer(&msg.Payload[4]))
 	case MsgTypeIndexError:
 		return *(*IndexError)(unsafe.Pointer(&msg.Payload[4]))
+	case MsgTypeSearchResult:
+		return *(*SearchResult)(unsafe.Pointer(&msg.Payload[4]))
+	case MsgTypeSearchError:
+		return *(*SearchError)(unsafe.Pointer(&msg.Payload[4]))
 	default:
 		return nil
 	}
@@ -212,6 +221,120 @@ func WriteSharedPageHeader(dst []byte, subject, from, sender, date string) int {
 	off += copy(dst[off:], sender)
 	off += copy(dst[off:], date)
 	return off
+}
+
+// --- Search types (maildb ↔ fti) ---
+
+// QueryType constants for SearchMail.
+const (
+	QueryTypeSubject uint32 = 1 // match against Subject field
+	QueryTypeFrom    uint32 = 2 // match against From/Sender fields
+)
+
+// SearchMail is a search request sent from maildb to fti.
+// Size=0 means count-only: fti returns SearchResult with Total set but no page.
+// Layout: RequestId[16]+QueryType(4)+SortOrder(4)+From(4)+Size(4)+QueryLen(2)+Query[58] = 92 bytes. Total: 96.
+type SearchMail struct {
+	RequestId [16]byte
+	QueryType uint32
+	SortOrder uint32 // 0=newest-first, 1=oldest-first
+	From      uint32 // offset into result set (pagination)
+	Size      uint32 // hits to return; 0 = count only
+	QueryLen  uint16
+	Query     [58]byte // search term, null-terminated
+}
+
+// SearchResult is fti's response to a SearchMail request.
+// TargetVA is 0 when Size=0 (count-only). Total is always set.
+// Layout: RequestId[16]+TargetVA(8)+NumBytes(4)+Count(4)+Total(4)+ErrCode(4) = 40 bytes. Total: 44.
+type SearchResult struct {
+	RequestId [16]byte
+	TargetVA  uint64
+	NumBytes  uint32
+	Count     uint32
+	Total     uint32
+	ErrCode   uint32
+}
+
+// SearchError is returned by fti when a search fails.
+// Layout: RequestId[16]+ErrCode(4)+MsgLen(2)+_pad(2)+Msg[80] = 104 bytes. Total: 108.
+type SearchError struct {
+	RequestId [16]byte
+	ErrCode   uint32
+	MsgLen    uint16
+	_pad      [2]byte
+	Msg       [80]byte
+}
+
+// SearchResultEntry is one record in a search result page.
+// sizeof = 88 bytes; 46 entries per 4096-byte page; 128 entries = 3 pages.
+type SearchResultEntry struct {
+	IdLen uint16
+	_pad  [6]byte
+	DocId [80]byte
+}
+
+// SearchResultEntrySize is the byte size of a SearchResultEntry.
+const SearchResultEntrySize = 88
+
+// EncodeSearchMail wraps a SearchMail in a ProtoFTIReq message.
+func EncodeSearchMail(s *SearchMail) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFTIReq
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeSearchMail
+	*(*SearchMail)(unsafe.Pointer(&msg.Payload[4])) = *s
+	return msg
+}
+
+// EncodeSearchResult wraps a SearchResult in a ProtoFTIResp message.
+func EncodeSearchResult(r *SearchResult) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFTIResp
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeSearchResult
+	*(*SearchResult)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+// EncodeSearchError wraps a SearchError in a ProtoFTIResp message.
+func EncodeSearchError(e *SearchError) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFTIResp
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeSearchError
+	*(*SearchError)(unsafe.Pointer(&msg.Payload[4])) = *e
+	return msg
+}
+
+// PackSearchMail builds a SearchMail from individual fields.
+func PackSearchMail(reqId [16]byte, queryType, sortOrder, from, size uint32, query string) SearchMail {
+	var s SearchMail
+	s.RequestId = reqId
+	s.QueryType = queryType
+	s.SortOrder = sortOrder
+	s.From = from
+	s.Size = size
+	n := copy(s.Query[:], query)
+	s.QueryLen = uint16(n)
+	return s
+}
+
+// UnpackSearchQuery extracts the query string from a SearchMail.
+func UnpackSearchQuery(s *SearchMail) string {
+	return string(s.Query[:s.QueryLen])
+}
+
+// PackSearchError creates a SearchError from a request ID and error message.
+func PackSearchError(reqId [16]byte, errCode uint32, errMsg string) SearchError {
+	var e SearchError
+	e.RequestId = reqId
+	e.ErrCode = errCode
+	n := copy(e.Msg[:], errMsg)
+	e.MsgLen = uint16(n)
+	return e
+}
+
+// UnpackSearchError extracts the error message from a SearchError.
+func UnpackSearchError(e *SearchError) string {
+	return string(e.Msg[:e.MsgLen])
 }
 
 // ReadSharedPageHeader reads the SharedPageHeader and extracts the
