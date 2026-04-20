@@ -370,12 +370,18 @@ func GetFramebufferSize() uint32 {
 	return virtioGPUDevice.FramebufferSize
 }
 
-// GetWidth returns the framebuffer width in pixels
+// GetWidth returns the actual display width in pixels.
+// Marked nosplit so it can be called from IRQ/nosplit context.
+//
+//go:nosplit
 func GetWidth() uint32 {
 	return virtioGPUDevice.Width
 }
 
-// GetHeight returns the display height in pixels (visible area)
+// GetHeight returns the actual display height in pixels.
+// Marked nosplit so it can be called from IRQ/nosplit context.
+//
+//go:nosplit
 func GetHeight() uint32 {
 	return virtioGPUDevice.Height
 }

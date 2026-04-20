@@ -710,9 +710,11 @@ func topHalfTabletHandler() {
 	}
 
 	// Move hardware cursor to latest absolute position.
+	// Use the actual runtime display dimensions (not the compile-time minimum
+	// constants) so the cursor tracks input coordinates correctly.
 	if gotAbs {
-		screenX := (lastAbsX * gpu.DisplayWidth) / (hid.AbsMax + 1)
-		screenY := (lastAbsY * gpu.DisplayHeight) / (hid.AbsMax + 1)
+		screenX := (lastAbsX * gpu.GetWidth()) / (hid.AbsMax + 1)
+		screenY := (lastAbsY * gpu.GetHeight()) / (hid.AbsMax + 1)
 		gpu.TopHalfMoveCursor(screenX, screenY)
 	}
 

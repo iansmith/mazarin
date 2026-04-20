@@ -80,6 +80,13 @@ const (
 	BTN_MIDDLE = 0x112
 )
 
+// mouseXMax is the rightmost X pixel the cursor is allowed to reach.
+// On macOS with Apple HVF, the OS intercepts mouse events past this boundary
+// (it reserves a strip for the Dock/system chrome), causing a double-cursor
+// where both QEMU's and macOS's cursor appear simultaneously.
+// Empirically determined to be 2051 on a 2056-wide VirtIO GPU display.
+const mouseXMax = 2051
+
 // Input type tracking — when the type of input changes, we emit a newline
 // so different input types appear on separate lines in the serial console.
 const (
@@ -158,6 +165,11 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 			}
 		}
 
+		// Log every mouse button press with screen coordinates for diagnostics.
+		if ev.Code >= BTN_LEFT && ev.Value == 1 {
+			fmt.Printf("[rachel:click] screen=(%d,%d) btn=%d\n", mouseX, mouseY, ev.Code)
+		}
+
 		// Background click: if a mouse button is pressed and nothing is
 		// under the cursor, revoke all focus. This is handled outside the
 		// dispatch pipeline because an empty pick list means no agent fires.
@@ -189,8 +201,8 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 			if mouseX < 0 {
 				mouseX = 0
 			}
-			if mouseX >= displayWidth {
-				mouseX = displayWidth - 1
+			if mouseX > mouseXMax {
+				mouseX = mouseXMax
 			}
 		case REL_Y:
 			mouseY += int32(ev.Value)
@@ -212,8 +224,8 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 			if mouseX < 0 {
 				mouseX = 0
 			}
-			if mouseX >= displayWidth {
-				mouseX = displayWidth - 1
+			if mouseX > mouseXMax {
+				mouseX = mouseXMax
 			}
 		case hid.AbsY:
 			mouseY = int32((uint32(ev.Value) * uint32(displayHeight)) / (hid.AbsMax + 1))
@@ -1642,10 +1654,6 @@ func MazarinMain() {
 		panic(fmt.Sprintf("[rachel] FATAL: fs: %v", err))
 	}
 
-	// Mirror /data to /tmp/data so shepherds can write to ramdisk paths
-	// that mirror the read-only data disk layout.
-	TestOnlyOnRamdisk()
-
 	// Read rachel.toml from the ext2 filesystem.
 	var rachelCfg constants.RachelConfig
 	lf, lfErr := file.LoadFile("/rachel.toml")
@@ -1808,6 +1816,16 @@ func MazarinMain() {
 	_ = ready
 	sys.SetReady(true)
 	fmt.Printf("[rachel] Ready=true\n")
+
+	// Mirror /data to /tmp/data after linux is ready, since mkdirat is
+	// delegated to the linux shepherd which can't start until rachel is Ready.
+	go func() {
+		if err := sys.WaitForShepherdReady("linux", 30); err != nil {
+			fmt.Printf("[rachel] TestOnlyOnRamdisk: linux not ready: %v\n", err)
+			return
+		}
+		TestOnlyOnRamdisk()
+	}()
 
 	// Record time at rachel ready for blit rate reporting.
 	blitRateStart = time.Now()

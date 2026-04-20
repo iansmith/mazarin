@@ -201,9 +201,8 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	// --- File syscalls delegated to the linux shepherd ---
 
 	case sysid.Mkdirat, sysid.Unlinkat, sysid.Fchmodat,
-		sysid.Utimensat, sysid.Faccessat, sysid.Readlinkat,
-		sysid.Statfs, sysid.Chdir:
-		// String argument in arg1 (pathname).
+		sysid.Utimensat, sysid.Faccessat, sysid.Readlinkat:
+		// *at-family syscalls take dirfd in arg0 and pathname in arg1.
 		if arg1 != 0 {
 			pa, va, n := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg1))
 			if pa == 0 {
@@ -212,6 +211,35 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataPagePA = pa
 			handlerDataVA = va
 			dataLen = uint32(n)
+		}
+
+	case sysid.Chdir:
+		// chdir(path): pathname is in arg0 (not arg1 — chdir is not an *at
+		// syscall). Without this case the handler would see an empty path
+		// and return EINVAL.
+		if arg0 != 0 {
+			pa, va, n := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg0))
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = uint32(n)
+		}
+
+	case sysid.Statfs:
+		// statfs(path, buf): pathname in arg0, output buf in arg1.
+		// Copy pathname in; handler reuses the same page to write the
+		// 120-byte struct statfs64 back. Kernel copies it to arg1 via the
+		// isCopyBackSyscall path.
+		if arg0 != 0 {
+			pa, va, _ := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg0))
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = 4096
 		}
 
 	case sysid.Renameat:
@@ -327,6 +355,9 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		callerBufLen = 128 // sizeof(struct stat) on linux/arm64 and linux/amd64
 	case sysid.Fstatfs:
 		// fstatfs(fd, buf): arg1=buf, no size arg.
+		callerBufLen = 120
+	case sysid.Statfs:
+		// statfs(path, buf): arg1=buf, no size arg.
 		callerBufLen = 120 // sizeof(struct statfs) on linux
 	case sysid.Fstatat:
 		// fstatat(dirfd, path, statbuf, flags): arg2=statbuf (output).
@@ -721,7 +752,7 @@ func prefaultOutputBuffer(bufVA uintptr, bufLen uintptr) {
 func isCopyBackSyscall(id sysid.ID) bool {
 	switch id {
 	case sysid.Read, sysid.Pread64, sysid.Fstat, sysid.Getdents64, sysid.Getcwd,
-		sysid.Fstatfs, sysid.Fstatat, sysid.Readlinkat, sysid.Readv:
+		sysid.Fstatfs, sysid.Statfs, sysid.Fstatat, sysid.Readlinkat, sysid.Readv:
 		return true
 	}
 	return false

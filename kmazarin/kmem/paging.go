@@ -2992,6 +2992,34 @@ func AllocAndMapUserPageWithL0(userVA uintptr, elfFlags uint32, l0PA uintptr) (f
 	return framePA, scratchVA
 }
 
+// MapExistingUserPageWithL0 installs a PTE mapping userVA → pa in the shepherd's
+// page table (identified by l0PA), with permissions derived from ELF phdr flags,
+// and increments the PageDescriptor RefCount for pa.
+//
+// Unlike AllocAndMapUserPageWithL0, this does NOT allocate a new frame — pa must
+// already belong to a caller (typically the shared-text cache) that holds a ref
+// to keep it alive. The RefCount bump here gives the new mapping its own ref,
+// which is decremented by releasePageByPA when CleanupShepherdPages runs.
+//
+// The data cache is NOT cleaned here — the caller is responsible for having
+// done CleanPageCache at population time (the pages are already coherent from
+// the original load).
+//
+// Returns true on success.
+func MapExistingUserPageWithL0(userVA, pa uintptr, elfFlags uint32, l0PA uintptr) bool {
+	if !pagingInitialized {
+		InitPaging()
+	}
+	if !mapUserPageWithL0(userVA, pa, elfFlags, l0PA) {
+		return false
+	}
+	if desc := GetPageDescriptor(pa); desc != nil {
+		desc.RefCount++
+		desc.Flags |= PD_SHARED
+	}
+	return true
+}
+
 // AllocAndMapUserPageNoZero is like AllocAndMapUserPage but skips zeroing.
 // Only use this for pages that will be entirely overwritten (e.g., code pages
 // where every byte will be copied from the ELF file).

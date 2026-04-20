@@ -176,6 +176,21 @@ func ClearPageDescriptor(pa uintptr) {
 	desc.Flags = 0
 }
 
+// BumpPageRefCount increments the refcount of the page at pa. Returns the new
+// refcount, or 0 if pa is not in the pool. Used by the shared-text cache to
+// mark a page as held by the cache itself (independent of any process mapping).
+//
+//go:nosplit
+func BumpPageRefCount(pa uintptr) int16 {
+	desc := GetPageDescriptor(pa)
+	if desc == nil {
+		return 0
+	}
+	desc.RefCount++
+	desc.Flags |= PD_SHARED
+	return desc.RefCount
+}
+
 // TransferPageOwnership atomically changes the owner of a physical page.
 // Returns false if the PA is invalid or the current owner doesn't match fromPID.
 //

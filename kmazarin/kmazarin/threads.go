@@ -2008,8 +2008,8 @@ func threadExitInternal() uint64 {
 // DeferredCleanupEntry holds state for two-phase shepherd death cleanup.
 // When a shepherd dies with in-flight delegate calls as CALLER, we defer
 // page cleanup until the handler (linux shepherd) ACKs via SysDeathAck.
-// Only L0PA is stored — CleanupShepherdPages Phase 2 (full PT walk) handles
-// all page freeing without needing the span list.
+// L0PA is stored; CleanupShepherdPages is called with freeLeaves=true so
+// Phase 2 walks L3 entries and frees all leaf + PT pages without needing Spans.
 type DeferredCleanupEntry struct {
 	InUse bool
 	SID   ShepherdId
@@ -2030,10 +2030,10 @@ func CompleteDeferredCleanup(deadSID int16) {
 		}
 		// Safety net: reclaim any delegate call entries that SyscallReply didn't clear.
 		ksyscall.CleanupRemainingDelegateCallsForCaller(deadSID)
-		// Free all the dead shepherd's pages via Phase 2 full PT walk.
-		// Pass empty spans — Phase 2 (walkAndFreePageTablePages) catches everything.
+		// Free all the dead shepherd's pages. freeLeaves=true causes Phase 2 to
+		// walk L3 entries and free leaf pages (Spans is empty in deferred path).
 		var emptySpans proc.LockedSpanGroup
-		kmem.CleanupShepherdPages(e.SID, &emptySpans, e.L0PA)
+		kmem.CleanupShepherdPages(e.SID, &emptySpans, e.L0PA, true)
 		e.InUse = false
 		return
 	}
@@ -2050,7 +2050,7 @@ func FlushAllDeferredCleanups() {
 		}
 		ksyscall.CleanupRemainingDelegateCallsForCaller(int16(e.SID))
 		var emptySpans proc.LockedSpanGroup
-		kmem.CleanupShepherdPages(e.SID, &emptySpans, e.L0PA)
+		kmem.CleanupShepherdPages(e.SID, &emptySpans, e.L0PA, true)
 		e.InUse = false
 	}
 }
@@ -2273,8 +2273,8 @@ func releaseShepherdSchedLockHeld(shepherdIdx int16, pid ShepherdId, deferPages 
 
 	if deferPages {
 		// Two-phase death: save L0PA for deferred cleanup.
-		// Only L0PA is needed — CleanupShepherdPages Phase 2 (full PT walk)
-		// will free all leaf and intermediate pages without needing spans.
+		// freeLeaves=true in CompleteDeferredCleanup will walk L3 entries to
+		// free all leaf pages, since Spans is empty in the deferred path.
 		deferredCleanups[shepherdIdx] = DeferredCleanupEntry{
 			InUse: true,
 			SID:   pid,
@@ -2282,7 +2282,7 @@ func releaseShepherdSchedLockHeld(shepherdIdx int16, pid ShepherdId, deferPages 
 		}
 	} else {
 		// Normal path: free all physical pages now.
-		kmem.CleanupShepherdPages(pid, spans, l0PA)
+		kmem.CleanupShepherdPages(pid, spans, l0PA, false)
 	}
 
 	// Release the shepherd slot

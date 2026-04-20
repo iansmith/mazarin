@@ -128,10 +128,17 @@ const (
 )
 
 // Process represents a loaded userspace process
+type segSpan struct {
+	VA   uint64
+	Size uint64
+}
+
 type Process struct {
-	EntryPoint uint64
-	StackTop   uint64
-	StackBase  uint64
+	EntryPoint   uint64
+	StackTop     uint64
+	StackBase    uint64
+	SegmentCount int
+	SegmentSpans [16]segSpan
 }
 
 // currentProcess holds the currently loaded process (if any)
@@ -159,13 +166,11 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 	if !kmem.MapUserFramebufferWithL0(fbPA, fbSize, processL0PA) {
 		return -7
 	}
-	addSpan(UserFramebufferVA, UserFramebufferSize)
 
 	// Map constraint shared pages read-only into shepherd address space.
 	if !kmem.MapUserConstraintPagesWithL0(processL0PA) {
 		return -8
 	}
-	addSpan(UserConstraintPagesVA, UserConstraintPagesSize)
 
 	// Initialize kernel attribute manager (once, on first shepherd launch).
 	InitKernelAttrManager()
@@ -198,18 +203,29 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 	// Create a new thread for this process
 	CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
 
-	// Cache symbol table, highest VA, filename, and allocate IPC uring ring.
+	// Cache symbol table, highest VA, filename, allocate IPC uring ring, and
+	// register all kernel-allocated VA ranges in Spans so CleanupShepherdPages
+	// Phase 1 correctly reclaims ELF, stack, framebuffer, and constraint pages.
 	for i := 0; i < proc.MaxShepherds; i++ {
 		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PageTableL0PA == processL0PA {
-			proc.ShepherdListData[i].SymbolTable = shepherdSymTable
-			proc.ShepherdListData[i].HighestVA = shepherdHighestVA
-			proc.ShepherdListData[i].Filename = filename
+			p := &proc.ShepherdListData[i]
+			p.SymbolTable = shepherdSymTable
+			p.HighestVA = shepherdHighestVA
+			p.Filename = filename
 
 			// Allocate IPC uring ring for the new shepherd
 			uringID := allocateUringID()
-			proc.ShepherdListData[i].UringID = uringID
-			allocateUringIPCRing(&proc.ShepherdListData[i], 0)
-			registerUringID(uringID, int16(proc.ShepherdListData[i].PID))
+			p.UringID = uringID
+			allocateUringIPCRing(p, 0)
+			registerUringID(uringID, int16(p.PID))
+
+			// Register kernel-allocated VA ranges that mmap syscall never sees.
+			for j := 0; j < loadedProc.SegmentCount; j++ {
+				p.Spans.Add(loadedProc.SegmentSpans[j].VA, loadedProc.SegmentSpans[j].Size)
+			}
+			p.Spans.Add(loadedProc.StackBase, 64*1024)
+			p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
+			p.Spans.Add(UserConstraintPagesVA, UserConstraintPagesSize)
 
 			break
 		}
@@ -238,6 +254,29 @@ func loadELF(data []byte, filename string, l0PA uintptr, shepherdNum uint64, ext
 		return nil, &elfError{"ELF machine type mismatch"}
 	}
 
+	// Consult the shared-text cache. On hit, read-only PT_LOAD segments are
+	// mapped from pre-loaded physical frames instead of allocated+copied,
+	// saving ~4-5 MiB per subsequent launch of the same shepherd binary.
+	// Writable segments (PF_W) always take the normal alloc+copy path.
+	//
+	// Scope: only plugin-host launches (shepherd.elf loading a .maz plugin)
+	// are cacheable. The embedded fs shepherd and legacy ET_EXEC loads skip
+	// the cache entirely so the single slot stays reserved for shepherd.elf.
+	var cacheSnap cacheSnapshot
+	cacheable := isCacheableLoad(extraArgs)
+	if cacheable {
+		cacheSnap = snapshotCache(data)
+	}
+
+	// On cache miss, record R-only segments here so we can populate the
+	// cache after all segments have been successfully loaded.
+	var newSegs []sharedSegment
+
+	// Record all PT_LOAD VA ranges so the caller can register them in the
+	// shepherd's Spans for correct cleanup on death.
+	var segSpans [16]segSpan
+	segCount := 0
+
 	for i := uint16(0); i < hdr.Phnum; i++ {
 		phdrOffset := hdr.Phoff + uint64(i)*uint64(hdr.Phentsize)
 		if phdrOffset+uint64(hdr.Phentsize) > uint64(len(data)) {
@@ -247,9 +286,58 @@ func loadELF(data []byte, filename string, l0PA uintptr, shepherdNum uint64, ext
 		if phdr.Type != PT_LOAD {
 			continue
 		}
-		if err := loadSegment(data, &phdr, l0PA); err != nil {
+
+		// Compute the same start/end rounding loadSegment uses, for cache key math.
+		const pageSize = uint64(4096)
+		startPage := phdr.Vaddr &^ (pageSize - 1)
+		endPage := (phdr.Vaddr + phdr.Memsz + pageSize - 1) &^ (pageSize - 1)
+		roundedSize := endPage - startPage
+
+		// Record VA range for Spans registration after shepherd is created.
+		if segCount < len(segSpans) {
+			segSpans[segCount] = segSpan{VA: startPage, Size: roundedSize}
+			segCount++
+		}
+
+		// Cache hit + cacheable segment → map existing frames, skip alloc+copy.
+		if cacheSnap.hit && isCacheableSegment(phdr.Flags) {
+			var cached *sharedSegment
+			for j := range cacheSnap.segments {
+				seg := &cacheSnap.segments[j]
+				if seg.startVA == startPage && seg.memsz == roundedSize && seg.flags == phdr.Flags {
+					cached = seg
+					break
+				}
+			}
+			if cached != nil {
+				if err := mapSharedSegment(cached, l0PA); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			// Fingerprint matched but no segment entry for these bounds;
+			// fall through to a normal load (won't be cached — slot is full).
+		}
+
+		pagePAs, err := loadSegment(data, &phdr, l0PA)
+		if err != nil {
 			return nil, err
 		}
+
+		// On cache miss, record R-only segments for post-load populate.
+		if cacheable && !cacheSnap.hit && isCacheableSegment(phdr.Flags) && len(pagePAs) > 0 {
+			newSegs = append(newSegs, sharedSegment{
+				startVA: startPage,
+				memsz:   roundedSize,
+				flags:   phdr.Flags,
+				pas:     pagePAs,
+			})
+		}
+	}
+
+	// Populate cache if this load brought in R-only segments and the slot is empty.
+	if cacheable && !cacheSnap.hit && len(newSegs) > 0 {
+		populateCache(cacheSnap.sizeBytes, cacheSnap.fp, newSegs)
 	}
 
 	// Allocate a user stack (64KB at a fixed location for now)
@@ -269,9 +357,11 @@ func loadELF(data []byte, filename string, l0PA uintptr, shepherdNum uint64, ext
 	}
 
 	return &Process{
-		EntryPoint: hdr.Entry,
-		StackTop:   stackTop,
-		StackBase:  stackBase,
+		EntryPoint:   hdr.Entry,
+		StackTop:     stackTop,
+		StackBase:    stackBase,
+		SegmentCount: segCount,
+		SegmentSpans: segSpans,
 	}, nil
 }
 
@@ -550,9 +640,13 @@ func findHighestVA(elfData []byte, hdr *elf64Header) uint64 {
 //
 // IMPORTANT: Uses AllocAndMapUserPageWithL0 which zeros all pages before use.
 // This ensures any padding within pages is zero, not garbage data.
-func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
+//
+// Returns the list of allocated physical frames in VA order (starting at the
+// page containing phdr.Vaddr), for the caller to record in the shared-text
+// cache if this segment is read-only.
+func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) ([]uintptr, error) {
 	if phdr.Memsz == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Calculate page-aligned boundaries
@@ -575,7 +669,7 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 		// Using explicit l0PA prevents race conditions with context switches.
 		framePA, _ := kmem.AllocAndMapUserPageWithL0(uintptr(pageVA), phdr.Flags, l0PA)
 		if framePA == 0 {
-			return &elfError{"failed to alloc/map/zero user page"}
+			return nil, &elfError{"failed to alloc/map/zero user page"}
 		}
 		pagePAs[page] = framePA
 
@@ -600,7 +694,7 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 			// Map the page's physical address to kernel scratch VA
 			kernelVA := kmem.MapPAToKernelScratch(pagePAs[pageIdx])
 			if kernelVA == 0 {
-				return &elfError{"failed to map PA to kernel scratch"}
+				return nil, &elfError{"failed to map PA to kernel scratch"}
 			}
 
 			// Write byte through kernel mapping
@@ -627,7 +721,7 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 		}
 	}
 
-	return nil
+	return pagePAs, nil
 }
 
 // allocateUserStack allocates pages for the user stack

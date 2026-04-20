@@ -347,6 +347,11 @@ func (s *fsIPCServer) ipcFstat(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *
 func (s *fsIPCServer) ipcMkdir(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
 	path := pathFromReq(conn, req)
 	kind, relPath := mt.resolve(path)
+	// An empty relPath means path is exactly a mount-point root — it already exists.
+	if relPath == "" || relPath == "/" {
+		resp.Err = -17 // EEXIST
+		return
+	}
 	fsys := mt.getFS(kind)
 	err := fsys.Mkdir(relPath, uint16(req.Mode))
 	resp.Err = ext2ToErrno(err)

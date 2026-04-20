@@ -8,6 +8,7 @@ tasks:
     sources:
       - 'maz/clocks/**/*'
       - 'mazarin/**/*.go'
+      - 'shared/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
@@ -24,6 +25,7 @@ tasks:
     sources:
       - 'maz/clocks/**/*'
       - 'mazarin/**/*.go'
+      - 'shared/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
@@ -40,6 +42,7 @@ tasks:
     sources:
       - 'maz/clocks/**/*'
       - 'mazarin/**/*.go'
+      - 'shared/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:

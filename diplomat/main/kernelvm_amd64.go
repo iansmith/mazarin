@@ -160,7 +160,7 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 	printString("\r\n")
 
 	// Step 4: Compute unified pool (remaining RAM for kmazarin's allocator)
-	unifiedPoolPages := uint64(193536) // 756MB
+	unifiedPoolPages := uint64(393216) // 1536MB (1.5GB)
 	unifiedPhys, err := allocatePhysPages(unifiedPoolPages)
 	if err != nil {
 		printString("Unified pool alloc FAILED\r\n")

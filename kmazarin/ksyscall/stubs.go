@@ -233,7 +233,10 @@ func SyscallPrlimit64(_, _, _, _, _, _ uint64) int64 {
 // For MADV_DONTNEED and MADV_FREE on kernel heap pages, clears the PTEs
 // and returns physical frames to the buddy allocator. This is critical
 // for the Go runtime scavenger to reclaim unused heap memory.
-// For userspace or unrecognized advice, returns success (no-op).
+// For shepherd userspace pages, clears PTEs and returns frames so the Go
+// scavenger inside a shepherd can reclaim memory; Spans are preserved so
+// the next page fault demand-pages a fresh zeroed page.
+// For unrecognized advice, returns success (no-op).
 //
 //go:nosplit
 func SyscallMadvise(addr, length, advice, _, _, _ uint64) int64 {
@@ -247,31 +250,51 @@ func SyscallMadvise(addr, length, advice, _, _, _ uint64) int64 {
 		return 0
 	}
 
-	// Only release kernel heap pages (high VA range)
-	heapStart := uint64(constants.KernelHeapStart)
-	heapEnd := uint64(constants.KernelHeapEnd)
-	if addr < heapStart || addr+length > heapEnd {
-		return 0 // Outside kernel heap — no-op
-	}
-
 	// Align to page boundaries
 	pageSize := uint64(4096)
 	alignedAddr := addr &^ (pageSize - 1)
 	alignedEnd := (addr + length + pageSize - 1) &^ (pageSize - 1)
-
-	// Disable IRQs to prevent async preemption between ReleaseKernelPage
-	// (clears PTE, returns PA) and ReleasePageByPA (frees PA to buddy).
-	// Without this, a preempted goroutine could leave the buddy allocator
-	// in an inconsistent state if another goroutine concurrently calls madvise.
-	savedDAIF := saveAndDisableIRQs()
-	for va := alignedAddr; va < alignedEnd; va += pageSize {
-		pa := kmem.ReleaseKernelPage(uintptr(va))
-		if pa != 0 {
-			kmem.ReleasePageByPA(pa)
-		}
+	if alignedEnd <= alignedAddr {
+		return 0
 	}
-	restoreIRQs(savedDAIF)
 
+	heapStart := uint64(constants.KernelHeapStart)
+	heapEnd := uint64(constants.KernelHeapEnd)
+
+	if addr >= heapStart && addr+length <= heapEnd {
+		// Kernel heap path: use hardware page table (current goroutine's address space).
+		savedDAIF := saveAndDisableIRQs()
+		for va := alignedAddr; va < alignedEnd; va += pageSize {
+			pa := kmem.ReleaseKernelPage(uintptr(va))
+			if pa != 0 {
+				kmem.ReleasePageByPA(pa)
+			}
+		}
+		restoreIRQs(savedDAIF)
+		return 0
+	}
+
+	if addr+length <= heapStart {
+		// Userspace path: look up the calling shepherd's page table explicitly.
+		// The SVC handler runs on a kernel worker goroutine, not on the shepherd's
+		// hardware thread, so we cannot rely on the hardware TTBR0 register.
+		shepherd := proc.CurrentShepherd()
+		if shepherd == nil {
+			return 0
+		}
+		l0PA := shepherd.PageTableL0PA
+		savedDAIF := saveAndDisableIRQs()
+		for va := alignedAddr; va < alignedEnd; va += pageSize {
+			pa := kmem.UnmapUserPageWithL0(uintptr(va), l0PA)
+			if pa != 0 {
+				kmem.ReleasePageByPA(pa)
+			}
+		}
+		restoreIRQs(savedDAIF)
+		return 0
+	}
+
+	// Mixed or unrecognised range — no-op.
 	return 0
 }
 

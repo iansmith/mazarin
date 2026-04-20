@@ -166,13 +166,11 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	if !kmem.MapUserFramebufferWithL0(fbPA, fbSize, processL0PA) {
 		return int64(errNoSpace)
 	}
-	addSpan(UserFramebufferVA, UserFramebufferSize)
 
 	// Map constraint shared pages read-only into shepherd address space.
 	if !kmem.MapUserConstraintPagesWithL0(processL0PA) {
 		return int64(errNoSpace)
 	}
-	addSpan(UserConstraintPagesVA, UserConstraintPagesSize)
 
 	// Initialize kernel attribute manager (once, on first shepherd launch).
 	InitKernelAttrManager()
@@ -196,18 +194,29 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	// Create a new thread for this shepherd
 	_ = CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
 
-	// Cache symbol table, highest VA, filename, and allocate IPC uring ring
+	// Cache symbol table, highest VA, filename, allocate IPC uring ring, and
+	// register all kernel-allocated VA ranges in Spans so CleanupShepherdPages
+	// Phase 1 correctly reclaims ELF, stack, framebuffer, and constraint pages.
 	for i := 0; i < proc.MaxShepherds; i++ {
 		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PageTableL0PA == processL0PA {
-			proc.ShepherdListData[i].SymbolTable = shepherdSymTable
-			proc.ShepherdListData[i].HighestVA = shepherdHighestVA
-			proc.ShepherdListData[i].Filename = "/" + req.Name + ".elf"
+			p := &proc.ShepherdListData[i]
+			p.SymbolTable = shepherdSymTable
+			p.HighestVA = shepherdHighestVA
+			p.Filename = "/" + req.Name + ".elf"
 
 			// Allocate IPC uring ring for the new shepherd
 			uringID := allocateUringID()
-			proc.ShepherdListData[i].UringID = uringID
-			allocateUringIPCRing(&proc.ShepherdListData[i], 0)
-			registerUringID(uringID, int16(proc.ShepherdListData[i].PID))
+			p.UringID = uringID
+			allocateUringIPCRing(p, 0)
+			registerUringID(uringID, int16(p.PID))
+
+			// Register kernel-allocated VA ranges that mmap syscall never sees.
+			for j := 0; j < loadedProc.SegmentCount; j++ {
+				p.Spans.Add(loadedProc.SegmentSpans[j].VA, loadedProc.SegmentSpans[j].Size)
+			}
+			p.Spans.Add(loadedProc.StackBase, 64*1024)
+			p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
+			p.Spans.Add(UserConstraintPagesVA, UserConstraintPagesSize)
 
 			break
 		}

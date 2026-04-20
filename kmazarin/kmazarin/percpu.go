@@ -272,11 +272,16 @@ func (p *PerCPU) CurrentThread() *Thread {
 }
 
 // SetCurrentThread sets the thread currently running on this CPU.
-// Uses atomic store for safe concurrent access.
+//
+// WB-free intentionally: called from the exception handler path (DoContextSwitch),
+// which runs with x28=g0 while a kernel goroutine may be mid-wbBufFlush1 with
+// P.wbBuf.next temporarily zeroed. A write barrier here would store into that
+// zero pointer and fault (FAR=0). Thread objects are always reachable via
+// threadList, so skipping the write barrier is GC-safe.
 //
 //go:nosplit
 func (p *PerCPU) SetCurrentThread(t *Thread) {
-	atomic.StorePointer(&p.currentThread, unsafe.Pointer(t))
+	*(*uintptr)(unsafe.Pointer(&p.currentThread)) = uintptr(unsafe.Pointer(t))
 }
 
 // ============================================================================
@@ -298,12 +303,14 @@ func GetCurrentThread() *Thread {
 // SetCurrentThreadGlobal updates both the per-CPU and global CurrentThread.
 // Used during the migration period. Eventually, only per-CPU will be used.
 //
+// WB-free intentionally: same reason as SetCurrentThread — called from the
+// exception handler with x28=g0 while P.wbBuf.next may be temporarily zeroed
+// during wbBufFlush1. Thread reachability via threadList makes this GC-safe.
+//
 //go:nosplit
 func SetCurrentThreadGlobal(t *Thread) {
-	// Update per-CPU
 	GetPerCPU().SetCurrentThread(t)
-	// Update global for backward compatibility with assembly
-	atomic.StorePointer(&CurrentThread, unsafe.Pointer(t))
+	*(*uintptr)(unsafe.Pointer(&CurrentThread)) = uintptr(unsafe.Pointer(t))
 }
 
 // ============================================================================

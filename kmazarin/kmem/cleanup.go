@@ -31,7 +31,10 @@ import (
 //
 // spans must point to the shepherd's LockedSpanGroup (read before zeroing the struct).
 // l0PA is the physical address of the shepherd's L0 page table.
-func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGroup, l0PA uintptr) {
+// freeLeaves controls whether Phase 2 also walks L3 entries to free leaf (data) pages.
+// Normal path: false (Phase 1 Spans walk already frees all leaves).
+// Deferred path: true (Spans are empty; Phase 2 must free leaves itself).
+func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGroup, l0PA uintptr, freeLeaves bool) {
 	if l0PA == 0 {
 		return // No page table allocated (e.g., shepherd that never ran)
 	}
@@ -62,9 +65,11 @@ func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGrou
 	})
 
 	// Phase 2: Walk the full page table hierarchy bottom-up.
-	// Frees any leaf pages missed by Phase 1 (ELF segments not in Spans, etc.)
-	// and all intermediate page table pages (L1/L2/L3 tables + L0 root).
-	walkAndFreePageTablePages(l0PA)
+	// Frees all intermediate page table pages (L1/L2/L3 tables + L0 root).
+	// When freeLeaves is true, also frees leaf (data) pages by walking L3 entries
+	// before freeing the L3 table — used by the deferred cleanup path where Spans
+	// is empty and Phase 1 freed nothing.
+	walkAndFreePageTablePages(l0PA, freeLeaves)
 }
 
 // ReleasePageByPA decrements the refcount for the physical page at pa and
@@ -105,11 +110,12 @@ func releasePageByPA(pa uintptr) bool {
 
 // walkAndFreePageTablePages walks the userspace half of the L0→L3 page table
 // hierarchy bottom-up and frees intermediate page table pages (L3, L2, L1
-// tables and the L0 root). Leaf (data) pages are NOT freed here — Phase 1
-// already handles all leaf pages via the Spans walk.
+// tables and the L0 root). When freeLeaves is true, also walks L3 entries and
+// frees each leaf (data) page before freeing the L3 table itself — used by the
+// deferred cleanup path where Phase 1 Spans walk freed nothing.
 //
 // Returns the total number of PT pages freed.
-func walkAndFreePageTablePages(l0PA uintptr) int {
+func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool) int {
 	freed := 0
 
 	l0VA := paToVAOrCache(l0PA)
@@ -166,10 +172,22 @@ func walkAndFreePageTablePages(l0PA uintptr) int {
 				}
 
 				l3PA := pteExtractPA(l2e)
-				// Skip leaf page freeing — Phase 1 already freed all
-				// leaf pages via the Spans walk. The releasePageByPA
-				// RefCount guard would catch overlap anyway, but we
-				// avoid the redundant work entirely.
+				// When freeLeaves is true (deferred-cleanup path), walk
+				// L3 entries and free each leaf page before freeing the
+				// L3 table. On the normal path Phase 1 already freed all
+				// leaves via Spans, so we skip this to avoid redundant work.
+				if freeLeaves {
+					l3VA := paToVAOrCache(l3PA)
+					if l3VA != 0 {
+						for l := 0; l < 512; l++ {
+							l3e := *(*uint64)(unsafe.Pointer(l3VA + uintptr(l)*8))
+							if pteIsValid(l3e) {
+								leafPA := pteExtractPA(l3e)
+								releasePageByPA(leafPA)
+							}
+						}
+					}
+				}
 
 				// Free the L3 page table page itself.
 				if releasePageByPA(l3PA) {

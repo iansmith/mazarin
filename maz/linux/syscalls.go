@@ -613,12 +613,84 @@ func (h *syscallHandler) sysReadlinkat(req sys.SyscallRequest) {
 	req.Reply(EINVAL) // no symlinks
 }
 
+// sysStatfs handles statfs(path, buf). We don't have per-volume metadata
+// (the fs shepherd exposes no capacity IPC), so on a valid path we return
+// synthetic-but-reasonable values for a single global filesystem.
 func (h *syscallHandler) sysStatfs(req sys.SyscallRequest) {
-	req.Reply(ENOSYS)
+	fdt := h.getShepherd(req.CallerPID).FDT
+	path := req.PathString()
+	if path == "" {
+		req.Reply(EINVAL)
+		return
+	}
+	absPath := fdt.resolvePath(path)
+	if _, _, err := h.fs.Resolve(absPath); err != nil {
+		req.Reply(int64(errToErrno(err)))
+		return
+	}
+	buf := req.DataBuf()
+	if buf == nil || len(buf) < 120 {
+		req.Reply(EFAULT)
+		return
+	}
+	fillSyntheticStatfs(buf[:120])
+	req.Reply(120)
 }
 
+// sysFstatfs handles fstatfs(fd, buf). Same synthetic values as statfs; the
+// fd just needs to be a live file or directory descriptor.
 func (h *syscallHandler) sysFstatfs(req sys.SyscallRequest) {
-	req.Reply(ENOSYS)
+	fdt := h.getShepherd(req.CallerPID).FDT
+	fd := int(req.Arg0())
+	e := fdt.get(fd)
+	if e == nil || e.kind == fdKindNone {
+		req.Reply(EBADF)
+		return
+	}
+	buf := req.DataBuf()
+	if buf == nil || len(buf) < 120 {
+		req.Reply(EFAULT)
+		return
+	}
+	fillSyntheticStatfs(buf[:120])
+	req.Reply(120)
+}
+
+// fillSyntheticStatfs writes a 120-byte linux/arm64 + linux/amd64 struct
+// statfs64 with synthetic values. All fields are 8-byte __fsword_t /
+// fsblkcnt64_t on 64-bit Linux, so the layout is just 15 u64s.
+//
+// Layout (bytes 0..119):
+//
+//	 0:  f_type       = 0xEF53 (EXT2_SUPER_MAGIC — closest match to our ext2 ramdisk)
+//	 8:  f_bsize      = 4096
+//	16:  f_blocks     = 1<<20 (4 GiB total, synthetic)
+//	24:  f_bfree      = 1<<19
+//	32:  f_bavail     = 1<<19
+//	40:  f_files      = 0
+//	48:  f_ffree      = 0
+//	56:  f_fsid       = 0 (two 32-bit zeros)
+//	64:  f_namelen    = 255
+//	72:  f_frsize     = 4096
+//	80:  f_flags      = 0
+//	88:  f_spare[4]   = 0
+func fillSyntheticStatfs(buf []byte) {
+	for i := range buf {
+		buf[i] = 0
+	}
+	p := (*[15]uint64)(unsafe.Pointer(&buf[0]))
+	p[0] = 0xEF53       // f_type
+	p[1] = 4096         // f_bsize
+	p[2] = 1 << 20      // f_blocks
+	p[3] = 1 << 19      // f_bfree
+	p[4] = 1 << 19      // f_bavail
+	p[5] = 0            // f_files
+	p[6] = 0            // f_ffree
+	p[7] = 0            // f_fsid
+	p[8] = 255          // f_namelen
+	p[9] = 4096         // f_frsize
+	p[10] = 0           // f_flags
+	// p[11..14] — f_spare — already zero
 }
 
 // ============================================================
