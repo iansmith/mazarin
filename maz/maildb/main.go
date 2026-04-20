@@ -18,7 +18,6 @@ import (
 	"mazzy/mazarin/uring"
 	"mazzy/shared/fti"
 	"mazzy/shared/ipc"
-	"mazzy/shared/mail"
 	"mazzy/shared/mailproto"
 	"mazzy/maz/maildb/shared"
 )
@@ -69,9 +68,9 @@ type taggedMailReq struct {
 	senderSID int16
 }
 
-// decodeMailReqWithSID decodes a ProtoMailReq and preserves the sender SID.
+// decodeMailReqWithSID decodes a v2 ProtoMailReq and preserves the sender SID.
 func decodeMailReqWithSID(msg *ipc.UringIPCMsg) any {
-	decoded := mail.DecodeMailReq(msg)
+	decoded := mailproto.DecodeMailReq(msg)
 	if decoded == nil {
 		return nil
 	}
@@ -292,10 +291,8 @@ func main() {
 		defer ir.db.Close()
 		ms = newMessageStore(ir.db)
 		cs = newCollectionStore(ir.db, ms)
-		// Enable the mail protocol handler now that the db is ready.
-		mh.mu.Lock()
-		mh.db = ir.db
-		mh.mu.Unlock()
+		// Enable the v2 mail protocol handler now that the db is ready.
+		mh.setStores(ir.db, ms, cs)
 	}
 
 	// Signal readiness now that badger is queryable. The mail program

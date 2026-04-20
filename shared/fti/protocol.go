@@ -231,6 +231,12 @@ const (
 	QueryTypeFrom    uint32 = 2 // match against From/Sender fields
 )
 
+// SortOrder constants for SearchMail.SortOrder (mirrors mailproto values).
+const (
+	SortDesc uint32 = 0 // newest-first
+	SortAsc  uint32 = 1 // oldest-first
+)
+
 // SearchMail is a search request sent from maildb to fti.
 // Size=0 means count-only: fti returns SearchResult with Total set but no page.
 // Layout: RequestId[16]+QueryType(4)+SortOrder(4)+From(4)+Size(4)+QueryLen(2)+Query[58] = 92 bytes. Total: 96.

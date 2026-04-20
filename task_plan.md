@@ -13,7 +13,7 @@ Re-read before any coding session:
 - `/Users/iansmith/.claude/projects/-Users-iansmith-mazzy/memory/MEMORY.md` — auto-memory
 
 ## Current Phase
-Phase 2 — MessageStore + Collection infrastructure (complete 2026-04-20)
+Phase 3 — Maildb uring handlers (complete 2026-04-20)
 
 ## Code Locations
 - **maildb**:                  `maz/maildb/`
@@ -79,26 +79,27 @@ Core data structures in maildb.  No uring handlers yet; unit-testable in isolati
 - **Key fix:** dateKey parsing: timestamp is exactly 30 chars → msgId starts at offset 36;
   existing SplitN(key, ":", 3) was silently broken (included timestamp colons in msgId)
 
-### Phase 3: Maildb — Uring Handlers — PENDING
+### Phase 3: Maildb — Uring Handlers — COMPLETE
 Implement all request handlers and send unsolicited notifications.
 Remove old GetHeaders/GetBody/BodyConfirm handlers.
-- [ ] Delete old MsgTypeGetHeaders(1), MsgTypeGetBody(2), MsgTypeBodyConfirm(3) handlers
-- [ ] `handleCreateCollection` → build collection, return RespCreateCollection
-- [ ] `handleMessageCount` → return total message count in DB (not collection-scoped)
-- [ ] `handleKeyHeaders(collId, from, to)` → EnsureReified+LoadHeaders for range,
-  pack KeyHeaderEntry[] into pages, TransferPages → RespKeyHeaders
-- [ ] `handleAllHeaders(collId, msgNum)` → load full headers, pack AllHeaderEntry,
-  TransferPages → RespAllHeaders
-- [ ] `handleLatestUnread` → scan for first unread in reverse-chron order → RespLatestUnread
-  (creates an ephemeral collection or uses existing FilterUnread collection if present)
-- [ ] `handleBody(collId, msgNum)` → load body pages, TransferPages → RespBody
-- [ ] `handleMarkRead(collId, msgNum)` → MarkRead in store → RespMarkRead
-- [ ] `handleMarkDeleted(collId, msgNum)` → MarkDeleted in store → RespMarkDeleted +
-  fan-out CollectionRemove to all affected collection subscribers
-- [ ] Update uring Dispatcher registration in maildb main.go
-- [ ] `maz/fti/search_handler.go`: handle SearchMail — run bleve query, TransferPages results to maildb
-- [ ] Register SearchMail handler in fti Dispatcher (fti main.go)
-- **Status:** pending
+- [x] Deleted old GetHeaders/GetBody/BodyConfirm handlers; replaced mail_handler.go entirely
+- [x] handleMessageCount → reads count:all counter → RespMessageCount
+- [x] handleCreateCollection → collectionStore.createCollection → RespCreateCollection
+- [x] handleKeyHeaders → loadWindow + LoadHeaders + LoadFlags → KeyHeaderEntry pages → RespKeyHeaders
+- [x] handleAllHeaders → on-demand loadWindow(msgNum,msgNum) → AllHeaderEntry page → RespAllHeaders
+  (To/CC/ContentType empty — not stored in badger yet)
+- [x] handleLatestUnread → ephemeral FilterUnread+SortDesc collection → first entry AllHeaderEntry → RespLatestUnread
+- [x] handleBody → LoadBody → copy to pages → TransferAndUnmap → RespBody
+- [x] handleMarkRead → ms.MarkRead → RespMarkRead
+- [x] handleMarkDeleted → ms.MarkDeleted + cs.removeMessage fan-out → CollectionRemove per SID → RespMarkDeleted
+- [x] main.go: removed mail import, decoder uses mailproto.DecodeMailReq, mh.setStores wired
+- [x] maz/fti/search_handler.go: handleSearchMail — bleve MatchQuery by subject/from,
+  count-only (Size=0) and paginated results, SearchResultEntry pages, TransferAndUnmap
+- [x] fti/main.go: taggedFTIReq replaces taggedIndexReq; dispatcher dispatches both
+  IndexDocument and SearchMail
+- [x] shared/fti/protocol.go: added SortAsc/SortDesc constants
+- [x] Build check: task fti:arm64 and task maildb:arm64 both pass
+- **Status:** complete
 
 ### Phase 4: Mail Row Interactor — PENDING
 New `MailRow` type: `mazarin/apps/mail/mail_row.go`

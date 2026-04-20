@@ -19,23 +19,21 @@ import (
 	"mazzy/shared/ipc"
 )
 
-// taggedIndexReq wraps a decoded IndexDocument with the sender's SID
-// so the handler can reply to the correct shepherd.
-type taggedIndexReq struct {
-	doc       fti.IndexDocument
+// taggedFTIReq wraps a decoded FTI request with the sender's SID.
+// payload is either fti.IndexDocument or fti.SearchMail.
+type taggedFTIReq struct {
+	payload   any
 	senderSID int16
 }
 
-// decodeIndexReqWithSID decodes a ProtoFTIReq and preserves the sender SID.
-func decodeIndexReqWithSID(msg *ipc.UringIPCMsg) any {
+// decodeFTIReqWithSID decodes a ProtoFTIReq (IndexDocument or SearchMail)
+// and preserves the sender SID.
+func decodeFTIReqWithSID(msg *ipc.UringIPCMsg) any {
 	decoded := fti.DecodeFTIReq(msg)
 	if decoded == nil {
 		return nil
 	}
-	if doc, ok := decoded.(fti.IndexDocument); ok {
-		return taggedIndexReq{doc: doc, senderSID: msg.SenderSID}
-	}
-	return nil
+	return taggedFTIReq{payload: decoded, senderSID: msg.SenderSID}
 }
 
 func main() {
@@ -72,14 +70,22 @@ func main() {
 	defer index.Close()
 	fmt.Println("[fti] bleve index created")
 
-	// Create the index handler.
-	handler := newIndexHandler(index)
+	// Create the index and search handlers.
+	indexH := newIndexHandler(index)
+	searchH := newSearchHandler(index)
 
 	// Set up uring dispatcher.
 	d := uring.NewDispatcher()
-	d.OnFunc(ipc.ProtoFTIReq, decodeIndexReqWithSID, func(v any) {
-		if tagged, ok := v.(taggedIndexReq); ok {
-			handler.handleIndexDocument(&tagged.doc, tagged.senderSID)
+	d.OnFunc(ipc.ProtoFTIReq, decodeFTIReqWithSID, func(v any) {
+		tagged, ok := v.(taggedFTIReq)
+		if !ok {
+			return
+		}
+		switch req := tagged.payload.(type) {
+		case fti.IndexDocument:
+			indexH.handleIndexDocument(&req, tagged.senderSID)
+		case fti.SearchMail:
+			searchH.handleSearchMail(&req, tagged.senderSID)
 		}
 	})
 	d.OnDeath(func(deadSID int16) {
