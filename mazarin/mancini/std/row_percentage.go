@@ -113,15 +113,15 @@ func (rp *RowPercentage) Draw(self mancini.Interactor, x, y, w, h int64, damage 
 		if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
 			cs.SetDC(dc)
 		}
-		if rp.ClipChildren {
-			cc := mancini.WithClip(dc, float64(curX), float64(childY),
-				float64(childW), float64(childH), 0, mancini.ClipRight)
-			if d, ok := child.(mancini.NewDrawer); ok {
+		if d, ok := child.(mancini.NewDrawer); ok {
+			if rp.ClipChildren && childW > 0 {
+				dc.Push()
+				dc.DrawRectangle(float64(curX), float64(y), float64(childW), float64(h))
+				dc.Clip()
 				d.Draw(child, curX, childY, childW, childH, damage)
-			}
-			cc.Flush()
-		} else {
-			if d, ok := child.(mancini.NewDrawer); ok {
+				dc.ResetClip()
+				dc.Pop()
+			} else {
 				d.Draw(child, curX, childY, childW, childH, damage)
 			}
 		}

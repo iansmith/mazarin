@@ -1,139 +1,114 @@
 # Task Plan: Mail Row Interactor + Maildb Collection Protocol
+## STATUS: ALL PHASES COMPLETE — 2026-04-20
 
-## Goal
-Build a `MailRow` interactor for the Mail app backed by a new uring-based maildb protocol.
-The protocol uses **HOT collections** — named, ordered result sets that maildb pushes
-unsolicited Add/Remove notifications into as the live message set changes.  Every message
-reference is `(collectionId, msgNumber)`.  Data-returning requests (KeyHeaders, AllHeaders,
-Body) transfer page ownership to the caller via `TransferPages`.
+System verified: ARM64 HVF 90s stable, mail app renders 50 rows with correct column
+clipping, 100 docs indexed by fti, Go 1.26.2, all builds clean.
+
+---
 
 ## Rules & Discipline
 Re-read before any coding session:
 - `/Users/iansmith/mazzy/CLAUDE.md` — build via Taskfile only, serial log safety, env vars
 - `/Users/iansmith/.claude/projects/-Users-iansmith-mazzy/memory/MEMORY.md` — auto-memory
 
-## Current Phase
-Phase 5 — Mail App Integration (complete 2026-04-20) — all phases done
+---
 
-## Code Locations
-- **maildb**:                  `maz/maildb/`
-- **new protocol package**:    `shared/mailproto/` (to create)
-- **mail app**:                `mazarin/apps/mail/main.go`
-- **grid table**:              `mazarin/mancini/std/grid_table.go`
-- **mail row interactor**:     `mazarin/apps/mail/mail_row.go` (to create)
-- **page transfer userspace**: `mazarin/sys/sharedmem.go`
+## What Was Built
 
-## Phases
+### Kernel: Constraint Collection Allocator Fix
+- **Root cause:** `attr.Find(pattern)` used a single bump allocator for all collection
+  results. After ~a dozen `AddRow` calls the bump region exhausted; `GetChildren()`
+  returned 0, making the mail grid appear empty.
+- **Fix:** Per-query fixed collection slots — 64 slots × 1024 entries each.
+  - `kmazarin/kmem/constraint.go`: `ConstraintPageVersion` 2→3; `RegionCollCap`
+    4096→65536; `CollCapacity` field widened `uint16`→`uint32`.
+  - `kmazarin/ksyscall/constraint_mgr.go`: `queryPattern.collOff` assigned at
+    registration; `MaxCollPerQuery=1024`; compile-time assertion.
+  - `kmazarin/ksyscall/constraint_syscall.go`: `writeQueryCollection` uses fixed
+    per-query region; `SyscallAttrRegisterQuery` assigns `collOff`.
+  - `mazarin/vm/flat/layout_shared.go`: userspace header parser updated for `uint32`
+    collCap and `SharedPageVersion=3`.
 
-### Phase 0: Protocol Design — IN PROGRESS
-- [x] Drafted request/response wire format (fits in 108 bytes after MsgType)
-- [x] Added RequestId [16]byte (raw UUID) to every message
-- [x] Defined HOT collections: CollectionAdd / CollectionRemove unsolicited notifications
-- [x] Defined multi-client semantics: RequestId may come from a different client
-- [x] Defined MessageStore data structure (lazy-fetch map keyed by messageId)
-- [x] Defined Collection struct (eager msgIds[] index, subscribers, msgIdToNum reverse map)
-- [x] Defined notification flow for MarkDeleted (DeletionNotice → CollectionRemove fan-out)
-- [x] Decided: remove old GetHeaders/GetBody/BodyConfirm; extend ProtoMailReq/ProtoMailResp
-- [x] Defined read/deleted persistence: `read:<msgId>` / `deleted:<msgId>` keys in badger
-- [x] User approved all decisions (2026-04-20)
-- **Status:** complete
+### Go 1.26.2 Migration (complete)
+- `go.mod`, `mazarin/textshape/go.mod`, `internal/gg/go.mod` → `go 1.26.2`
+- `Makefile`, `CLAUDE.md`, site docs, `cmd/check-version` all updated.
+- `design/GO-126-MIGRATION.md` deleted (stale; mazgo/mazlink cover 1.26.2).
+- `GOEXPERIMENT=norandomizedheapbase64,nogreenteagc` in Taskfile retained.
 
-### Phase 1: Wire protocol packages — COMPLETE
-Two packages: new `shared/mailproto/` and additions to existing `shared/fti/protocol.go`.
+### GridTable: Async Row Rendering
+- `GridTable.AddRow` now returns a `func()` (OnLoaded callback).
+- Labels are pre-positioned at expected row Y on `AddRow` so `FullDamage()` emits
+  a non-empty rect immediately. `RowPercentage.Draw` refines column X on next pass.
+- `GridTable.Draw` syncs `dataLabs[].Text` from live `GridRow` data each draw pass
+  — async-loaded rows (MailRow) display data without a separate update step.
+- `DamageAll()` marks every leaf `DynamicLabel` dirty (parent `RowPercentage` has
+  constraint DamageRect; its `FullDamage` is a no-op).
+- Divider `onDamage` uses `DamageAll()` instead of manual per-label walks.
 
-**shared/mailproto/** (new — imported by maildb and mail app):
-- [x] Package skeleton (no build tags needed — follows same pattern as shared/fti, shared/mail)
-- [x] Error code constants (ErrNone … ErrFilterInvalid)
-- [x] Filter type constants (FilterAll, FilterUnread, FilterFrom, FilterSubject)
-- [x] SortOrder constants (SortDesc, SortAsc)
-- [x] Request structs + encode functions (MsgType 10–17)
-- [x] Response structs + decode functions (MsgType 50–57)
-- [x] Unsolicited notification structs + decode functions (MsgType 60–61)
-- [x] KeyHeaderEntry (240 bytes) and AllHeaderEntry (1232 bytes) page layout structs
-- [x] Pack*/Unpack* helpers for all major types
+### RowPercentage: Column Clipping
+- **Root cause:** `WithClip`/`Flush()` pixel save-restore was not reliably clipping
+  text to column boundaries — long sender/subject strings overlapped adjacent columns.
+- **Fix:** Replaced with proper DrawContext clip path:
+  ```go
+  dc.Push()
+  dc.DrawRectangle(float64(curX), float64(y), float64(childW), float64(h))
+  dc.Clip()
+  d.Draw(child, curX, childY, childW, childH, damage)
+  dc.ResetClip()
+  dc.Pop()
+  ```
+  Applied when `ClipChildren=true` (set by `GridTable.AddRow`).
 
-**shared/fti/protocol.go** (extend existing):
-- [x] MsgTypeSearchMail=2, MsgTypeSearchResult=20, MsgTypeSearchError=21
-- [x] SearchMail struct + EncodeSearchMail (maildb → fti)
-- [x] SearchResult + SearchError structs + encode functions (fti → maildb)
-- [x] SearchResultEntry page layout struct (88 bytes, 46 per page)
-- [x] SearchMail added to DecodeFTIReq; SearchResult/SearchError added to DecodeFTIResp
-- [x] Build-check: `go build mazzy/shared/mailproto` and `go build mazzy/shared/fti` both clean
-- **Status:** complete
+### Maildb / fti / Mail App (Phases 1–5)
+All phases of the maildb protocol and mail app integration are complete; see git
+history (commits `706820f` through `2a4a092`) for per-phase detail.
 
-### Phase 2: Maildb — MessageStore + Collection Infrastructure — COMPLETE
-Core data structures in maildb.  No uring handlers yet; unit-testable in isolation.
-- [x] `maz/maildb/msgstore.go`: MessageStore, MessageRecord (pure data cache)
-  - Ensure, LoadHeaders, LoadFlags, LoadBody, MarkRead, MarkDeleted, Evict
-- [x] `maz/maildb/counter.go`: readCounter, setCounter, adjustCounterTxn, initCounters
-- [x] `maz/maildb/collection.go`: collection struct (sparse array), collectionStore (16-slot LRU)
-  - createCollection: O(1) from count:all/count:unread; from/subject return 0 (Phase 3 fti TODO)
-  - loadWindowAll/loadWindowUnread: key-only badger scan; uses dateKeyPrefixLen=36 fix
-  - lookupCollection: returns errCollectionExpired if collId not in live set
-  - evictLRULocked: evicts MessageStore records no longer in any collection
-  - removeMessage: returns []collectionNotify for caller to send (no uring calls here)
-- [x] mbox_import.go: initCounters(db, count, count) after wb.Flush (all imported = unread)
-- [x] main.go: newMessageStore/newCollectionStore after import, handleList uses new infra
-- [x] Build check: `task maildb:arm64` — ET_EXEC and .maz both built successfully
-- **Status:** complete
-- **Key fix:** dateKey parsing: timestamp is exactly 30 chars → msgId starts at offset 36;
-  existing SplitN(key, ":", 3) was silently broken (included timestamp colons in msgId)
+### Diagnostic Cleanup
+- Removed all `fmt.Printf` diagnostic traces added during debugging:
+  `app_window.go`, `column_percentage.go`, `grid_table.go`, `margin_parent.go`,
+  `apps/mail/main.go` (redraw counter + forced-damage workaround).
 
-### Phase 3: Maildb — Uring Handlers — COMPLETE
-Implement all request handlers and send unsolicited notifications.
-Remove old GetHeaders/GetBody/BodyConfirm handlers.
-- [x] Deleted old GetHeaders/GetBody/BodyConfirm handlers; replaced mail_handler.go entirely
-- [x] handleMessageCount → reads count:all counter → RespMessageCount
-- [x] handleCreateCollection → collectionStore.createCollection → RespCreateCollection
-- [x] handleKeyHeaders → loadWindow + LoadHeaders + LoadFlags → KeyHeaderEntry pages → RespKeyHeaders
-- [x] handleAllHeaders → on-demand loadWindow(msgNum,msgNum) → AllHeaderEntry page → RespAllHeaders
-  (To/CC/ContentType empty — not stored in badger yet)
-- [x] handleLatestUnread → ephemeral FilterUnread+SortDesc collection → first entry AllHeaderEntry → RespLatestUnread
-- [x] handleBody → LoadBody → copy to pages → TransferAndUnmap → RespBody
-- [x] handleMarkRead → ms.MarkRead → RespMarkRead
-- [x] handleMarkDeleted → ms.MarkDeleted + cs.removeMessage fan-out → CollectionRemove per SID → RespMarkDeleted
-- [x] main.go: removed mail import, decoder uses mailproto.DecodeMailReq, mh.setStores wired
-- [x] maz/fti/search_handler.go: handleSearchMail — bleve MatchQuery by subject/from,
-  count-only (Size=0) and paginated results, SearchResultEntry pages, TransferAndUnmap
-- [x] fti/main.go: taggedFTIReq replaces taggedIndexReq; dispatcher dispatches both
-  IndexDocument and SearchMail
-- [x] shared/fti/protocol.go: added SortAsc/SortDesc constants
-- [x] Build check: task fti:arm64 and task maildb:arm64 both pass
-- **Status:** complete
+---
 
-### Phase 4: Mail Row Interactor — COMPLETE
-New `MailRow` type: `mazarin/apps/mail/mail_row.go`
-- [x] MailRow struct (collId, msgNum, state, cached KeyHeaderEntry)
-- [x] Constructor: fire KeyHeaders(collId, msgNum, msgNum) immediately
-- [x] Response handler: unpack page → KeyHeaderEntry[0], free pages, → Loaded state
-- [x] ErrCollectionExpired handler: call onCollectionExpired callback
-- [x] Implements std.GridRow (Sender/Subject/Date strings, placeholders while Loading)
-- [x] Click handler: fire onRowSelected(collId, msgNum)
-- [x] Build check: `go build ./mazarin/apps/mail/` passes clean
-- **Status:** complete
+## Known Bugs / Issues (open at close of this plan)
 
-### Phase 5: Mail App Integration — COMPLETE (build verified; QEMU run pending)
-Wire new protocol into `mazarin/apps/mail/main.go`.
-- [x] Register CollectionAdd / CollectionRemove notification handlers in uring Dispatcher
-- [x] On startup: CreateCollection(FilterAll) → collId, size
-- [x] Populate GridTable with MailRow for each of first 50 messages (0..min(size-1,49))
-- [x] Handle CollectionRemove: remove row from tracking list (grid visual removal deferred — GridTable lacks RemoveRow)
-- [x] Handle CollectionAdd: create new MailRow + AddRow if < 50 shown
-- [x] Handle onCollectionExpired: clear rows + re-create collection
-- [x] Remove old requestInitialHeaders(), testRow, testMailRows(), handleMailResponse old handlers
-- [x] Removed `shared/mail` import; using `shared/mailproto` throughout
-- [x] Build verified: `task mail-app:arm64` passes clean
-- [x] Verify end-to-end in QEMU (ARM64 HVF) — 90s stable, no errors, s15=7506 IPC confirms 50 RespKeyHeaders received
-- **Status:** complete
+### 1. fti: bleve AnalysisWorker goroutine panic (intermittent)
+- **Symptom:** `AnalysisWorker` goroutine in `bleve_index_api` panics; fti marks
+  index as `corrupted` and drops subsequent documents with a logged error. The last
+  document in the batch may not be indexed.
+- **Root cause:** `recover()` in `handleIndexDocument` cannot catch panics in
+  goroutines spawned internally by bleve. The analysis worker queue runs on its
+  own goroutines.
+- **Impact:** fti indexing degrades gracefully (documents are stored in badger;
+  only full-text search is affected). The shepherd does not crash — the `corrupted`
+  flag prevents further bleve calls.
+- **Next step:** Wrap bleve's `NewAnalysisQueue` worker pool or switch to
+  synchronous analysis (disable async worker queue) to avoid cross-goroutine panics.
+  Alternatively, catch at bleve call site and recreate the index.
 
-## Open Questions (resolved)
-- Extend ProtoMailReq/ProtoMailResp? **Yes** ✓
-- Read/unread stored? **Not yet; adding read:/deleted: keys** ✓
-- MarkDeleted behavior? **Removes from collection immediately; unsolicited fan-out** ✓
-- MailRow granularity? **One KeyHeaders request per row; batched in handler** ✓
-- Remove GetBody/BodyConfirm? **Yes, both deleted** ✓
-- RequestId format? **[16]byte raw UUID in wire; display as hyphenated string** ✓
-- Multi-client? **Yes; clients MUST NOT assume RequestId is their own** ✓
+### 2. VirtIO block: intermittent stall on large file reads
+- **Symptom:** fs shepherd logs `[fs] reading /fti.elf...` (18.5 MB) and then
+  produces no further output for the remainder of the run. The block device IRQ
+  apparently never fires for one or more DMA transfers.
+- **Frequency:** ~1 in 3 cold runs observed.
+- **Root cause:** Unknown. DMA scratch is 8 pages (32 KB); 18.5 MB requires ~592
+  sequential transfers. An interrupt miss under HVF scheduling stalls the whole
+  read permanently — there is no timeout or retry in the fs read path.
+- **Next step:** Add a watchdog timer in the fs DMA read loop. Investigate whether
+  the block IRQ edge-trigger is being lost under HVF when many back-to-back
+  transfers are queued.
+
+### 3. GridTable: no RemoveRow
+- `CollectionRemove` notifications are tracked in the mail app's in-memory list
+  but the visual grid is not updated. `GridTable` lacks a `RemoveRow` method.
+- **Next step:** implement `GridTable.RemoveRow(idx int)` when mail needs it.
+
+### 4. Cosmetic: kmem log still prints "Constraint pages v2"
+- `logConstraintPagesInit` in `kmazarin/kmem/constraint.go:167` hardcodes `"v2"`
+  but the actual version written is now 3.
+- Trivial one-line fix; not worth a standalone commit.
+
+---
 
 ## Decisions Made
 | Decision | Rationale |
@@ -142,17 +117,7 @@ Wire new protocol into `mazarin/apps/mail/main.go`.
 | Fixed-size KeyHeaderEntry (240 bytes) | Simple decode; no offset table |
 | 16-slot LRU collection store | Bounded memory in small shepherd |
 | Monotonically increasing CollId | Simple staleness check |
-| Sparse array + 128-entry lazy window load | Mailboxes can have 50K+ messages; eager full index would be slow and blow memory |
-| Persistent `count:all` / `count:unread` counters | BadgerDB has no O(1) prefix count; counters give O(1) totalSize for common filters |
-| Reverse lookup = iterate 16 collection slots | No separate reverse index needed; 16 map lookups is O(1) and correct by construction |
-| MessageStore = pure data cache (no membership tracking) | Membership derived on-demand from collection.msgIdToNum; simpler ownership |
-| SortOrder field in CreateCollReq | Sort direction is a first-class collection property; inbox = FilterAll+SortDesc |
-| [16]byte RequestId on wire | Compact; display as UUID string when needed |
-| Zero UUID = no originating request | Covers external-source unsolicited notifications |
-| CollectionAdd only sends msgNum+newSize | Client issues KeyHeaders to fetch data; keeps notification message small |
-| CollectionRemove includes MsgId[64] | Client can locate row without valid msgNum mapping |
-
-## Errors Encountered
-| Error | Attempt | Resolution |
-|-------|---------|------------|
-| (none yet) | | |
+| Sparse array + 128-entry lazy window load | Mailboxes can have 50K+ messages |
+| Persistent `count:all` / `count:unread` counters | O(1) totalSize for common filters |
+| Per-query fixed collection slots (64×1024) | Eliminates bump-allocator exhaustion |
+| dc.Push/DrawRectangle/Clip/Pop for column clipping | Correct Cairo clip vs fragile pixel save |
