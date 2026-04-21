@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 	"unsafe"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -45,7 +46,7 @@ func forceMailDBIOItab(v interface{}) {
 // WM and font response messages are forwarded to mail-ui via the
 // injection channels. Mail protocol requests are dispatched to the
 // mailHandler. FTI responses are sent to ftiRespCh.
-func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh chan any, mh *mailHandler, ftiRespCh chan any) {
+func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh chan any, mh *mailHandler, ftiRespCh chan any, ftiSID int, tracker *ftiTracker) {
 	d := uring.NewDispatcher()
 	d.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
 	d.On(ipc.ProtoFontResponse, decodeRawPayload, fontReplyCh)
@@ -58,6 +59,9 @@ func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh 
 	d.On(ipc.ProtoFTIResp, fti.DecodeFTIResp, ftiRespCh)
 	d.OnDeath(func(deadSID int16) {
 		fmt.Printf("[maildb] shepherd %d died\n", deadSID)
+		if int(deadSID) == ftiSID {
+			tracker.MarkFTIDied()
+		}
 	})
 	d.Start()
 }
@@ -207,20 +211,46 @@ func main() {
 	mh := newMailHandler(nil)
 	tempWMCh := make(chan any, 8)
 	tempFontReplyCh := make(chan any, 8)
-	startUringDispatcher(fsClient, tempWMCh, tempFontReplyCh, mh, ftiRespCh)
+	startUringDispatcher(fsClient, tempWMCh, tempFontReplyCh, mh, ftiRespCh, ftiSID, ftiTracker)
 	if err := fsClient.Connect(); err != nil {
 		panic(fmt.Sprintf("[maildb] FATAL: fsclient.Connect: %v", err))
 	}
 	fmt.Println("[maildb] fs IPC connected via uring")
 
-	// Start import goroutine. mboxImport returns as soon as all messages
-	// are written to badger (fast). FTI indexing continues in the background
-	// via the ftiTracker goroutine.
+	// importCS holds the collectionStore once onFirstCommit fires.
+	// Accessed only from the import goroutine, so no synchronisation needed.
+	var importCS *collectionStore
+
+	// onFirstCommit is called from the import goroutine after the first
+	// message is flushed to badger. It sets up the in-memory data structures
+	// and signals shepherd readiness so the mail program can connect.
+	onFirstCommit := func(db *badger.DB) {
+		msNew := newMessageStore(db)
+		csNew := newCollectionStore(db, msNew)
+		importCS = csNew
+		mh.setStores(db, msNew, csNew)
+		sys.SetReady(true)
+		fmt.Println("[maildb] Ready=true (first message in badger, fti+import in background)")
+	}
+
+	// onMessage is called from the import goroutine after each message is
+	// committed. It sends CollectionAdd to any live subscribed collections.
+	onMessage := func(msgId string, ts time.Time) {
+		if importCS != nil {
+			importCS.addMessage(msgId, ts)
+		}
+	}
+
+	// Start import goroutine. mboxImport calls onFirstCommit after the first
+	// message, then calls onMessage for each subsequent message. FTI indexing
+	// continues in the background via the ftiTracker goroutine.
 	go func() {
 		bdb, err := mboxImport(
 			"/data/mail/mbox/gmail/important.partial.mbox",
 			ftiTracker,
 			notifyStatus,
+			onFirstCommit,
+			onMessage,
 		)
 		if err != nil {
 			notifyStatus(fmt.Sprintf("mbox import error: %v", err))
@@ -277,33 +307,47 @@ func main() {
 	go mazhost.RunMaz(uiMain)
 	fmt.Println("[maildb] mail-ui.maz launched")
 
-	// 5. Wait for badger import to finish, then signal readiness.
-	// FTI indexing continues in the background — that's fine, the mail
-	// program only needs badger (headers, bodies) to be queryable.
+	// 5. Wait for badger import to finish.
+	// Ready was already signalled (or will be) by onFirstCommit when the
+	// first message lands in badger. FTI indexing continues in the background.
 	fmt.Println("[maildb] waiting for badger import to finish...")
 	ir := <-importDone
 	if ir.err != nil {
 		fmt.Printf("[maildb] import failed: %v\n", ir.err)
 	}
-	var ms *MessageStore
-	var cs *collectionStore
-	if ir.db != nil {
-		defer ir.db.Close()
-		ms = newMessageStore(ir.db)
-		cs = newCollectionStore(ir.db, ms)
-		// Enable the v2 mail protocol handler now that the db is ready.
-		mh.setStores(ir.db, ms, cs)
+
+	// Retrieve the current stores from the mail handler (set by onFirstCommit).
+	mh.mu.Lock()
+	ms := mh.ms
+	cs := mh.cs
+	var db *badger.DB
+	if mh.db != nil {
+		db = mh.db
+	} else if ir.db != nil {
+		db = ir.db
+	}
+	mh.mu.Unlock()
+
+	if db != nil {
+		defer db.Close()
 	}
 
-	// Signal readiness now that badger is queryable. The mail program
-	// (and any other shepherd waiting on maildb) can proceed.
-	sys.SetReady(true)
-	fmt.Println("[maildb] Ready=true (badger queryable, fti indexing in background)")
+	// If the import finished without onFirstCommit firing (e.g. empty mbox or
+	// error before first message), set up stores and signal ready now.
+	if ms == nil && ir.db != nil {
+		ms = newMessageStore(ir.db)
+		cs = newCollectionStore(ir.db, ms)
+		mh.setStores(ir.db, ms, cs)
+		sys.SetReady(true)
+		fmt.Println("[maildb] Ready=true (import complete, no early-ready)")
+	}
+
+	fmt.Printf("[maildb] import complete: ms=%v cs=%v\n", ms != nil, cs != nil)
 
 	// 6. Enter query loop.
 	fmt.Println("[maildb] entering query loop")
 	for query := range queryCh {
-		if ir.db == nil || cs == nil {
+		if db == nil || cs == nil {
 			respCh <- shared.Response{Error: "database not available"}
 			continue
 		}

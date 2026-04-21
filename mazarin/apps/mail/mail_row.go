@@ -76,6 +76,40 @@ func (r *MailRow) CollId() uint32 { return r.collId }
 // MsgNum returns the message number within the collection.
 func (r *MailRow) MsgNum() uint32 { return r.msgNum }
 
+// ShiftMsgNum adjusts the row's msgNum by delta. Called by the mail app when
+// a CollectionAdd inserts a new message at a position that displaces this row.
+func (r *MailRow) ShiftMsgNum(delta int) {
+	if delta >= 0 {
+		r.msgNum += uint32(delta)
+	} else if uint32(-delta) <= r.msgNum {
+		r.msgNum -= uint32(-delta)
+	}
+}
+
+// IsLoading reports whether this row's header request is still in flight.
+func (r *MailRow) IsLoading() bool { return r.state == rowLoading }
+
+// RefreshRequest fires a new KeyHeaders request using the row's current msgNum.
+// Returns the old requestId so the caller can remove it from the lookup table.
+// Must only be called when IsLoading() is true — the old in-flight request had
+// the pre-shift msgNum, so its response would be for the wrong message.
+func (r *MailRow) RefreshRequest(newReqId [16]byte) [16]byte {
+	old := r.requestId
+	r.requestId = newReqId
+	req := mailproto.KeyHeadersReq{
+		RequestId: newReqId,
+		CollId:    r.collId,
+		From:      r.msgNum,
+		To:        r.msgNum,
+	}
+	msg := mailproto.EncodeKeyHeaders(&req)
+	if err := uring.Send(r.maildbSID, &msg); err != nil {
+		fmt.Printf("[mail] MailRow RefreshRequest send failed: %v\n", err)
+		r.state = rowError
+	}
+	return old
+}
+
 // HandleKeyHeadersResp processes a RespKeyHeaders message whose RequestId
 // matches this row's requestId. It unpacks the first KeyHeaderEntry from the
 // transferred pages and transitions to Loaded (or CollExpired / Error).

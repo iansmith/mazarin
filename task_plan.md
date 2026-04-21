@@ -1,8 +1,14 @@
 # Task Plan — Mazarin / Mazzy
-## STATUS: 2026-04-20
+## STATUS: 2026-04-21 (updated)
 
-Mail work: ALL PHASES COMPLETE.
-mazdl/mazlink: Phases 0–4 arm64 COMPLETE; Phase 4 amd64 open.
+Mail work: x86_64 — all blockers fixed:
+  1. `morestack on g0` in badger: FIXED (RDMSR→direct read from 144(R12))
+  2. `SyscallUringSend EINVAL` cross-page: FIXED (slow-path copy for cross-boundary msgs)
+  3. Issue #8 crash (exit code 2): CONFIRMED FIXED by 300s clean run
+  4. CollectionAdd double-counting race: FIXED (addMessage guard + createCollection under cs.mu)
+  5. Stale KeyHeaders during row shift: FIXED (IsLoading/RefreshRequest in MailRow)
+x86_64 mail app: loading, rendering correct unique senders across incremental imports.
+mazdl/mazlink: Phases 0–4 COMPLETE on both arm64 AND amd64.
 CFF write-barrier investigation: PAUSED (different solution in progress).
 ARM64 HVF 90s stable, mail app renders 50 rows with correct column
 clipping, 100 docs indexed by fti, Go 1.26.2, all builds clean.
@@ -96,6 +102,46 @@ Mazarin-native `dlopen`/`dlsym` API. Full design and phase specs preserved in
 
 ## Known Bugs / Open Issues
 
+### 6. x86_64: `morestack on g0` in badger compaction goroutine (FIXED 2026-04-21)
+- **Root cause:** TLS-sync path in `abi_stubs_amd64.s` did WRMSR then RDMSR to get FS_BASE.
+  WRMSR hadn't propagated when RDMSR fired → stale FS_BASE → wrong g written to TLS.
+- **Fix:** Replaced RDMSR with direct read from `144(R12)` (saved FSBase in ThreadContext).
+  Both run path and yield path fixed. No `morestack on g0` in subsequent test runs.
+  File: `kmazarin/kmazarin/abi_stubs_amd64.s`.
+
+### 8. x86_64: mail app crashes (exit code 2, panic not visible) (FIXED 2026-04-21)
+- **Root cause:** Two independent bugs, both fixed:
+  1. WRMSR→RDMSR race in TLS sync (`abi_stubs_amd64.s`): stale FS_BASE → wrong g → `morestack on g0`.
+  2. `SyscallUringSend` EINVAL for cross-page 128-byte IPC message on x86_64 stack layout → nil
+     font face → mail app panic.
+- **Fix 1:** Direct read from `144(R12)` instead of RDMSR in both RunFirstThread and YieldToReadyThread.
+- **Fix 2:** Slow-path copy in `kmazarin/ksyscall/uring_ipc.go` for messages spanning page boundaries.
+- **Confirmed FIXED:** 300s run completes with no crash; mail app loads and renders correctly.
+
+### 9. x86_64: CollectionAdd double-counting race (FIXED 2026-04-21)
+- **Symptom:** Mail grid showed duplicate sender for the last imported message.
+  `totalSize` inflated to N+1 for an N-message mailbox; fourth row showed same sender as third.
+- **Root cause:** `createCollection` counted messages outside `cs.mu`; then `addMessage` fired
+  for a message already included in that count, incrementing `totalSize` a second time.
+  Also: `CollectionAdd` shifted a still-loading MailRow's `msgNum` but left the in-flight
+  `KeyHeaders` request carrying the old position → maildb returned data for the wrong message.
+- **Fix 1 (collection.go):** Moved `countDateIndex()` call inside `cs.mu` lock in `createCollection`
+  so the count and slot assignment are atomic with respect to `addMessage`.
+- **Fix 2 (collection.go):** `addMessage` now calls `countDateIndex()` under `cs.mu` before
+  processing any collection; skips collections where `currentCount <= coll.totalSize` (message
+  was already counted at creation time).
+- **Fix 3 (mail_row.go + main.go):** Added `IsLoading()` and `RefreshRequest(newReqId)` to
+  `MailRow`; `handleCollectionAdd` calls `RefreshRequest` for any displaced loading row so the
+  new in-flight request carries the post-shift `msgNum`.
+- **Confirmed FIXED:** Subsequent runs show clean sequential CollectionAdds with distinct
+  correct senders and no duplicates.
+
+### 7. x86_64: collection created with size=0 mid-import (FIXED 2026-04-21)
+- **Root cause:** `createCollection` called `readCounter` which returns 0 before
+  `initCounters` runs. Fixed by scanning the date: index instead.
+- **Fix:** `countDateIndex()` / `countUnreadDateIndex()` helpers in `collection.go`;
+  `createCollection` uses them instead of `readCounter`.
+
 ### 1. fti: bleve AnalysisWorker goroutine panic (intermittent)
 - **Symptom:** `AnalysisWorker` goroutine in `bleve_index_api` panics; fti marks
   index as `corrupted` and drops subsequent documents with a logged error. The last
@@ -127,19 +173,32 @@ Mazarin-native `dlopen`/`dlsym` API. Full design and phase specs preserved in
   but the visual grid is not updated. `GridTable` lacks a `RemoveRow` method.
 - **Next step:** implement `GridTable.RemoveRow(idx int)` when mail needs it.
 
-### 4. mazdl Phase 4: amd64 parity needed
-- **What's done:** mazlink Option A is present in `amd64/asm.go` (mirrors arm64
-  block). `smoke/host-mazdl` compiles for amd64.
-- **What's missing:**
-  - `mazarin/mazdl/reloc_amd64.go` — apply `R_X86_64_{RELATIVE,GLOB_DAT,JUMP_SLOT,64}`
-  - Container arch toggle in `mazlink-smoke` Taskfile task so the x86_64 image
-    runs on an arm64 host (smoke Dockerfile already cross-builds both arches;
-    the task only runs the host-matching arch today).
-- **Exit criterion:** exits #1–#4 pass on amd64:
-  1. `mazdl.Open("plugin.maz")` succeeds, `h.Sym("Hello")` returns callable fn
-  2. `runtime.Stack` shows ≤1 each of forcegchelper, bgsweep, bgscavenge, runfinq
-  3. Plugin allocations visible in host `runtime.memstats`
-  4. 1000-iteration `Stress()` test clean, no panics or races
+### 4. mazdl Phase 4: amd64 parity — COMPLETE (2026-04-21)
+
+**All four exit criteria pass on amd64.** `$GO tool task mazlink-smoke-amd64`
+exits 0.
+
+**Root cause of regression:** `smoke/host-mazdl/go.mod` had `go 1.26` but the
+root `mazzy` module uses `go 1.26.2` (updated in the Go 1.26.2 migration commit).
+This caused mazgo to report `go: updates to go.mod needed` when building
+`host-mazdl` (which imports mazzy via replace directive). Fixed by bumping
+`smoke/host-mazdl/go.mod` to `go 1.26.2`.
+
+**All loader-side and linker-side code was already correct** — `reloc_amd64.go`,
+`amd64/asm.go` Option A block, R_GOTPCREL handler, and the `mazlink-smoke-amd64`
+Taskfile task all existed and worked without change. Phase 4 arm64 and amd64 are
+now both continuously verified by their respective smoke tasks.
+
+**Known minor issue (non-blocking):** Three `runtime.AddCleanup[go.shape.struct...]`
+generic stencils from Go 1.26.2 appear as DEFINED T in the plugin (Phase 2
+metric shows "DEFINED T runtime.* symbols: 3" on both arches). These are GCshape
+instantiations whose `SymPkg` in the linker is not attributed to `runtime`,
+bypassing the policy filter in `rewriteHostSymsAsDynimport`. They don't affect
+smoke exit criteria (AddCleanup is not called by the smoke plugin) but represent
+a mild policy gap for production plugins that use generics or packages that call
+`runtime.AddCleanup`. Fix when relevant: add name-based fallback matching in
+`rewriteHostSymsAsDynimport` for symbols whose `SymPkg` is empty/wrong but whose
+name starts with a policy-matched package prefix.
 
 ### 5. CFF write-barrier crash in fontsvc.maz (paused)
 - **Symptom:** fontsvc.maz crashes during CFF glyph rendering in go-text/typesetting

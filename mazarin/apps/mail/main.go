@@ -91,7 +91,7 @@ func main() {
 	if err := sys.WaitForCoreServices(20); err != nil {
 		panic(fmt.Sprintf("[mail] FATAL: core services: %v", err))
 	}
-	if err := sys.WaitForShepherdReady("maildb", 75); err != nil {
+	if err := sys.WaitForShepherdReady("maildb", 300); err != nil {
 		fmt.Printf("[mail] WARNING: maildb not ready (%v), continuing without mail data\n", err)
 		maildbSID = -1
 	}
@@ -103,7 +103,9 @@ func main() {
 	fmt.Printf("[mail:timing] wait deps: %v\n", time.Since(tDep))
 
 	rachelSID = sys.MustGetShepherdByName("rachel")
-	maildbSID = sys.MustGetShepherdByName("maildb")
+	if maildbSID != -1 {
+		maildbSID = sys.MustGetShepherdByName("maildb")
+	}
 	fc := fontcache.New(rachelSID)
 
 	// Start uring dispatcher.
@@ -450,11 +452,31 @@ func handleKeyHeadersResp(resp *mailproto.RespKeyHeaders) {
 }
 
 // handleCollectionAdd handles an unsolicited CollectionAdd notification.
+// notif.MsgNum is the message's actual position in the collection after insertion.
+// Any existing MailRow at that position or later is shifted forward by one.
 func handleCollectionAdd(notif *mailproto.CollectionAdd) {
 	if notif.CollId != activeCollId {
 		return
 	}
 	fmt.Printf("[mail] CollectionAdd: msgNum=%d newSize=%d\n", notif.MsgNum, notif.NewSize)
+
+	// Shift all rows displaced by the insertion.
+	// For rows still loading: the in-flight KeyHeaders request carries the old
+	// msgNum. Maildb will serve data for the current occupant of that position
+	// (the newly-inserted message), not the original one. Re-fire the request
+	// with the new (post-shift) msgNum so the row gets the correct data.
+	for _, row := range mailRows {
+		if row.MsgNum() >= notif.MsgNum {
+			row.ShiftMsgNum(1)
+			if row.IsLoading() {
+				newReqId := nextReqId()
+				oldReqId := row.RefreshRequest(newReqId)
+				delete(rowByReqId, oldReqId)
+				rowByReqId[newReqId] = row
+			}
+		}
+	}
+
 	if len(mailRows) < 50 {
 		reqId := nextReqId()
 		row := NewMailRow(maildbSID, activeCollId, notif.MsgNum, reqId,

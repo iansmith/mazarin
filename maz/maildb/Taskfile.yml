@@ -37,10 +37,12 @@ tasks:
       - '{{.GO}} tool go-echo "maildb.maz ready at {{.MAILDB_MAZ}}"'
 
   x86_64:
-    desc: Build maildb shepherd (x86_64) — legacy ET_EXEC, not yet converted to plugin
+    desc: Build maildb shepherd (x86_64) — legacy ET_EXEC + new .maz plugin
     run: once
-    deps: [':check-env', ':merged-shepherd-overlay-amd64']
+    deps: [':check-env', ':merged-shepherd-overlay-amd64', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
+      - 'maz/maildb/**/*.go'
+      - 'maz/maildb/**/*.s'
       - 'maz/**/*.go'
       - 'maz/**/*.s'
       - 'mazarin/**/*.go'
@@ -48,12 +50,26 @@ tasks:
       - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
       - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
       - '{{.MAILDB_AMD64_ELF}}'
+      - '{{.MAILDB_MAZ_AMD64}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building maildb for x86_64..."'
+      - '{{.GO}} tool go-echo "Building maildb for x86_64 (legacy ET_EXEC)..."'
       - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.MAILDB_AMD64_ELF}} ./maz/maildb'
-      - '{{.GO}} tool go-echo "maildb x86_64 built at {{.MAILDB_AMD64_ELF}}"'
+      - '{{.GO}} tool go-echo "maildb x86_64 ET_EXEC built at {{.MAILDB_AMD64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building maildb.maz for x86_64 (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.MAILDB_MAZ_AMD64}} ./maz/maildb
+      - '{{.GO}} tool go-echo "maildb.maz (x86_64) ready at {{.MAILDB_MAZ_AMD64}}"'
 
   riscv64:
     desc: Build maildb shepherd (RISC-V 64-bit) — legacy ET_EXEC, stays on SysLoadMaz until Phase 7

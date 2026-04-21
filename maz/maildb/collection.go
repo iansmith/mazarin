@@ -66,35 +66,84 @@ func newCollectionStore(db *badger.DB, store *MessageStore) *collectionStore {
 	}
 }
 
+// countDateIndex counts all date: entries in badger, which is the ground-truth
+// message count regardless of whether initCounters has been called. Used by
+// createCollection so that collections created mid-import see the correct size.
+func (cs *collectionStore) countDateIndex() (int, error) {
+	var count int
+	err := cs.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		opts.Prefix = []byte("date:")
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek([]byte("date:")); it.Valid(); it.Next() {
+			count++
+		}
+		return nil
+	})
+	return count, err
+}
+
+// countUnreadDateIndex counts date: entries that have no corresponding read: key.
+func (cs *collectionStore) countUnreadDateIndex() (int, error) {
+	var count int
+	err := cs.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		opts.Prefix = []byte("date:")
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek([]byte("date:")); it.Valid(); it.Next() {
+			msgId := extractMsgIdFromDateKey(string(it.Item().Key()))
+			if msgId == "" {
+				continue
+			}
+			_, err := txn.Get([]byte("read:" + msgId))
+			if err != nil { // ErrKeyNotFound → unread
+				count++
+			}
+		}
+		return nil
+	})
+	return count, err
+}
+
 // createCollection creates a new collection with the given filter and sort order.
-// For FilterAll and FilterUnread, totalSize is read from the persistent counter.
+// For FilterAll and FilterUnread, totalSize is determined by scanning the date
+// index directly — this is correct even mid-import before initCounters has run.
 // For FilterFrom and FilterSubject, totalSize is 0 (fti count query happens in Phase 3).
 // The collection is added to the LRU pool; the oldest is evicted if the pool is full.
 // subscriberSID is the SID of the client that will receive CollectionAdd/Remove notifications.
+//
+// The counting is performed INSIDE cs.mu so that addMessage (which also holds cs.mu
+// while checking totalSize) sees a consistent view: any message committed to badger
+// before this lock is held is counted in totalSize, and addMessage will correctly
+// skip that message if it fires after createCollection.
 func (cs *collectionStore) createCollection(filterType, sortOrder uint32, filterArg [64]byte, subscriberSID int16) (*collection, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
 	var totalSize int
 	switch filterType {
 	case mailproto.FilterAll:
-		n, err := readCounter(cs.db, keyCountAll)
+		n, err := cs.countDateIndex()
 		if err != nil {
-			return nil, fmt.Errorf("createCollection: count:all: %w", err)
+			return nil, fmt.Errorf("createCollection: countDateIndex: %w", err)
 		}
-		totalSize = int(n)
+		totalSize = n
 	case mailproto.FilterUnread:
-		n, err := readCounter(cs.db, keyCountUnread)
+		n, err := cs.countUnreadDateIndex()
 		if err != nil {
-			return nil, fmt.Errorf("createCollection: count:unread: %w", err)
+			return nil, fmt.Errorf("createCollection: countUnreadDateIndex: %w", err)
 		}
-		totalSize = int(n)
+		totalSize = n
 	case mailproto.FilterFrom, mailproto.FilterSubject:
 		// TODO Phase 3: send SearchMail{Size=0} to fti to get total count.
 		totalSize = 0
 	default:
 		return nil, fmt.Errorf("createCollection: unknown filterType %d", filterType)
 	}
-
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
 
 	// Find a free slot; if none, evict the LRU.
 	slot := cs.findFreeSlotLocked()
@@ -287,6 +336,125 @@ func (cs *collectionStore) removeMessage(msgId string, reqId [16]byte) []collect
 		}
 	}
 	return notifs
+}
+
+// addMessage is called during mbox import after each message is committed to badger.
+// It queries the date index to find the message's actual position in each live
+// FilterAll collection, shifts cached entries that are displaced, and sends
+// CollectionAdd with the correct msgNum.
+//
+// The message MUST already be committed to badger (wb.Flush called) before this
+// is invoked, so the date index scan sees the new key.
+func (cs *collectionStore) addMessage(msgId string, ts time.Time) {
+	if ts.IsZero() {
+		return
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	// Count the date index once. If a collection's totalSize already equals or
+	// exceeds the current count, createCollection ran AFTER this message was
+	// committed to badger and already included it in totalSize — skip to avoid
+	// double-counting.
+	currentCount, countErr := cs.countDateIndex()
+	if countErr != nil {
+		fmt.Printf("[maildb] addMessage: countDateIndex: %v\n", countErr)
+		return
+	}
+
+	for _, coll := range cs.slots {
+		if coll == nil || len(coll.subscribers) == 0 {
+			continue
+		}
+		if coll.filterType != mailproto.FilterAll {
+			continue
+		}
+		if currentCount <= coll.totalSize {
+			continue // already counted at createCollection time
+		}
+
+		// Compute actual position of the new message in this collection.
+		msgNum := cs.computeMsgNumLocked(coll, ts, msgId)
+		oldSize := uint32(coll.totalSize)
+		coll.totalSize++
+
+		// If the new message is inserted before the end, shift cached entries.
+		if msgNum < oldSize {
+			newEntries := make(map[uint32]string, len(coll.entries))
+			newMsgIdToNum := make(map[string]uint32, len(coll.msgIdToNum))
+			for num, id := range coll.entries {
+				if id == "" {
+					continue
+				}
+				if num >= msgNum {
+					newEntries[num+1] = id
+					newMsgIdToNum[id] = num + 1
+				} else {
+					newEntries[num] = id
+					newMsgIdToNum[id] = num
+				}
+			}
+			coll.entries = newEntries
+			coll.msgIdToNum = newMsgIdToNum
+		}
+		// Register the new entry in the collection cache.
+		coll.entries[msgNum] = msgId
+		coll.msgIdToNum[msgId] = msgNum
+
+		notif := mailproto.CollectionAdd{
+			CollId:  coll.id,
+			MsgNum:  msgNum,
+			NewSize: uint32(coll.totalSize),
+		}
+		msg := mailproto.EncodeCollectionAdd(&notif)
+		for _, sid := range coll.subscribers {
+			sendMailMsg(int(sid), &msg)
+		}
+		fmt.Printf("[maildb] CollectionAdd: collId=%d msgNum=%d newSize=%d\n",
+			coll.id, msgNum, coll.totalSize)
+	}
+}
+
+// computeMsgNumLocked counts how many date-index entries in badger come before
+// the given (ts, msgId) key in the collection's sort order. The result is the
+// 0-based position of the new message. Must be called with cs.mu held.
+func (cs *collectionStore) computeMsgNumLocked(coll *collection, ts time.Time, msgId string) uint32 {
+	newKey := fmt.Sprintf("date:%s:%s", ts.UTC().Format("2006-01-02T15:04:05.000000000Z"), msgId)
+	var count uint32
+	_ = cs.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		opts.Prefix = []byte("date:")
+		opts.Reverse = coll.sortOrder == mailproto.SortDesc
+
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		if coll.sortOrder == mailproto.SortDesc {
+			// Scan newest-first; count keys that are lexicographically
+			// greater than newKey (they appear before the new message).
+			it.Seek([]byte("date:\xff"))
+			for ; it.Valid(); it.Next() {
+				key := string(it.Item().Key())
+				if key <= newKey {
+					break
+				}
+				count++
+			}
+		} else {
+			// Scan oldest-first; count keys strictly less than newKey.
+			it.Seek([]byte("date:"))
+			for ; it.Valid(); it.Next() {
+				key := string(it.Item().Key())
+				if key >= newKey {
+					break
+				}
+				count++
+			}
+		}
+		return nil
+	})
+	return count
 }
 
 // findFreeSlotLocked returns the index of a nil slot, or -1 if all are occupied.

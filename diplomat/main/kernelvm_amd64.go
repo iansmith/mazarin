@@ -460,8 +460,23 @@ func createLinearMap(pml4Phys, ramStart, ramEnd uint64) {
 		}
 		pd := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdPhys)))
 
-		// Skip if entry is already valid (preserves 4KB page mappings)
 		if pd[idx2]&PTE_PRESENT != 0 {
+			if pd[idx2]&PTE_PS != 0 {
+				// Already a 2MB large page — skip.
+				continue
+			}
+			// A 4KB PT is already here (e.g. from mapStacks for this 2MB range).
+			// Fill in the unmapped PT slots with linear-map 4KB entries so the
+			// rest of this 2MB physical range is reachable via the linear map.
+			ptPhys := pd[idx2] & PTE_ADDR_MASK
+			pt := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(ptPhys)))
+			for ptIdx := uint64(0); ptIdx < ENTRIES_PER_TABLE; ptIdx++ {
+				if pt[ptIdx]&PTE_PRESENT != 0 {
+					continue // already mapped (stack page) — preserve it
+				}
+				pt[ptIdx] = (pa + ptIdx*PageSize) | PTE_PRESENT | PTE_WRITABLE
+			}
+			blocksCreated++
 			continue
 		}
 

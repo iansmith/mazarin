@@ -7,6 +7,7 @@ import (
 	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ktimer"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/hid"
 	"mazzy/shared/iouring"
@@ -168,6 +169,7 @@ type blockAsyncSlot struct {
 	dataLen         uint32  // Data buffer size (for cache invalidate)
 	clumpAddr       uintptr // VA of *proc.DMAClump, stored as uintptr (no write barrier)
 	userData        uint64  // Opaque tag from io_uring SQEntry.UserData, written to CQEntry
+	submitTick      uint64  // ktimer counter value at Notify() time (for IRQ latency)
 }
 
 var blockAsyncSlots [256]blockAsyncSlot // indexed by IOTag (descriptor head index)
@@ -199,6 +201,33 @@ func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, da
 			userData:        userData,
 		}
 	}
+}
+
+// lastIOLatencyTicks stores the most recent submit→IRQ elapsed ticks for logging.
+// Written atomically by the IRQ top-half; read by the SVC goroutine on the next submit.
+var lastIOLatencyTicks uint64
+
+// SetBlockSubmitTick records the ktimer counter value at Notify() time for tag.
+// Called from SyscallBlockSubmit immediately after dev.Eng.Notify().
+//
+//go:nosplit
+func SetBlockSubmitTick(tag uint16, tick uint64) {
+	if tag < 256 {
+		blockAsyncSlots[tag].submitTick = tick
+	}
+}
+
+// GetLastIOLatencyUs returns the submit→IRQ latency of the most recently completed
+// block I/O in microseconds. Returns 0 if no completion has been recorded yet.
+//
+//go:nosplit
+func GetLastIOLatencyUs() uint64 {
+	ticks := atomic.LoadUint64(&lastIOLatencyTicks)
+	freq := uint64(ktimer.Frequency())
+	if freq == 0 {
+		return 0
+	}
+	return ticks * 1_000_000 / freq
 }
 
 // EnableBlockAsyncMode switches the top-half to async completion delivery.
@@ -407,6 +436,12 @@ func NonTimerIRQTopHalf() {
 				drained++
 				tag := uint16(info.Tag)
 				meta := &blockAsyncSlots[tag]
+
+				// Record submit→IRQ latency for the SVC goroutine to log.
+				if meta.submitTick != 0 {
+					elapsed := ktimer.ReadCounter() - meta.submitTick
+					atomic.StoreUint64(&lastIOLatencyTicks, elapsed)
+				}
 
 				// Read status from sidecar (Device-nGnRnE, no cache mgmt needed)
 				status := uint16(0)

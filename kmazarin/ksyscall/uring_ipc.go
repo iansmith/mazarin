@@ -61,29 +61,71 @@ func SyscallUringSend(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	callerSID := getCurrentThreadSID()
 
 	// Resolve the user VA to a kernel-accessible address.
-	// The 128-byte message might span a page boundary, so we handle
-	// the common case (within one page) and reject cross-page for now.
 	pageOffset := msgPtr & (kmem.PageSize - 1)
-	if pageOffset+uintptr(ipc.UringIPCSlotSize) > kmem.PageSize {
-		return -22 // EINVAL — message spans page boundary
-	}
+	var msgKVA uintptr
 
-	userPA := kmem.WalkUserPageTable(msgPtr)
-	if userPA == 0 {
-		if !kmem.HandleUserPageFault(msgPtr, 0) {
-			return -14 // EFAULT
-		}
-		userPA = kmem.WalkUserPageTable(msgPtr)
+	if pageOffset+uintptr(ipc.UringIPCSlotSize) <= kmem.PageSize {
+		// Fast path: message fits within one page.
+		userPA := kmem.WalkUserPageTable(msgPtr)
 		if userPA == 0 {
+			if !kmem.HandleUserPageFault(msgPtr, 0) {
+				return -14 // EFAULT
+			}
+			userPA = kmem.WalkUserPageTable(msgPtr)
+			if userPA == 0 {
+				return -14 // EFAULT
+			}
+		}
+		scratchVA := kmem.MapPAToKernelScratch(userPA &^ (kmem.PageSize - 1))
+		if scratchVA == 0 {
 			return -14 // EFAULT
 		}
-	}
+		msgKVA = scratchVA + uintptr(pageOffset)
+	} else {
+		// Slow path: message spans a page boundary — copy to a local buffer.
+		// Happens when a 128-byte stack variable lands in the last 128 bytes of
+		// a page (platform-dependent stack layout, seen on x86_64).
+		var localBuf [ipc.UringIPCSlotSize]byte
+		firstBytes := kmem.PageSize - pageOffset
 
-	scratchVA := kmem.MapPAToKernelScratch(userPA &^ (kmem.PageSize - 1))
-	if scratchVA == 0 {
-		return -14 // EFAULT
+		userPA1 := kmem.WalkUserPageTable(msgPtr)
+		if userPA1 == 0 {
+			if !kmem.HandleUserPageFault(msgPtr, 0) {
+				return -14
+			}
+			userPA1 = kmem.WalkUserPageTable(msgPtr)
+			if userPA1 == 0 {
+				return -14
+			}
+		}
+		scratchVA1 := kmem.MapPAToKernelScratch(userPA1 &^ (kmem.PageSize - 1))
+		if scratchVA1 == 0 {
+			return -14
+		}
+		copy(localBuf[:firstBytes],
+			unsafe.Slice((*byte)(unsafe.Pointer(scratchVA1+pageOffset)), int(firstBytes)))
+
+		secondPageVA := (msgPtr &^ (kmem.PageSize - 1)) + kmem.PageSize
+		userPA2 := kmem.WalkUserPageTable(secondPageVA)
+		if userPA2 == 0 {
+			if !kmem.HandleUserPageFault(secondPageVA, 0) {
+				return -14
+			}
+			userPA2 = kmem.WalkUserPageTable(secondPageVA)
+			if userPA2 == 0 {
+				return -14
+			}
+		}
+		scratchVA2 := kmem.MapPAToKernelScratch(userPA2 &^ (kmem.PageSize - 1))
+		if scratchVA2 == 0 {
+			return -14
+		}
+		remaining := uintptr(ipc.UringIPCSlotSize) - firstBytes
+		copy(localBuf[firstBytes:],
+			unsafe.Slice((*byte)(unsafe.Pointer(scratchVA2)), int(remaining)))
+
+		msgKVA = uintptr(unsafe.Pointer(&localBuf[0]))
 	}
-	msgKVA := scratchVA + uintptr(pageOffset)
 
 	// Stamp sender fields into the message before writing to ring
 	msg := (*ipc.UringIPCMsg)(unsafe.Pointer(msgKVA))

@@ -383,6 +383,78 @@ New keys to add:
 - After `TransferPages`, maildb MUST NOT access the transferred VA
 - Caller (mail app) calls `mem.FreePages(va, numPages)` after consuming data
 
+### UringIPCMsg is always exactly 128 bytes
+
+`UringIPCMsg` is a fixed-size struct (enforced by compile-time assertion in
+`shared/ipc/uring_ring.go:93`):
+```
+Protocol(4) + SenderSID(2) + Flags(2) + SenderID(8) + Payload(112) = 128 bytes
+```
+`UringIPCSlotSize = 128` is a ring-layout constant (64 slots × 128B per slot = one ring
+page). This size cannot change without restructuring the ring.
+
+### MapPAToKernelScratch is free — no release needed
+
+`kmem.MapPAToKernelScratch(pa)` is `pa + KernelMMIOOffset` — a pure arithmetic
+translation. Diplomat sets up permanent 2MB block descriptors covering all physical RAM
+at that offset. There are no TLB entries to flush, no page table writes, and nothing to
+release after use. The function is safe to call from any goroutine at any time.
+`KernelScratchVA` (the old single-slot PT approach) is dead code; ignore it.
+
+### CollectionAdd double-counting race and fix (2026-04-21)
+
+**The race:** `createCollection` counted date-index keys to determine `totalSize`, but the
+count was taken BEFORE acquiring `cs.mu`. Meanwhile the import goroutine could commit a
+message, yield (preempted by Go scheduler), then resume and call `addMessage` for that
+same message. `addMessage` found a live collection and incremented `totalSize` again →
+spurious CollectionAdd with `newSize = actual + 1`.
+
+**Fix contract:** Both `createCollection` and `addMessage` must hold `cs.mu` when accessing
+or mutating `totalSize`, AND the count used to initialize `totalSize` must also be taken
+under `cs.mu`. This makes the "count + assign `totalSize`" atomic with respect to `addMessage`'s
+"count + compare + increment".
+
+**Guard in `addMessage`:**
+```go
+currentCount, _ := cs.countDateIndex()   // inside cs.mu
+if currentCount <= coll.totalSize {
+    continue  // already counted at createCollection time
+}
+```
+`currentCount` is the ground-truth date-index size. If it equals `coll.totalSize`, the
+message was committed to badger before `createCollection` finalized → skip. The guard is
+safe for concurrent imports: each `addMessage` call adds exactly one specific `msgId`, and
+the comparison is monotonically correct because the import goroutine commits messages
+one-at-a-time in sequence.
+
+**RefreshRequest pattern:** When `handleCollectionAdd` shifts existing rows, any row whose
+`KeyHeaders` request is still in flight must re-fire the request with the updated `msgNum`.
+The old in-flight request will return data for position N (which is now occupied by the
+newly inserted message, not the row that was shifted). `MailRow.RefreshRequest(newReqId)`
+atomically updates the row's `requestId`, fires a new request, and returns the old ID for
+removal from the `rowByReqId` lookup table.
+
+---
+
+### SyscallUringSend cross-page fix (2026-04-21)
+
+The kernel rejected `SyscallUringSend` calls where the 128-byte `UringIPCMsg` buffer
+spans a page boundary (`(msgPtr & 0xFFF) + 128 > 4096`), returning EINVAL. On x86_64 the
+mail app's stack layout places the `msg` variable at a page offset that triggers this.
+
+Fix in `kmazarin/ksyscall/uring_ipc.go`: when the fast-path check fails, a slow path
+copies both partial pages into a 128-byte kernel stack buffer, then uses that buffer as
+the message source. No resources are allocated — `MapPAToKernelScratch` is arithmetic,
+and the local buffer lives on the kernel goroutine's stack for the duration of the call.
+
+**Why two `WalkUserPageTable` calls are required even though the source is a stack:**
+A goroutine stack is contiguous in virtual address space, so the two pages involved are
+always adjacent VAs. However, virtual contiguity does not imply physical contiguity — the
+buddy allocator hands out independent frames for each page, so the two physical addresses
+can be anywhere in RAM. Each must be resolved separately via a full L0→L3 page table walk.
+The `HandleUserPageFault` fallback on the second page is a correctness guard; in practice
+both pages are demand-paged in before the shepherd reaches the syscall.
+
 ---
 
 ## MailRow Interactor Design
@@ -476,6 +548,24 @@ to 6-byte base64 tags as dynsym `extname` (e.g. `type:.C9kB2TSL`). Stock exe mod
 skips this hashing, so host and plugin would have mismatched dynsym names → "unresolved
 symbol" at load time. Mazlink patches `mangleTypeSym` to also run when
 `-dlopen-host-exports` is set so names agree.
+
+### Phase 5: x86_64 end-to-end (CURRENT WORK — 2026-04-21)
+
+All production plugins (rachel, helloworld, prefs, fontsvc, keymapper, linux,
+maildb, mail-ui, fti, clocks, etc.) are **already** built with the new mazlink
+plugin-shape format — every `maz/*/Taskfile.yml` uses
+`-buildmode=plugin -dlopen-host-packages`. The shepherd uses `-dlopen-host-exports`.
+`mazhost/load.go` already calls `mazdl.RegisterHost()` + `mazdl.OpenBytes`.
+The ARM64 HVF system is stable and fully exercising this path.
+
+**What remains:** The x86_64 system has not been tested with a disk image.
+CLAUDE.md notes "VirtIO PCI block driver needs testing with disk" for x86_64.
+Without a working block driver the shepherd never gets a filesystem, never loads
+plugins, and the x86_64 system never runs any userspace.
+
+**Phase 5 work:** Build `disk-x86_64`, run `run-x86_64`, read the serial log,
+identify and fix whatever breaks in the VirtIO block / fs / shepherd / plugin
+pipeline on x86_64.
 
 ### Retirements when Phase 5 lands (arm64/amd64)
 | Mechanism | Why it goes away |

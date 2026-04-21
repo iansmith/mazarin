@@ -82,3 +82,13 @@ func getBlockEmptyUsedPtr() uint64
 
 //go:linkname getBlockEmptySnapped main.GetBlockEmptySnapped
 func getBlockEmptySnapped() uint32
+
+// setBlockSubmitTick records the ktimer counter at Notify() time for submit→IRQ latency.
+//
+//go:linkname setBlockSubmitTick main.SetBlockSubmitTick
+func setBlockSubmitTick(tag uint16, tick uint64)
+
+// getLastIOLatencyUs returns the submit→IRQ latency of the last completed block I/O in µs.
+//
+//go:linkname getLastIOLatencyUs main.GetLastIOLatencyUs
+func getLastIOLatencyUs() uint64

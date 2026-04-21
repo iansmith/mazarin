@@ -46,9 +46,16 @@ type ftiTracker struct {
 	mu      sync.Mutex
 	pending map[string]pendingIndex // docId -> shared page info
 
-	queue  chan ftiQueueItem // incoming items to index
-	done   chan struct{}     // closed when all items are indexed
-	ftiSID int
+	queue       chan ftiQueueItem // incoming items to index
+	done        chan struct{}     // closed when all items are indexed
+	ftiSID      int
+	ftiDied     chan struct{} // closed when fti shepherd dies
+	ftiDiedOnce sync.Once
+}
+
+// MarkFTIDied signals that the fti shepherd has died. Safe to call multiple times.
+func (t *ftiTracker) MarkFTIDied() {
+	t.ftiDiedOnce.Do(func() { close(t.ftiDied) })
 }
 
 func newFTITracker(ftiRespCh <-chan any, ftiSID int, notify func(string)) *ftiTracker {
@@ -57,6 +64,7 @@ func newFTITracker(ftiRespCh <-chan any, ftiSID int, notify func(string)) *ftiTr
 		queue:   make(chan ftiQueueItem, 256),
 		done:    make(chan struct{}),
 		ftiSID:  ftiSID,
+		ftiDied: make(chan struct{}),
 	}
 	go t.sendLoop(ftiRespCh, notify)
 	return t
@@ -115,11 +123,19 @@ func (t *ftiTracker) sendLoop(ftiRespCh <-chan any, notify func(string)) {
 	}
 }
 
-// waitForOne blocks until one fti response arrives, frees its shared pages,
-// and notifies the UI.
+// waitForOne blocks until one fti response arrives (or fti dies), frees its
+// shared pages, and notifies the UI.
 func (t *ftiTracker) waitForOne(ftiRespCh <-chan any, notify func(string)) {
-	resp, ok := <-ftiRespCh
-	if !ok {
+	var resp any
+	var ok bool
+
+	select {
+	case resp, ok = <-ftiRespCh:
+		if !ok {
+			return
+		}
+	case <-t.ftiDied:
+		fmt.Println("[maildb] fti died while waiting for index confirmation, skipping")
 		return
 	}
 
@@ -153,9 +169,16 @@ func (t *ftiTracker) waitForOne(ftiRespCh <-chan any, notify func(string)) {
 // headers + body into BadgerDB. Each message body is also enqueued for
 // full-text indexing via the ftiTracker (sent one at a time).
 //
+// onFirstCommit is called after the very first message is committed. The
+// caller uses this to signal shepherd readiness while import continues.
+//
+// onMessage is called after each message is committed. The caller uses this
+// to send incremental CollectionAdd notifications to live collections.
+//
 // Returns the open db immediately after badger flush. FTI indexing continues
 // in the background via the ftiTracker.
-func mboxImport(mboxDir string, tracker *ftiTracker, notify func(string)) (*badger.DB, error) {
+func mboxImport(mboxDir string, tracker *ftiTracker, notify func(string),
+	onFirstCommit func(db *badger.DB), onMessage func(msgId string, ts time.Time)) (*badger.DB, error) {
 	mboxPath := mboxDir + "/mbox"
 
 	fmt.Printf("[maildb] mboxImport: opening %s\n", mboxPath)
@@ -183,12 +206,9 @@ func mboxImport(mboxDir string, tracker *ftiTracker, notify func(string)) (*badg
 	var lastKey string
 	var body strings.Builder
 
-	wb := db.NewWriteBatch()
-
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil && err != io.EOF {
-			wb.Cancel()
 			db.Close()
 			return nil, fmt.Errorf("read mbox: %w", err)
 		}
@@ -202,9 +222,20 @@ func mboxImport(mboxDir string, tracker *ftiTracker, notify func(string)) (*badg
 				count++
 				fmt.Printf("[maildb] parse: msg %d id=%s subj=%q body=%d bytes\n",
 					count, headers["message-id"], headers["subject"], len(bodyStr))
-				if storeErr := storeParsedMessage(wb, headers, bodyStr, tracker, notify); storeErr != nil {
+				var storedMsgId string
+				var storedTs time.Time
+				if storeErr := storeParsedMessage(db, headers, bodyStr, tracker, notify, &storedMsgId, &storedTs); storeErr != nil {
 					fmt.Printf("[maildb] store error: %v\n", storeErr)
 					count--
+				} else {
+					// db.Update() in storeParsedMessage commits immediately — no flush needed.
+					// Signal readiness after the very first commit.
+					if count == 1 && onFirstCommit != nil {
+						onFirstCommit(db)
+					}
+					if storedMsgId != "" && onMessage != nil {
+						onMessage(storedMsgId, storedTs)
+					}
 				}
 				headers = make(map[string]string)
 				lastKey = ""
@@ -240,12 +271,7 @@ func mboxImport(mboxDir string, tracker *ftiTracker, notify func(string)) (*badg
 		}
 	}
 
-	if err := wb.Flush(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("badger flush: %w", err)
-	}
-
-	fmt.Printf("[maildb] mboxImport: badger flush complete, %d messages stored\n", count)
+	fmt.Printf("[maildb] mboxImport: import complete, %d messages stored\n", count)
 	notify(fmt.Sprintf("Import complete: %d messages in database", count))
 
 	// Initialise persistent counters. All newly imported messages are unread.
@@ -259,10 +285,12 @@ func mboxImport(mboxDir string, tracker *ftiTracker, notify func(string)) (*badg
 	return db, nil
 }
 
-// storeParsedMessage writes message metadata + body to BadgerDB, then
-// enqueues the message for fti indexing. The tracker sends items one at
-// a time and handles completion/page cleanup.
-func storeParsedMessage(wb *badger.WriteBatch, headers map[string]string, body string, tracker *ftiTracker, notify func(string)) error {
+// storeParsedMessage writes message metadata + body to BadgerDB in a single
+// transaction, then enqueues the message for fti indexing. Using db.Update()
+// (one transaction per message) instead of WriteBatch so each commit is
+// immediately visible to subsequent reads (e.g. the date-index scan in addMessage).
+// On success, *outMsgId is set to the stored message ID and *outTs to the timestamp.
+func storeParsedMessage(db *badger.DB, headers map[string]string, body string, tracker *ftiTracker, notify func(string), outMsgId *string, outTs *time.Time) error {
 	messageId := strings.Trim(headers["message-id"], "<> ")
 	if messageId == "" {
 		return fmt.Errorf("no message-id")
@@ -292,24 +320,35 @@ func storeParsedMessage(wb *badger.WriteBatch, headers map[string]string, body s
 		return err
 	}
 
-	// Write metadata to badger.
-	if err := wb.Set([]byte(messageId), data); err != nil {
-		return fmt.Errorf("badger meta: %w", err)
+	// Commit metadata + body + date-index in one transaction.
+	// db.Update() creates a fresh read-write transaction, commits it, and
+	// returns; the keys are immediately visible to subsequent db.View() calls.
+	if err := db.Update(func(txn *badger.Txn) error {
+		if err := txn.Set([]byte(messageId), data); err != nil {
+			return fmt.Errorf("meta: %w", err)
+		}
+		if len(body) > 0 {
+			if err := txn.Set([]byte("body:"+messageId), []byte(body)); err != nil {
+				return fmt.Errorf("body: %w", err)
+			}
+		}
+		if !msg.Timestamp.IsZero() {
+			dateKey := fmt.Sprintf("date:%s:%s", msg.Timestamp.UTC().Format("2006-01-02T15:04:05.000000000Z"), messageId)
+			if err := txn.Set([]byte(dateKey), nil); err != nil {
+				return fmt.Errorf("date: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("badger commit: %w", err)
 	}
 
-	// Write body to badger.
-	if len(body) > 0 {
-		if err := wb.Set([]byte("body:"+messageId), []byte(body)); err != nil {
-			return fmt.Errorf("badger body: %w", err)
-		}
+	// Signal the stored messageId and timestamp to the caller.
+	if outMsgId != nil {
+		*outMsgId = messageId
 	}
-
-	// Write date index key.
-	if !msg.Timestamp.IsZero() {
-		dateKey := fmt.Sprintf("date:%s:%s", msg.Timestamp.UTC().Format("2006-01-02T15:04:05.000000000Z"), messageId)
-		if err := wb.Set([]byte(dateKey), nil); err != nil {
-			return fmt.Errorf("badger date: %w", err)
-		}
+	if outTs != nil {
+		*outTs = msg.Timestamp
 	}
 
 	// Build a short display string for UI notifications.

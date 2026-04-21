@@ -20,7 +20,8 @@
 // resolution pass, never read by user code.
 //
 // Phase 4 MVP limits:
-//   - arm64 only (R_AARCH64_{RELATIVE,GLOB_DAT,JUMP_SLOT}).
+//   - arm64 and amd64 (R_AARCH64_{RELATIVE,GLOB_DAT,JUMP_SLOT} /
+//     R_X86_64_{RELATIVE,GLOB_DAT,JMP_SLOT,64}).
 //   - Linux only (plain mmap via syscall; no SysMapELFSegment kernel
 //     syscall yet — that lands when we integrate with the real shepherd).
 //   - Plugin DT_NEEDED must be exactly "mazarin-host".

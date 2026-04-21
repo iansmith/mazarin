@@ -195,12 +195,14 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	WRMSR
 
-	// Sync TLS: write g to FS_BASE - 8
-	MOVL	$0xC0000100, CX		// MSR_FS_BASE
-	RDMSR
-	SHLQ	$32, DX
-	ORQ	DX, AX			// RAX = FS_BASE
+	// Sync TLS: write g to FS_BASE - 8.
+	// Skip if g==0 (thread not yet initialized): the demand page hasn't been
+	// faulted in yet, and writing nil from supervisor mode would cause a
+	// nested kernel page fault. The Go runtime writes TLS itself once g is set.
 	MOVQ	104(R12), DX		// new g (R14)
+	TESTQ	DX, DX
+	JZ	run_skip_tls		// g==0 → skip TLS sync (page may not be present)
+	MOVQ	144(R12), AX		// FSBase (use saved value — avoids WRMSR→RDMSR pipeline race)
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 run_skip_tls:
 
@@ -392,12 +394,14 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	WRMSR
 
-	// Sync TLS: write g to FS_BASE - 8
-	MOVL	$0xC0000100, CX		// MSR_FS_BASE
-	RDMSR
-	SHLQ	$32, DX
-	ORQ	DX, AX			// RAX = FS_BASE
+	// Sync TLS: write g to FS_BASE - 8.
+	// Skip if g==0 (thread not yet initialized): the demand page hasn't been
+	// faulted in yet, and writing nil from supervisor mode would cause a
+	// nested kernel page fault.
 	MOVQ	104(R12), DX		// new g (R14)
+	TESTQ	DX, DX
+	JZ	yield_skip_tls		// g==0 → skip TLS sync (page may not be present)
+	MOVQ	144(R12), AX		// FSBase (use saved value — avoids WRMSR→RDMSR pipeline race)
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 yield_skip_tls:
 

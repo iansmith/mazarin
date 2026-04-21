@@ -1889,23 +1889,11 @@ func MapUserFramebufferWithL0(framebufferPA uintptr, framebufferSize uintptr, l0
 	return true
 }
 
-// ============================================================================
-// Kernel Scratch Page for ELF Loading
-// ============================================================================
-// The kernel can't directly access userspace pages (PAN / permissions).
-// We use a scratch VA in kernel space that we can remap to different physical
-// addresses when copying data to userspace pages.
-
-// KernelScratchVA is a dedicated kernel virtual address for temporary PA mapping.
-// Located after the PT pool region, safely before the Go heap.
-const KernelScratchVA = 0xFFFFFFFF42260000
-
-// MapPAToKernelScratch returns a kernel VA for accessing a physical address.
-// Uses the linear map directly (PA + KernelMMIOOffset) which covers all
-// physical RAM via 2MB block descriptors set up by diplomat.
-//
-// CRITICAL: This is NOT thread-safe. Only use during single-threaded boot
-// for ELF loading, before the Go scheduler starts multiple goroutines.
+// MapPAToKernelScratch returns a kernel VA for reading a physical page.
+// All physical RAM is permanently identity-mapped at KernelMMIOOffset via 2MB
+// block descriptors set up by diplomat, so this is a pure arithmetic translation
+// with no TLB entries, no page table writes, and nothing to release.
+// Safe to call from any goroutine at any time.
 func MapPAToKernelScratch(pa uintptr) uintptr {
 	return pa + constants.KernelMMIOOffset
 }

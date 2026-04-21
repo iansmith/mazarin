@@ -42,6 +42,9 @@ func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
 		haltForever()
 	}
 
+	// Log shepherd exit to UART for diagnostics (Criticalf uses polling, always visible).
+	klog.Criticalf("E", "E%02d status=%d\n", int16(pid), int64(status))
+
 	// Userspace exit_group — kill all threads of this shepherd
 	nextCtx := TerminateShepherd(pid, int64(status))
 	if nextCtx == 0 {
