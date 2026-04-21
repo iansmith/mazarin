@@ -1,4 +1,4 @@
-# Findings: Mail Row Interactor + Maildb Collection Protocol
+# Findings
 
 ## Existing Protocol (to be removed)
 
@@ -414,3 +414,119 @@ New keys to add:
 | Page alloc (userspace) | `mazarin/sys/sharedmem.go`, `mazarin/sys/mem/` |
 | Grid table | `mazarin/mancini/std/grid_table.go` |
 | Badger flags persistence | new keys in `maz/maildb/mail_handler.go` |
+
+---
+
+## mazdl / mazlink Architecture
+
+### Four-piece design
+| Piece | Location | Responsibility |
+|---|---|---|
+| **mazlink** | `mazlink-patches/cmd/link/` | Emit plugin-shape ELF: UNDEF dynsym for host imports, PLT/JUMP_SLOT for function imports, GLOB_DAT for data imports, strip unreferenced host code, NOP host `init.N` entries. Also: emit host's export dynsym when linking the host binary. |
+| **mazdl** | `mazarin/mazdl/` | Real dlopen: mmap segments via kernel primitive, apply `R_*_RELATIVE`, resolve UNDEF symbols against global module table, patch GOT/PLT, run `DT_INIT_ARRAY`, return handle. `dlsym` walks export table. |
+| **Kernel** | `kmazarin/ksyscall/` | Single new primitive `SysMapELFSegment(fd, offset, len, vaddr, perms)` — mmap + W^X enforcement. No ELF parsing, no relocations, no symbol names. |
+| **maz-reloc** | `cmd/maz-reloc/` | Retires on arm64/amd64 once Phase 5 lands. Stays alive for riscv64 until Phase 7. |
+
+Rule of thumb: if the work requires understanding ELF structure, it lives in `mazdl`,
+not the kernel. The kernel only touches page tables.
+
+### Plugin ELF shape (ET_DYN)
+- `.dynsym`: UNDEF entries for host-imported symbols; DEFINED for exports
+- `.rela.dyn`: `R_*_RELATIVE` for internal pointers; `R_*_GLOB_DAT` for data imports
+- `.rela.plt` + `.plt` + `.got.plt`: function imports via JUMP_SLOT — eager binding
+- `.dynamic`: `DT_NEEDED="mazarin-host"`, `DT_JMPREL`, `DT_PLTREL=DT_RELA`, etc.
+- `.init_array`: `_mazdl_register_moduledata` wrapper first, then user inits
+- No `R_*_COPY` — single authoritative copy of every host datum
+- No lazy .plt resolver — `mazdl.Open` fills every slot before returning
+
+### Host policy (Phase-2 starting set)
+Packages whose code is stripped from plugins and resolved against the host at load time:
+```
+runtime
+internal/runtime/...   (atomic, gc, maps, math, sys, syscall, exithook, ...)
+internal/abi
+internal/cpu
+internal/bytealg
+internal/goarch
+internal/goos
+internal/goexperiment
+```
+`internal/runtime/...` kept wholesale: atomic CAS primitives must be identical on
+shared memory. Ambiguous packages (`sync`, `reflect`, `os`, `time`) deferred to Phase 6
+— add only when a specific bug forces it.
+
+### Funcval dead-reloc bug (Option A fix — 2026-04-18)
+Go emits an 8-byte `.data.rel.ro` funcval object for every function taken as a value
+(name ends in `·f`). When mazlink strips a host-policy package's `.text`, the funcval
+stays but its `R_*_RELATIVE` addend points into the zero-padding gap between stripped
+functions and `runtime.etext`. Any indirect call through the funcval (e.g. map hasher)
+branches into padding → `udf #0` → SIGILL.
+
+**Fix:** In `adddynrel`'s `R_ADDR` case, when target is `SDYNIMPORT` AND
+`DynimpLib=="mazarin-host"`, emit `R_AARCH64_GLOB_DAT` / `R_X86_64_GLOB_DAT` against
+the target's dynsym entry. The dynamic loader writes the host's real address at load
+time. The `DynimpLib=="mazarin-host"` gate is load-bearing — prevents accidentally
+promoting unrelated SDYNIMPORT entries.
+Files: `mazlink-patches/cmd/link/internal/arm64/asm.go`,
+       `mazlink-patches/cmd/link/internal/amd64/asm.go`.
+
+### Name-mangling parity
+`BuildModePlugin` triggers `ld.mangleTypeSym` which hashes long `type:.*` symbols
+to 6-byte base64 tags as dynsym `extname` (e.g. `type:.C9kB2TSL`). Stock exe mode
+skips this hashing, so host and plugin would have mismatched dynsym names → "unresolved
+symbol" at load time. Mazlink patches `mangleTypeSym` to also run when
+`-dlopen-host-exports` is set so names agree.
+
+### Retirements when Phase 5 lands (arm64/amd64)
+| Mechanism | Why it goes away |
+|---|---|
+| `maz-reloc` thin-stub trampolines | Plugin no longer has its own `morestack` — `.plt` goes directly to host |
+| `maz-reloc` `.maz_imports`/`.maz_import_strtab` | Standard `.dynsym`/`.rela.plt` replace them |
+| `syncMazWriteBarriers` | Plugin's `runtime.writeBarrier` is gone; GOT slot points at host's flag |
+| `preGrowStack` | No plugin `morestack`; host handler runs correctly |
+| Kernel symbol-name hunt for `MazarinMain` | Replaced by `mazdl.Sym` |
+| `RegisterMazModuledata` host helper | `_mazdl_register_moduledata` init-array entry runs from inside the plugin |
+
+---
+
+## CFF Write-Barrier Investigation (paused 2026-04-17)
+
+### Symptom
+fontsvc.maz crashes during CFF glyph rendering in `go-text/typesetting` after loading
+the Italic font (Regular succeeds). Two modes, non-deterministic:
+- `SIGSEGV addr=0x70000000000000` at `(*CharstringReader).ensureClosePath`
+  (the `append(out.Segments, ...)` inside)
+- `panic: runtime error: growslice: len out of range` — cap field is garbage
+  before growslice is entered
+
+Always happens after one full GC cycle (2 writeBarrier transitions).
+
+### Confirmed NOT the bug
+- Library is correct on stock Go 1.26.2 (standalone test renders 362 glyphs each arch, 0 panics)
+- `RegisterMazWriteBarrier` IS called; `syncMazWriteBarriers` IS firing at STW exit
+- Compiled fontsvc.maz code reads the correct `runtime.writeBarrier` VA
+- Body trampolines (`morestack.abi0`, `wbBufFlush.abi0`) are patched correctly
+- Go P-struct wbBuf offsets match between host and .maz (both Go 1.26.2)
+
+### Still suspicious
+1. Timing gap: `setGCPhase(_GCmark)` flips `writeBarrier.enabled=true` during STW;
+   `syncMazWriteBarriers` runs in `startTheWorldWithSema` — on paper fine, but
+   not runtime-verified.
+2. `[]ot.Segment` GC bitmap after `buildCompleteTypemap` type-redirect — if the
+   redirected `*_type` has wrong `Size_` or GC bitmap, growslice computes wrong cap.
+3. Race between growslice return and slice-header store (cap written before array
+   pointer at `a5350`/`a5360`) — if write barriers don't fire, GC could miss new array.
+
+### Architecture context
+- fontsvc.maz is loaded by **rachel** (rachel is the HOST, not kmazarin)
+- rachel uses the userspace overlay at `mazarin/overlay/userspace/runtime/`
+- fontsvc.maz uses the thin-overlay at `build/shepherd-overlay/runtime/`
+- Instrumentation still in `mazarin/overlay/userspace/runtime/maz_moduledata.go`
+
+### Next diagnostic steps (if resuming before mazdl Phase 5)
+1. Force `runtime.GC()` before every glyph render in fontsvc to isolate GC-correlation
+2. Add growslice instrumentation in the userspace overlay at growslice entry
+3. Verify `[]ot.Segment` type descriptor after typelinksinit + buildCompleteTypemap
+   (adrp x4, 0x21c000 + #0x880 = 0x21c880 in fontsvc binary)
+
+**Revert before next boot:** `config/kernel.arm64.toml` `go_mem_limit=256` → `24`

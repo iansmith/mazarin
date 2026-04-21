@@ -1,4 +1,4 @@
-# Progress Log — Mail Row Interactor + Maildb Collection Protocol
+# Progress Log
 
 ## Session: 2026-04-20
 
@@ -92,3 +92,79 @@
 - Build verified: `task mail-app:arm64` passes clean
 
 **Next:** QEMU end-to-end verification (ARM64 HVF)
+
+---
+
+## Session: 2026-04-17 to 2026-04-18 — mazdl / mazlink Plugin-Shape
+
+### Phase 0: mazlink init-task NOP — COMPLETE (2026-04-18)
+
+- `mazlinkNopHostInitTasks` added to `mazlink-patches/cmd/link/internal/ld/go.go`
+- Flips `runtime..inittask.state=2` at link time so `runtime.doInit1` skips all
+  init functions — prevents duplicate runtime singleton goroutines in plugins
+  (forcegchelper, sysmon, bgsweep, bgscavenge, runfinq, gcBgMarkWorker, templateThread)
+- Default-on for `BuildModePlugin + LinkInternal`; no flag required
+- Exit criterion met: `smoke/host` passes on arm64 and amd64; no `forcegc: phase error`
+
+### Phase 1: Design sign-off — COMPLETE (2026-04-18)
+
+- Policy list (`mazlink-patches/policy/dlopen-host-packages.txt`) with Phase-2 starting set:
+  `runtime`, `internal/runtime/...`, `internal/abi`, `internal/cpu`, `internal/bytealg`,
+  `internal/goarch`, `internal/goos`, `internal/goexperiment`
+- ABI contract confirmed: `ET_DYN`, UNDEF dynsym for imports, DEFINED dynsym for exports,
+  `DT_NEEDED="mazarin-host"`, eager binding, no `R_*_COPY`, no symbol versioning in MVP
+- One shepherd binary; everything else a plugin (see `memory/shepherd_plugin_model.md`)
+
+### Phase 2: UNDEF dynsym + PLT emission — COMPLETE (2026-04-18)
+
+- New `ld/mazdl.go`: `loadHostPolicy`, `isHostSymbol`, `rewriteHostSymsAsDynimport`
+- `ld/elf.go`: `.plt`, `.got.plt`, `.rela.plt`, `DT_JMPREL`, `DT_NEEDED=mazarin-host`
+- `ld/data.go`: sizes `.plt`/`.got.plt`
+- `amd64/asm.go`, `arm64/asm.go`: emit `PLT32`/`CALL26` for SDYNIMPORT calls
+- Exit criteria met: plugin has 200+ UNDEF `runtime.*` symbols; zero `T runtime.*`; < 1 MB
+
+### Phase 3: Host exports runtime dynsym — COMPLETE (2026-04-18)
+
+- `ld/mazdl.go` extended: `emitHostExportsDynsym`; `-dlopen-host-exports` flag
+- Filter closures (`.func*` suffixes) to avoid pclntab aux-sym crashes
+- Force `havedynamic=1` so stock linksetup doesn't suppress `.dynsym` on exe
+- `smoke/host-probe`: validates 3292 `runtime.*`, 418 `internal/runtime/*`,
+  423 `internal/abi.*` entries as `GLOBAL DEFAULT FUNC` on arm64
+- `mangleTypeSym` patched: runs for exe with `-dlopen-host-exports` so hashed
+  `type:.<hash>` dynsym names match between host (exe) and plugin (`BuildModePlugin`)
+
+### Phase 4 arm64: mazdl.Open end-to-end — COMPLETE (2026-04-18)
+
+- `kmazarin/ksyscall/`: new `SysMapELFSegment` kernel primitive
+- `mazarin/mazdl/`: full `Open`/`Sym`/`Close` library per §6 of design doc
+- `mazarin/mazdl/elfread/`: ELF parser (extended from maz-reloc)
+- Funcval dead-reloc fix (Option A): `adddynrel` emits `GLOB_DAT` for host-policy
+  funcval objects (`·f` suffix + `DynimpLib=="mazarin-host"`) instead of `RELATIVE`
+  — prevents SIGILL from calls through funcvals that point into stripped .text padding
+- `rewriteHostFuncvals` loader-side workaround removed from `mazdl/open.go`
+- Exit criteria met under `$GO tool task mazlink-smoke`:
+  1. `mazdl.Open` + `h.Sym("Hello")` succeeds, returns "hello from mazlink plugin"
+  2. `runtime.Stack` shows ≤1 each singleton goroutine
+  3. Plugin allocs visible in host `memstats`
+  4. 1000-iteration `Stress()` clean
+
+### Phase 4 amd64: OPEN
+
+- mazlink Option A present in `amd64/asm.go`; plugin cross-compiles
+- Still needed: `mazarin/mazdl/reloc_amd64.go` + container arch toggle in
+  `mazlink-smoke` task
+- See `task_plan.md` open issue #4 for exit criteria
+
+---
+
+## Session: 2026-04-17 — CFF Write-Barrier Investigation (PAUSED)
+
+- Investigating SIGSEGV/growslice panic in fontsvc.maz during Italic CFF rendering
+- Added `mazWriteBarrierLastVal` + `mazWriteBarrierSyncCount` instrumentation to
+  `mazarin/overlay/userspace/runtime/maz_moduledata.go`
+- Confirmed: RegisterMazWriteBarrier called, syncMazWriteBarriers fires (2 transitions/GC),
+  compiled code reads correct writeBarrier VA, P-struct wbBuf offsets match
+- Paused: plugin-shape mazdl (Phase 2+) eliminates the root class of write-barrier bugs
+  by removing runtime from plugins entirely; investigation deferred until then
+- **Revert before next boot:** `config/kernel.arm64.toml` `go_mem_limit=256` → `24`
+- See `task_plan.md` open issue #5 for full details and next diagnostic steps

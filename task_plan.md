@@ -1,7 +1,10 @@
-# Task Plan: Mail Row Interactor + Maildb Collection Protocol
-## STATUS: ALL PHASES COMPLETE — 2026-04-20
+# Task Plan — Mazarin / Mazzy
+## STATUS: 2026-04-20
 
-System verified: ARM64 HVF 90s stable, mail app renders 50 rows with correct column
+Mail work: ALL PHASES COMPLETE.
+mazdl/mazlink: Phases 0–4 arm64 COMPLETE; Phase 4 amd64 open.
+CFF write-barrier investigation: PAUSED (different solution in progress).
+ARM64 HVF 90s stable, mail app renders 50 rows with correct column
 clipping, 100 docs indexed by fti, Go 1.26.2, all builds clean.
 
 ---
@@ -61,16 +64,37 @@ Re-read before any coding session:
 
 ### Maildb / fti / Mail App (Phases 1–5)
 All phases of the maildb protocol and mail app integration are complete; see git
-history (commits `706820f` through `2a4a092`) for per-phase detail.
+history (commits `706820f` through `2a4a092`) and `findings.md` for per-phase detail.
 
 ### Diagnostic Cleanup
 - Removed all `fmt.Printf` diagnostic traces added during debugging:
   `app_window.go`, `column_percentage.go`, `grid_table.go`, `margin_parent.go`,
   `apps/mail/main.go` (redraw counter + forced-damage workaround).
 
+### mazdl / mazlink — Plugin-shape .maz loader (Phases 0–4 arm64)
+Complete redesign of the `.maz` dynamic loading infrastructure using a
+Mazarin-native `dlopen`/`dlsym` API. Full design and phase specs preserved in
+`findings.md` (architecture) and `progress.md` (phase log).
+
+- **Phase 0** (2026-04-18): `mazlinkNopHostInitTasks` in `ld/go.go` — flips
+  `runtime..inittask.state=2` so plugin never spawns duplicate runtime singleton
+  goroutines (forcegchelper, sysmon, bgsweep, bgscavenge, etc.).
+- **Phase 1** (2026-04-18): Policy list + ABI contract signed off. Policy file at
+  `mazlink-patches/policy/dlopen-host-packages.txt`.
+- **Phase 2** (2026-04-18): Plugin builds with no runtime code. mazlink emits UNDEF
+  dynsym + PLT + `DT_NEEDED=mazarin-host`. Plugin binary < 1 MB (was ~6 MB).
+- **Phase 3** (2026-04-18): Host exports runtime dynsym (3292 `runtime.*`, 418
+  `internal/runtime/*`, 423 `internal/abi.*` entries on arm64). `smoke/host-probe`
+  validates. `mangleTypeSym` patched so host+plugin agree on hashed `type:.<hash>`
+  dynsym names.
+- **Phase 4 arm64** (2026-04-18): `mazdl.Open` loads `smoke/plugin` end-to-end;
+  funcval dead-reloc bug fixed via Option A (GLOB_DAT for host-policy funcvals
+  in `amd64/asm.go` + `arm64/asm.go`); `rewriteHostFuncvals` removed from
+  `mazdl/open.go`. All four exit criteria pass under `$GO tool task mazlink-smoke`.
+
 ---
 
-## Known Bugs / Issues (open at close of this plan)
+## Known Bugs / Open Issues
 
 ### 1. fti: bleve AnalysisWorker goroutine panic (intermittent)
 - **Symptom:** `AnalysisWorker` goroutine in `bleve_index_api` panics; fti marks
@@ -103,6 +127,44 @@ history (commits `706820f` through `2a4a092`) for per-phase detail.
   but the visual grid is not updated. `GridTable` lacks a `RemoveRow` method.
 - **Next step:** implement `GridTable.RemoveRow(idx int)` when mail needs it.
 
+### 4. mazdl Phase 4: amd64 parity needed
+- **What's done:** mazlink Option A is present in `amd64/asm.go` (mirrors arm64
+  block). `smoke/host-mazdl` compiles for amd64.
+- **What's missing:**
+  - `mazarin/mazdl/reloc_amd64.go` — apply `R_X86_64_{RELATIVE,GLOB_DAT,JUMP_SLOT,64}`
+  - Container arch toggle in `mazlink-smoke` Taskfile task so the x86_64 image
+    runs on an arm64 host (smoke Dockerfile already cross-builds both arches;
+    the task only runs the host-matching arch today).
+- **Exit criterion:** exits #1–#4 pass on amd64:
+  1. `mazdl.Open("plugin.maz")` succeeds, `h.Sym("Hello")` returns callable fn
+  2. `runtime.Stack` shows ≤1 each of forcegchelper, bgsweep, bgscavenge, runfinq
+  3. Plugin allocations visible in host `runtime.memstats`
+  4. 1000-iteration `Stress()` test clean, no panics or races
+
+### 5. CFF write-barrier crash in fontsvc.maz (paused)
+- **Symptom:** fontsvc.maz crashes during CFF glyph rendering in go-text/typesetting
+  after loading the Italic font. Two modes: SIGSEGV at `ensureClosePath` (append),
+  or `panic: growslice: len out of range`. Always happens after one full GC cycle.
+- **Confirmed not the bug:** library is fine on stock Go 1.26.2; `RegisterMazWriteBarrier`
+  IS called; `syncMazWriteBarriers` IS firing (2 transitions/GC); compiled code
+  reads the correct `writeBarrier` address; body trampolines are patched correctly;
+  P-struct wbBuf offsets are identical between host and .maz.
+- **Still suspicious:** (a) timing gap between `setGCPhase` and `syncMazWriteBarriers`
+  (on paper correct, not runtime-verified); (b) `[]ot.Segment` GC bitmap after
+  `buildCompleteTypemap` type redirect; (c) race between growslice return and
+  slice-header store if write barriers don't fire.
+- **Paused to pursue different solution:** Plugin-shape mazdl (Phases 2–4) eliminates
+  the root class of write-barrier/morestack/typemap bugs by removing runtime code
+  from plugins entirely. Once Phase 4 arm64 fully stabilizes this approach can replace
+  the .maz model and the CFF investigation becomes moot.
+- **If resuming before that:** force `runtime.GC()` before every glyph render in
+  fontsvc to isolate the GC-correlation hypothesis; add growslice instrumentation
+  in the userspace overlay; verify `[]ot.Segment` type descriptor after typemap merge.
+- **State at pause:** `mazarin/overlay/userspace/runtime/maz_moduledata.go` has
+  `mazWriteBarrierLastVal` + `mazWriteBarrierSyncCount` instrumentation still in
+  place. `config/kernel.arm64.toml` has `go_mem_limit=256` (was 24) — **revert
+  to 24 before next boot**.
+
 ---
 
 ## Decisions Made
@@ -116,3 +178,10 @@ history (commits `706820f` through `2a4a092`) for per-phase detail.
 | Persistent `count:all` / `count:unread` counters | O(1) totalSize for common filters |
 | Per-query fixed collection slots (64×1024) | Eliminates bump-allocator exhaustion |
 | dc.Push/DrawRectangle/Clip/Pop for column clipping | Correct Cairo clip vs fragile pixel save |
+| mazlink Option A (internal-linker patches, not post-processing) | Direct; no external toolchain dependency |
+| `mazlinkNopHostInitTasks` flips inittask state=2 | 4-byte write; no instruction rewriting; cleaner than NOPing init.N bodies |
+| No `R_*_COPY` relocations | Single authoritative copy of every host datum |
+| No symbol versioning in MVP | Host+plugin built in lockstep; version skew is non-concern within a release |
+| Eager binding (not lazy .plt resolver) | Fail at Open time on missing symbol, not at first call |
+| riscv64 stays on legacy .maz+maz-reloc path | riscv64 PIE emission in mazlink is Phase 7; legacy path still works |
+| One shepherd binary, everything else is a plugin | Collapsed architecture; simpler than per-app shepherd binaries |
