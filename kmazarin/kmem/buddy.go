@@ -321,6 +321,7 @@ func logPageBreakdownUART() {
 			SerialPuts(" KB)\r\n")
 		}
 	}
+	LogPagesByOwnerUART()
 }
 
 // SerialPuts writes a string to UART character by character.
@@ -539,6 +540,14 @@ func PagesByType() [PageTypeCount]uint64 {
 	result := buddyPagesByType
 	buddyAlloc.lock.Unlock()
 	return result
+}
+
+// LogMemStats prints a full memory breakdown to the serial console.
+// Includes pool totals, per-type counts, and per-SID counts.
+// Safe to call from normal (non-IRQ) context. No heap allocation.
+func LogMemStats() {
+	SerialPuts("[kmem:stats]")
+	logPageBreakdownUART()
 }
 
 // KernelPageFaultCount returns the number of successful kernel page faults.

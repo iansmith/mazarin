@@ -33,8 +33,9 @@ type Attribute[T any] struct {
 	lastRS  *vm.ReadSet // last read set from evaluation (constraints only)
 	eager   bool        // local eager flag (no kernel effect until Phase 6)
 	toT     func(flat.Value) T // convert flat value to typed T
-	fromT   func(T) flat.Value // convert typed T to flat value (nil for strings)
-	isStr   bool                   // true if this attribute manages string type
+	fromT   func(T) flat.Value // convert typed T to flat value (nil for strings/colls)
+	isStr    bool // true if this attribute manages string type
+	isCollI64 bool // true if this attribute manages a []int64 collection
 }
 
 // registerCascade registers a constraint attribute for cascading evaluation.
@@ -104,6 +105,15 @@ func (h *Attribute[T]) Set(v T) {
 		s = *(*string)(unsafe.Pointer(&v))
 		if err := sys.AttrWriteString(h.slot, s, false); err != nil {
 			panic("attr: AttrWriteString failed: " + err.Error())
+		}
+		return
+	}
+	if h.isCollI64 {
+		// CollI64 values go through the special collection syscall.
+		var vs []int64
+		vs = *(*[]int64)(unsafe.Pointer(&v))
+		if err := sys.AttrWriteCollI64(h.slot, vs, false); err != nil {
+			panic("attr: AttrWriteCollI64 failed: " + err.Error())
 		}
 		return
 	}

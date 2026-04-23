@@ -77,28 +77,16 @@ func faceScreenRect(ta *trackedApp) image.Rectangle {
 	)
 }
 
-// lightShadowPad is the shadow extent for focused window decoration.
-// With Inset (groove) focused decoration the shadow draws INWARD into the
-// face area, so no padding outside bsW × bsH is needed. Keep at 0 to
-// prevent blitWindow from reading past the per-row backing-store data
-// (which causes right/left edge gunk by pulling pixels from the next/prev
-// row's leftmost columns).
-var lightShadowPad = 0
-
 // windowVisibleRect returns the screen rectangle a window actually occupies.
-// Focused windows use the face rect expanded by the light shadow padding.
-// Unfocused windows use only the face rect (titlebar + content).
+// Focused windows use the full backing-store rect so that the border zones
+// (groove, resize handles) are included in the blit regions.
+// Unfocused windows use only the face rect (title bar + content).
 func windowVisibleRect(ta *trackedApp, focused bool) image.Rectangle {
-	face := faceScreenRect(ta)
+	ox, oy := screenOrigin(ta)
 	if focused {
-		return image.Rect(
-			face.Min.X-lightShadowPad,
-			face.Min.Y-lightShadowPad,
-			face.Max.X+lightShadowPad,
-			face.Max.Y+lightShadowPad,
-		)
+		return image.Rect(ox, oy, ox+int(ta.bsWidth), oy+int(ta.bsHeight))
 	}
-	return face
+	return faceScreenRect(ta)
 }
 
 // dumpWindowGeometry prints diagnostic info about a tracked window's geometry.
@@ -113,13 +101,13 @@ func dumpWindowGeometry(reason string, ta *trackedApp) {
 	fmt.Printf("[rachel:geom] %s sid=%d title=%q ta.x=%d ta.y=%d bsW=%d bsH=%d "+
 		"appW=%d appH=%d lastBlitW=%d lastBlitH=%d "+
 		"face=(%d,%d)-(%d,%d) vis_focused=(%d,%d)-(%d,%d) vis_unfocused=(%d,%d)-(%d,%d) "+
-		"borders=L%d/R%d/T%d/B%d shadowTop=%d lightShadowPad=%d\n",
+		"borders=L%d/R%d/T%d/B%d shadowTop=%d\n",
 		reason, ta.sid, ta.title, ta.x, ta.y, ta.bsWidth, ta.bsHeight,
 		ta.appWidth, ta.appHeight, ta.lastBlitAppW, ta.lastBlitAppH,
 		face.Min.X, face.Min.Y, face.Max.X, face.Max.Y,
 		visFocused.Min.X, visFocused.Min.Y, visFocused.Max.X, visFocused.Max.Y,
 		visUnfocused.Min.X, visUnfocused.Min.Y, visUnfocused.Max.X, visUnfocused.Max.Y,
-		borderLeft, borderRight, borderTop, borderBottom, shadowTop, lightShadowPad)
+		borderLeft, borderRight, borderTop, borderBottom, shadowTop)
 }
 
 // dumpAllWindowGeometry prints geometry for every tracked window in z-order.
@@ -565,7 +553,11 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 		}
 	}
 
-	// Title bar drawn AFTER face/shadows.
+	// Groove around app content area — drawn before title bar so title bar
+	// overlays the top segment.
+	drawAppGroove(dc, tw, th)
+
+	// Title bar drawn AFTER groove so it covers the top groove segment.
 	var titleBarDur time.Duration
 	if windowTitleBar != nil {
 		tbX := float64(borderLeft) + 4
@@ -577,8 +569,10 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 		titleBarDur = time.Since(t3)
 	}
 
-	// Resize handle semi-circles on left, right, bottom edges.
-	drawResizeHandles(dc, tw, th)
+	// Resize handles only on focused (Inset) decoration.
+	if depth == mancini.Inset {
+		drawResizeHandles(dc, tw, th)
+	}
 
 	// Accumulate into phase stats if tracking.
 	if decorPhaseAccum.active {
@@ -598,6 +592,48 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 	}
 
 	return buf
+}
+
+// drawAppGroove draws a 2-pixel inset bevel framing the app content area.
+//
+// applyDecorations copies left x=0..borderLeft-1, right x=tw-borderRight..tw-1,
+// bottom y=th-borderBottom..th-1, top y=0..borderTop-1. Groove lines must
+// fall within those zones — placing them AT the boundary (x=borderLeft etc.)
+// puts them on the wrong side of the copy fence. We offset 2px inward so
+// both the outer and inner lines land safely inside the border zones.
+//
+// Outer line: pal.Mid() (darker — inset shadow side).
+// Inner line: pal.Midlight() (lighter — inset highlight side).
+// The title bar will repaint the top segment, so only left/right/bottom show.
+func drawAppGroove(dc textshape.DrawContext, tw, th int) {
+	// Outer rectangle: 2px inside each border zone boundary.
+	ox1 := float64(borderLeft) - 2        // left outer: x ≈ borderLeft-2  (in left zone)
+	oy1 := float64(shadowTop) + 1         // top outer:  y ≈ shadowTop+1   (in top zone)
+	ox2 := float64(tw-borderRight) + 2    // right outer: x ≈ tw-borderRight+2 (in right zone)
+	oy2 := float64(th-borderBottom) + 2   // bottom outer: y ≈ th-borderBottom+2 (in bottom zone)
+
+	// Inner rectangle: 1px further inward.
+	ix1 := ox1 + 1
+	iy1 := oy1 + 1
+	ix2 := ox2 - 1
+	iy2 := oy2 - 1
+
+	dc.SetLineWidth(1)
+	hw := 0.5
+
+	dc.SetColor(pal.Mid())
+	dc.DrawLine(ox1+hw, oy1+hw, ox2-hw, oy1+hw) // top
+	dc.DrawLine(ox2-hw, oy1, ox2-hw, oy2)        // right
+	dc.DrawLine(ox1, oy2-hw, ox2, oy2-hw)        // bottom
+	dc.DrawLine(ox1+hw, oy1, ox1+hw, oy2)        // left
+	dc.Stroke()
+
+	dc.SetColor(pal.Midlight())
+	dc.DrawLine(ix1+hw, iy1+hw, ix2-hw, iy1+hw) // top
+	dc.DrawLine(ix2-hw, iy1, ix2-hw, iy2)        // right
+	dc.DrawLine(ix1, iy2-hw, ix2, iy2-hw)        // bottom
+	dc.DrawLine(ix1+hw, iy1, ix1+hw, iy2)        // left
+	dc.Stroke()
 }
 
 // resizeHandleRadius is the radius of the semi-circle resize handles
@@ -731,10 +767,7 @@ func preRenderDecorations(ta *trackedApp) {
 		}
 	}
 
-	fmt.Printf("[rachel:decor] pre-rendered %dx%d title=%q render=%s apply=%s\n",
-		ta.bsWidth, ta.bsHeight, ta.title, renderDur, applyDur)
 }
-
 
 // applyDecorations copies pre-rendered border pixels into the backing store.
 // Only the border zone is overwritten — app content is untouched.

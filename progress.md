@@ -1,5 +1,451 @@
 # Progress Log
 
+## Session: 2026-04-23 — mail-dumb hard part COMPLETE
+
+### Smart Cache Phases S1–S4 implemented and verified
+
+All four phases are done and verified in a 90s ARM64 HVF run.
+
+**Phase S1 (GridTable virtual scroll):**
+- `rowFactory`, `slotPool`, `slotWidgets`, `slotLabels`, `poolEpoch`, `scrollOffset`, `visibleCount`, `TotalRows`
+- `buildSlotPool(count)`, `computeVisibleCount(h, rh)`, `applyScrollToSlots()`, `publishScrollAttrs()`
+- `FirstVisibleMsgNumAttr`, `LastVisibleMsgNumAttr`, `VisibleRowCountAttr`
+- `GridFrame` forwarding: `SetTotalRows`, `SetRowFactory`, `ScrollBy`, `MoveSelection`, three attr accessors
+
+**Phase S2 (MailCache + MailRow):**
+- `MailCache`: `entries map[uint32]*KeyHeaderEntry`, sliding window `[windowLo, windowHi]`,
+  single in-flight request, `Rebalance`, `HandleResponse` (KeyHeaders + CollectionAdd/Remove),
+  `OnUpdated`/`OnExpired` callbacks, `nextReqId` via UnixNano + counter
+- `MailRow` (`mail_row.go`): virtual row backed by cache; `Sender/Subject/Date` return "…" on nil entry;
+  `MsgNum() / SetMsgNum()` satisfy both `GridRow` and structural `MsgNumSetter`
+
+**Phase S3 (wire main.go):**
+- `handleCreateCollectionResp`: creates `MailCache`, calls `SetCollection`, wires `OnUpdated`/`OnExpired`,
+  calls `SetTotalRows` + `SetRowFactory`, fires initial `Rebalance` (no-op if vis=0)
+- `handleMailResponse`: routes `RespCreateCollection` to setup fn; everything else to `cache.HandleResponse`
+- `mailRespCh` handler: `redraw` BEFORE `Rebalance` (eagerCh drain-race fix — see findings.md)
+- `eagerCh` handler: `Rebalance` then `redraw` (correct — reads already-published vis attr)
+
+**Phase S4 (batch unpack):**
+- `handleKeyHeaders` in `MailCache`: reads `Count × KeyHeaderEntrySize` bytes from `TargetVA` via
+  unsafe pointer cast, stores `eCopy` in entries map (stable pointer), frees pages via `mem.FreePages`
+
+**Arrow key navigation:**
+- `GridTable.MoveSelection(delta)`: moves `selectedMsgNum`, clamps, scrolls to keep visible,
+  publishes attrs, damages all
+- `mail/main.go`: `wm.KeyPress` case intercepts `ActionUp`/`ActionDown` → `gridFrame.MoveSelection(±1)`
+
+**Verification:**
+- 90s ARM64 HVF runs: 100/100 docs indexed, blit#1000 reached, no panics
+- All 14 rows display with real email data (Rob at Cockroach Labs, GoDaddy, etc.)
+- Arrow key scroll confirmed smooth by user ("smooth like butter")
+- Debug print `[grid] visibleCount %d→%d` removed from grid_table.go
+
+**What's next:** mail-dumb easy part — body display, PageUp/PageDown, mark-read, delete.
+
+---
+
+## Session: 2026-04-23 — Smart cache design + plan (PLANNED, not yet coded)
+
+### Design session: smart mail cache Phases S1–S4
+
+Full design worked out in conversation; plan written to `task_plan.md` §Smart Cache
+and `findings.md` §Smart Cache Architecture.
+
+**Key decisions made:**
+- Virtual scroll: GridTable has a fixed pool of `visibleCount` slot widgets; same
+  objects are reused across scrolls via `SetMsgNum` (MsgNumSetter interface)
+- Pool size = integer `(contentH - headerH) / rowHeight` — no partial rows
+- Font size change rebuilds pool (epoch-stamped widget names avoid URI collisions)
+- GridTable publishes three new value attrs: `firstVisible`, `lastVisible`, `visibleCount`
+- Cache window: `[max(0, firstVisible - readAhead×visCount), min(collSize-1, lastVisible + readAhead×visCount)]`
+- `readAhead = 2` (constant); one in-flight request at a time
+- `MailCache.Get(msgNum)` is synchronous; nil → show "…" placeholder
+- `MailCache.Rebalance()` triggered by eagerCh in main after attrs update
+- `VirtualMailRow.Sender/Subject/Date` read from cache; `SetMsgNum` called by grid on scroll
+- CollectionAdd/Remove: evict affected cache range, update collSize, let Rebalance refetch
+- `selectedMsgNum int64` (not `selectedRow GridRow`) in GridTable to survive pool rebuilds
+- Old MailRow file deleted; MailCache owns all maildb I/O and reqId tracking
+- `OnExpired func()` on MailCache for ErrCollectionExpired path
+
+**Implementation order decided:** S4 (batch unpack) → S2 (VirtualMailRow + MailCache) → S1 (GridTable scroll) → S3 (wire main.go)
+
+**Open items before coding:**
+- Confirm keyboard event type (`wm.KeyboardPress`?) and key constants for arrow/page keys
+- Decide: keep or delete `mail_row.go` (delete preferred)
+- Verify `mem.FreePages` signature matches what cache will call for batch page release
+
+---
+
+## Session: 2026-04-23 — Phase 3 multi-selection set + ValueCollI64 (COMPLETE)
+
+### Phase 3 complete: ValueCollI64 infrastructure + GridTable multi-selection
+
+**New kernel region and syscall:**
+- `kmazarin/kmem/constraint.go`: added `RegionValueCollSlots=32`, `MaxValueCollEntries=256`,
+  `RegionValueCollCap=8192`; `RegionValueCollOff` appended after trie region;
+  `ConstraintPageVersion` 3→4. `SharedPageHeader` gains `ValueCollRegionOff uint32` and
+  `ValueCollCapacity uint32` at byte offset 64.
+- `shared/mazzy/mazzy.go`: `SysAttrWriteCollI64 = MazzySyscallBase + 45 // 0x102D`
+  (slot 44 was already SysRequestWindowManager — not 44 as originally specced in findings.md).
+- `kmazarin/ksyscall/mazzy.go`: dispatch table entry `45: SyscallAttrWriteCollI64`.
+- `kmazarin/ksyscall/constraint_mgr.go`: `valueCollRegionOff`, `valueCollNextSlot`,
+  `valueCollSlotCount` fields; `allocValueCollSlot()` bump allocator.
+- `kmazarin/ksyscall/constraint_syscall.go`: `SyscallAttrWriteCollI64` — validates slot,
+  finds or reuses existing ValueColl slot (by checking CachedValue ElemType==TypeI64),
+  copies int64s from userspace 8 bytes at a time via WalkUserPageTable, writes
+  `flat.NewI64(v)` items, stores CollRef, dirty-propagates.
+
+**Userspace flat layout:**
+- `mazarin/vm/flat/layout.go`: added `ValueCollections []byte` to `PageRegion`;
+  `ReadCollectionElement` dispatches by `ref.ElemType`: TypeStr → `Collections`,
+  others → `ValueCollections`.
+- `mazarin/vm/flat/layout_shared.go`: `SharedPageVersion` 3→4; parses new
+  `ValueCollRegionOff`/`ValueCollCapacity` header fields; slices `ValueCollections`
+  region into `PageRegion`.
+
+**Userspace attr layer:**
+- `mazarin/sys/constraint.go`: `AttrWriteCollI64(slot, values, isConstraintResult)`.
+- `mazarin/attr/attribute.go`: `isCollI64 bool` field; `Set()` isCollI64 branch casts
+  via `unsafe.Pointer` to `[]int64` and calls `sys.AttrWriteCollI64`.
+- `mazarin/attr/attribute_value.go`: `ValueCollI64(uri, initial) *Attribute[[]int64]`
+  with `isCollI64: true`; `toT` reads via `sharedPR.ReadCollectionElement`.
+
+**GridTable multi-selection:**
+- `mazarin/mancini/std/grid_table.go`: new fields `selectedSet map[GridRow]bool`,
+  `SelectedSetAttr *attr.Attribute[[]int64]`, `SelectedSetCountAttr *attr.Attribute[int64]`,
+  `SelectedSetPagesAttr *attr.Attribute[int64]`.
+- `setSelected`: shift-click detected via `hid.Shift(int64(ev.Mods))`. Normal click resets
+  set; shift-click toggles row (primary cannot be removed). `publishSelectedSet()` called
+  after either path.
+- `publishSelectedSet()`: sets CountAttr (true count), PagesAttr (ceil(count/512) inline),
+  and SetAttr (nil / [MaxInt64] sentinel / []int64 of MsgNum values). Sentinel fires when
+  >256 items selected.
+- `GridFrame` accessors: `SelectedSetAttr()`, `SelectedSetCountAttr()`, `SelectedSetPagesAttr()`.
+- `RefreshSelected` also calls `publishSelectedSet()`.
+
+**Build verification:** `mancini:build`, `mail-app:arm64`, `kmazarin:arm64`, `kmazarin:x86_64`,
+`mail-app:x86_64`, `mail-ui:arm64` — all pass clean.
+
+---
+
+## Session: 2026-04-22 — Phase 2 click wiring + SelectedAttr (COMPLETE)
+
+### Phase 2 complete: click routing + SelectedAttr
+
+- `RowPercentage`: added `SelectionState int`, `OnClick func(*mancini.InputEvent)` fields.
+  Implemented `Click(*mancini.InputEvent) bool` — calls `OnClick` if set.
+  `Draw`: fills selection background before children (state 1 = `Highlight()` α160, state 2 = `Accent()` α120).
+- `GridTable`: added `selectedIdx int` (init -1) and `SelectedAttr *attr.Attribute[int64]`
+  (URI `layout:///NAME/int64/grid/selected`, initial -1).
+  `AddRow` wires `rp.OnClick` closure capturing row index → calls `gt.setSelected(idx, ev)`.
+  `setSelected`: updates `selectedIdx`, publishes `rows[rowIdx].MsgNum()` to `SelectedAttr`,
+  calls `DamageAll()`.
+  `Draw`: sets `rp.SelectionState = 1` for selected row, 0 for all others.
+- `GridFrame`: added `SelectedAttr() *attr.Attribute[int64]` accessor.
+- `mail_row.go`: removed `onRowSelected` field, removed from `NewMailRow` signature, removed `Select()`.
+- `main.go`: updated all 3 `NewMailRow` calls to drop `onRowSelected` arg; removed `onRowSelected` func.
+- Build: `task mail-app:arm64` and `task mail-app:x86_64` both pass clean.
+
+---
+
+## Session: 2026-04-22 — smart caching prep plan + Phase 2 start
+
+Planned Phases 1–3 for smart caching UI prep.
+Full specs in `task_plan.md` §Smart Caching Prep and `findings.md` §Smart Caching Prep.
+
+Design decisions made this session:
+- Phase 3 selectedSet exported as `ValueCollI64` (proper collection type), not string
+- `SysAttrWriteCollI64` syscall needed (slot 44); new `RegionValueColl` in constraint page; `ConstraintPageVersion` 3→4
+- Sentinel `math.MaxInt64` in collection when >256 items selected
+- `SelectedSetCountAttr` (ValueI64) always holds true count; `SelectedSetPagesAttr` (ConstraintI64) via `computeneededpages.vgo`
+- Colors: `pal.Highlight()` for primary selection, `pal.Accent()` for set members
+- `hid.ModShift` confirmed in `shared/hid/`
+- `*MailRow` is the only `GridRow` implementor — no audit needed
+
+### Phase 2 partial: GridRow interface + MailRow
+
+- Added `MsgNum() uint32` to `std.GridRow` interface (`mazarin/mancini/std/grid_table.go:18`)
+- `MailRow.MsgNum()` was already present at line 77 — interface change was zero additional code
+- Build verified: `task mail-app:arm64` passes clean
+
+---
+
+## Session: 2026-04-22 — write/mmap coherence fix runtime-verified
+
+### Verification: ARM64 HVF 120s run
+
+Goal: confirm Bug #1 (fti bleve persister panic / maildb mmap coherence test failure) is
+actually fixed by the `sysMmapPageFill` flush-before-read change landed 2026-04-21.
+
+**Result: CONFIRMED FIXED.**
+
+Mmap coherence test suite (all PASS):
+- `[mmaptest] PASS: mmap read-back matches initial content`
+- `[mmaptest] PASS: pread sees mmap-written data (mmap→read coherence)`
+- `[mmaptest] PASS: mmap sees pwrite-written data (write→mmap coherence)`
+- Badger-like 1MB + 64MB pattern tests both PASS
+- Write-first page fault test (copy/MOVOU, 16 pages) PASS
+- No `[maildb] WARNING: mmap coherence test FAILED` line anywhere in output
+
+Bleve indexing:
+- 100/100 documents indexed cleanly, 4.4s total, 0.89 MB/s
+- No `persisterLoop` panic, no `corrupted` flag, no `IndexError` messages
+
+Mail app:
+- `createCollection: collId=1 filter=0 size=21`; rows loaded with correct senders
+
+Bug #1 is closed. Remaining open bugs: #2 (intermittent VirtIO block stall) and #3
+(GridTable no RemoveRow).
+
+---
+
+## Session: 2026-04-21 (continued 9) — write/mmap coherence fix
+
+### Fix: write buffer not flushed before mmap page fill (FIXED)
+
+**Root cause:** `sysWrite` (sequential write path) buffers data in `fdEntry.writeBuf` without
+writing to ext2 immediately. When a shepherd then `mmap`'d the same fd and triggered a page
+fault, `sysMmapPageFill` read directly from ext2 — which had zeros because the write buffer
+was never flushed. This caused bleve's scorch persister to read back zeros from freshly
+written `.zap` segment files, panic in `persisterLoop`, and set `h.corrupted = true`.
+
+The same coherence gap was caught by maildb's startup mmap coherence test (Test 1 uses
+`syscall.Write`, not `syscall.Pwrite` — the pwrite path already flushed through ext2 directly).
+
+**Fix:** Added write buffer flush at the top of `sysMmapPageFill` (after the nil check on `e`,
+before `req.DataBuf()`). If `len(e.writeBuf) > 0`, calls `h.flushWriteBuf(callerPID, fd, e)`
+before reading from ext2. This makes write→mmap coherent for both the maildb test and bleve.
+File: `maz/linux/syscalls.go`.
+
+Both `linux:arm64` and `linux:x86_64` build cleanly after the change.
+
+---
+
+## Session: 2026-04-21 (continued 8) — title bar clamp + fti error dedup
+
+### Fix: window title bar pushed off-screen by drag (FIXED)
+
+**Root cause:** `moveWindowTo` in `maz/rachel/main.go` had no lower bound on `ta.y`.
+The LR anchor-box clamp only fires when the bottom 100px would leave the screen; for a
+tall window (e.g. 1200px) this allows `ta.y` to go as low as −1076. Serial log confirmed
+`ta.y=13 < borderTop=24` after a drag, placing `face.top = −9` → title bar invisible.
+
+**Fix:** Added `if newY < bT { newY = bT }` after the LR-box top clamp so `ta.y` is
+always ≥ `borderTop=24`, keeping `face.top ≥ 0`. Confirmed working by screenshot showing
+"Mail" title bar visible after drag.
+
+### Fix: MailDB window floods with repeated fti error notifications (FIXED)
+
+**Root cause:** When the FTI shepherd marks its bleve index corrupted (due to an
+AnalysisWorker goroutine panic or a stale `.zap` segment from a read-only ext2 disk),
+every subsequent `IndexDocument` request returns `IndexError("bleve index corrupted after
+internal panic")`. `maildb/mbox_import.go` `waitForOne` called `notify()` for every error
+— 35+ identical messages filled the MailDB window.
+
+**Underlying bleve panic cause (corrected):** `/tmp` is on the ramdisk, which resets on
+each QEMU boot — stale bleve state is NOT the cause. The panic is happening within a
+single run. Bleve scorch mmaps `.zap` segment files after writing them (`blevesearch/mmap-go`).
+The write/mmap coherence bug (same one detected by maildb's startup test: pwrite does not
+update the mmap page cache) causes bleve to read back zeros from its newly written segment,
+dereference a nil pointer, and panic in `persisterLoop`. Scorch's `recover()` catches this
+and fires `ErrAsyncPanic` → `h.corrupted = true`.
+
+**Fix:** Added `lastErrMsg string` and `lastErrCount int` dedup fields to `ftiTracker`
+struct. `waitForOne` now shows the first occurrence of each unique error message; subsequent
+identical messages are suppressed (displayed every 50th as "Index error (Nx): ...").
+File: `maz/maildb/mbox_import.go`.
+
+---
+
+## Session: 2026-04-21 (continued 7) — run verification + linuxapp cleanup
+
+### Run confirmed (ARM64 HVF, 60s)
+
+All three windows visible: Linux Console (sid=8, 800×400), MailDB (sid=9, 800×400),
+Mail (sid=5, 900×1162). Mail app loaded 35 MailRows from the initial collection
+(collId=1, size=35) with correct senders, plus received CollectionAdd for message 35
+as import continued. Resize drag worked: user dragged the left edge of the Mail window
+from 900→1029px wide; `dragEndResize` fired, BackingStoreReady sent to app.
+
+**Root cause of first-run failure:** `linux-ui.maz` was stale in the disk image.
+When only individual targets (`task rachel:arm64`, `task mail-app:arm64`) are built
+before `task run-arm64-hvf`, the Taskfile does not always rebuild `linux-ui.maz`
+because the disk's checksum may already be newer than the partial rebuild. Fix: always
+run `task linux-ui:arm64` (or a broader rebuild) before `run-arm64-hvf` when linuxapp.go
+changes.
+
+### Cleanup: debug prints in Bootstrap
+
+Removed 9 `rawPuts("[linuxapp] dbg: ...")` lines added during hang investigation.
+Also removed `[linuxapp] dirtyTicks=…` spam (was every 10 eager ticks) and its `dirtyTicks`
+counter variable from `runLoop`.
+
+### Known minor: mail app position tracking stale after resize
+
+`[mail:click]` debug print captures `bsr.AppX, bsr.AppY` from the initial
+`BackingStoreReady`. After a left-edge resize, `AppX` moves left but the captured
+value stays at the original 886. Only the click debug log is affected — the interactor
+coordinate mapping uses the constraint system (correct). Fix deferred: pass new `AppX`/`AppY`
+to the drain callback or update the capture on `BackingStoreReady` in runLoop.
+
+### Open: mmap coherence test fails in maildb
+
+`[maildb] WARNING: mmap coherence test FAILED` — badger's mmap read-back returned
+zeros instead of the expected 'A' byte. Maildb continues running via direct-I/O path;
+no functional crash observed. Root cause unknown — may be ext2/fsclient coherence gap
+between write and mmap, or a missing msync/cache flush. Needs investigation.
+
+---
+
+## Session: 2026-04-21 (continued 6) — rachel window decoration + resize drag fix
+
+### Change: fsclient shared data area 4KB → 64KB
+
+`mazarin/fsclient/client.go`: `dataPages` constant 1 → 16 (16 × 4096 = 65536 bytes).
+`sys.SharePages(fsSID, localVA)` → `sys.SharePagesWithTarget(fsSID, localVA, dataPages)`.
+Added `DataLen() int` method. Linux shepherd's `flushWriteBuf` now uses `h.fs.DataLen()`
+as chunk size instead of the hardcoded 4096. Effect: 64KB write buffer flushes in one IPC
+round-trip instead of 16. ARM64 HVF indexing: 9–46ms/doc (was limited by context-switch cost
+at 4KB chunk size).
+
+### Change: rachel resize handle borders (shadow margins 2→14px)
+
+`mazarin/mancini/theme/wmtheme.go`: `ShadowBottom/Left/Right` all changed from 2 to 14 to
+accommodate the 12-pixel resize handle semi-circles (radius 12 + 2px groove margin = 14).
+Without this, handles were drawn outside the decoration area and not visible.
+
+### Change: rachel groove + handle draw order
+
+`maz/rachel/blit.go`:
+- Added `drawAppGroove()`: 2px inset bevel rectangle drawn around the app content area,
+  using `pal.Mid()` (outer) and `pal.Midlight()` (inner). Lines are offset 2px inward
+  from the border zone boundary so they fall inside `applyDecorations`' copy range.
+- `renderDecorOnce` draw order: DrawBox → `drawAppGroove` → `DrawTitleBar` → `drawResizeHandles`
+  (handles only when `depth == mancini.Inset` i.e. focused window).
+
+### Change: applyDecorations called on every Blit
+
+`maz/rachel/main.go` `case wm.Blit`: added `applyDecorations(ta, focused)` before
+`timedBlitWindow`. The app writes its entire backing store (including border zones) into
+the shared memory, overwriting groove and handle pixels. Re-stamping on every Blit restores
+them before compositing to the GPU framebuffer.
+
+### Change: windowVisibleRect uses full buffer for focused windows
+
+`maz/rachel/blit.go`: `windowVisibleRect` returns `image.Rect(ox, oy, ox+bsWidth, oy+bsHeight)`
+for focused windows (was returning `faceScreenRect` which excluded the 14px border zones).
+This ensures the border zones (groove, handles, shadow) are included in the GPU blit regions.
+
+### Fix: resize drag produces no visual feedback
+
+**Root cause:** `mazarin/mancini/linuxapp/linuxapp.go` `runLoop` did not handle
+`wm.WindowResized` or `wm.BackingStoreReady` messages. When rachel sends `WindowResized`
+during a resize drag, the app silently dropped it (no SetSize, no redraw, no Blit back).
+Rachel's Blit handler condition `dragIsResize && dragActive && msg.DrawnWidth > 0` was
+never satisfied → no visual update.
+
+**Fix:**
+- `runLoop` signature extended with `dc mancini.DrawContext, bsImg *image.RGBA, leftInset, topInset float64`.
+- `Bootstrap` passes these four values to `runLoop`.
+- New `resizeDC(newW, newH int)` closure: `dc.Pop()` + `dc.Push()` + `Translate` + `DrawRectangle` + `Clip()` to update the clip rect and win dimensions.
+- `wm.WindowResized`: calls `resizeDC(AppWidth, AppHeight)` + `redraw()` + `continue`.
+- `wm.BackingStoreReady` (in-loop, from resize start/end): if `BackingStoreAddr != 0` remaps
+  `bsImg.Pix/Stride/Rect` to the new buffer; then `resizeDC` + `redraw()` + `continue`.
+
+---
+
+## Session: 2026-04-21 (continued 5) — bleve sync writes + x86_64 TCG analysis
+
+### Change: removed unsafe_batch from bleve fti config
+
+`maz/fti/main.go` `bleve.NewUsing` previously passed `"unsafe_batch": true`, which
+makes `Index()` return before segment data is flushed to disk. This was removed so
+bleve waits for each flush to hit disk before returning.
+
+### ARM64 HVF sync write RTT (60s run, 100 emails)
+
+Measured disk write (sysid=66, 4096-byte pwrite) delegate RTTs with unsafe_batch off:
+- n=25 samples, min=30µs, **median=39µs**, avg=425µs, max=6254µs
+- 3.6× more write operations than with unsafe_batch (scorch flushes smaller segments)
+- Throughput: 0.70 MB/s (was 2.98 MB/s with unsafe_batch) — expected cost of durable writes
+- All writes completing correctly; 100 docs imported and indexed within 60s
+
+### x86_64 TCG analysis: why sync writes take 15–30s per document
+
+Ran x86_64 TCG with same 60s timeout. Key observations:
+- ctx_switches: 8.5/sec (vs 265/sec ARM64 HVF — 31× lower)
+- DLG:W #1 RTT: **349ms** (vs 8µs on ARM64 HVF — 43,000× slower)
+- fti.elf read: 19.7MB in **15.97s** (1.24 MB/s)
+- System did not reach bleve indexing within 60s
+
+Root cause of 15–30s per document (not a bug):
+1. TCG makes overall system 12–50× slower (expected).
+2. Low scheduler throughput (8.5 ctx_switches/sec → ~118ms per switch) means each
+   delegated syscall costs ~236ms in wall time.
+3. Bleve sync writes issue ~82 pwrite() calls per 41KB document segment.
+4. 82 × 236ms ≈ 19s per document — matches observed 15–30s.
+
+This is inherent to TCG, not a kernel/IPC bug. x86_64 TCG + bleve sync writes is
+acceptable as a dev/debug target; production paths (ARM64 HVF, bare-metal x86_64)
+are unaffected.
+
+Also identified: x86_64 ext2 file loading is inconsistent (30µs–3314µs/page) due to
+file fragmentation on disk image — fragmented files require 8–19 single-sector VirtIO
+requests per 4KB page instead of one multi-sector request.
+
+---
+
+## Session: 2026-04-21 (continued 4) — delegate IPC RTT measurements + fti diagnostics
+
+### Goal
+Capture real measured latency numbers for Write/Pwrite64 delegate round-trips and
+confirm fti indexing throughput with `unsafe_batch: true`.
+
+### Fix: [DLG:W] timing not appearing in log
+
+`klog.Logf` routes through the linux shepherd's soft-IRQ uring ring.  During the
+initial bleve write burst (~580 Pwrite64 calls) the ring fills and messages are
+silently dropped — the `[DLG:W]` lines never reached UART.
+
+**Fix in `kmazarin/ksyscall/delegate.go`:** Changed `[DLG:W]` timing log from
+`klog.Logf` to `klog.Criticalf`, which writes directly to UART and survives ring
+saturation.  Sampling policy kept: log first 3 Write/Pwrite64 delegates unconditionally,
+then every 64th (`n <= 3 || n&63 == 1`).
+
+### Investigation: fti.elf hang at [fs] reading /fti.elf... (300s run)
+
+A 300s run stalled at `[fs] reading /fti.elf...` for the full 300 seconds (197 lines
+total output).  Investigation ruled out: AllocPages limits (4519 < 32768), ext2
+double-indirect block handling (correct), IOUring ring sizes (SQCapacity=32, batch 8 fine),
+DMA scratch clump validity.
+
+**Root cause of THAT specific hang:** Stale disk.img.  The Taskfile `method: checksum`
+for `disk-arm64` had not detected that kmazarin.elf changed (not listed as an explicit
+source for that target).  The disk image was built against a prior binary state that
+caused the hang.  Touching `maz/fs/main.go` forced a full rebuild; the next 120s run
+loaded fti.elf successfully (4642 blocks, all batches).
+
+**Separate open bug (issue #2):** An intermittent VirtIO block stall (~1 in 3 cold runs)
+can hang the fs read path permanently with no timeout or retry.  This is distinct from
+the stale-image issue.
+
+### Measured delegate IPC RTT (ARM64 HVF, 120s run, 98 emails indexed)
+
+- **Write (sysid=10), warm:** 10–50µs typical; ~255µs on first boot writes
+- **Pwrite64 (sysid=66), bleve journal flushes:** 64–290µs typical
+- **GC-induced outliers:** entry #449 = 2590µs, entry #641 = 8392µs
+- **fti throughput:** 2.84 MB/s cumulative, per-doc 146µs–1.5ms
+
+### Diagnostic cleanup
+
+- Removed `delegateReplyCount uint64` and the top-of-`SyscallReply` 20-entry
+  `klog.Criticalf` diagnostic block from `kmazarin/ksyscall/delegate.go`
+- Removed `[fs:dbg]` per-batch and `[dma:batch]` counter prints from `maz/fs/main.go`
+  (added temporarily to diagnose the fti.elf hang, removed after confirmation)
+
+---
+
 ## Session: 2026-04-21 (continued 3) — x86_64 mail display + Taskfile dep fixes
 
 ### Issue #8 confirmed FIXED

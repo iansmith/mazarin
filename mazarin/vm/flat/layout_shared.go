@@ -14,7 +14,7 @@ import (
 // Shared page magic and version expected by the client.
 const (
 	SharedPageMagic   = 0x4D415A46 // "MAZF"
-	SharedPageVersion = 3
+	SharedPageVersion = 4          // v4: added ValueColl region for writable int64 collections
 )
 
 // SharedPageHeaderSize is the size of the header at offset 0 of the mapping.
@@ -64,23 +64,31 @@ func NewPageRegionFromSharedMapping(base uintptr) *PageRegion {
 	collCap := binary.LittleEndian.Uint32(hdr[off+4 : off+8])
 	off += 8
 
-	_ = off // trieOff/trieCap read separately by trie walker
+	// Trie region: read separately by trie walker (ReadTrieRegion); skip 8 bytes.
+	off += 8
+
+	// v4: ValueColl region at header offset 64.
+	vcollOff := binary.LittleEndian.Uint32(hdr[off : off+4])
+	vcollCap := binary.LittleEndian.Uint32(hdr[off+4 : off+8])
+	_ = off
 
 	// Create sub-slices using unsafe.Slice into the mapped memory.
-	nodeBytes := int(nodeCap) * AttrNodeSize
-	edgeBytes := int(edgeCap) * 2
-	bcBytes := int(bcCap) * 16
-	strBytes := int(strCap) * StringSlotSize
-	collBytes := int(collCap) * ValueSize
+	nodeBytes  := int(nodeCap) * AttrNodeSize
+	edgeBytes  := int(edgeCap) * 2
+	bcBytes    := int(bcCap) * 16
+	strBytes   := int(strCap) * StringSlotSize
+	collBytes  := int(collCap) * ValueSize
+	vcollBytes := int(vcollCap) * ValueSize
 
 	pr := &PageRegion{
-		Nodes:          unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(nodeOff))), nodeBytes),
-		Edges:          unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(edgeOff))), edgeBytes),
-		Bytecode:       unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(bcOff))), bcBytes),
-		Strings:        unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(strOff))), strBytes),
-		Collections:    unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(collOff))), collBytes),
-		NodeCapacity:   int(nodeCap),
-		StringCapacity: int(strCap),
+		Nodes:            unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(nodeOff))), nodeBytes),
+		Edges:            unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(edgeOff))), edgeBytes),
+		Bytecode:         unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(bcOff))), bcBytes),
+		Strings:          unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(strOff))), strBytes),
+		Collections:      unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(collOff))), collBytes),
+		ValueCollections: unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(vcollOff))), vcollBytes),
+		NodeCapacity:     int(nodeCap),
+		StringCapacity:   int(strCap),
 	}
 
 	return pr

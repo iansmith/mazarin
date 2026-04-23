@@ -94,6 +94,41 @@ func ValueTribool(uri string, initial int64) *Attribute[int64] {
 	}
 }
 
+// ValueCollI64 creates a value attribute that holds a collection of int64 values.
+// The Go type is []int64. Set() calls AttrWriteCollI64; Get() reads from the
+// ValueCollections region. Panics if len(initial) > MaxValueCollEntries (256).
+//
+// The sentinel rule applies: if the caller writes more than 256 elements, use
+// a single element [math.MaxInt64] to signal "large set — use IPC path."
+func ValueCollI64(uri string, initial []int64) *Attribute[[]int64] {
+	slot := createValueSlot(uri, flat.TypeCollection)
+	if err := sys.AttrWriteCollI64(slot, initial, false); err != nil {
+		panic("attr: ValueCollI64 initial write failed: " + err.Error())
+	}
+	return &Attribute[[]int64]{
+		slot:      slot,
+		uri:       uri,
+		kind:      flat.AttrKindValue,
+		typ:       flat.TypeCollection,
+		isCollI64: true,
+		toT: func(fv flat.Value) []int64 {
+			if fv.Typ != flat.TypeCollection {
+				return nil
+			}
+			ref := fv.AsCollRef()
+			if ref.ElemType != flat.TypeI64 || ref.Count == 0 {
+				return nil
+			}
+			result := make([]int64, ref.Count)
+			for i := range result {
+				elem := sharedPR.ReadCollectionElement(ref, i)
+				result[i] = elem.AsI64()
+			}
+			return result
+		},
+	}
+}
+
 // ValueComposite creates a value attribute for a composite type (Rectangle,
 // Point2D, Timespec, etc.) using vm.Value as the Go representation.
 func ValueComposite(uri string, flatType uint8, initial vm.Value) *Attribute[vm.Value] {

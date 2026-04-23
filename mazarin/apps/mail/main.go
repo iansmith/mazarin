@@ -1,7 +1,7 @@
 // mail is a standalone shepherd that provides a mancini-based mail client.
 // It connects to maildb via uring IPC using the v2 mailproto HOT-collection
-// protocol. On startup it creates a FilterAll collection and populates the
-// grid with MailRow interactors that load their headers asynchronously.
+// protocol. On startup it creates a FilterAll collection; a MailCache owns
+// all KeyHeaders fetching and the grid uses virtual scroll (fixed slot pool).
 //
 // UI hierarchy:
 //
@@ -46,21 +46,8 @@ var (
 
 	// Active collection state.
 	activeCollId uint32
-	mailRows     []*MailRow
-	rowByReqId   = make(map[[16]byte]*MailRow)
-	reqCounter   uint64
-
+	cache        *MailCache
 )
-
-// nextReqId returns a new unique [16]byte request ID using a counter + timestamp.
-func nextReqId() [16]byte {
-	reqCounter++
-	var id [16]byte
-	n := uint64(time.Now().UnixNano())
-	*(*uint64)(unsafe.Pointer(&id[0])) = n
-	*(*uint64)(unsafe.Pointer(&id[8])) = reqCounter
-	return id
-}
 
 func startUringDispatcher(fc *fontcache.FontCache) {
 	d := uring.NewDispatcher()
@@ -344,6 +331,19 @@ func main() {
 				needsRedraw = false
 			case wm.WindowMoved:
 				chooser.SetAppScreenPos(m.AppX, m.AppY)
+			case wm.KeyPress:
+				switch m.Action {
+				case wm.ActionUp:
+					if gridFrame != nil {
+						gridFrame.MoveSelection(-1)
+					}
+				case wm.ActionDown:
+					if gridFrame != nil {
+						gridFrame.MoveSelection(1)
+					}
+				default:
+					disp.DispatchWM(msg)
+				}
 			default:
 				disp.DispatchWM(msg)
 			}
@@ -354,6 +354,12 @@ func main() {
 		case resp := <-mailRespCh:
 			handleMailResponse(resp)
 			redraw("mail-resp")
+			if cache != nil {
+				first := gridFrame.FirstVisibleMsgNumAttr().Get()
+				last := gridFrame.LastVisibleMsgNumAttr().Get()
+				vis := gridFrame.VisibleRowCountAttr().Get()
+				cache.Rebalance(first, last, vis)
+			}
 
 		case <-clickTimer:
 			clickTimer = nil
@@ -362,6 +368,12 @@ func main() {
 			}
 
 		case <-eagerCh:
+			if cache != nil {
+				first := gridFrame.FirstVisibleMsgNumAttr().Get()
+				last := gridFrame.LastVisibleMsgNumAttr().Get()
+				vis := gridFrame.VisibleRowCountAttr().Get()
+				cache.Rebalance(first, last, vis)
+			}
 			redraw("eagerCh")
 
 		case <-throbTicker.C:
@@ -380,7 +392,9 @@ func requestCreateCollection() {
 		fmt.Println("[mail] maildb not available, skipping CreateCollection")
 		return
 	}
-	reqId := nextReqId()
+	c := &MailCache{maildbSID: maildbSID}
+	c.entries = make(map[uint32]*mailproto.KeyHeaderEntry)
+	reqId := c.nextReqId()
 	req := mailproto.CreateCollectionReq{
 		RequestId:  reqId,
 		FilterType: mailproto.FilterAll,
@@ -398,23 +412,18 @@ func handleMailResponse(v any) {
 	switch resp := v.(type) {
 	case mailproto.RespCreateCollection:
 		handleCreateCollectionResp(&resp)
-	case mailproto.RespKeyHeaders:
-		handleKeyHeadersResp(&resp)
-	case mailproto.CollectionAdd:
-		handleCollectionAdd(&resp)
-	case mailproto.CollectionRemove:
-		handleCollectionRemove(&resp)
 	case mailproto.RespMarkRead:
 		fmt.Printf("[mail] MarkRead ack: errCode=%d\n", resp.ErrCode)
 	case mailproto.RespMarkDeleted:
 		fmt.Printf("[mail] MarkDeleted ack: errCode=%d newSize=%d\n", resp.ErrCode, resp.NewSize)
 	default:
-		fmt.Printf("[mail] unhandled mail response: %T\n", v)
+		if cache != nil {
+			cache.HandleResponse(v)
+		}
 	}
 }
 
-// handleCreateCollectionResp receives the RespCreateCollection and populates
-// the grid with MailRow instances for the first 50 messages.
+// handleCreateCollectionResp sets up the cache and virtual scroll grid.
 func handleCreateCollectionResp(resp *mailproto.RespCreateCollection) {
 	if resp.ErrCode != mailproto.ErrNone {
 		fmt.Printf("[mail] CreateCollection failed: errCode=%d\n", resp.ErrCode)
@@ -423,97 +432,25 @@ func handleCreateCollectionResp(resp *mailproto.RespCreateCollection) {
 	activeCollId = resp.CollId
 	fmt.Printf("[mail] collection created: collId=%d size=%d\n", resp.CollId, resp.Size)
 
-	limit := int(resp.Size)
-	if limit > 50 {
-		limit = 50
-	}
-	for i := 0; i < limit; i++ {
-		reqId := nextReqId()
-		row := NewMailRow(maildbSID, activeCollId, uint32(i), reqId,
-			onCollectionExpired, onRowSelected)
-		mailRows = append(mailRows, row)
-		rowByReqId[reqId] = row
-		row.OnLoaded = gridFrame.AddRow(row)
-	}
-	fmt.Printf("[mail] added %d MailRows to grid\n", limit)
-}
-
-// handleKeyHeadersResp routes a RespKeyHeaders to the matching MailRow and
-// marks the grid dirty so the new text is displayed on the next draw.
-func handleKeyHeadersResp(resp *mailproto.RespKeyHeaders) {
-	row, ok := rowByReqId[resp.RequestId]
-	if !ok {
-		fmt.Printf("[mail] RespKeyHeaders: no matching row for requestId\n")
-		return
-	}
-	delete(rowByReqId, resp.RequestId)
-	row.HandleKeyHeadersResp(resp) // fires row.OnLoaded → label FullDamage if successful
-	fmt.Printf("[mail] KeyHeaders loaded msgNum=%d sender=%q\n", row.MsgNum(), row.Sender())
-}
-
-// handleCollectionAdd handles an unsolicited CollectionAdd notification.
-// notif.MsgNum is the message's actual position in the collection after insertion.
-// Any existing MailRow at that position or later is shifted forward by one.
-func handleCollectionAdd(notif *mailproto.CollectionAdd) {
-	if notif.CollId != activeCollId {
-		return
-	}
-	fmt.Printf("[mail] CollectionAdd: msgNum=%d newSize=%d\n", notif.MsgNum, notif.NewSize)
-
-	// Shift all rows displaced by the insertion.
-	// For rows still loading: the in-flight KeyHeaders request carries the old
-	// msgNum. Maildb will serve data for the current occupant of that position
-	// (the newly-inserted message), not the original one. Re-fire the request
-	// with the new (post-shift) msgNum so the row gets the correct data.
-	for _, row := range mailRows {
-		if row.MsgNum() >= notif.MsgNum {
-			row.ShiftMsgNum(1)
-			if row.IsLoading() {
-				newReqId := nextReqId()
-				oldReqId := row.RefreshRequest(newReqId)
-				delete(rowByReqId, oldReqId)
-				rowByReqId[newReqId] = row
-			}
-		}
+	cache = &MailCache{maildbSID: maildbSID}
+	cache.SetCollection(resp.CollId, resp.Size)
+	cache.OnUpdated = func() { gridFrame.DamageAll() }
+	cache.OnExpired = func(collId uint32) {
+		fmt.Printf("[mail] collection %d expired, re-requesting\n", collId)
+		cache = nil
+		go requestCreateCollection()
 	}
 
-	if len(mailRows) < 50 {
-		reqId := nextReqId()
-		row := NewMailRow(maildbSID, activeCollId, notif.MsgNum, reqId,
-			onCollectionExpired, onRowSelected)
-		mailRows = append(mailRows, row)
-		rowByReqId[reqId] = row
-		row.OnLoaded = gridFrame.AddRow(row)
-	}
-}
+	gridFrame.SetTotalRows(int64(resp.Size))
+	gridFrame.SetRowFactory(func() std.GridRow {
+		return &MailRow{cache: cache}
+	})
 
-// handleCollectionRemove handles an unsolicited CollectionRemove notification.
-// The row is removed from the app tracking list. Visual removal from GridTable
-// is deferred until GridTable supports row removal.
-func handleCollectionRemove(notif *mailproto.CollectionRemove) {
-	if notif.CollId != activeCollId {
-		return
-	}
-	fmt.Printf("[mail] CollectionRemove: msgNum=%d newSize=%d\n", notif.MsgNum, notif.NewSize)
-	for i, row := range mailRows {
-		if row.MsgNum() == notif.MsgNum {
-			delete(rowByReqId, row.RequestId())
-			mailRows = append(mailRows[:i], mailRows[i+1:]...)
-			break
-		}
-	}
-}
-
-// onCollectionExpired is called by a MailRow when ErrCollectionExpired arrives.
-// It rebuilds the collection from scratch.
-func onCollectionExpired(collId uint32) {
-	fmt.Printf("[mail] collection %d expired, re-requesting\n", collId)
-	mailRows = mailRows[:0]
-	rowByReqId = make(map[[16]byte]*MailRow)
-	go requestCreateCollection()
-}
-
-// onRowSelected is called by a MailRow when the user selects it.
-func onRowSelected(collId, msgNum uint32) {
-	fmt.Printf("[mail] row selected: collId=%d msgNum=%d\n", collId, msgNum)
+	// Trigger initial fetch using current visibility attrs (may be 0 before
+	// first draw; cache.Rebalance is a no-op until visibleCount > 0).
+	first := gridFrame.FirstVisibleMsgNumAttr().Get()
+	last := gridFrame.LastVisibleMsgNumAttr().Get()
+	vis := gridFrame.VisibleRowCountAttr().Get()
+	cache.Rebalance(first, last, vis)
+	fmt.Printf("[mail] cache ready, initial rebalance first=%d last=%d vis=%d\n", first, last, vis)
 }

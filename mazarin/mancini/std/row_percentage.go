@@ -18,9 +18,21 @@ type RowPercentage struct {
 	impl.Interactor
 	impl.Parent
 
-	Pal          mancini.Palette
-	ClipChildren bool      // clip each child to its cell bounds (prevents text overflow)
-	Percents     []float64 // percentage of width for each child position
+	Pal            mancini.Palette
+	ClipChildren   bool      // clip each child to its cell bounds (prevents text overflow)
+	Percents       []float64 // percentage of width for each child position
+	SelectionState int       // 0=unselected, 1=primary selection, 2=in-set-not-primary
+
+	grid *GridTable // set by GridTable.AddRow; nil for the header row
+	row  GridRow    // the data row this widget represents; nil for header
+}
+
+// Click implements [mancini.Clickable]. Routes the click to the owning GridTable.
+func (rp *RowPercentage) Click(ev *mancini.InputEvent) bool {
+	if rp.grid != nil && rp.row != nil {
+		rp.grid.setSelected(rp.row, ev)
+	}
+	return true
 }
 
 // NewRowPercentage creates a RowPercentage with the given percentage
@@ -56,6 +68,19 @@ func (rp *RowPercentage) Draw(self mancini.Interactor, x, y, w, h int64, damage 
 	dc := self.DC()
 	if dc == nil {
 		return
+	}
+
+	switch rp.SelectionState {
+	case 1:
+		bg := rp.Pal.Highlight()
+		bg.A = 160
+		dc.SetColor(bg)
+		dc.FillRectangle(float64(x), float64(y), float64(w), float64(h))
+	case 2:
+		bg := rp.Pal.Accent()
+		bg.A = 120
+		dc.SetColor(bg)
+		dc.FillRectangle(float64(x), float64(y), float64(w), float64(h))
 	}
 
 	children := rp.GetChildren()

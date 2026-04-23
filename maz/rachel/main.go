@@ -375,8 +375,11 @@ func generateHResizeCursor() []byte {
 			off := (y*64 + x) * 4
 			v := hResizeBitmap[y][x]
 			switch v {
-			case 0:
-				// transparent
+			case 0: // transparent — write zeros explicitly to fault in all pages
+				img[off+0] = 0
+				img[off+1] = 0
+				img[off+2] = 0
+				img[off+3] = 0
 			case 1: // white outline
 				img[off+0] = 255
 				img[off+1] = 255
@@ -401,8 +404,11 @@ func generateVResizeCursor() []byte {
 			off := (y*64 + x) * 4
 			v := vResizeBitmap[y][x]
 			switch v {
-			case 0:
-				// transparent
+			case 0: // transparent — write zeros explicitly to fault in all pages
+				img[off+0] = 0
+				img[off+1] = 0
+				img[off+2] = 0
+				img[off+3] = 0
 			case 1: // white outline
 				img[off+0] = 255
 				img[off+1] = 255
@@ -958,6 +964,11 @@ func moveWindowTo(ta *trackedApp, newX, newY int32) {
 	if newY-bT+winH-boxH < 0 {
 		newY = bT - winH + boxH
 	}
+	// Clamp Y: keep title bar on screen — face.top = newY - bT must be >= 0.
+	// Without this, dragging up puts the title bar above the screen edge.
+	if newY < bT {
+		newY = bT
+	}
 	// Clamp Y: keep UL box on screen at bottom edge.
 	// UL box bottom = newY - bT + boxH must be <= dh
 	if newY-bT+boxH > dh {
@@ -1433,6 +1444,11 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 					}
 					regions = clipped
 				}
+				// Re-stamp border decoration: the app writes its full buffer
+				// (including border zones) into the shared backing store, overwriting
+				// groove and handle pixels. Restore them before compositing.
+				applyDecorations(ta, focused)
+
 				copyDur := timedBlitWindow(senderSID, regions, fbPix, fbStride, focused)
 
 				// If this shepherd has an active overlay, re-composite it on top

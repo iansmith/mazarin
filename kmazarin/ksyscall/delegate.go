@@ -16,6 +16,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ktimer"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/constants"
 	"mazzy/shared/ipc"
@@ -57,7 +58,12 @@ type DelegateCallInfo struct {
 	FlushResponseVA uint64  // VA of response page in handler's address space
 	FlushFD         uint64  // fd for the file being flushed
 	FlushCallerSID  int16   // SID of the shepherd whose pages are being flushed
+
+	SubmitTick uint64 // ktimer counter when the uring send was issued (for RTT logging)
 }
+
+// delegateWriteCount counts Write/Pwrite64 delegate calls for sampling.
+var delegateWriteCount uint64
 
 // syscallDelegates maps SysID → handler shepherd PID.
 var syscallDelegates [sysid.NumIDs]delegateHandler
@@ -69,6 +75,15 @@ func init() {
 	for i := range syscallDelegates {
 		syscallDelegates[i].pid = -1
 	}
+}
+
+// LinuxDelegateSID returns the SID of the shepherd currently registered as the
+// handler for write() — which is the linux shepherd. Returns -1 if none registered.
+// Used by KernelIdleLoop to target idle flush hints.
+//
+//go:nosplit
+func LinuxDelegateSID() int16 {
+	return int16(atomic.LoadInt32(&syscallDelegates[sysid.Write].pid))
 }
 
 // IsDelegated returns true if the given SysID has a handler shepherd registered,
@@ -393,6 +408,7 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		info.CallerL0PA = callerShepherd.PageTableL0PA
 		info.SysID = id
 		info.InUse = true
+		info.SubmitTick = ktimer.ReadCounter()
 	}
 
 	// Send the request to the handler's uring ring.
@@ -713,6 +729,20 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 			if info.DataPagePA != 0 {
 				handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
 				reclaimDataPage(info.DataPagePA, info.DataPageVA, info.HandlerSID, handlerShepherd)
+			}
+
+			// Log Write/Pwrite64 round-trip latency (first 3 unconditionally, then every 64th).
+			if info.SysID == sysid.Write || info.SysID == sysid.Pwrite64 {
+				n := atomic.AddUint64(&delegateWriteCount, 1)
+				if n <= 3 || n&63 == 1 {
+					freq := uint64(ktimer.Frequency())
+					rttUs := uint64(0)
+					if freq > 0 && info.SubmitTick != 0 {
+						rttUs = (ktimer.ReadCounter() - info.SubmitTick) * 1_000_000 / freq
+					}
+					klog.Criticalf("[DLG:W]", "[DLG:W] #%d sysid=%d rtt=%dµs tick=%d len=%d ret=%d\n",
+						n, info.SysID, rttUs, info.SubmitTick, info.CallerBufLen, returnVal)
+				}
 			}
 
 			info.InUse = false

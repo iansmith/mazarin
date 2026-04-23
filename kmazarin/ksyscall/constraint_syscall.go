@@ -6,6 +6,7 @@
 package ksyscall
 
 import (
+	"encoding/binary"
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/mazarin/vm/flat"
@@ -604,6 +605,96 @@ func SyscallAttrWriteString(slotIndex, strBufPtr, strLen, isConstraintResult, _,
 	} else {
 		// Value write path: propagate to dependents. The source node is
 		// marked dirty by dirtyWalk; no need to clear first.
+		attrMgr.dirtyPropagate(slot)
+		flushPendingDirtyWakes()
+	}
+
+	return 0
+}
+
+// SyscallAttrWriteCollI64 writes a collection of int64 values to a TypeCollection attribute.
+//
+// Args: slotIndex, userVABuf ([]int64 backing array), count, isConstraintResult, _, _
+//   - isConstraintResult=1: clears dirty, no propagation (constraint result path)
+//   - isConstraintResult=0: dirty-propagates (value write path)
+//
+// The kernel allocates a ValueColl slot for this attribute on first write and reuses
+// it on subsequent writes (slots are not freed; max RegionValueCollSlots live attrs).
+//
+// Returns: 0 on success, negative errno on failure.
+func SyscallAttrWriteCollI64(slotIndex, userVABuf, count, isConstraintResult, _, _ uint64) int64 {
+	if !attrMgr.initialized {
+		return -12
+	}
+
+	slot := uint16(slotIndex)
+	if !attrMgr.isNodeAllocated(slot) {
+		return -22 // EINVAL
+	}
+
+	node := attrMgr.node(slot)
+	if node.IsTombstoned() {
+		return -22 // EINVAL
+	}
+
+	pid, _ := getCurrentThreadSIDAndTID()
+	if node.Owner != uint16(pid) {
+		return -1 // EPERM
+	}
+
+	if node.ValueType != flat.TypeCollection {
+		return -22 // EINVAL — must be TypeCollection
+	}
+	if isConstraintResult == 0 && node.Kind == flat.AttrKindConstraint {
+		return -1 // EPERM — use constraint result path for constraints
+	}
+	if isConstraintResult != 0 && node.Kind != flat.AttrKindConstraint {
+		return -22 // EINVAL
+	}
+
+	n := int(count)
+	if n > kmem.MaxValueCollEntries {
+		return -22 // EINVAL — too many entries; use sentinel path
+	}
+
+	// Find or allocate the ValueColl slot for this attribute.
+	var slotByteOff uint32
+	existing := node.CachedValue
+	if existing.Typ == flat.TypeCollection && existing.AsCollRef().ElemType == flat.TypeI64 {
+		slotByteOff = existing.AsCollRef().RegionOffset
+	} else {
+		slotByteOff = attrMgr.allocValueCollSlot()
+		if slotByteOff == ^uint32(0) {
+			klog.Errf("[attr] ENOMEM: allocValueCollSlot full (slots=%d)\n", uint64(attrMgr.valueCollSlotCount))
+			return -12 // ENOMEM
+		}
+	}
+
+	// Copy int64 values from user and write as flat.Value(TypeI64) items.
+	base := attrMgr.baseVA + uintptr(attrMgr.valueCollRegionOff) + uintptr(slotByteOff)
+	for i := 0; i < n; i++ {
+		var buf [8]byte
+		if !kmem.CopyFromUser(buf[:], uintptr(userVABuf)+uintptr(i)*8, 8) {
+			return -14 // EFAULT
+		}
+		v := int64(binary.LittleEndian.Uint64(buf[:]))
+		entry := flat.NewI64(v)
+		*(*flat.Value)(unsafe.Pointer(base + uintptr(i)*flat.ValueSize)) = entry
+	}
+
+	newVal := flat.NewCollection(flat.CollRef{
+		ElemType:     flat.TypeI64,
+		RegionOffset: slotByteOff,
+		Count:        uint16(n),
+	})
+
+	node.SeqCounter++
+	node.CachedValue = newVal
+	node.SeqCounter++
+
+	if isConstraintResult != 0 {
+		node.SetDirty(false)
+	} else {
 		attrMgr.dirtyPropagate(slot)
 		flushPendingDirtyWakes()
 	}

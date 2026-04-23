@@ -191,6 +191,30 @@ func AttrDelete(slot uint16) error {
 	return nil
 }
 
+// AttrWriteCollI64 writes a slice of int64 values to a TypeCollection attribute.
+// If isConstraintResult is true, clears dirty without propagation.
+// Otherwise dirty-propagates to dependents.
+// The kernel allocates (or reuses) a ValueColl slot for this attribute.
+func AttrWriteCollI64(slot uint16, values []int64, isConstraintResult bool) error {
+	var ptr unsafe.Pointer
+	count := len(values)
+	if count > 0 {
+		ptr = unsafe.Pointer(&values[0])
+	}
+	var flag uintptr
+	if isConstraintResult {
+		flag = 1
+	}
+	_, _, errno := RawSyscall(mazzy.SysAttrWriteCollI64,
+		uintptr(slot),
+		uintptr(ptr), uintptr(count),
+		flag, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 // AttrIncrementI64 atomically increments an int64 value attribute.
 // Returns the new value on success, or an error.
 // No dirty propagation — intended for side-effect counters.

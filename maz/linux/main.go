@@ -48,6 +48,10 @@ type stdinDecRefNotification struct {
 	sid int16
 }
 
+// idleFlushNotification is sent through delegateCh when the kernel is about to
+// enter WFI (no ready threads). The delegate handler flushes one write buffer.
+type idleFlushNotification struct{}
+
 // shepherdState tracks per-SID refcount for the two-phase death protocol.
 // refcount starts at 1 ("alive" baseline). Each in-flight read/write: +1.
 // Each completed read/write: -1. When dying && refcount<=1: ACK to kernel.
@@ -158,6 +162,9 @@ func startUringDelegateHandler(delegateCh chan any, handler *syscallHandler, sup
 			case stdinDecRefNotification:
 				sidDecRef(v.sid)
 
+			case idleFlushNotification:
+				handler.flushOneBuffer()
+
 			case sys.SyscallRequest:
 				sid := v.CallerPID
 				if v.SysID == sysid.Write {
@@ -239,6 +246,15 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, wmCh 
 		sys.UartWriteString(fmt.Sprintf("[linux] shepherd %d died\n", deadSID))
 		// Route through delegateCh so all sidStates access is single-goroutine.
 		delegateCh <- deathNotification{deadSID: deadSID}
+	})
+	// Kernel sends this just before WFI when no threads are ready.
+	// Route to delegate handler so flush runs on the same goroutine as writes.
+	decodeNoop := func(_ *ipc.UringIPCMsg) any { return nil }
+	ipcDispatcher.OnFunc(ipc.ProtoIdleFlushHint, decodeNoop, func(v any) {
+		select {
+		case delegateCh <- idleFlushNotification{}:
+		default: // drop if channel full — shepherd is already busy
+		}
 	})
 	ipcDispatcher.Start()
 

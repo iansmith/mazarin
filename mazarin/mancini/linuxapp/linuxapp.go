@@ -134,8 +134,6 @@ func Bootstrap[T any](inj *Injection[T], cfg AppConfig[T]) {
 		fontSize = 24
 	}
 
-	rawPuts(fmt.Sprintf("[linuxapp] TextSize=%d\n", fontSize))
-
 	// Build Theme.
 	resolver := func(family string, feature mancini.Feature, size int64) font.Face {
 		style := mfont.Regular
@@ -265,12 +263,15 @@ func Bootstrap[T any](inj *Injection[T], cfg AppConfig[T]) {
 	appWin.SendBlit()
 
 	// Enter event loop.
-	runLoop(appWin, wmCh, drain, br.NotifyCh, winW, winH)
+	runLoop(appWin, wmCh, drain, br.NotifyCh, winW, winH, dc, bsImg, leftInset, topInset)
 }
 
 // runLoop is the main event loop. It processes WM messages, constraint
 // change notifications, app notifications, and calls drain for app-specific traffic.
-func runLoop(appWin *std.AppWindow, wmCh chan any, drain DrainFunc, notifyCh <-chan struct{}, winW, winH int) {
+// dc and bsImg are passed so that WindowResized and BackingStoreReady messages
+// can update the clip rect and remap the backing store during resize drags.
+func runLoop(appWin *std.AppWindow, wmCh chan any, drain DrainFunc, notifyCh <-chan struct{},
+	winW, winH int, dc mancini.DrawContext, bsImg *image.RGBA, leftInset, topInset float64) {
 	eagerCh := attr.OnEager()
 	appLH := appWin.GetLayout()
 
@@ -279,13 +280,23 @@ func runLoop(appWin *std.AppWindow, wmCh chan any, drain DrainFunc, notifyCh <-c
 		appWin.SendBlit()
 	}
 
+	// resizeDC updates the DC clip rect and layout dimensions to match new app size.
+	resizeDC := func(newW, newH int) {
+		dc.Pop()
+		dc.Push()
+		dc.Translate(leftInset, topInset)
+		dc.DrawRectangle(0, 0, float64(newW), float64(newH))
+		dc.Clip()
+		winW = newW
+		winH = newH
+		appWin.SetSize(int64(winW), int64(winH))
+	}
+
 	drainAndRedraw := func() {
 		if drain() {
 			redraw()
 		}
 	}
-
-	var dirtyTicks int64
 
 	// If no notify channel, use a nil channel (never fires, costs nothing in select).
 	if notifyCh == nil {
@@ -299,6 +310,27 @@ func runLoop(appWin *std.AppWindow, wmCh chan any, drain DrainFunc, notifyCh <-c
 
 		select {
 		case wmMsg := <-wmCh:
+			// Handle resize messages before other dispatch — these require
+			// updating the DC clip and/or remapping the backing store.
+			if wr, ok := wmMsg.(wm.WindowResized); ok {
+				resizeDC(int(wr.AppWidth), int(wr.AppHeight))
+				redraw()
+				continue
+			}
+			if bsr, ok := wmMsg.(wm.BackingStoreReady); ok {
+				if bsr.BackingStoreAddr != 0 {
+					newSlice := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(bsr.BackingStoreAddr))),
+						int(bsr.TotalStride)*int(bsr.TotalHeight))
+					bsImg.Pix = newSlice
+					bsImg.Stride = int(bsr.TotalStride)
+					bsImg.Rect = image.Rect(0, 0, int(bsr.TotalWidth), int(bsr.TotalHeight))
+					leftInset = float64(bsr.LeftInset)
+					topInset = float64(bsr.TopInset)
+				}
+				resizeDC(int(bsr.AppWidth), int(bsr.AppHeight))
+				redraw()
+				continue
+			}
 			switch wmMsg.(type) {
 			case wm.KeyboardFocusGained:
 				appWin.Focus()
@@ -327,15 +359,11 @@ func runLoop(appWin *std.AppWindow, wmCh chan any, drain DrainFunc, notifyCh <-c
 			}
 
 		case <-eagerCh:
-			dirtyTicks++
 			if drain() {
 				dirty = true
 			}
 			if dirty {
 				redraw()
-			}
-			if dirtyTicks%10 == 0 {
-				rawPuts(fmt.Sprintf("[linuxapp] dirtyTicks=%d\n", dirtyTicks))
 			}
 
 		case <-notifyCh:

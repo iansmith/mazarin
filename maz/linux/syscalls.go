@@ -154,6 +154,9 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 		req.Reply(EOK)
 		return
 	}
+	if e.writeBuf != nil && len(e.writeBuf) > 0 {
+		h.flushWriteBuf(req.CallerPID, fd, e) // best-effort; ignore error on close
+	}
 	if e.handle != 0 {
 		h.fs.Close(e.handle)
 	}
@@ -261,12 +264,20 @@ func (h *syscallHandler) sysIoctl(req sys.SyscallRequest) {
 func (h *syscallHandler) sysFsync(req sys.SyscallRequest) {
 	fd := int(req.Arg0())
 
-	// Flush dirty cached pages for this fd to ext2 BEFORE syncing.
-	// The pwrite fast path writes directly to cached pages without
-	// touching ext2. Without this flush, fdatasync/fsync would leave
-	// stale data on disk, causing mmap coherence failures after re-mmap
-	// (bbolt reads zeros for pages it just wrote).
 	if fd >= 0 {
+		fdt := h.getShepherd(req.CallerPID).FDT
+		if e := fdt.get(fd); e != nil && e.writeBuf != nil && len(e.writeBuf) > 0 {
+			if err := h.flushWriteBuf(req.CallerPID, fd, e); err != nil {
+				req.Reply(int64(errToErrno(err)))
+				return
+			}
+		}
+
+		// Flush dirty cached pages for this fd to ext2 BEFORE syncing.
+		// The pwrite fast path writes directly to cached pages without
+		// touching ext2. Without this flush, fdatasync/fsync would leave
+		// stale data on disk, causing mmap coherence failures after re-mmap
+		// (bbolt reads zeros for pages it just wrote).
 		h.cache.FlushAllPagesForFD(req.CallerPID, fd, func(offset int64, data []byte) (int, error) {
 			return h.writePageToExt2(req.CallerPID, fd, offset, data)
 		})
@@ -339,14 +350,19 @@ func (h *syscallHandler) sysOpenat(req sys.SyscallRequest) {
 		kind = fdKindDir
 	}
 
-	fdt.put(newFD, &fdEntry{
+	entry := &fdEntry{
 		kind:   kind,
 		handle: handle,
 		size:   size,
 		ftype:  ftype,
 		flags:  flags,
 		path:   absPath,
-	})
+	}
+	if kind == fdKindFile {
+		entry.writeBuf = []byte{} // non-nil = buffering active; zero-capacity, allocates on first write
+		entry.writeBufOff = int64(size)
+	}
+	fdt.put(newFD, entry)
 	req.Reply(int64(newFD))
 }
 
@@ -734,6 +750,12 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 		req.Reply(EISDIR)
 		return
 	}
+	if e.writeBuf != nil && len(e.writeBuf) > 0 {
+		if err := h.flushWriteBuf(req.CallerPID, fd, e); err != nil {
+			req.Reply(int64(errToErrno(err)))
+			return
+		}
+	}
 
 	buf := req.DataBuf()
 	if buf == nil {
@@ -768,6 +790,66 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 	req.Reply(int64(n))
 }
 
+// flushWriteBuf drains e.writeBuf to ext2 in 4KB chunks (the IPC window size).
+// Called from sysClose, sysFsync, and sysRead before any pass-through I/O.
+func (h *syscallHandler) flushWriteBuf(pid int16, fd int, e *fdEntry) error {
+	buf := e.writeBuf
+	off := e.writeBufOff
+	winSize := h.fs.DataLen()
+	for len(buf) > 0 {
+		chunk := buf
+		if len(chunk) > winSize {
+			chunk = chunk[:winSize]
+		}
+		n := h.fs.WriteData(chunk)
+		written, err := h.fs.Write(e.handle, off, n)
+		if err != nil {
+			return err
+		}
+		// Keep cached pages coherent with what we just wrote.
+		if entries := h.cache.LookupRange(pid, fd, off, written); len(entries) > 0 {
+			updateCachedPages(entries, off, chunk[:written])
+		}
+		off += int64(written)
+		buf = buf[written:]
+	}
+	// Reset to a non-nil zero-capacity slice: keeps "buffering enabled" sentinel
+	// while releasing the backing pages to the GC with no pre-allocation.
+	e.writeBuf = []byte{}
+	e.writeBufOff = e.offset
+	return nil
+}
+
+// writeBufMaxBytes is the maximum number of bytes held in a write buffer before
+// a forced flush. Bounds memory usage and limits data-loss window.
+const writeBufMaxBytes = 1 << 20 // 1 MB
+
+// idleHintCount counts ProtoIdleFlushHint messages received.
+// idleFlushCount counts buffers actually flushed by idle hints.
+var idleHintCount, idleFlushCount uint64
+
+// flushOneBuffer scans all shepherd FD tables and flushes the first non-empty
+// write buffer it finds. Called from the idle-flush hint handler; processes
+// at most one buffer per call so the delegate handler stays responsive.
+func (h *syscallHandler) flushOneBuffer() {
+	idleHintCount++
+	if idleHintCount <= 3 || idleHintCount%1000 == 0 {
+		fmt.Printf("[linux] idle hint #%d (flushes so far: %d)\n", idleHintCount, idleFlushCount)
+	}
+	for pid, shep := range h.shepherds {
+		for fd, e := range shep.FDT.entries {
+			if e != nil && e.writeBuf != nil && len(e.writeBuf) > 0 {
+				n := len(e.writeBuf)
+				h.flushWriteBuf(pid, fd, e) // ignore error; best-effort idle flush
+				idleFlushCount++
+				fmt.Printf("[linux] idle flush #%d: pid=%d fd=%d bytes=%d\n",
+					idleFlushCount, pid, fd, n)
+				return
+			}
+		}
+	}
+}
+
 func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT
 	fd := int(req.Arg0())
@@ -788,8 +870,36 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 		return
 	}
 
-	// Always write through ext2 first — ensures on-disk data is current
-	// so mmap page faults after re-mmap see correct data (same fix as pwrite).
+	// Buffered path: accumulate sequential writes and defer IPC to fsync/close.
+	if e.writeBuf != nil {
+		bufEnd := e.writeBufOff + int64(len(e.writeBuf))
+		if e.offset == bufEnd {
+			// Contiguous — append and return immediately, no IPC to fs.
+			e.writeBuf = append(e.writeBuf, data...)
+			e.offset += int64(len(data))
+			if uint32(e.offset) > e.size {
+				e.size = uint32(e.offset)
+			}
+			// Force flush once the buffer reaches the size cap.
+			if len(e.writeBuf) >= writeBufMaxBytes {
+				if err := h.flushWriteBuf(req.CallerPID, fd, e); err != nil {
+					req.Reply(int64(errToErrno(err)))
+					return
+				}
+			}
+			req.Reply(int64(len(data)))
+			return
+		}
+		// Non-contiguous write (seek happened) — flush buffer first, then fall
+		// through to the direct write path below.
+		if err := h.flushWriteBuf(req.CallerPID, fd, e); err != nil {
+			req.Reply(int64(errToErrno(err)))
+			return
+		}
+	}
+
+	// Direct write path: send data to ext2 immediately.
+	// Also used for the first chunk after a seek flushes the buffer.
 	n := h.fs.WriteData(data)
 	written, err := h.fs.Write(e.handle, e.offset, n)
 	if err != nil {
@@ -797,7 +907,7 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 		return
 	}
 
-	// Update any cached pages that overlap so mmap'd memory stays coherent.
+	// Keep cached pages coherent with on-disk data.
 	if entries := h.cache.LookupRange(req.CallerPID, fd, e.offset, written); len(entries) > 0 {
 		updateCachedPages(entries, e.offset, data[:written])
 	}
@@ -805,6 +915,10 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 	e.offset += int64(written)
 	if uint32(e.offset) > e.size {
 		e.size = uint32(e.offset)
+	}
+	if e.writeBuf != nil {
+		// Re-arm buffer starting at new position for future sequential writes.
+		e.writeBufOff = e.offset
 	}
 	req.Reply(int64(written))
 }
@@ -925,6 +1039,16 @@ func (h *syscallHandler) sysMmapPageFill(req sys.SyscallRequest) {
 	if e == nil {
 		req.Reply(EBADF)
 		return
+	}
+
+	// Flush any pending write buffer to ext2 before filling the page.
+	// sysWrite buffers sequential writes in e.writeBuf without writing to ext2
+	// immediately. If the caller wrote data then mmap'd the same fd, the page
+	// fault arrives here before the buffer is flushed — ext2 would return zeros.
+	if len(e.writeBuf) > 0 {
+		if err := h.flushWriteBuf(req.CallerPID, fd, e); err != nil {
+			fmt.Printf("[mmap-fill] sid=%d fd=%d flush err: %v\n", req.CallerPID, fd, err)
+		}
 	}
 
 	buf := req.DataBuf()

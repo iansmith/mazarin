@@ -24,7 +24,7 @@ import (
 	"mazzy/shared/ipc"
 )
 
-const dataPages = 1 // shared data area size (4KB)
+const dataPages = 16 // shared data area size (64KB)
 
 // Client is an IPC client for the fs shepherd.
 type Client struct {
@@ -68,9 +68,9 @@ func (c *Client) Connect() error {
 	c.dataLen = dataPages * 4096
 
 	// Map into fs's address space.
-	remote, mapErr := sys.SharePages(c.fsSID, c.localVA)
+	remote, mapErr := sys.SharePagesWithTarget(c.fsSID, c.localVA, dataPages)
 	if mapErr != nil {
-		return fmt.Errorf("fsclient: SharePages: %w", mapErr)
+		return fmt.Errorf("fsclient: SharePagesWithTarget: %w", mapErr)
 	}
 	c.remoteVA = remote
 
@@ -109,6 +109,9 @@ func (c *Client) call(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, error) {
 	}
 	return resp, nil
 }
+
+// DataLen returns the shared data area size in bytes.
+func (c *Client) DataLen() int { return c.dataLen }
 
 // dataArea returns the local shared data area as a byte slice.
 func (c *Client) dataArea() []byte {

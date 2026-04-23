@@ -778,6 +778,30 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	if gcVal <= 0 {
 		gcVal = 100 // Go standard default
 	}
+	memLimitMB := shepherdMemLimitMB
+	if memLimitMB <= 0 {
+		memLimitMB = 24 // default
+	}
+
+	// Scan extraArgs for __MAZZY_ kernel directives.
+	// These are per-shepherd runtime overrides consumed by the kernel and
+	// stripped from the shepherd's argv — not passed to the process.
+	var filteredArgs []string
+	for _, a := range extraArgs {
+		switch {
+		case mazzyArgHasPrefix(a, "__MAZZY_GOMEMLIMIT="):
+			if v := parseMazzyArgInt(a, len("__MAZZY_GOMEMLIMIT=")); v > 0 {
+				memLimitMB = v
+			}
+		case mazzyArgHasPrefix(a, "__MAZZY_GCPERCENT="):
+			if v := parseMazzyArgInt(a, len("__MAZZY_GCPERCENT=")); v > 0 {
+				gcVal = v
+			}
+		default:
+			filteredArgs = append(filteredArgs, a)
+		}
+	}
+
 	// Convert gcVal to string (max 6 digits)
 	var gcBuf [6]byte
 	gcLen := 0
@@ -797,10 +821,6 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 		}
 	}
 	penv.SetEnv("GOGC", string(gcBuf[:gcLen]))
-	memLimitMB := shepherdMemLimitMB
-	if memLimitMB <= 0 {
-		memLimitMB = 24 // default
-	}
 	// Convert memLimitMB to string (max 6 digits) + "MiB"
 	var mlBuf [10]byte // "NNNNNNMiB\0"
 	mlLen := 0
@@ -845,7 +865,7 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	penv.SetAuxv(6, 4096) // AT_PAGESZ
 
 	argv := []string{filename, shepherdStr}
-	argv = append(argv, extraArgs...)
+	argv = append(argv, filteredArgs...)
 	sw := &StackWriter{
 		StackBase: stackBase,
 		StackTop:  stackTop,
@@ -895,6 +915,27 @@ func uint64ToDecimal(val uint64) string {
 		val /= 10
 	}
 	return string(buf[pos:])
+}
+
+// mazzyArgHasPrefix reports whether s starts with prefix.
+// Kernel-safe: no strings package import needed.
+func mazzyArgHasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+// parseMazzyArgInt parses a decimal integer starting at offset in s.
+// Returns 0 if s is too short or contains no digits at offset.
+// Kernel-safe: no strconv package import needed.
+func parseMazzyArgInt(s string, offset int) int {
+	n := 0
+	for i := offset; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
 
 // elfError represents an ELF parsing error

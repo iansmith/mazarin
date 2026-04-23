@@ -20,11 +20,12 @@ const (
 // wrap shared memory pages.
 type PageRegion struct {
 	// Region data (sub-slices of a contiguous backing buffer).
-	Nodes       []byte
-	Edges       []byte
-	Bytecode    []byte
-	Strings     []byte
-	Collections []byte
+	Nodes           []byte
+	Edges           []byte
+	Bytecode        []byte
+	Strings         []byte
+	Collections     []byte // query-result collections (ElemType=TypeStr only)
+	ValueCollections []byte // writable value collections (ElemType=TypeI64 etc.)
 
 	// Capacities in items.
 	NodeCapacity   int
@@ -134,9 +135,14 @@ func (pr *PageRegion) WriteCollection(elemType uint8, elems []Value) (CollRef, e
 }
 
 // ReadCollectionElement reads one element from a collection.
+// Query-result collections (ElemType=TypeStr) live in Collections.
+// Value-collection attributes (any other ElemType) live in ValueCollections.
 func (pr *PageRegion) ReadCollectionElement(ref CollRef, idx int) Value {
 	off := int(ref.RegionOffset) + idx*ValueSize
-	return *(*Value)(unsafe.Pointer(&pr.Collections[off]))
+	if ref.ElemType == TypeStr {
+		return *(*Value)(unsafe.Pointer(&pr.Collections[off]))
+	}
+	return *(*Value)(unsafe.Pointer(&pr.ValueCollections[off]))
 }
 
 // WriteEdges allocates space in the edge array and writes slot indices.

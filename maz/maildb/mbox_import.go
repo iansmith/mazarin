@@ -46,11 +46,13 @@ type ftiTracker struct {
 	mu      sync.Mutex
 	pending map[string]pendingIndex // docId -> shared page info
 
-	queue       chan ftiQueueItem // incoming items to index
-	done        chan struct{}     // closed when all items are indexed
-	ftiSID      int
-	ftiDied     chan struct{} // closed when fti shepherd dies
-	ftiDiedOnce sync.Once
+	queue        chan ftiQueueItem // incoming items to index
+	done         chan struct{}     // closed when all items are indexed
+	ftiSID       int
+	ftiDied      chan struct{} // closed when fti shepherd dies
+	ftiDiedOnce  sync.Once
+	lastErrMsg   string // last error message sent to notify (dedup)
+	lastErrCount int    // consecutive count of lastErrMsg
 }
 
 // MarkFTIDied signals that the fti shepherd has died. Safe to call multiple times.
@@ -148,7 +150,16 @@ func (t *ftiTracker) waitForOne(ftiRespCh <-chan any, notify func(string)) {
 	case fti.IndexError:
 		docId, errMsg = fti.UnpackIndexError(&r)
 		fmt.Printf("[maildb] fti error: %s: %s\n", docId, errMsg)
-		notify(fmt.Sprintf("Index error: %s", errMsg))
+		if errMsg != t.lastErrMsg {
+			t.lastErrMsg = errMsg
+			t.lastErrCount = 1
+			notify(fmt.Sprintf("Index error: %s", errMsg))
+		} else {
+			t.lastErrCount++
+			if t.lastErrCount%50 == 0 {
+				notify(fmt.Sprintf("Index error (%dx): %s", t.lastErrCount, errMsg))
+			}
+		}
 	default:
 		fmt.Printf("[maildb] unexpected fti response: %T\n", resp)
 		return

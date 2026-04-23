@@ -27,11 +27,13 @@ func (t *DefaultWMTheme) SetStyle(s mancini.SurfaceStyle) { t.style = s }
 
 // ── Decoration geometry ─────────────────────────────────────────────────
 
-// Shadow margins: flat style needs only a thin border, no blur shadows.
+// Shadow margins: left/right/bottom must be wide enough to contain the
+// 12-pixel resize handle semi-circles (radius 12 + 2px groove margin = 14).
+// Top is kept minimal since the title bar occupies that zone.
 func (t *DefaultWMTheme) ShadowTop() int    { return 2 }
-func (t *DefaultWMTheme) ShadowBottom() int { return 2 }
-func (t *DefaultWMTheme) ShadowLeft() int   { return 2 }
-func (t *DefaultWMTheme) ShadowRight() int  { return 2 }
+func (t *DefaultWMTheme) ShadowBottom() int { return 14 }
+func (t *DefaultWMTheme) ShadowLeft() int   { return 14 }
+func (t *DefaultWMTheme) ShadowRight() int  { return 14 }
 
 func (t *DefaultWMTheme) TitleBarHeight() int { return 20 }
 func (t *DefaultWMTheme) TitleGap() int       { return 2 }

@@ -3,10 +3,12 @@ package std
 import (
 	"fmt"
 	"image"
+	"math"
 
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
+	"mazzy/shared/hid"
 )
 
 // GridRow is the interface that each row's data must satisfy.
@@ -15,6 +17,7 @@ type GridRow interface {
 	Sender() string
 	Subject() string
 	Date() string
+	MsgNum() uint32
 }
 
 // GridFrame is a simple parent interactor that wraps a [GridTable] together
@@ -143,10 +146,67 @@ func (gf *GridFrame) AddRow(row GridRow) func() {
 	return gf.grid.AddRow(row)
 }
 
+// SelectedAttr returns the attribute that holds the msgNum of the primary
+// selected row (-1 = none). Constrain any viewer component to this URI.
+func (gf *GridFrame) SelectedAttr() *attr.Attribute[int64] {
+	return gf.grid.SelectedAttr
+}
+
+// SelectedSetAttr returns the attribute holding the full multi-selection set
+// as []int64 msgNums. Sentinel: [math.MaxInt64] when count > 256.
+func (gf *GridFrame) SelectedSetAttr() *attr.Attribute[[]int64] {
+	return gf.grid.SelectedSetAttr
+}
+
+// SelectedSetCountAttr returns the attribute holding the true count of
+// selected rows (regardless of whether the sentinel is active).
+func (gf *GridFrame) SelectedSetCountAttr() *attr.Attribute[int64] {
+	return gf.grid.SelectedSetCountAttr
+}
+
+// SelectedSetPagesAttr returns the attribute holding ceil(count/512):
+// the number of 4096-byte pages needed to transfer the full selection via IPC.
+func (gf *GridFrame) SelectedSetPagesAttr() *attr.Attribute[int64] {
+	return gf.grid.SelectedSetPagesAttr
+}
+
+// RefreshSelected re-publishes the selected row's current MsgNum and the
+// full selected set. Call this after ShiftMsgNum is applied to any selected row.
+func (gf *GridFrame) RefreshSelected() {
+	gf.grid.RefreshSelected()
+}
+
 // DamageAll marks every label in the grid as needing repaint.
 // Call this after batch-adding rows to force the first full draw.
 func (gf *GridFrame) DamageAll() {
 	gf.grid.DamageAll()
+}
+
+// SetTotalRows sets the total collection size for scroll clamping.
+func (gf *GridFrame) SetTotalRows(n int64) { gf.grid.SetTotalRows(n) }
+
+// SetRowFactory enables virtual scroll mode with the given row factory.
+func (gf *GridFrame) SetRowFactory(f func() GridRow) { gf.grid.SetRowFactory(f) }
+
+// ScrollBy moves the virtual scroll offset by delta rows.
+func (gf *GridFrame) ScrollBy(delta int64) { gf.grid.ScrollBy(delta) }
+
+// MoveSelection moves the primary selection by delta rows, scrolling to keep it visible.
+func (gf *GridFrame) MoveSelection(delta int64) { gf.grid.MoveSelection(delta) }
+
+// FirstVisibleMsgNumAttr returns the attribute holding the first visible msgNum.
+func (gf *GridFrame) FirstVisibleMsgNumAttr() *attr.Attribute[int64] {
+	return gf.grid.FirstVisibleMsgNumAttr
+}
+
+// LastVisibleMsgNumAttr returns the attribute holding the last visible msgNum.
+func (gf *GridFrame) LastVisibleMsgNumAttr() *attr.Attribute[int64] {
+	return gf.grid.LastVisibleMsgNumAttr
+}
+
+// VisibleRowCountAttr returns the attribute holding the visible row count.
+func (gf *GridFrame) VisibleRowCountAttr() *attr.Attribute[int64] {
+	return gf.grid.VisibleRowCountAttr
 }
 
 // Draw renders the frame. Grid subtree is drawn first in the content area
@@ -282,11 +342,35 @@ type GridTable struct {
 	fontSizeURI  string                   // URI of the font size source attribute
 
 	rows       []GridRow
+	rowWidgets []*RowPercentage // parallel to rows; holds the widget for each data row
 	headerLabs []*DynamicLabel
 	dataLabs   [][]*DynamicLabel
+	headerRow  *RowPercentage  // direct reference to header row for virtual draw path
 
 	fontSizeAttr *attr.Attribute[int64]
 	lastFontSize int64
+
+	selectedMsgNum int64            // msgNum of primary selected row (-1 = none)
+	selectedSet    map[uint32]bool  // set of selected msgNums (always includes selectedMsgNum when ≥0)
+
+	SelectedAttr          *attr.Attribute[int64]   // msgNum of primary selected row (-1 = none)
+	SelectedSetAttr       *attr.Attribute[[]int64] // collection of all selected msgNums (sentinel: [MaxInt64] if >256)
+	SelectedSetCountAttr  *attr.Attribute[int64]   // true count of selected rows (regardless of sentinel)
+	SelectedSetPagesAttr  *attr.Attribute[int64]   // ceil(count/512): pages needed for full IPC transfer
+
+	// Virtual scroll fields — active when rowFactory != nil.
+	TotalRows    int64          // total collection size; set via SetTotalRows
+	scrollOffset int64          // index of row shown in slot 0
+	visibleCount int64          // slots that fully fit; recomputed in Draw
+	rowFactory   func() GridRow // creates new slot data objects; nil = legacy AddRow mode
+	poolEpoch    int            // incremented on rebuild; ensures unique widget URIs
+	slotPool     []GridRow      // fixed pool of virtual slot data objects
+	slotWidgets  []*RowPercentage
+	slotLabels   [][]*DynamicLabel
+
+	FirstVisibleMsgNumAttr *attr.Attribute[int64]
+	LastVisibleMsgNumAttr  *attr.Attribute[int64]
+	VisibleRowCountAttr    *attr.Attribute[int64]
 
 	// PadXAttr and PadYAttr drive the interior padding (in pixels) of every
 	// label cell. Other parts of the constraint network may swap these to
@@ -376,16 +460,25 @@ func NewGridTable(myName, parent string, pal mancini.Palette,
 	padYURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutProp("padY"))
 
 	gt := &GridTable{
-		Theme:        theme,
-		nCols:        nCols,
-		flexIdx:      flexIdx,
-		splitAttrs:   splitAttrs,
-		splitMap:     splitMap,
-		fontSizeURI:  fontSizeURI,
-		fontSizeAttr: fontSizeAttr,
-		lastFontSize: initialFS,
-		PadXAttr:     attr.ValueI64(padXURI, 5),
-		PadYAttr:     attr.ValueI64(padYURI, 0),
+		Theme:                theme,
+		nCols:                nCols,
+		flexIdx:              flexIdx,
+		splitAttrs:           splitAttrs,
+		splitMap:             splitMap,
+		fontSizeURI:          fontSizeURI,
+		fontSizeAttr:         fontSizeAttr,
+		lastFontSize:         initialFS,
+		selectedMsgNum:       -1,
+		selectedSet:          make(map[uint32]bool),
+		SelectedAttr:         attr.ValueI64(attr.ShepherdURI("int64", myName+"/selected"), -1),
+		SelectedSetAttr:      attr.ValueCollI64(attr.ShepherdURI("int64", myName+"/selectedSet"), nil),
+		SelectedSetCountAttr: attr.ValueI64(attr.ShepherdURI("int64", myName+"/selectedSetCount"), 0),
+		SelectedSetPagesAttr: attr.ValueI64(attr.ShepherdURI("int64", myName+"/selectedSetPages"), 0),
+		FirstVisibleMsgNumAttr: attr.ValueI64(gridURI(myName, "firstVisible"), -1),
+		LastVisibleMsgNumAttr:  attr.ValueI64(gridURI(myName, "lastVisible"), -1),
+		VisibleRowCountAttr:    attr.ValueI64(gridURI(myName, "visibleCount"), 0),
+		PadXAttr:               attr.ValueI64(padXURI, 5),
+		PadYAttr:               attr.ValueI64(padYURI, 0),
 	}
 	gt.ColumnPercentage.Pal = pal
 	gt.Interactor.Initialize(gt, lh)
@@ -395,7 +488,7 @@ func NewGridTable(myName, parent string, pal mancini.Palette,
 	hdrRowName := myName + "_hdr"
 	hdrRow := NewRowPercentage(hdrRowName, myName, pal, 0, 0, initPcts)
 	hdrRow.ClipChildren = true
-	_ = hdrRow
+	gt.headerRow = hdrRow
 
 	gt.headerLabs = make([]*DynamicLabel, len(headers))
 	for i, hdr := range headers {
@@ -456,6 +549,9 @@ func (gt *GridTable) AddRow(row GridRow) func() {
 	rowName := fmt.Sprintf("%s_r%d", myName, idx)
 	rp := NewRowPercentage(rowName, myName, gt.Pal, 0, 0, pcts)
 	rp.ClipChildren = true
+	rp.grid = gt
+	rp.row = row
+	gt.rowWidgets = append(gt.rowWidgets, rp)
 
 	cols := []string{row.Sender(), row.Subject(), row.Date()}
 	labels := make([]*DynamicLabel, len(pcts))
@@ -511,6 +607,163 @@ func (gt *GridTable) AddRow(row GridRow) func() {
 	}
 }
 
+// --- Virtual scroll API ---
+
+// SetTotalRows sets the total collection size used for scroll clamping.
+func (gt *GridTable) SetTotalRows(n int64) {
+	gt.TotalRows = n
+	gt.clampScroll()
+}
+
+// SetRowFactory sets the factory used to create virtual slot data objects
+// and switches the grid into virtual scroll mode. A pool rebuild is deferred
+// to the next Draw call when visibleCount is known.
+func (gt *GridTable) SetRowFactory(f func() GridRow) {
+	gt.rowFactory = f
+	gt.visibleCount = 0 // force rebuild on next Draw
+}
+
+// ScrollBy moves the scroll offset by delta rows (clamped). Updates all
+// slot msgNums and publishes the visibility attrs.
+func (gt *GridTable) ScrollBy(delta int64) {
+	gt.scrollOffset += delta
+	gt.clampScroll()
+	gt.applyScrollToSlots()
+	gt.publishScrollAttrs()
+	gt.DamageAll()
+}
+
+// MoveSelection moves the primary selection by delta rows (clamped to [0, TotalRows-1]).
+// If nothing is currently selected, the first visible row is used as the starting point.
+// Scrolls to keep the new selection within the visible window.
+func (gt *GridTable) MoveSelection(delta int64) {
+	if gt.TotalRows == 0 {
+		return
+	}
+	cur := gt.selectedMsgNum
+	if cur < 0 {
+		cur = gt.scrollOffset
+	}
+	next := cur + delta
+	if next < 0 {
+		next = 0
+	}
+	if next >= gt.TotalRows {
+		next = gt.TotalRows - 1
+	}
+	msgNum := uint32(next)
+	gt.selectedMsgNum = next
+	gt.selectedSet = map[uint32]bool{msgNum: true}
+	gt.SelectedAttr.Set(next)
+	gt.publishSelectedSet()
+
+	// Scroll to keep new selection visible.
+	if next < gt.scrollOffset {
+		gt.scrollOffset = next
+	} else if gt.visibleCount > 0 && next >= gt.scrollOffset+gt.visibleCount {
+		gt.scrollOffset = next - gt.visibleCount + 1
+	}
+	gt.clampScroll()
+	gt.applyScrollToSlots()
+	gt.publishScrollAttrs()
+	gt.DamageAll()
+}
+
+func (gt *GridTable) clampScroll() {
+	max := gt.TotalRows - gt.visibleCount
+	if max < 0 {
+		max = 0
+	}
+	if gt.scrollOffset > max {
+		gt.scrollOffset = max
+	}
+	if gt.scrollOffset < 0 {
+		gt.scrollOffset = 0
+	}
+}
+
+// applyScrollToSlots updates the msgNum on each slot data object.
+func (gt *GridTable) applyScrollToSlots() {
+	for i, row := range gt.slotPool {
+		if setter, ok := row.(interface{ SetMsgNum(uint32) }); ok {
+			setter.SetMsgNum(uint32(gt.scrollOffset + int64(i)))
+		}
+	}
+}
+
+// buildSlotPool creates a new pool of count slot widgets using rowFactory.
+// Old pool widgets remain as orphaned children but are never drawn.
+func (gt *GridTable) buildSlotPool(count int64) {
+	gt.poolEpoch++
+	ep := gt.poolEpoch
+	myName := gt.GetLayout().Name()
+	pcts := gt.currentPercents()
+
+	gt.slotPool = make([]GridRow, count)
+	gt.slotWidgets = make([]*RowPercentage, count)
+	gt.slotLabels = make([][]*DynamicLabel, count)
+
+	for i := int64(0); i < count; i++ {
+		row := gt.rowFactory()
+		gt.slotPool[i] = row
+
+		rowName := fmt.Sprintf("%s_s%d_%d", myName, ep, i)
+		rp := NewRowPercentage(rowName, myName, gt.Pal, 0, 0, pcts)
+		rp.ClipChildren = true
+		rp.grid = gt
+		rp.row = row
+		gt.slotWidgets[i] = rp
+
+		labels := make([]*DynamicLabel, gt.nCols)
+		for j := 0; j < gt.nCols; j++ {
+			labName := fmt.Sprintf("%s_s%d_%d_c%d", myName, ep, i, j)
+			lab := NewDynamicLabel(labName, rowName, gt.Theme, "", gt.fontSizeURI)
+			lab.SetPaddingAttrs(gt.PadXAttr.URI(), gt.PadYAttr.URI())
+			labels[j] = lab
+		}
+		gt.slotLabels[i] = labels
+	}
+
+	gt.applyScrollToSlots()
+
+	// Re-apply selection state for the new pool.
+	if gt.selectedMsgNum >= 0 {
+		gt.SelectedAttr.Set(gt.selectedMsgNum)
+	}
+}
+
+// publishScrollAttrs writes the three visibility attrs from the current state.
+func (gt *GridTable) publishScrollAttrs() {
+	if gt.visibleCount == 0 || gt.TotalRows == 0 {
+		gt.FirstVisibleMsgNumAttr.Set(-1)
+		gt.LastVisibleMsgNumAttr.Set(-1)
+		gt.VisibleRowCountAttr.Set(0)
+		return
+	}
+	first := gt.scrollOffset
+	last := gt.scrollOffset + gt.visibleCount - 1
+	if last >= gt.TotalRows {
+		last = gt.TotalRows - 1
+	}
+	gt.FirstVisibleMsgNumAttr.Set(first)
+	gt.LastVisibleMsgNumAttr.Set(last)
+	gt.VisibleRowCountAttr.Set(gt.visibleCount)
+}
+
+// headerAreaH returns the pixel height consumed by the header row + separator.
+func (gt *GridTable) headerAreaH(rh int64) int64 { return rh + 3 }
+
+// computeVisibleCount returns how many full data rows fit below the header.
+func (gt *GridTable) computeVisibleCount(totalH, rh int64) int64 {
+	content := totalH - gt.headerAreaH(rh)
+	if content < rh {
+		return 0
+	}
+	return content / rh
+}
+
+// --- End virtual scroll API ---
+
 // DamageAll calls FullDamage on every DynamicLabel leaf in the grid (header
 // and all data rows). Use this after dynamically adding rows to trigger a
 // full grid repaint — parent interactors like RowPercentage have constraint-
@@ -528,6 +781,124 @@ func (gt *GridTable) DamageAll() {
 			}
 		}
 	}
+	for _, row := range gt.slotLabels {
+		for _, lab := range row {
+			if lab != nil {
+				lab.FullDamage()
+			}
+		}
+	}
+}
+
+// setSelected handles a click on row. Normal click sets a new primary selection
+// (clears all other selected rows). Shift+click toggles row in/out of the set
+// without changing the primary.
+func (gt *GridTable) setSelected(row GridRow, ev *mancini.InputEvent) {
+	msgNum := row.MsgNum()
+	if !hid.Shift(int64(ev.Mods)) {
+		// Normal click: set new primary, clear set.
+		gt.selectedMsgNum = int64(msgNum)
+		gt.selectedSet = map[uint32]bool{msgNum: true}
+		gt.SelectedAttr.Set(gt.selectedMsgNum)
+		gt.publishSelectedSet()
+
+		if gt.rowFactory != nil {
+			// Virtual mode: SelectionState recomputed in Draw.
+			gt.DamageAll()
+		} else {
+			// Legacy mode: update SelectionState imperatively.
+			for i, rp := range gt.rowWidgets {
+				newState := 0
+				if i < len(gt.rows) && gt.rows[i] == row {
+					newState = 1
+				}
+				if rp.SelectionState != newState {
+					rp.SelectionState = newState
+					gt.damageRow(i)
+				}
+			}
+		}
+		return
+	}
+
+	// Shift+click: toggle row in/out of selectedSet.
+	// Primary (selectedMsgNum) can never be removed from the set.
+	if gt.selectedSet == nil {
+		gt.selectedSet = make(map[uint32]bool)
+		if gt.selectedMsgNum >= 0 {
+			gt.selectedSet[uint32(gt.selectedMsgNum)] = true
+		}
+	}
+	if gt.selectedSet[msgNum] && int64(msgNum) != gt.selectedMsgNum {
+		delete(gt.selectedSet, msgNum)
+	} else if !gt.selectedSet[msgNum] {
+		gt.selectedSet[msgNum] = true
+	}
+	gt.publishSelectedSet()
+
+	if gt.rowFactory != nil {
+		gt.DamageAll()
+	} else {
+		for i, r := range gt.rows {
+			if r == row && i < len(gt.rowWidgets) {
+				state := 2
+				if int64(r.MsgNum()) == gt.selectedMsgNum {
+					state = 1
+				}
+				gt.rowWidgets[i].SelectionState = state
+				gt.damageRow(i)
+				break
+			}
+		}
+	}
+}
+
+// publishSelectedSet writes the current selectedSet to the three set-export attrs.
+// Sentinel rule: if count > 256, the collection contains a single math.MaxInt64
+// element. SelectedSetCountAttr always reflects the true count.
+func (gt *GridTable) publishSelectedSet() {
+	count := len(gt.selectedSet)
+	gt.SelectedSetCountAttr.Set(int64(count))
+
+	pages := int64(0)
+	if count > 0 {
+		pages = (int64(count) + 511) / 512
+	}
+	gt.SelectedSetPagesAttr.Set(pages)
+
+	var msgNums []int64
+	switch {
+	case count == 0:
+		msgNums = nil
+	case count > 256:
+		msgNums = []int64{math.MaxInt64}
+	default:
+		msgNums = make([]int64, 0, count)
+		for msgNum := range gt.selectedSet {
+			msgNums = append(msgNums, int64(msgNum))
+		}
+	}
+	gt.SelectedSetAttr.Set(msgNums)
+}
+
+// damageRow calls FullDamage on the labels of data row idx.
+func (gt *GridTable) damageRow(idx int) {
+	if idx < 0 || idx >= len(gt.dataLabs) {
+		return
+	}
+	for _, lab := range gt.dataLabs[idx] {
+		if lab != nil {
+			lab.FullDamage()
+		}
+	}
+}
+
+// RefreshSelected re-publishes the selected msgNum to SelectedAttr.
+func (gt *GridTable) RefreshSelected() {
+	if gt.selectedMsgNum >= 0 {
+		gt.SelectedAttr.Set(gt.selectedMsgNum)
+	}
+	gt.publishSelectedSet()
 }
 
 // rowHeight returns the current row height based on the font size attribute.
@@ -552,6 +923,102 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 	dc.SetColor(gt.Pal.Surface())
 	dc.FillRectangle(float64(x), float64(y), float64(w), float64(h))
 
+	rh := gt.rowHeight()
+
+	// --- Virtual scroll path ---
+	if gt.rowFactory != nil {
+		newVC := gt.computeVisibleCount(h, rh)
+		if newVC != gt.visibleCount {
+			gt.visibleCount = newVC
+			gt.clampScroll()
+			gt.buildSlotPool(newVC)
+		}
+
+		pcts := gt.currentPercents()
+		curY := y
+		hdrH := rh + 2
+
+		// Draw header.
+		if gt.headerRow != nil {
+			dc.SetColor(gt.Pal.SurfaceTint())
+			dc.FillRectangle(float64(x), float64(curY), float64(w), float64(hdrH))
+			gt.headerRow.Percents = pcts
+			hdrLH := gt.headerRow.GetLayout()
+			hdrLH.X.Set(x)
+			hdrLH.Y.Set(curY)
+			if !hdrLH.Width.IsConstraint() {
+				hdrLH.Width.Set(w)
+			}
+			if !hdrLH.Height.IsConstraint() {
+				hdrLH.Height.Set(hdrH)
+			}
+			gt.headerRow.SetDC(dc)
+			gt.headerRow.Draw(gt.headerRow, x, curY, w, hdrH, damage)
+			curY += hdrH
+			dc.SetColor(gt.Pal.Text())
+			dc.FillRectangle(float64(x), float64(curY), float64(w), 1)
+			curY++
+		}
+
+		// Draw data slots.
+		drawCount := gt.visibleCount
+		if avail := gt.TotalRows - gt.scrollOffset; avail < drawCount {
+			drawCount = avail
+		}
+		if drawCount < 0 {
+			drawCount = 0
+		}
+		for i := int64(0); i < drawCount; i++ {
+			rp := gt.slotWidgets[i]
+			row := gt.slotPool[i]
+
+			// Sync label text.
+			cols := [3]string{row.Sender(), row.Subject(), row.Date()}
+			for j, lab := range gt.slotLabels[i] {
+				if lab != nil && j < 3 {
+					lab.Text = cols[j]
+				}
+			}
+
+			// Alternating row background.
+			if i%2 == 1 {
+				bg := gt.Pal.SurfaceTint()
+				bg.A = 80
+				dc.SetColor(bg)
+				dc.FillRectangle(float64(x), float64(curY), float64(w), float64(rh))
+			}
+
+			// Selection state.
+			msgNum := uint32(gt.scrollOffset + i)
+			switch {
+			case gt.selectedMsgNum >= 0 && uint32(gt.selectedMsgNum) == msgNum:
+				rp.SelectionState = 1
+			case gt.selectedSet[msgNum]:
+				rp.SelectionState = 2
+			default:
+				rp.SelectionState = 0
+			}
+
+			rp.Percents = pcts
+			rpLH := rp.GetLayout()
+			rpLH.X.Set(x)
+			rpLH.Y.Set(curY)
+			if !rpLH.Width.IsConstraint() {
+				rpLH.Width.Set(w)
+			}
+			if !rpLH.Height.IsConstraint() {
+				rpLH.Height.Set(rh)
+			}
+			rp.SetDC(dc)
+			rp.Draw(rp, x, curY, w, rh, damage)
+			curY += rh
+		}
+
+		gt.publishScrollAttrs()
+		return
+	}
+	// --- End virtual scroll path ---
+
 	children := gt.GetChildren()
 	if len(children) == 0 {
 		return
@@ -559,7 +1026,6 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 
 	pcts := gt.currentPercents()
 
-	rh := gt.rowHeight()
 	curY := y
 	headerH := rh + 2
 

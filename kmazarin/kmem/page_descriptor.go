@@ -204,3 +204,51 @@ func TransferPageOwnership(pa uintptr, fromPID, toPID int16) bool {
 	return true
 }
 
+// MaxOwners is the maximum number of shepherd owners tracked (0=kernel, 1-31=SIDs).
+const MaxOwners = 32
+
+// PagesByOwner counts allocated pages for each owner SID.
+// Index 0 = kernel, 1-31 = shepherd SID. Returns array by value.
+// O(pdCapacity) — only call from OOM or diagnostic paths.
+//
+//go:nosplit
+func PagesByOwner() [MaxOwners]uint64 {
+	var counts [MaxOwners]uint64
+	if atomic.LoadUint32(&pdInitialized) == 0 {
+		return counts
+	}
+	cap := pdCapacity
+	for i := uintptr(0); i < uintptr(cap); i++ {
+		desc := pdAt(i)
+		if desc.Type == 0 {
+			continue
+		}
+		owner := int(desc.Owner)
+		if owner < 0 || owner >= MaxOwners {
+			owner = 0
+		}
+		counts[owner]++
+	}
+	return counts
+}
+
+// LogPagesByOwnerUART prints per-owner page counts via UART. No heap allocation.
+//
+//go:nosplit
+func LogPagesByOwnerUART() {
+	counts := PagesByOwner()
+	serial.RawUARTPuts("[kmem] per-SID pages:\r\n")
+	for i := 0; i < MaxOwners; i++ {
+		if counts[i] == 0 {
+			continue
+		}
+		serial.RawUARTPuts("[kmem]   SID=")
+		SerialHex16(uint64(i))
+		serial.RawUARTPuts(": ")
+		SerialHex16(counts[i])
+		serial.RawUARTPuts(" pages (")
+		SerialHex16(counts[i] * 4)
+		serial.RawUARTPuts(" KB)\r\n")
+	}
+}
+

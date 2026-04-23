@@ -1505,6 +1505,14 @@ func KernelIdleLoop() {
 
 		// No ready threads — wait for an interrupt (timer tick, etc.)
 		// IRQs MUST be enabled for WFI so the timer interrupt can fire
+		//
+		// Before sleeping, nudge the linux shepherd to flush any pending write
+		// buffers. Fire-and-forget: no response, no blocking. If the ring is
+		// full (shepherd busy) KernelWriteToRing drops the message silently.
+		if linuxSID := ksyscall.LinuxDelegateSID(); linuxSID >= 0 {
+			hintMsg := ipc.EncodeIdleFlushHint()
+			KernelWriteToRing(linuxSID, &hintMsg)
+		}
 		wfiCount++
 		EnableIRQs()
 		WaitForInterrupt()

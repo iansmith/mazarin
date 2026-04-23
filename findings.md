@@ -1,5 +1,376 @@
 # Findings
 
+---
+
+## Smart Cache — eagerCh Drain Race (FIXED 2026-04-23)
+
+### Root cause: mailRespCh called Rebalance before redraw
+
+The first `RespCreateCollection` response sets up the collection. The event loop's
+`mailRespCh` handler previously called `cache.Rebalance(vis)` before `redraw("mail-resp")`.
+At that point `vis=0` (GridTable had never drawn, so `publishScrollAttrs` had never run).
+`Rebalance` is a no-op when `visCount==0` — no fetch fired.
+
+After the buggy sequence, `redraw` called `GridTable.Draw`, which called `buildSlotPool(14)`
+and then `publishScrollAttrs(vis=14)`, which fired `eagerCh`. But the `drainDirty` loop at
+the top of the next outer event loop iteration consumed that `eagerCh` signal before the
+`eagerCh:` select case could run and call `Rebalance(14)`. Result: all 14 slots showed "…"
+placeholder text indefinitely.
+
+**Fix:** Swap order in `mailRespCh` handler — `redraw` first, then `Rebalance`:
+```go
+case resp := <-mailRespCh:
+    handleMailResponse(resp)
+    redraw("mail-resp")   // GridTable.Draw → buildSlotPool → publishScrollAttrs(vis=14)
+    if cache != nil {
+        cache.Rebalance(first, last, vis)  // vis=14 now; fetchRange(0,41) sent
+    }
+```
+
+### eagerCh handler ordering is correct (not the same bug)
+
+The `eagerCh` case reads vis from the published attr (`VisibleRowCountAttr().Get()`), which
+holds the value set during a prior Draw. By the time eagerCh fires for scroll changes, vis
+is already ≥ 14. So `Rebalance` before `redraw` in the `eagerCh` case is fine.
+
+### Arrow key selection: MoveSelection (added 2026-04-23)
+
+`GridTable.MoveSelection(delta int64)` moves `selectedMsgNum` by delta, scrolls to keep the
+selection within the visible window, and calls `publishScrollAttrs + DamageAll`. Exposed via
+`GridFrame.MoveSelection`. Mail app intercepts `wm.KeyPress{Action: wm.ActionUp/ActionDown}`
+in the `wmCh` handler and calls `gridFrame.MoveSelection(±1)`. The existing `needsRedraw=true`
+default triggers `redraw("wm-event")` immediately for snappy response.
+
+---
+
+## Smart Cache — Architecture Notes (2026-04-23)
+
+### Virtual scroll: why the pool has exactly `visibleCount` slots
+
+The pool is sized to `visibleCount` — the number of rows that **fully** fit in the grid
+content area (`(contentH - headerH) / rowHeight`, integer division, no rounding up). No
+partial rows. This avoids fractional-row edge cases in scroll clamping and damage rects.
+
+On font change the pool is rebuilt. Old slot widgets (RowPercentage + DynamicLabel) are
+abandoned in the attr registry (their URIs are unique via `poolEpoch`). They become
+unreachable objects. The attr system does not have a deregister path; this is acceptable
+because pool rebuilds are infrequent (only when font changes) and the count is small.
+
+### Scroll offset and MsgNum assignment
+
+`scrollOffset` is stored in GridTable. On `ScrollBy(delta)`:
+1. `scrollOffset = clamp(scrollOffset + delta, 0, max(0, TotalRows - visibleCount))`
+2. For i in 0..visibleCount-1: call `slotPool[i].(MsgNumSetter).SetMsgNum(uint32(scrollOffset + i))`
+3. `publishScrollAttrs()` — writes FirstVisible, LastVisible, VisibleRowCount attrs
+4. `DamageAll()`
+
+The `MsgNumSetter` interface check is structural (no package import needed):
+```go
+if setter, ok := row.(interface{ SetMsgNum(uint32) }); ok {
+    setter.SetMsgNum(uint32(gt.scrollOffset + int64(i)))
+}
+```
+
+### Cache window math
+
+With `readAhead = 2` and `visibleCount = 9`:
+```
+prefetch = 2 × 9 = 18
+windowLo = max(0, firstVisible - 18)
+windowHi = min(collSize-1, lastVisible + 18)
+```
+Max window size = 9 + 18 + 18 = 45 entries. Well below maildb's 128-entry batch cap.
+
+At Large font (rowHeight=26): `visibleCount ≈ 40` on a 1200px tall grid →
+`prefetch = 80` → max window ≈ 200 entries > 128. If window exceeds 128 maildb will
+return only 128 entries. The cache fills partially and the user sees "…" for a moment
+before Rebalance fires again. Acceptable for MVP; fix by splitting into two requests
+if `(hi - lo + 1) > 128`.
+
+### One in-flight request at a time
+
+`MailCache` tracks one in-flight `KeyHeadersReq` at a time (`inFlight bool`,
+`inFlightId [16]byte`, `inFlightLo/Hi uint32`). If Rebalance is called again before
+the response arrives AND the window changed, the old request is abandoned: when the
+response arrives its reqId won't match `inFlightId` → discarded. A new request is
+immediately fired for the new window.
+
+This means we may fetch redundant data if the user scrolls quickly. Acceptable: each
+request is small (~45 entries × 240 bytes = ~11KB) and the maildb response is fast.
+
+### Collection events (CollectionAdd / CollectionRemove)
+
+When a `CollectionAdd` arrives (MsgNum = insertion point), all cached entries at
+positions ≥ `notif.MsgNum` are now stale (their positions shifted +1). Rather than
+shifting the map, the MVP evicts the affected range and triggers Rebalance:
+
+```go
+// evict entries that shifted
+for k := range c.entries {
+    if k >= notif.MsgNum { delete(c.entries, k) }
+}
+c.collSize++
+// let next Rebalance re-fetch
+```
+
+Similarly for CollectionRemove (evict ≥ notif.MsgNum, collSize--).
+`OnUpdated` fires so the grid shows "…" placeholders briefly during refetch.
+
+### Collection expiry (ErrCollectionExpired in RespKeyHeaders)
+
+If `resp.ErrCode == ErrCollectionExpired`, the cache resets and main must call
+`requestCreateCollection()` again. MailCache calls a registered `OnExpired func()`
+callback. Main's handler: clear cache, re-request collection (same as current
+`onCollectionExpired`). Add `OnExpired func()` field to MailCache.
+
+### Pool widget naming convention
+
+Widgets are named `"{gridName}_s{epoch}_{i}"` for slot i in epoch e. Labels:
+`"{gridName}_s{epoch}_{i}_c{j}"`. The `_s` prefix (for "slot") distinguishes from
+`_r` (row, legacy) and `_hdr` (header). URIs are globally unique within a session.
+
+### Selection state after pool rebuild
+
+`GridTable.buildSlotPool` must call `gt.RefreshSelected()` after creating the new
+slots. The old `selectedRow` pointer references a slot object that no longer exists
+in the pool. `RefreshSelected` re-publishes `SelectedAttr` from `selectedRow.MsgNum()`.
+With virtual rows, `selectedRow.MsgNum()` returns its current `msgNum` field — which
+may no longer be the msgNum the user selected. 
+
+Better: GridTable stores the selected **msgNum** (int64) rather than the **GridRow
+pointer**. On pool rebuild, find which slot (if any) has `scrollOffset + i == selectedMsgNum`
+and set its `SelectionState = 1`. This is a clean change.
+
+Add `selectedMsgNum int64` (init -1) to GridTable. `setSelected` writes to
+`selectedMsgNum` (not `selectedIdx`). `buildSlotPool` applies SelectionState from
+`selectedMsgNum` after creating slots.
+
+---
+
+## Smart Caching Prep — Architecture Notes (2026-04-22)
+
+### Face.KnownHeight — implementation notes
+
+`dc.GetFontMetrics(fontID)` returns `FontMetrics{Ascent, Descent int32}` in 26.6
+fixed-point (divide by 64 for pixels). `LatinTextFaceImpl.KnownHeight` should return:
+```go
+func (f *LatinTextFaceImpl) KnownHeight(dc DrawContext) int64 {
+    if dc == nil { return 0 }
+    f.ensureFont(dc)
+    m := dc.GetFontMetrics(f.fontID)
+    return int64(math.Ceil(float64(m.Ascent+m.Descent) / 64.0))
+}
+```
+GridTable reads this from the first data row's first label face (if any row exists) during
+Draw. It calls `lab.Face.KnownHeight(dc)` where `lab` is `gt.dataLabs[0][0]`. If result
+is > 0, update `rowHeightAttr` and `visibleRowsAttr`.
+
+`DynamicLabel` needs a `Face()` accessor (or expose the face field) so GridTable can call
+`KnownHeight` on it. Currently the face is unexported — add `Face() mancini.Face` to
+`DynamicLabel`.
+
+### GridTable click routing — RowPercentage as Clickable
+
+`RowPercentage` implements `Clickable` since it is the interactor the dispatch hit-test
+will resolve to (it covers the full row rect). The existing `ClickAgent` in
+`mazarin/mancini/agent_click.go` handles single vs double vs triple discrimination
+automatically.
+
+`GridTable.AddRow` sets the callback:
+```go
+rp.OnClick = func(ev *mancini.InputEvent) {
+    gt.setSelected(idx, ev)      // idx captured at AddRow time
+}
+```
+`RowPercentage.Click`:
+```go
+func (rp *RowPercentage) Click(ev *mancini.InputEvent) bool {
+    if rp.OnClick != nil { rp.OnClick(ev) }
+    return true
+}
+```
+
+### GridTable.setSelected — selection state machine
+
+```go
+// selectedSet is map[GridRow]bool; shift-click detected via hid.Shift(int64(ev.Mods))
+func (gt *GridTable) setSelected(rowIdx int, ev *mancini.InputEvent) {
+    row := gt.rows[rowIdx]
+
+    if hid.Shift(int64(ev.Mods)) {
+        // toggle in set; primary cannot be removed
+        if gt.selectedSet[row] && row != gt.rows[gt.selectedIdx] {
+            delete(gt.selectedSet, row)
+        } else {
+            gt.selectedSet[row] = true
+        }
+        gt.publishSelectedSet()
+    } else {
+        // normal click: reset set, set new primary
+        gt.selectedSet = make(map[GridRow]bool)
+        gt.selectedIdx = rowIdx
+        gt.selectedSet[row] = true
+        gt.SelectedAttr.Set(int64(row.MsgNum()))
+        gt.publishSelectedSet()
+    }
+    gt.DamageAll()
+}
+```
+`publishSelectedSet` builds the collection value and updates both exports:
+```go
+func (gt *GridTable) publishSelectedSet() {
+    count := len(gt.selectedSet)
+    gt.SelectedSetCountAttr.Set(int64(count))
+    pages := int64(0)
+    if count > 0 { pages = (int64(count) + 511) / 512 }
+    gt.SelectedSetPagesAttr.Set(pages)
+    var msgNums []int64
+    switch {
+    case count == 0:
+        msgNums = nil
+    case count > 256:
+        // Sentinel: single MaxInt64 signals "large set — use IPC path".
+        // Consumer reads SelectedSetCountAttr to know true size.
+        msgNums = []int64{math.MaxInt64}
+    default:
+        msgNums = make([]int64, 0, count)
+        for r := range gt.selectedSet { msgNums = append(msgNums, int64(r.MsgNum())) }
+    }
+    gt.SelectedSetAttr.Set(msgNums)
+}
+```
+`SelectedSetPagesAttr` is a `ValueI64` (not ConstraintI64) computed inline in
+`publishSelectedSet` — avoids needing compiled `.vgo` bytecode.
+`math.MaxInt64` is a safe sentinel — valid msgNums are uint32 (max 4,294,967,295),
+far below MaxInt64 (9,223,372,036,854,775,807).
+
+**TODO (large-collection IPC path, deferred):** When a consumer sees the sentinel,
+it allocates `ceil(count / entriesPerPage)` shared pages and passes them to the grid
+via a yet-to-be-designed IPC message. The grid iterates `selectedSet` and fills the
+pages, then signals completion. Required for bulk mail operations (e.g. move all
+messages from a given sender to a folder). The `SelectedSetCountAttr` export exists
+precisely to make this allocation calculation possible.
+
+### ValueCollI64 new infrastructure
+
+The existing query-result collection region (`RegionCollCap = 65536`) is **completely
+full**: all 65,536 slots are reserved for `MaxQueryPatterns(64) × MaxCollPerQuery(1024)`.
+There is no room for user-settable collection attributes.
+
+**Solution:** A new dedicated `ValueColl` region in the shared constraint page.
+`ConstraintPageVersion` bumps from 3 → 4.
+
+**Sizing:** `RegionValueCollSlots = 32` attributes × `MaxValueCollEntries = 256`
+entries each = 8192 Value elements = 8192 × 40 bytes = 320KB additional shared memory.
+The 256-entry cap is a deliberate design rule: the constraint network is for UI-scale
+values. Larger collections (e.g. select-all on a 50K mailbox) belong in the maildb
+collection protocol as a filter descriptor, not an explicit enumerated set.
+
+**New region layout** (appended after existing `RegionCollSize`):
+```
+RegionValueCollOff  = RegionCollOff + RegionCollSize
+RegionValueCollSize = RegionValueCollSlots * MaxValueCollEntries * valueSize
+```
+Each value-collection attribute claims one of the 32 slots at creation time
+(tracked by a free-list bitmap in the kernel, similar to query slot allocation).
+
+**New syscall:** `SysAttrWriteCollI64 = MazzySyscallBase + 45  // 0x102D`
+(slot 45; slot 44 = SysRequestWindowManager was already occupied).
+
+**Kernel handler** in `constraint_syscall.go`:
+- Args: `slot uint16, userVA uintptr, count uintptr, isConstraintResult uint`
+- Returns EINVAL if `count > MaxValueCollEntries`
+- Reads `count` int64 values from `userVA` via `WalkUserPageTable` (same pattern as
+  `SyscallUringSend`'s cross-page read; up to 2KB = half a page for 256 entries)
+- Writes each as `flat.Value{Typ: TypeI64}` into the attribute's ValueColl region slot
+- Constructs `CollRef{ElemType: TypeI64, RegionOffset: slotOff, Count: count}`
+- Stores `flat.NewCollection(ref)` into attribute node; calls dirty propagation
+
+**Transport note:** 256 int64s = 2KB — fits within a single page, so at most 2
+`WalkUserPageTable` calls (if the slice straddles a page boundary). No multi-page
+copying needed.
+
+**Userspace chain:**
+```
+sys.AttrWriteCollI64(slot, values, false)      // mazarin/sys/constraint.go
+attr.ValueCollI64(uri, initial) → isCollI64    // mazarin/attr/attribute_value.go
+Attribute[[]int64].Set(v) → isCollI64 branch  // mazarin/attr/attribute.go
+```
+`ValueCollI64` returns `*Attribute[[]int64]` with `isCollI64: true`.
+The `Set` method checks `isCollI64` before `isStr`, casts `v` via `unsafe.Pointer`
+to `[]int64`, and calls `sys.AttrWriteCollI64`.
+Consumers: `selectedSetAttr.Get()` returns `[]int64` directly.
+
+### RowPercentage selection background
+
+`RowPercentage.Draw` fills the row background before drawing children:
+```go
+switch rp.SelectionState {
+case 1: // primary selection
+    dc.SetColor(pal.Highlight())
+    dc.DrawRectangle(float64(x), float64(y), float64(w), float64(h))
+    dc.Fill()
+case 2: // in set, not primary
+    dc.SetColor(pal.Accent())
+    dc.DrawRectangle(float64(x), float64(y), float64(w), float64(h))
+    dc.Fill()
+}
+```
+
+`GridTable.Draw` sets each row's `SelectionState` before calling its draw:
+```go
+for i, rp := range gt.rowWidgets {
+    msgNum := gt.rows[i].MsgNum()
+    switch {
+    case gt.selectedIdx == i:
+        rp.SelectionState = 1
+    case gt.selectedSet[msgNum]:
+        rp.SelectionState = 2
+    default:
+        rp.SelectionState = 0
+    }
+}
+```
+`gt.rowWidgets []*RowPercentage` is a new field parallel to `gt.rows`, populated
+in `AddRow`.
+
+### SelectedSetPagesAttr — inline computation (not a .vgo constraint)
+
+`SelectedSetPagesAttr` is a `ValueI64` computed directly inside `publishSelectedSet()`:
+```go
+pages := int64(0)
+if count > 0 { pages = (int64(count) + 511) / 512 }
+gt.SelectedSetPagesAttr.Set(pages)
+```
+The `.vgo` / `ProgComputeNeededPages` approach from the original plan was skipped —
+`compile-constraints` cannot be run during implementation, and the arithmetic is simple
+enough to compute inline. Functionally equivalent: the attr is updated every time
+`selectedSet` changes.
+
+### Constraint URI summary
+
+| Attribute | URI | Type | Initial | Notes |
+|-----------|-----|------|---------|-------|
+| Row height | `layout:///NAME/int64/grid/rowHeight` | ValueI64 | 0 | 0 = not yet known |
+| Visible rows | `layout:///NAME/int64/grid/visibleRows` | ValueI64 | 0 | 0 = not yet known |
+| Primary selected | `layout:///NAME/int64/grid/selected` | ValueI64 | -1 | -1 = none |
+| Selected set | `layout:///NAME/int64/grid/selectedSet` | ValueCollI64 | empty | `[MaxInt64]` = large-set sentinel |
+| Selected set count | `layout:///NAME/int64/grid/selectedSetCount` | ValueI64 | 0 | Always the true count; use when sentinel active |
+| Selected set pages | `layout:///NAME/int64/grid/selectedSetPages` | ValueI64 | 0 | `ceil(selectedSetCount / 512)`; computed inline in publishSelectedSet; pages to allocate for IPC path |
+
+Note: the selectedSet URI uses `DataTypeInt64` (element type); the collection wrapper
+is carried in the flat `Value.Typ = TypeCollection` field, not the URI segment.
+
+`NAME` is the GridTable's `myName` (e.g. `"mail_tbl"`).
+
+### GridRow interface extension
+
+Add `MsgNum() uint32` to `std.GridRow`. Existing implementors:
+- `*MailRow` (`mazarin/apps/mail/mail_row.go`): already has the field, trivial to add.
+- Any test/stub rows in tests: add `MsgNum() uint32 { return 0 }`.
+
+---
+
 ## Existing Protocol (to be removed)
 
 **Protocol IDs:** ProtoMailReq=13, ProtoMailResp=14  
@@ -436,6 +807,60 @@ removal from the `rowByReqId` lookup table.
 
 ---
 
+### FTI bleve persister panic — write/mmap coherence (CONFIRMED FIXED 2026-04-22)
+
+Bleve scorch's `persisterLoop` goroutine has a `defer recover()`. When it panics, it calls
+`fireAsyncError(ErrAsyncPanic)`, which sets `h.corrupted = true` in FTI's index handler.
+All subsequent `Index()` calls then return `IndexError("bleve index corrupted after internal panic")`.
+
+**Root cause:** `sysWrite` in `maz/linux/syscalls.go` buffers sequential writes in
+`fdEntry.writeBuf` without writing to ext2 immediately. Bleve writes `.zap` segment data
+via `write()`, then mmaps the same fd. The mmap page fault invokes `sysMmapPageFill`, which
+read from ext2 — which had zeros because the write buffer had never been flushed. Bleve
+reads back zeros, dereferences a nil pointer, and the persister panics.
+
+**What the stale-data theory got wrong:** `/tmp` is on the ramdisk which resets on each
+QEMU boot, so `os.RemoveAll(blevePath)` at FTI startup succeeds — no stale bleve state.
+Making ext2 writable would not have helped.
+
+**Mitigation in place:** `maz/maildb/mbox_import.go` `waitForOne` deduplicates error
+notifications — the MailDB window shows the first error and then only every 50th repeat.
+
+**Root fix (2026-04-21, confirmed 2026-04-22):** `sysMmapPageFill` in `maz/linux/syscalls.go`
+now calls `h.flushWriteBuf(callerPID, fd, e)` immediately after the nil check on `e`, before
+zeroing the page buffer and reading from ext2. Confirmed in ARM64 HVF 120s run: all mmap
+coherence tests pass; 100/100 docs indexed without persister panic or `corrupted` flag.
+
+### Maildb mmap coherence test failure (CONFIRMED FIXED 2026-04-22)
+
+`maildb` runs a startup coherence test at launch. Test 1 writes data via `syscall.Write`
+(sequential, buffered), mmaps the same fd, then reads back — expecting to see the written
+data. On ARM64 HVF the read-back returns all zeros:
+
+```
+[mmaptest] FAIL: mmap read-back: expected 'A' got 00 00
+[maildb] WARNING: mmap coherence test FAILED
+```
+
+Maildb continues using direct-I/O (no mmap for badger data pages). No functional crash
+has been observed — badger falls back cleanly. But this indicated mmap page faults were
+not seeing data written via `write()`.
+
+**Root cause:** `sysWrite` buffers sequential writes in `fdEntry.writeBuf` without
+flushing to ext2 immediately. A subsequent mmap page fault calls `sysMmapPageFill`, which
+read directly from ext2 — finding zeros because the write buffer had never been flushed.
+
+**Note:** `sysPwrite64` already writes through ext2 directly, so the pwrite→mmap path was
+already coherent. The failing test used `syscall.Write` (buffered sequential path), not
+`syscall.Pwrite`.
+
+**Root fix (2026-04-21, confirmed 2026-04-22):** `sysMmapPageFill` in `maz/linux/syscalls.go`
+now flushes `e.writeBuf` via `h.flushWriteBuf` before reading from ext2. Confirmed: ARM64
+HVF 120s run shows `[mmaptest] === ALL TESTS PASSED ===` with no `WARNING: mmap coherence
+test FAILED` line.
+
+---
+
 ### SyscallUringSend cross-page fix (2026-04-21)
 
 The kernel rejected `SyscallUringSend` calls where the 128-byte `UringIPCMsg` buffer
@@ -576,6 +1001,116 @@ pipeline on x86_64.
 | `preGrowStack` | No plugin `morestack`; host handler runs correctly |
 | Kernel symbol-name hunt for `MazarinMain` | Replaced by `mazdl.Sym` |
 | `RegisterMazModuledata` host helper | `_mazdl_register_moduledata` init-array entry runs from inside the plugin |
+
+---
+
+## Delegate IPC Latency Measurements (ARM64 HVF, 2026-04-21)
+
+Kernel-side RTT measured in `SyscallReply` via `ktimer.ReadCounter()` at 62.5 MHz
+(ARM64 CNTFRQ_EL0). RTT = elapsed ticks × 1,000,000 / frequency, in µs.
+Logged via `klog.Criticalf` (direct UART; survives soft-IRQ ring saturation).
+
+### Write (sysid=10) — small stdio/bleve flushes
+
+Typical warm-path small writes:
+- First few boot writes: ~255µs (cold path, page faults, initial setup)
+- Steady-state writes (1–4 KB payloads): **10–50µs**
+
+### Pwrite64 (sysid=66) — bleve scorch journal page flushes
+
+Bleve scorch writes 4 KB journal pages during indexing:
+- Typical: **64–290µs**
+- Occasional GC pause spikes: entry #449 = 2590µs, entry #641 = **8392µs**
+
+### Interpretation
+
+The 10–50µs warm Write RTT is the full round-trip:
+  fti → DelegateSyscall (kernel) → linux shepherd uring ring → fs shepherd ext2 → reply
+
+This is within expected range for a two-hop IPC path with shared-memory rings.
+The GC-induced 8.4ms outlier corresponds to a GC STW pause in fti or linux shepherd
+stopping the reply processing; not a kernel or IPC pathology.
+
+### klog.Logf vs klog.Criticalf for delegate diagnostics
+
+`klog.Logf` routes through the linux shepherd's soft-IRQ uring ring. During the initial
+bleve write burst (~580 Pwrite64 calls in rapid succession) this ring fills and messages
+are silently dropped. `klog.Criticalf` writes directly to UART via the kernel serial
+driver, bypassing the ring — guaranteed delivery even under full ring saturation.
+Any delegate timing instrumentation MUST use `klog.Criticalf`.
+
+---
+
+## fti: bleve sync write performance (2026-04-21)
+
+### Current configuration (unsafe_batch removed)
+
+```go
+index, err := bleve.NewUsing(blevePath, mapping, "scorch", "scorch", map[string]interface{}{
+    "asyncErrorCallbackName": "log",
+})
+```
+
+`unsafe_batch: true` was present in earlier builds and has been **removed** so that
+bleve waits for each segment flush to reach disk before returning from `Index()`.
+
+### ARM64 HVF: sync write RTT (60s run, 100 emails, 2026-04-21)
+
+Delegate write RTT for sysid=66 (4096-byte pwrite to ext2/BadgerDB), n=25:
+
+| Metric | unsafe_batch (old) | sync (current) |
+|--------|-------------------|----------------|
+| count | 7 | 25 |
+| min | 50µs | **30µs** |
+| median | 175µs | **39µs** |
+| avg | 979µs | **425µs** |
+| max | 5347µs | 6254µs |
+
+Removing unsafe_batch increased write frequency 3.6× (scorch flushes smaller segments
+more often) but dramatically lowered individual write latency — median 39µs vs 175µs.
+Throughput cost: 2.98 MB/s → **0.70 MB/s** for 100-message corpus (expected for durable writes).
+
+### x86_64 TCG: why sync writes take 15–30s per document
+
+On x86_64 TCG the same bleve sync write path takes 15–30 seconds per document.
+This is **not a kernel bug** — it is a compounding of two TCG-specific factors:
+
+**Factor 1 — low scheduler throughput:**
+x86_64 TCG context-switch rate is 8.5/sec vs 265/sec on ARM64 HVF (31× lower).
+Each context switch costs ~118ms in wall time.
+
+**Factor 2 — per-document write count:**
+A ~41KB bleve segment = ~82 × 512-byte sector writes. Each `pwrite()` is a delegated
+syscall requiring 2 context switches (yield to handler, yield back).
+
+**Combined:** 82 writes × 2 ctx_switches × 118ms ≈ **19s per document**. This matches
+the observed 15–30s.
+
+The ARM64 HVF median write RTT is 39µs; on x86_64 TCG the equivalent is ~236ms — a
+6000× difference, far beyond the raw 10–50× CPU emulation factor. The multiplier comes
+entirely from scheduler starvation: TCG executes so slowly that the timer interrupt
+(203Hz) barely dents the CPU monopolisation by the active thread.
+
+**Implication:** x86_64 TCG + bleve sync writes is unusably slow. This is acceptable
+— x86_64 TCG is a development/debugging target only; production use is ARM64 HVF
+(fast) and eventually bare-metal x86_64 (faster than HVF). No fix is needed.
+
+### x86_64 TCG: file loading time inconsistency
+
+File loading times on x86_64 TCG are wildly inconsistent:
+
+| File | Size | Time | Throughput | µs/page |
+|------|------|------|------------|---------|
+| shepherd.elf | 6.8MB | 113ms | 60 MB/s | 68µs |
+| fontsvc.maz | 6.2MB | 46ms | 135 MB/s | 30µs |
+| keymapper.maz | 3.5MB | 1137ms | 3.0 MB/s | 1349µs |
+| fti.elf | 19.7MB | 15970ms | 1.2 MB/s | 3314µs |
+
+Root cause: **ext2 file fragmentation**. Contiguous files are read with 4096-byte
+multi-sector VirtIO requests (1 round-trip per page, ~30–68µs). Fragmented files
+require one 512-byte single-sector request per ext2 block (8 round-trips per 4KB
+page × ~170µs each ≈ 1360µs/page). fti.elf requires ~19 requests per page on average.
+The disk image layout determines which files are fragmented; this varies by build order.
 
 ---
 

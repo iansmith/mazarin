@@ -33,6 +33,7 @@
 [[shepherd]]
 name = "fti"
 path = "/fti.elf"
+memlimit_mb = 128
 
 [[shepherd]]
 name = "maildb"

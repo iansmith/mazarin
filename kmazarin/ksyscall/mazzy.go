@@ -53,7 +53,8 @@ var mazzySyscallTable = [65]SyscallHandler{
 	42: SyscallAttrWaitDirty,             // AttrWaitDirty = 0x102A
 	43: SyscallAttrIncrementI64,          // AttrIncrementI64 = 0x102B
 	44: SyscallRequestWindowManager,     // RequestWindowManager = 0x102C
-	// slots 45-46 freed (were SetInputFocus/WaitInputEvent — rachel uses completion ring now)
+	45: SyscallAttrWriteCollI64,         // AttrWriteCollI64 = 0x102D
+	// slot 46 freed (was WaitInputEvent — rachel uses completion ring now)
 	47: SyscallSharePages,               // SharePages = 0x102F
 	// slots 48-49 freed (were MailboxSend/MailboxRecv — all IPC uses uring now)
 	50: SyscallRegisterCursor,          // RegisterCursor = 0x1032

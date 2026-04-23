@@ -48,12 +48,13 @@ type KernelAttrManager struct {
 	basePA uintptr // PA of shared pages start
 
 	// Region offsets (byte offsets from baseVA)
-	nodeRegionOff     uint32
-	edgeRegionOff     uint32
-	bytecodeRegionOff uint32
-	stringRegionOff   uint32
-	collRegionOff     uint32
-	trieRegionOff     uint32
+	nodeRegionOff      uint32
+	edgeRegionOff      uint32
+	bytecodeRegionOff  uint32
+	stringRegionOff    uint32
+	collRegionOff      uint32
+	trieRegionOff      uint32
+	valueCollRegionOff uint32
 
 	// Capacities
 	nodeCapacity uint16
@@ -68,9 +69,11 @@ type KernelAttrManager struct {
 	trieBitmap   [kmem.RegionTrieCap / 8]byte
 
 	// Bump allocators (byte offsets into their regions, relative to region start)
-	edgeBumpOff     uint32 // next free byte in edge region
-	bytecodeBumpOff uint32 // next free byte in bytecode region
-	// (collection region is not bump-allocated: each query owns a fixed slot —
+	edgeBumpOff         uint32 // next free byte in edge region
+	bytecodeBumpOff     uint32 // next free byte in bytecode region
+	valueCollNextSlot   uint16 // next free value-coll slot index (bump-only; slots not freed)
+	valueCollSlotCount  uint16 // total available value-coll slots
+	// (query collection region is not bump-allocated: each query owns a fixed slot —
 	// see queryPattern.collOff and writeQueryCollection.)
 
 	// Generation counter (also written to shared page header)
@@ -124,6 +127,8 @@ func InitKernelAttrManager() bool {
 	attrMgr.stringRegionOff = hdr.StringRegionOff
 	attrMgr.collRegionOff = hdr.CollRegionOff
 	attrMgr.trieRegionOff = hdr.TrieRegionOff
+	attrMgr.valueCollRegionOff = hdr.ValueCollRegionOff
+	attrMgr.valueCollSlotCount = uint16(hdr.ValueCollCapacity / kmem.MaxValueCollEntries)
 
 	attrMgr.nodeCapacity = hdr.NodeCapacity
 	attrMgr.trieCapacity = hdr.TrieCapacity
@@ -314,6 +319,20 @@ func (mgr *KernelAttrManager) readNodeURI(slot uint16) string {
 		return ""
 	}
 	return unsafeStringFromBytes(unsafe.Slice((*byte)(unsafe.Pointer(base)), n))
+}
+
+// allocValueCollSlot allocates the next free value-coll slot and returns its
+// byte offset within the ValueColl region. Returns ^uint32(0) if full.
+// Slots are bump-allocated and never freed (max 32 live at a time).
+//
+//go:nosplit
+func (mgr *KernelAttrManager) allocValueCollSlot() uint32 {
+	if mgr.valueCollNextSlot >= mgr.valueCollSlotCount {
+		return ^uint32(0)
+	}
+	off := uint32(mgr.valueCollNextSlot) * kmem.MaxValueCollEntries * flat.ValueSize
+	mgr.valueCollNextSlot++
+	return off
 }
 
 // bumpGeneration increments the shared page generation counter.

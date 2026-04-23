@@ -16,17 +16,20 @@ import (
 
 // Page header magic for constraint shared pages.
 const ConstraintPageMagic = 0x4D415A46 // "MAZF"
-const ConstraintPageVersion = 3        // bumped from 2: CollCapacity widened to uint32 (per-query fixed collection slots)
+const ConstraintPageVersion = 4        // bumped from 3: added ValueColl region for writable int64 collections
 
 // --- Single source of truth: region capacities ---
 // Change ONLY these values to resize the constraint system.
 const (
-	RegionNodeCap     = 16384 // max attribute node slots
-	RegionEdgeCap     = 65535 // max edges (uint16 cap)
-	RegionBytecodeCap = 65535 // header field (uint16); actual limit is RegionBytecodeSize
-	RegionStringCap   = 4096  // max string slots
-	RegionCollCap     = 65536 // max collection elements — sized for 64 query slots × 1024 entries each
-	RegionTrieCap     = 16384 // max trie nodes
+	RegionNodeCap       = 16384 // max attribute node slots
+	RegionEdgeCap       = 65535 // max edges (uint16 cap)
+	RegionBytecodeCap   = 65535 // header field (uint16); actual limit is RegionBytecodeSize
+	RegionStringCap     = 4096  // max string slots
+	RegionCollCap       = 65536 // max collection elements — sized for 64 query slots × 1024 entries each
+	RegionTrieCap       = 16384 // max trie nodes
+	RegionValueCollSlots = 32   // number of discrete writable value-collection slots
+	MaxValueCollEntries  = 256  // max int64 entries per value-coll slot (sentinel kicks in at >256)
+	RegionValueCollCap   = RegionValueCollSlots * MaxValueCollEntries // total value-coll entries
 )
 
 // --- Per-slot sizes (from flat package, duplicated here to avoid import) ---
@@ -58,8 +61,11 @@ const (
 	RegionTrieOff  = RegionCollOff + RegionCollSize
 	RegionTrieSize = RegionTrieCap * 128 // trie node size
 
-	// Total footprint: header through trie end, rounded up to page size.
-	constraintEndOff    = RegionTrieOff + RegionTrieSize
+	RegionValueCollOff  = RegionTrieOff + RegionTrieSize
+	RegionValueCollSize = RegionValueCollCap * valueSize // 8192 × 40 = 327,680 bytes
+
+	// Total footprint: header through value-coll end, rounded up to page size.
+	constraintEndOff    = RegionValueCollOff + RegionValueCollSize
 	ConstraintTotalSize = (constraintEndOff + 4095) &^ 4095
 	ConstraintPageCount = ConstraintTotalSize / 4096
 )
@@ -90,7 +96,11 @@ type SharedPageHeader struct {
 	TrieCapacity     uint16
 	_pad5            uint16
 
-	_reserved [256 - 64]byte
+	// v4: writable value-collection region (for CollI64 attrs like SelectedSet)
+	ValueCollRegionOff uint32
+	ValueCollCapacity  uint32 // total entries = RegionValueCollSlots × MaxValueCollEntries
+
+	_reserved [256 - 72]byte
 }
 
 // Compile-time size assertion.
@@ -150,6 +160,8 @@ func InitConstraintPages() bool {
 	hdr.CollCapacity = RegionCollCap
 	hdr.TrieRegionOff = RegionTrieOff
 	hdr.TrieCapacity = RegionTrieCap
+	hdr.ValueCollRegionOff = RegionValueCollOff
+	hdr.ValueCollCapacity = RegionValueCollCap
 
 	constraintState.pa = pa
 	atomic.StoreUint32(&constraintState.initialized, 1)

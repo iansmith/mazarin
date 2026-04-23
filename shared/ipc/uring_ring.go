@@ -37,6 +37,7 @@ const (
 	ProtoMailResp        uint32 = 14 // maildb → mail response (HeadersResult, BodyResult)
 	ProtoFTIReq          uint32 = 15 // shepherd → fti request (IndexDocument)
 	ProtoFTIResp         uint32 = 16 // fti → shepherd response (IndexingCompleted, IndexError)
+	ProtoIdleFlushHint   uint32 = 17 // kernel → linux shepherd: flush one write buffer (fire-and-forget)
 )
 
 // UringIPCRingHeader is the metadata at offset 0 of the ring's first page.
@@ -86,6 +87,16 @@ func EncodeDeathNotification(deadSID int16) UringIPCMsg {
 // DecodeDeathNotification extracts the DeathNotification from a UringIPCMsg.
 func DecodeDeathNotification(msg *UringIPCMsg) DeathNotification {
 	return *(*DeathNotification)(unsafe.Pointer(&msg.Payload[0]))
+}
+
+// EncodeIdleFlushHint builds a ProtoIdleFlushHint UringIPCMsg.
+// Sent by the kernel to the linux shepherd just before entering WFI.
+// No payload; no response expected.
+func EncodeIdleFlushHint() UringIPCMsg {
+	var msg UringIPCMsg
+	msg.Protocol = ProtoIdleFlushHint
+	msg.SenderSID = -1 // kernel
+	return msg
 }
 
 // Compile-time size assertions.

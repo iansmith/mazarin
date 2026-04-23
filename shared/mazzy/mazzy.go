@@ -53,7 +53,8 @@ const (
 	SysAttrWaitDirty          = MazzySyscallBase + 42 // 0x102A - Wait for dirty notifications
 	SysAttrIncrementI64       = MazzySyscallBase + 43 // 0x102B - Atomically increment int64 attribute
 	SysRequestWindowManager   = MazzySyscallBase + 44 // 0x102C - Claim window manager role
-	// slots 45-46 freed (were SetInputFocus/WaitInputEvent — rachel uses completion ring now)
+	SysAttrWriteCollI64       = MazzySyscallBase + 45 // 0x102D - Write int64 collection to value attribute
+	// slot 46 freed (was WaitInputEvent — rachel uses completion ring now)
 	SysSharePages             = MazzySyscallBase + 47 // 0x102F - Map caller's page into target shepherd's space
 	// slots 48-49 freed (were SysMailboxSend/SysMailboxRecv — all IPC uses uring now)
 	SysRegisterCursor         = MazzySyscallBase + 50 // 0x1032 - Register cursor image

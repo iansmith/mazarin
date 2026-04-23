@@ -8,6 +8,7 @@ tasks:
     sources:
       - 'maz/shepherd/**/*.go'
       - 'mazarin/**/*.go'
+      - 'shared/**/*.go'
       - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
       - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
@@ -36,6 +37,7 @@ tasks:
     sources:
       - 'maz/shepherd/**/*.go'
       - 'mazarin/**/*.go'
+      - 'shared/**/*.go'
       - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
       - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'

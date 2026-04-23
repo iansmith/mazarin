@@ -592,8 +592,6 @@ func (a *DragAgent) startDragResize(wi *WindowInteractor, pressX, pressY int32, 
 	// Pre-render fixed background for compositing.
 	startDragComposite(ta.sid)
 
-	fmt.Printf("[rachel:resize] start edge=%d SID=%d orig=%dx%d max=%dx%d\n",
-		edge, ta.sid, a.resizeOrigW, a.resizeOrigH, maxAppW, maxAppH)
 }
 
 // dragMoveResize handles mouse movement during a resize drag.
@@ -743,6 +741,13 @@ func (a *DragAgent) dragEndResize(wi *WindowInteractor) {
 	ta.backingStore = finalBuf
 	ta.bsStride = int32(finalStride)
 
+	// Re-render decorations at the final stride so that the cached
+	// ta.decorFocused matches ta.bsStride. Without this, applyDecorations
+	// in the subsequent Blit handler would use finalStride to index into
+	// a decoration buffer that was rendered with the wider oversized stride,
+	// corrupting title bar rows 1+ (they read zero-padding instead of pixels).
+	preRenderDecorations(ta)
+
 	// Share final buffer with target app.
 	bsVA := uintptr(unsafe.Pointer(&finalBuf[0]))
 	clientVA, shareErr := sys.SharePagesWithTarget(ta.sid, bsVA, finalPages)
@@ -790,8 +795,6 @@ func (a *DragAgent) dragEndResize(wi *WindowInteractor) {
 		cursorIsInverse = false
 	}
 
-	fmt.Printf("[rachel:resize] end SID=%d final=%dx%d\n",
-		ta.sid, ta.appWidth, ta.appHeight)
 }
 
 // --- TitlebarDragAgent ---
@@ -857,7 +860,6 @@ func (a *ResizeDragAgent) Deliver(ev *input.InputEvent, target input.Interactor)
 	}
 	// Grant focus if not already focused.
 	if !hasFocus(wi.ta.sid) {
-		fmt.Printf("[rachel:resize] raise+focus SID %d\n", wi.ta.sid)
 		grantFocus(wi.ta.sid)
 		a.keyFwd.SetFocus(wi)
 	}

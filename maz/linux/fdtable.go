@@ -45,6 +45,13 @@ type fdEntry struct {
 	ftype  uint8  // ftFile or ftDir
 	flags  int32  // O_RDONLY, O_WRONLY, O_RDWR, etc.
 	path   string // absolute path that was opened (for diagnostics)
+
+	// writeBuf accumulates sequential write() data in the linux shepherd so
+	// many small writes from bleve/zapx collapse into one IPC round-trip on
+	// fsync/close. writeBufOff is the file offset where the buffer starts.
+	// nil means buffering is disabled for this fd.
+	writeBuf    []byte
+	writeBufOff int64
 }
 
 // fdTable manages a per-shepherd file descriptor table.
