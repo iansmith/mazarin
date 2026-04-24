@@ -163,6 +163,9 @@ func main() {
 		panic(fmt.Sprintf("[maildb] FATAL: scratchdir: %v", err))
 	}
 	fmt.Printf("[maildb] scratch dir: %s\n", scratch)
+	// Pass the absolute scratch path to openImportBadger — see comment
+	// on importBadgerDir for why we can't rely on cwd-relative "./badger".
+	SetImportBadgerDir(scratch + "/badger")
 	rachelSID := sys.MustGetShepherdByName("rachel")
 	fsSID := sys.MustGetShepherdByName("fs")
 	ftiSID := sys.MustGetShepherdByName("fti")
@@ -245,8 +248,8 @@ func main() {
 	// message, then calls onMessage for each subsequent message. FTI indexing
 	// continues in the background via the ftiTracker goroutine.
 	go func() {
-		bdb, err := mboxImport(
-			"/data/mail/mbox/gmail/important.partial.mbox",
+		bdb, err := mailImport(
+			"/data/mail/mbox/current.mbox",
 			ftiTracker,
 			notifyStatus,
 			onFirstCommit,

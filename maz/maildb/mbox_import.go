@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/mail"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -176,9 +179,13 @@ func (t *ftiTracker) waitForOne(ftiRespCh <-chan any, notify func(string)) {
 	t.mu.Unlock()
 }
 
-// mboxImport parses the mbox file inside mboxDir and writes each message's
-// headers + body into BadgerDB. Each message body is also enqueued for
-// full-text indexing via the ftiTracker (sent one at a time).
+// mailImport detects whether mailPath is a classic mbox file (single file
+// containing concatenated RFC822 messages separated by "From " lines) or an
+// Apple Mail emlx mailbox (a directory tree of one-message-per-file .emlx
+// files), and dispatches to the appropriate parser.
+//
+// Both parsers ultimately call storeParsedMessage for each message, so the
+// onFirstCommit / onMessage / FTI fan-out semantics are identical.
 //
 // onFirstCommit is called after the very first message is committed. The
 // caller uses this to signal shepherd readiness while import continues.
@@ -188,105 +195,47 @@ func (t *ftiTracker) waitForOne(ftiRespCh <-chan any, notify func(string)) {
 //
 // Returns the open db immediately after badger flush. FTI indexing continues
 // in the background via the ftiTracker.
-func mboxImport(mboxDir string, tracker *ftiTracker, notify func(string),
+func mailImport(mailPath string, tracker *ftiTracker, notify func(string),
 	onFirstCommit func(db *badger.DB), onMessage func(msgId string, ts time.Time)) (*badger.DB, error) {
-	mboxPath := mboxDir + "/mbox"
-
-	fmt.Printf("[maildb] mboxImport: opening %s\n", mboxPath)
-	f, err := os.Open(mboxPath)
+	info, err := os.Stat(mailPath)
 	if err != nil {
-		return nil, fmt.Errorf("open mbox %s: %w", mboxPath, err)
+		return nil, fmt.Errorf("stat %s: %w", mailPath, err)
 	}
-	defer f.Close()
-	fmt.Println("[maildb] mboxImport: mbox opened, opening badger")
 
-	os.RemoveAll("/tmp/data/fti/badger")
-	opts := badger.DefaultOptions("/tmp/data/fti/badger").WithLogger(nil)
-	db, err := badger.Open(opts)
+	db, err := openImportBadger()
 	if err != nil {
-		return nil, fmt.Errorf("open badger: %w", err)
+		return nil, err
 	}
-	fmt.Println("[maildb] mboxImport: badger opened, starting parse")
 
-	notify("Starting mbox import...")
+	state := &importState{
+		db:            db,
+		tracker:       tracker,
+		notify:        notify,
+		onFirstCommit: onFirstCommit,
+		onMessage:     onMessage,
+	}
 
-	reader := bufio.NewReaderSize(f, 64*1024)
-	count := 0
-	inHeaders := false
-	headers := make(map[string]string)
-	var lastKey string
-	var body strings.Builder
-
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
+	if info.IsDir() {
+		fmt.Printf("[maildb] mailImport: %s is a directory — using emlx walker\n", mailPath)
+		notify("Starting emlx import...")
+		if err := emlxImport(mailPath, state); err != nil {
 			db.Close()
-			return nil, fmt.Errorf("read mbox: %w", err)
+			return nil, err
 		}
-		atEOF := err == io.EOF
-
-		trimmed := strings.TrimRight(line, "\r\n")
-
-		if strings.HasPrefix(trimmed, "From ") || atEOF {
-			if len(headers) > 0 {
-				bodyStr := body.String()
-				count++
-				fmt.Printf("[maildb] parse: msg %d id=%s subj=%q body=%d bytes\n",
-					count, headers["message-id"], headers["subject"], len(bodyStr))
-				var storedMsgId string
-				var storedTs time.Time
-				if storeErr := storeParsedMessage(db, headers, bodyStr, tracker, notify, &storedMsgId, &storedTs); storeErr != nil {
-					fmt.Printf("[maildb] store error: %v\n", storeErr)
-					count--
-				} else {
-					// db.Update() in storeParsedMessage commits immediately — no flush needed.
-					// Signal readiness after the very first commit.
-					if count == 1 && onFirstCommit != nil {
-						onFirstCommit(db)
-					}
-					if storedMsgId != "" && onMessage != nil {
-						onMessage(storedMsgId, storedTs)
-					}
-				}
-				headers = make(map[string]string)
-				lastKey = ""
-				body.Reset()
-			}
-			if atEOF {
-				break
-			}
-			inHeaders = true
-			continue
-		}
-
-		if !inHeaders {
-			body.WriteString(line)
-			continue
-		}
-
-		if trimmed == "" {
-			inHeaders = false
-			continue
-		}
-
-		if (trimmed[0] == ' ' || trimmed[0] == '\t') && lastKey != "" {
-			headers[lastKey] += " " + strings.TrimSpace(trimmed)
-			continue
-		}
-
-		if idx := strings.IndexByte(trimmed, ':'); idx > 0 {
-			key := strings.ToLower(trimmed[:idx])
-			val := strings.TrimSpace(trimmed[idx+1:])
-			headers[key] = val
-			lastKey = key
+	} else {
+		fmt.Printf("[maildb] mailImport: %s is a file — using mbox parser\n", mailPath)
+		notify("Starting mbox import...")
+		if err := mboxImport(mailPath, state); err != nil {
+			db.Close()
+			return nil, err
 		}
 	}
 
-	fmt.Printf("[maildb] mboxImport: import complete, %d messages stored\n", count)
-	notify(fmt.Sprintf("Import complete: %d messages in database", count))
+	fmt.Printf("[maildb] mailImport: import complete, %d messages stored\n", state.count)
+	notify(fmt.Sprintf("Import complete: %d messages in database", state.count))
 
 	// Initialise persistent counters. All newly imported messages are unread.
-	if err := initCounters(db, count, count); err != nil {
+	if err := initCounters(db, state.count, state.count); err != nil {
 		fmt.Printf("[maildb] WARNING: initCounters failed: %v\n", err)
 	}
 
@@ -294,6 +243,236 @@ func mboxImport(mboxDir string, tracker *ftiTracker, notify func(string),
 	tracker.close()
 
 	return db, nil
+}
+
+// importState carries everything per-message storage needs into the format-
+// specific parsers so they only have to focus on splitting the input into
+// RFC822 byte ranges.
+type importState struct {
+	db            *badger.DB
+	tracker       *ftiTracker
+	notify        func(string)
+	onFirstCommit func(db *badger.DB)
+	onMessage     func(msgId string, ts time.Time)
+	count         int
+}
+
+// importBadgerDir is the absolute filesystem path used by openImportBadger.
+// Set once at maildb startup from sys.SetupScratchDir's return value, then
+// used unchanged for the lifetime of the shepherd. We must use an absolute
+// path because badger.Open calls os.Getwd internally to construct the pid
+// lock file path, and the Mazzy linux delegate's getwd returns EFAULT
+// even after a successful Chdir — passing "." or "./badger" makes badger's
+// internal Getwd fail with "bad address".
+var importBadgerDir string
+
+// openImportBadger wipes any previous index directory and opens a fresh
+// badger DB inside the maildb shepherd's scratch dir. The storage stays
+// self-contained — no dependency on rachel's old /data → /tmp/data mirror.
+// Shared by both mbox and emlx import paths.
+func openImportBadger() (*badger.DB, error) {
+	if importBadgerDir == "" {
+		return nil, fmt.Errorf("importBadgerDir not set; call SetImportBadgerDir at startup")
+	}
+	os.RemoveAll(importBadgerDir)
+	opts := badger.DefaultOptions(importBadgerDir).WithLogger(nil)
+	db, err := badger.Open(opts)
+	if err != nil {
+		return nil, fmt.Errorf("open badger: %w", err)
+	}
+	return db, nil
+}
+
+// SetImportBadgerDir records the absolute path where openImportBadger
+// will create the badger index. Call once at maildb startup with
+// scratchDir + "/badger" (where scratchDir comes from sys.SetupScratchDir).
+func SetImportBadgerDir(absPath string) {
+	importBadgerDir = absPath
+}
+
+// storeRawRFC822 parses one RFC822 byte range into headers + body and hands
+// it to storeParsedMessage, updating import state on success.
+func storeRawRFC822(raw []byte, state *importState) {
+	headers, body := parseRFC822Message(raw)
+	if len(headers) == 0 {
+		return
+	}
+	state.count++
+	fmt.Printf("[maildb] parse: msg %d id=%s subj=%q body=%d bytes\n",
+		state.count, headers["message-id"], headers["subject"], len(body))
+
+	var storedMsgId string
+	var storedTs time.Time
+	if storeErr := storeParsedMessage(state.db, headers, body, state.tracker,
+		state.notify, &storedMsgId, &storedTs); storeErr != nil {
+		fmt.Printf("[maildb] store error: %v\n", storeErr)
+		state.count--
+		return
+	}
+	if state.count == 1 && state.onFirstCommit != nil {
+		state.onFirstCommit(state.db)
+	}
+	if storedMsgId != "" && state.onMessage != nil {
+		state.onMessage(storedMsgId, storedTs)
+	}
+}
+
+// parseRFC822Message walks raw mail bytes once and returns the case-folded
+// header map (continuation lines folded in) and the body string. The body
+// starts immediately after the first blank line.
+func parseRFC822Message(raw []byte) (map[string]string, string) {
+	headers := make(map[string]string)
+	var lastKey string
+	r := bufio.NewReaderSize(bytes.NewReader(raw), 64*1024)
+	inHeaders := true
+	var body strings.Builder
+
+	for {
+		line, err := r.ReadString('\n')
+		atEOF := err == io.EOF
+		trimmed := strings.TrimRight(line, "\r\n")
+
+		if inHeaders {
+			if trimmed == "" {
+				inHeaders = false
+			} else if (trimmed[0] == ' ' || trimmed[0] == '\t') && lastKey != "" {
+				headers[lastKey] += " " + strings.TrimSpace(trimmed)
+			} else if idx := strings.IndexByte(trimmed, ':'); idx > 0 {
+				key := strings.ToLower(trimmed[:idx])
+				val := strings.TrimSpace(trimmed[idx+1:])
+				headers[key] = val
+				lastKey = key
+			}
+		} else {
+			body.WriteString(line)
+		}
+
+		if atEOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+	}
+	return headers, body.String()
+}
+
+// mboxImport parses a classic mbox file, splitting on "From " separator
+// lines and handing each message off to storeRawRFC822 via the shared
+// importState.
+func mboxImport(mboxPath string, state *importState) error {
+	fmt.Printf("[maildb] mboxImport: opening %s\n", mboxPath)
+	f, err := os.Open(mboxPath)
+	if err != nil {
+		return fmt.Errorf("open mbox %s: %w", mboxPath, err)
+	}
+	defer f.Close()
+	fmt.Println("[maildb] mboxImport: mbox opened, starting parse")
+
+	reader := bufio.NewReaderSize(f, 64*1024)
+	var msgBuf bytes.Buffer
+
+	flush := func() {
+		if msgBuf.Len() > 0 {
+			storeRawRFC822(msgBuf.Bytes(), state)
+			msgBuf.Reset()
+		}
+	}
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("read mbox: %w", err)
+		}
+		atEOF := err == io.EOF
+
+		trimmed := strings.TrimRight(line, "\r\n")
+
+		if strings.HasPrefix(trimmed, "From ") || atEOF {
+			flush()
+			if atEOF {
+				break
+			}
+			continue
+		}
+		msgBuf.WriteString(line)
+	}
+	return nil
+}
+
+// emlxImport walks an Apple Mail mailbox tree (a directory containing
+// per-message .emlx files in nested Data/N/N/N/Messages/ subdirectories),
+// strips each file's length-prefix header and trailing property list, and
+// hands the RFC822 payload to storeRawRFC822.
+//
+// emlx file layout:
+//
+//	"<decimal byte count>\n"   ← length of the message in bytes
+//	<exactly that many bytes> ← the RFC822 message
+//	<optional XML plist>      ← Apple Mail metadata, ignored here
+func emlxImport(rootDir string, state *importState) error {
+	fmt.Printf("[maildb] emlxImport: walking %s\n", rootDir)
+	walked := 0
+	parsed := 0
+
+	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			fmt.Printf("[maildb] emlxImport: walk error at %s: %v\n", path, err)
+			return nil // continue walking siblings
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(strings.ToLower(path), ".emlx") {
+			return nil
+		}
+		walked++
+
+		raw, rerr := readEmlxMessage(path)
+		if rerr != nil {
+			fmt.Printf("[maildb] emlxImport: skip %s: %v\n", path, rerr)
+			return nil
+		}
+		storeRawRFC822(raw, state)
+		parsed++
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("walk %s: %w", rootDir, err)
+	}
+	fmt.Printf("[maildb] emlxImport: walked %d .emlx files, parsed %d\n", walked, parsed)
+	return nil
+}
+
+// readEmlxMessage opens an Apple Mail .emlx file, parses the leading
+// decimal-length header, and returns exactly that many bytes of RFC822
+// payload. The trailing property list is discarded.
+func readEmlxMessage(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	reader := bufio.NewReaderSize(f, 64*1024)
+	header, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("read length prefix: %w", err)
+	}
+	header = strings.TrimSpace(header)
+	n, err := strconv.Atoi(header)
+	if err != nil {
+		return nil, fmt.Errorf("bad length prefix %q: %w", header, err)
+	}
+	if n <= 0 {
+		return nil, fmt.Errorf("non-positive length %d", n)
+	}
+
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(reader, buf); err != nil {
+		return nil, fmt.Errorf("read %d bytes: %w", n, err)
+	}
+	return buf, nil
 }
 
 // storeParsedMessage writes message metadata + body to BadgerDB in a single
@@ -315,12 +494,17 @@ func storeParsedMessage(db *badger.DB, headers map[string]string, body string, t
 	subject := headers["subject"]
 	date := headers["date"]
 
+	// MIME-parse the body once at import time. Both variants are decoded
+	// (quoted-printable / base64) and stored separately so BodyReq can return
+	// pre-decoded UTF-8 without re-parsing on each request.
+	textBody, htmlBody := extractBodyVariants(headers, body)
+
 	msg := shared.MailMessage{
 		MessageId: messageId,
 		From:      from,
 		Sender:    sender,
 		Subject:   subject,
-		BodyLen:   len(body),
+		BodyLen:   len(textBody),
 	}
 	if date != "" {
 		msg.Timestamp, _ = mail.ParseDate(date)
@@ -331,16 +515,21 @@ func storeParsedMessage(db *badger.DB, headers map[string]string, body string, t
 		return err
 	}
 
-	// Commit metadata + body + date-index in one transaction.
+	// Commit metadata + body variants + date-index in one transaction.
 	// db.Update() creates a fresh read-write transaction, commits it, and
 	// returns; the keys are immediately visible to subsequent db.View() calls.
 	if err := db.Update(func(txn *badger.Txn) error {
 		if err := txn.Set([]byte(messageId), data); err != nil {
 			return fmt.Errorf("meta: %w", err)
 		}
-		if len(body) > 0 {
-			if err := txn.Set([]byte("body:"+messageId), []byte(body)); err != nil {
-				return fmt.Errorf("body: %w", err)
+		if len(textBody) > 0 {
+			if err := txn.Set([]byte("body:text:"+messageId), []byte(textBody)); err != nil {
+				return fmt.Errorf("body:text: %w", err)
+			}
+		}
+		if len(htmlBody) > 0 {
+			if err := txn.Set([]byte("body:html:"+messageId), []byte(htmlBody)); err != nil {
+				return fmt.Errorf("body:html: %w", err)
 			}
 		}
 		if !msg.Timestamp.IsZero() {
@@ -368,17 +557,26 @@ func storeParsedMessage(db *badger.DB, headers map[string]string, body string, t
 		display += " — " + subject
 	}
 
-	fmt.Printf("[maildb] badger: stored %s (%s)\n", messageId, display)
+	fmt.Printf("[maildb] badger: stored %s (text=%d html=%d) (%s)\n",
+		messageId, len(textBody), len(htmlBody), display)
 	notify(fmt.Sprintf("Stored: %s", display))
 
 	// Enqueue for fti indexing (tracker sends one at a time).
+	// Send the decoded text/plain variant — never the raw MIME envelope —
+	// so the index sees real words instead of boundary markers, =3D escapes,
+	// and HTML tags. Fall back to the HTML variant stripped to plain text
+	// only if no text/plain part was extracted.
+	ftiBody := textBody
+	if ftiBody == "" {
+		ftiBody = htmlBody
+	}
 	tracker.enqueue(ftiQueueItem{
 		messageId: messageId,
 		subject:   subject,
 		from:      from,
 		sender:    sender,
 		date:      date,
-		body:      body,
+		body:      ftiBody,
 		display:   display,
 	})
 

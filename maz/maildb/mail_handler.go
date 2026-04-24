@@ -392,17 +392,27 @@ func (mh *mailHandler) handleBody(req *mailproto.BodyReq, senderSID int, ms *Mes
 		}
 	}
 
-	bodyBytes, bErr := ms.LoadBody(msgId)
+	bodyBytes, bErr := ms.LoadBodyVariant(msgId, req.Variant)
 	if bErr != nil {
-		fmt.Printf("[maildb] Body LoadBody(%s): %v\n", msgId, bErr)
-		resp := mailproto.RespBody{RequestId: req.RequestId, ErrCode: mailproto.ErrMessageNotFound}
+		// Variant not present (e.g. plain-text message, html requested) is
+		// expected and not worth logging — just return ErrMessageNotFound so
+		// the client can render an empty body / placeholder.
+		resp := mailproto.RespBody{
+			RequestId: req.RequestId,
+			Variant:   req.Variant,
+			ErrCode:   mailproto.ErrMessageNotFound,
+		}
 		msg := mailproto.EncodeRespBody(&resp)
 		sendMailMsg(senderSID, &msg)
 		return
 	}
 
 	if len(bodyBytes) == 0 {
-		resp := mailproto.RespBody{RequestId: req.RequestId, ErrCode: mailproto.ErrMessageNotFound}
+		resp := mailproto.RespBody{
+			RequestId: req.RequestId,
+			Variant:   req.Variant,
+			ErrCode:   mailproto.ErrMessageNotFound,
+		}
 		msg := mailproto.EncodeRespBody(&resp)
 		sendMailMsg(senderSID, &msg)
 		return
@@ -433,6 +443,7 @@ func (mh *mailHandler) handleBody(req *mailproto.BodyReq, senderSID int, ms *Mes
 		RequestId: req.RequestId,
 		TargetVA:  uint64(targetVA),
 		NumBytes:  uint32(len(bodyBytes)),
+		Variant:   req.Variant,
 		ErrCode:   mailproto.ErrNone,
 	}
 	msg := mailproto.EncodeRespBody(&resp)

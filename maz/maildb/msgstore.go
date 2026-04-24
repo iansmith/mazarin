@@ -16,7 +16,8 @@ type MessageRecord struct {
 	messageId string
 
 	headers   *shared.MailMessage
-	body      []byte
+	bodyText  []byte
+	bodyHTML  []byte
 	isRead    *bool // nil = not yet checked
 	isDeleted *bool
 }
@@ -109,18 +110,27 @@ func (ms *MessageStore) LoadFlags(msgId string) (isRead, isDeleted bool, err err
 	return read, deleted, nil
 }
 
-// LoadBody returns the raw body bytes for msgId, fetching from badger on
-// first call. The slice is owned by the store; treat as read-only.
-func (ms *MessageStore) LoadBody(msgId string) ([]byte, error) {
+// LoadBodyVariant returns the decoded body bytes for one variant
+// (mailproto.BodyVariantText or BodyVariantHTML). The first call fetches
+// from badger and caches in the MessageRecord; subsequent calls are served
+// from memory. The returned slice is owned by the store; treat as read-only.
+//
+// Returns badger.ErrKeyNotFound if the requested variant doesn't exist for
+// this message (e.g. a plain-text-only message has no html variant).
+func (ms *MessageStore) LoadBodyVariant(msgId string, variant uint32) ([]byte, error) {
 	r := ms.record(msgId)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.body != nil {
-		return r.body, nil
+
+	cached := variantSlot(r, variant)
+	if *cached != nil {
+		return *cached, nil
 	}
+
+	key := variantKey(variant, msgId)
 	var body []byte
 	err := ms.db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte("body:" + msgId))
+		item, err := txn.Get([]byte(key))
 		if err != nil {
 			return err
 		}
@@ -130,8 +140,26 @@ func (ms *MessageStore) LoadBody(msgId string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.body = body
+	*cached = body
 	return body, nil
+}
+
+// variantSlot returns the cache pointer for the given variant within a
+// MessageRecord so LoadBodyVariant can read/write either field uniformly.
+func variantSlot(r *MessageRecord, variant uint32) *[]byte {
+	if variant == 1 { // BodyVariantHTML — avoid importing mailproto for one constant
+		return &r.bodyHTML
+	}
+	return &r.bodyText
+}
+
+// variantKey returns the badger key for the given variant + message id.
+// Mirrors the keys written by storeParsedMessage in mbox_import.go.
+func variantKey(variant uint32, msgId string) string {
+	if variant == 1 {
+		return "body:html:" + msgId
+	}
+	return "body:text:" + msgId
 }
 
 // MarkRead marks the message as read and persists `read:<msgId>` to badger.

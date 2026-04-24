@@ -38,6 +38,13 @@ const (
 	FilterSubject uint32 = 3 // subject contains substring; FilterArg = query bytes; via fti
 )
 
+// --- Body variants ---
+
+const (
+	BodyVariantText uint32 = 0 // decoded text/plain part
+	BodyVariantHTML uint32 = 1 // decoded text/html part
+)
+
 // --- Sort order ---
 
 const (
@@ -111,12 +118,16 @@ type LatestUnreadReq struct {
 	RequestId [16]byte
 }
 
-// BodyReq requests the raw body for one message.
-// Layout: RequestId[16] + CollId(4) + MsgNum(4) = 24 bytes. Total: 28.
+// BodyReq requests one decoded body variant for one message.
+// Variant selects between text/plain (BodyVariantText) and text/html
+// (BodyVariantHTML); maildb has already MIME-parsed and decoded both at
+// import time, so the response carries pre-decoded UTF-8 bytes.
+// Layout: RequestId[16] + CollId(4) + MsgNum(4) + Variant(4) = 28 bytes. Total: 32.
 type BodyReq struct {
 	RequestId [16]byte
 	CollId    uint32
 	MsgNum    uint32
+	Variant   uint32
 }
 
 // MarkReadReq marks one message as read.
@@ -190,12 +201,14 @@ type RespLatestUnread struct {
 	ErrCode   uint32
 }
 
-// RespBody is the reply to BodyReq.
-// Layout: RequestId[16] + TargetVA(8) + NumBytes(4) + ErrCode(4) = 32 bytes. Total: 36.
+// RespBody is the reply to BodyReq. Variant echoes the request so the
+// client can route the response when several BodyReqs are in flight.
+// Layout: RequestId[16] + TargetVA(8) + NumBytes(4) + Variant(4) + ErrCode(4) = 36 bytes. Total: 40.
 type RespBody struct {
 	RequestId [16]byte
 	TargetVA  uint64
 	NumBytes  uint32
+	Variant   uint32
 	ErrCode   uint32
 }
 

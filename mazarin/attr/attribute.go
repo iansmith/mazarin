@@ -7,6 +7,8 @@
 package attr
 
 import (
+	"fmt"
+
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/vm"
 	"mazzy/mazarin/vm/flat"
@@ -125,7 +127,13 @@ func (h *Attribute[T]) Set(v T) {
 	}
 	buf := (*[40]byte)(unsafe.Pointer(&fv))
 	if err := sys.AttrWrite(h.slot, buf); err != nil {
-		panic("attr: AttrWrite failed: " + err.Error())
+		// Include the slot index in the panic message — without it the
+		// caller's stack tells us *which* attribute object panicked but
+		// not which kernel slot the kernel rejected, and EPERM means the
+		// kernel-side Owner check failed (likely slot recycling /
+		// cross-shepherd corruption, both of which need the slot to
+		// diagnose).
+		panic(fmt.Sprintf("attr: AttrWrite failed for slot=%d: %v", h.slot, err))
 	}
 }
 

@@ -691,19 +691,49 @@ func (gt *GridTable) applyScrollToSlots() {
 	}
 }
 
-// buildSlotPool creates a new pool of count slot widgets using rowFactory.
-// Old pool widgets remain as orphaned children but are never drawn.
+// buildSlotPool ensures the pool has at least count slot widgets, growing
+// it (and creating new attribute URIs) only when the requested count exceeds
+// current capacity. Each grow uses a fresh poolEpoch so freshly-allocated
+// slots have unique attribute names; existing slots are kept as-is.
+//
+// Why grow-only: the previous design rebuilt the pool from scratch on every
+// visibleCount change and left the old pool's layout attributes (X/Y/W/H
+// per slot per column) orphaned in the kernel attribute table. With repeated
+// resize/relayout cycles that table overflowed (`AttrCreate failed: cannot
+// allocate memory`), eventually killing the shepherd.
+//
+// The Draw loop only ever indexes the first `visibleCount` slots, so an
+// oversized pool is harmless — wasted RAM, but stable.
 func (gt *GridTable) buildSlotPool(count int64) {
+	existing := int64(len(gt.slotPool))
+	if existing >= count {
+		// Pool already big enough — reuse. Re-apply scroll so any newly
+		// promoted-into-view slots see the current msgNum mapping.
+		gt.applyScrollToSlots()
+		if gt.selectedMsgNum >= 0 {
+			gt.SelectedAttr.Set(gt.selectedMsgNum)
+		}
+		return
+	}
+
 	gt.poolEpoch++
 	ep := gt.poolEpoch
 	myName := gt.GetLayout().Name()
 	pcts := gt.currentPercents()
 
-	gt.slotPool = make([]GridRow, count)
-	gt.slotWidgets = make([]*RowPercentage, count)
-	gt.slotLabels = make([][]*DynamicLabel, count)
+	// Grow the underlying slices in place; preserve the existing slots.
+	newPool := make([]GridRow, count)
+	newWidgets := make([]*RowPercentage, count)
+	newLabels := make([][]*DynamicLabel, count)
+	copy(newPool, gt.slotPool)
+	copy(newWidgets, gt.slotWidgets)
+	copy(newLabels, gt.slotLabels)
+	gt.slotPool = newPool
+	gt.slotWidgets = newWidgets
+	gt.slotLabels = newLabels
 
-	for i := int64(0); i < count; i++ {
+	// Allocate only the new slots [existing, count).
+	for i := existing; i < count; i++ {
 		row := gt.rowFactory()
 		gt.slotPool[i] = row
 

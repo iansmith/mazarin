@@ -14,6 +14,7 @@ package main
 
 import (
 	"fmt"
+	"html"
 	"image"
 	"image/color"
 	"time"
@@ -21,11 +22,14 @@ import (
 
 	"golang.org/x/image/font"
 
+	louis14resource "louis14/pkg/resource"
+
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
+	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
 	mfont "mazzy/shared/font"
@@ -44,9 +48,22 @@ var (
 	// Grid frame — set in main, used by response handlers.
 	gridFrame *std.GridFrame
 
+	// Body web interactor — receives HTML via SetHTML when a body arrives.
+	webBody *std.WebInteractor
+
 	// Active collection state.
 	activeCollId uint32
 	cache        *MailCache
+
+	// Body fetch state. requestBody first asks for the html variant; on
+	// ErrMessageNotFound it falls back to text/plain (wrapped in <pre> for
+	// the WebInteractor). bodyVariantInFlight remembers which variant is
+	// outstanding so the response handler can route correctly.
+	lastBodyMsgNum      int64 = -1 // msgNum whose body was last requested (html attempt)
+	bodyInFlight        bool
+	bodyReqId           [16]byte
+	bodyReqCounter      uint64
+	bodyVariantInFlight uint32
 )
 
 func startUringDispatcher(fc *fontcache.FontCache) {
@@ -141,6 +158,12 @@ func main() {
 	gridFontSizes := []int64{12, 16, 20}
 	initialFontIdx := 0 // Small
 
+	// Build the louis14 web render engine here so the body WebInteractor
+	// (created below) and the main DrawContext (created after BSR) share
+	// a single GlyphProvider instance backed by fontsvc IPC.
+	provider := fontcache.NewFontSvcGlyphProvider(fc)
+	webEngine := louis14resource.NewWebEngineWithProvider(provider)
+
 	// C1 — ColumnPercentage [30%, 3%, -1] child of AppWindow.
 	c1 := std.NewColumnPercentage("mail_c1", "AppWindow", pal,
 		int64(winW), int64(winH), []float64{30, 3, -1})
@@ -183,9 +206,14 @@ func main() {
 	sc := std.NewPanel("mail_sc", "mail_sc_margin", scPal, int64(winW), 0)
 	_ = sc
 
-	// T — Panel placeholder for message body, child of C1.
-	bodyPanel := std.NewPanel("mail_web", "mail_c1", pal, int64(winW), 0)
-	_ = bodyPanel
+	// T — WebInteractor for HTML message body, child of C1. The louis14
+	// WebEngine renders HTML fragments into a cached image; subsequent
+	// draws blit a viewport from it (so scrolling is effectively free).
+	// Reverted from WebScrollerVertical wrapper temporarily — the wrapper's
+	// parent-damage constraint chain caused the mail event loop to starve
+	// (1 redraw/sec, no input dispatch). Will reintroduce a scrollbar via
+	// a less chatty mechanism once we have telemetry to verify.
+	webBody = std.NewWebInteractor("mail_web", "mail_c1", webEngine)
 
 	// 8. Publish Ready and announce to rachel.
 	_ = appLH.Bounds.Get()
@@ -224,7 +252,6 @@ func main() {
 	totalStride := int(bsr.TotalStride)
 	bsSlice := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(bsr.BackingStoreAddr))), totalStride*totalH)
 
-	provider := fontcache.NewFontSvcGlyphProvider(fc)
 	bsImg := &image.RGBA{
 		Pix:    bsSlice,
 		Stride: totalStride,
@@ -282,6 +309,17 @@ func main() {
 		if damage.Empty() {
 			return
 		}
+		// Recover from any draw-time panic (typically a downstream
+		// AttrWrite/AttrCreate failure or a louis14 crash that escaped
+		// the per-interactor recover) so a single bad frame doesn't kill
+		// the mail shepherd. The next damage cycle will re-attempt; if
+		// the underlying state is permanently broken the user can switch
+		// messages or restart, but the window itself stays alive.
+		defer func() {
+			if rec := recover(); rec != nil {
+				fmt.Printf("[mail] redraw panic recovered (reason=%s): %v\n", reason, rec)
+			}
+		}()
 		app.Draw(app, 0, 0, int64(winW), int64(winH), damage)
 		app.SendBlit()
 	}
@@ -374,6 +412,12 @@ func main() {
 				vis := gridFrame.VisibleRowCountAttr().Get()
 				cache.Rebalance(first, last, vis)
 			}
+			if gridFrame != nil && cache != nil {
+				sel := gridFrame.SelectedAttr().Get()
+				if sel >= 0 && sel != lastBodyMsgNum && !bodyInFlight {
+					requestBody(sel, mailproto.BodyVariantHTML)
+				}
+			}
 			redraw("eagerCh")
 
 		case <-throbTicker.C:
@@ -412,6 +456,8 @@ func handleMailResponse(v any) {
 	switch resp := v.(type) {
 	case mailproto.RespCreateCollection:
 		handleCreateCollectionResp(&resp)
+	case mailproto.RespBody:
+		handleBodyResp(&resp)
 	case mailproto.RespMarkRead:
 		fmt.Printf("[mail] MarkRead ack: errCode=%d\n", resp.ErrCode)
 	case mailproto.RespMarkDeleted:
@@ -420,6 +466,104 @@ func handleMailResponse(v any) {
 		if cache != nil {
 			cache.HandleResponse(v)
 		}
+	}
+}
+
+// requestBody sends a BodyReq for the given msgNum + variant to maildb.
+// Selection-driven callers should use BodyVariantHTML; handleBodyResp
+// transparently retries with BodyVariantText if html isn't available.
+func requestBody(msgNum int64, variant uint32) {
+	if maildbSID <= 0 || cache == nil || activeCollId == 0 {
+		return
+	}
+	bodyReqCounter++
+	var id [16]byte
+	n := uint64(time.Now().UnixNano())
+	*(*uint64)(unsafe.Pointer(&id[0])) = n
+	*(*uint64)(unsafe.Pointer(&id[8])) = bodyReqCounter
+	bodyReqId = id
+	bodyVariantInFlight = variant
+
+	req := mailproto.BodyReq{
+		RequestId: id,
+		CollId:    activeCollId,
+		MsgNum:    uint32(msgNum),
+		Variant:   variant,
+	}
+	msg := mailproto.EncodeBody(&req)
+	if err := uring.Send(maildbSID, &msg); err != nil {
+		fmt.Printf("[mail] BodyReq send failed: %v\n", err)
+		return
+	}
+	bodyInFlight = true
+	lastBodyMsgNum = msgNum
+	fmt.Printf("[mail] body: requested msgNum=%d variant=%d\n", msgNum, variant)
+}
+
+// handleBodyResp processes a RespBody from maildb. On success it copies
+// the variant payload into a Go string, hands it to webBody (HTML directly,
+// text wrapped in <pre>), and frees the transferred pages. On
+// ErrMessageNotFound for the html variant it retries with the text variant.
+func handleBodyResp(resp *mailproto.RespBody) {
+	bodyInFlight = false
+	if resp.RequestId != bodyReqId {
+		// Stale response for a superseded request — free pages and ignore.
+		if resp.ErrCode == mailproto.ErrNone && resp.TargetVA != 0 {
+			numPages := (int(resp.NumBytes) + 4095) / 4096
+			_ = mem.FreePages(unsafe.Pointer(uintptr(resp.TargetVA)), numPages)
+		}
+		return
+	}
+
+	// Fallback: if html isn't available for this message, retry with text.
+	if resp.ErrCode == mailproto.ErrMessageNotFound && resp.Variant == mailproto.BodyVariantHTML {
+		fmt.Printf("[mail] body: no html variant for msgNum=%d, retrying as text\n", lastBodyMsgNum)
+		requestBody(lastBodyMsgNum, mailproto.BodyVariantText)
+		return
+	}
+
+	if resp.ErrCode != mailproto.ErrNone {
+		fmt.Printf("[mail] body: error errCode=%d variant=%d\n", resp.ErrCode, resp.Variant)
+		if webBody != nil {
+			webBody.SetHTML(nil)
+		}
+		return
+	}
+
+	numBytes := int(resp.NumBytes)
+	fmt.Printf("[mail] body: %d bytes variant=%d\n", numBytes, resp.Variant)
+	if resp.TargetVA == 0 || numBytes == 0 {
+		if webBody != nil {
+			webBody.SetHTML(nil)
+		}
+		return
+	}
+
+	// Copy out before freeing the transferred pages — webBody retains the
+	// slice across draws and shouldn't reference the soon-to-be-unmapped
+	// region.
+	src := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(resp.TargetVA))), numBytes)
+	payload := make([]byte, numBytes)
+	copy(payload, src)
+
+	numPages := (numBytes + 4095) / 4096
+	if err := mem.FreePages(unsafe.Pointer(uintptr(resp.TargetVA)), numPages); err != nil {
+		fmt.Printf("[mail] body: FreePages err: %v\n", err)
+	}
+
+	if webBody == nil {
+		return
+	}
+	switch resp.Variant {
+	case mailproto.BodyVariantHTML:
+		webBody.SetHTML(payload)
+	case mailproto.BodyVariantText:
+		// Wrap plain text in <pre> so the WebInteractor can render it
+		// without losing whitespace/line breaks. HTML-escape so any
+		// stray <, >, & in the source are shown literally rather than
+		// re-interpreted as markup.
+		escaped := html.EscapeString(string(payload))
+		webBody.SetHTML([]byte("<pre>" + escaped + "</pre>"))
 	}
 }
 
@@ -434,7 +578,10 @@ func handleCreateCollectionResp(resp *mailproto.RespCreateCollection) {
 
 	cache = &MailCache{maildbSID: maildbSID}
 	cache.SetCollection(resp.CollId, resp.Size)
-	cache.OnUpdated = func() { gridFrame.DamageAll() }
+	cache.OnUpdated = func() {
+		gridFrame.SetTotalRows(int64(cache.CollectionSize()))
+		gridFrame.DamageAll()
+	}
 	cache.OnExpired = func(collId uint32) {
 		fmt.Printf("[mail] collection %d expired, re-requesting\n", collId)
 		cache = nil

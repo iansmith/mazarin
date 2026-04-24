@@ -94,7 +94,10 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
-		klog.Errf("[RunShepherd] ERROR: busy or no thread to switch to\n")
+		// Criticalf bypasses the soft-IRQ ring so this is visible even
+		// when the worker thread is already busy with a previous request.
+		klog.Criticalf("[RS]", "[RunShepherd] ERROR: busy or no thread for name=%s pages=%d\n",
+			name, numPages)
 		return int64(errNoSpace)
 	}
 
@@ -130,31 +133,40 @@ func readPackedArgs(ptr uintptr, totalLen int) []string {
 // DoRunShepherdWork performs the heavy shepherd creation from the caller's pages.
 // Called by the kernel worker goroutine on a normal growable stack.
 func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
+	klog.Criticalf("[RS]", "[RunShepherd] start name=%s pages=%d bytes=%d\n",
+		req.Name, req.NumPages, req.TotalBytes)
+
 	// Copy ELF data from the caller's pages into a contiguous kernel buffer.
 	elfData := copyPagesFromUser(req.StartVA, req.TotalBytes, req.CallerL0PA)
 	if elfData == nil {
-		klog.Errf("[RunShepherd] ERROR: failed to copy pages from user\n")
+		klog.Errf("[RunShepherd] ERROR: copyPagesFromUser failed name=%s\n", req.Name)
 		return int64(errNullPointer)
 	}
+	klog.Criticalf("[RS]", "[RunShepherd] %s: copied %d bytes from user\n", req.Name, len(elfData))
 
 	// Unmap the raw ELF pages from the caller (implicit cleanup).
 	unmapUserPages(req.StartVA, req.NumPages, req.CallerL0PA, int16(req.CallerShepherd.PID))
 
 	// Validate ELF header
 	if len(elfData) < 64 {
+		klog.Errf("[RunShepherd] ERROR: ELF too small name=%s len=%d\n", req.Name, len(elfData))
 		return int64(errInvalidELF)
 	}
 	hdr := parseELFHeader(elfData)
 	if hdr.Magic != ELF_MAGIC {
+		klog.Errf("[RunShepherd] ERROR: bad ELF magic name=%s\n", req.Name)
 		return int64(errInvalidELF)
 	}
 	if hdr.Class != ELF_CLASS64 || hdr.Machine != elfExpectedMachine {
+		klog.Errf("[RunShepherd] ERROR: wrong arch name=%s class=%d machine=%d\n",
+			req.Name, hdr.Class, hdr.Machine)
 		return int64(errWrongArch)
 	}
 
 	// Create a fresh page table for the new shepherd
 	processL0PA := kmem.CreateProcessPageTable()
 	if processL0PA == 0 {
+		klog.Errf("[RunShepherd] ERROR: CreateProcessPageTable failed name=%s\n", req.Name)
 		return int64(errNoSpace)
 	}
 
@@ -164,11 +176,13 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	fbPA := gpu.GetFramebufferPA()
 	fbSize := uintptr(gpu.GetFramebufferSize())
 	if !kmem.MapUserFramebufferWithL0(fbPA, fbSize, processL0PA) {
+		klog.Errf("[RunShepherd] ERROR: MapUserFramebufferWithL0 failed name=%s\n", req.Name)
 		return int64(errNoSpace)
 	}
 
 	// Map constraint shared pages read-only into shepherd address space.
 	if !kmem.MapUserConstraintPagesWithL0(processL0PA) {
+		klog.Errf("[RunShepherd] ERROR: MapUserConstraintPagesWithL0 failed name=%s\n", req.Name)
 		return int64(errNoSpace)
 	}
 
@@ -182,9 +196,11 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	// Load ELF into the new shepherd's page table
 	loadedProc, err := loadELF(elfData, "/"+req.Name+".elf", processL0PA, 0, req.Args)
 	if err != nil {
-		klog.Errf("[RunShepherd] loadELF failed\n")
+		klog.Errf("[RunShepherd] ERROR: loadELF failed name=%s err=%v\n", req.Name, err)
 		return int64(errInvalidELF)
 	}
+	klog.Criticalf("[RS]", "[RunShepherd] %s: loadELF ok entry=0x%x stackTop=0x%x\n",
+		req.Name, loadedProc.EntryPoint, loadedProc.StackTop)
 
 	// Final I-cache invalidation
 	kmem.InvalidateAllICache()
@@ -192,7 +208,8 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	kmem.FinalUserspaceSync()
 
 	// Create a new thread for this shepherd
-	_ = CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
+	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
+	klog.Criticalf("[RS]", "[RunShepherd] %s: created userspace thread tid=0x%x\n", req.Name, tid)
 
 	// Cache symbol table, highest VA, filename, allocate IPC uring ring, and
 	// register all kernel-allocated VA ranges in Spans so CleanupShepherdPages

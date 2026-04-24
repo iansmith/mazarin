@@ -2,6 +2,76 @@
 
 ---
 
+## Fs ↔ Linux Delegate Handler Deadlock (2026-04-24)
+
+### The cycle
+
+When bleve (or any client) writes to /tmp, the call path is:
+
+1. Caller `pwrite(/tmp/…)` → kernel delegates to linux.
+2. Ring 1 reader enqueues the request on `delegateCh` (cap 8).
+3. `startUringDelegateHandler`'s single goroutine calls `handler.handle(v)` →
+   `h.fs.Pwrite64(...)` → `fsclient.call()` → `uring.Send` to fs →
+   blocks on `<-c.RespCh`.
+4. fs's single serve goroutine runs `ipcWrite`, calls a diagnostic
+   `fmt.Printf(...)`.
+5. fs's `fmt.Printf` → `Write(fd=1)` syscall → kernel delegates to linux →
+   ring 1 → `delegateCh`.
+6. Linux's delegate goroutine is still blocked in step 3; message sits in
+   `delegateCh`; fs's `Write` never gets `v.Reply()`.
+7. fs is blocked in kernel waiting for the reply. fs's IPC serve loop never
+   resumes. Linux's `RespCh` never arrives. Both shepherds frozen.
+
+The workaround introduced previously — route fs diagnostics to
+`sys.UartWriteString` instead of `fmt.Printf` — silences the cycle for the
+one known caller but leaves the class of bug intact. Any future delegated
+syscall from inside an fs IPC handler (not just fd≤2 writes) re-trips it.
+
+### Why not "goroutine-per-delegate-request"
+
+Literal Option B (spawn a new goroutine for every delegate request) requires
+wrapping a lot of state in mutexes:
+
+- `fsclient.Client` — shared 64KB data area, single `RespCh` with no ReqID
+  match, non-atomic `nextID`. Two concurrent callers would clobber each
+  other's paths / buffers and receive each other's responses.
+- `syscallHandler.shepherds map[int16]*ShepherdFilesystemData` — plain map,
+  concurrent access = fatal race.
+- `syscallHandler.flocks`, `syscallHandler.cache`, `sidStates`, `reqQueue` —
+  all documented single-goroutine.
+
+And once you mutex all of those, fs-bound work serialises right back to
+one-at-a-time (fs itself is single-goroutine by design — ext2 is not
+thread-safe, and the per-connection shared data area holds one request at a
+time). You'd pay the cognitive cost of locks for no throughput win.
+
+### Fix: two-lane delegate handler
+
+Peel stdout (fd ≤ 2 Writes) off onto its own lane, since that's the only
+thing that currently needs to proceed while an fs call is in flight:
+
+- Ring-1 reader uses `OnFunc` to inspect each `FSDelegateReq`:
+  - `Write` with `fd ≤ 2` → dispatch to `stdoutCh` (stdout lane).
+  - everything else → `delegateCh` (file lane, unchanged).
+- **Stdout lane goroutine** only does `sidIncRef`, copy bytes, `v.Reply(len)`,
+  `sidDecRef`, push to `dataCh`. Never touches `fsclient` or
+  `h.shepherds`. Can run concurrently with the file lane.
+- **File lane goroutine** is today's existing worker, single-goroutine,
+  consumes file/stdin/notification work, blocks on `fsclient.call` as
+  needed. No change to per-shepherd state safety.
+- `sidStates` is the only state touched by both lanes, so it gets a small
+  `sync.Mutex`. It's a counter map, not fs state — trivial surface.
+
+Result: while the file lane is blocked on fs's `RespCh`, the stdout lane
+freely pumps fs's `fmt.Printf` bytes through `v.Reply`; fs unblocks; file
+lane unblocks.
+
+Making fs (and fsclient) genuinely concurrent is a separate architectural
+project — thread-safe ext2 + per-caller data slots + ReqID-routed responses.
+Deferred; not required for this fix.
+
+---
+
 ## Smart Cache — eagerCh Drain Race (FIXED 2026-04-23)
 
 ### Root cause: mailRespCh called Rebalance before redraw
@@ -1155,3 +1225,163 @@ Always happens after one full GC cycle (2 writeBarrier transitions).
    (adrp x4, 0x21c000 + #0x880 = 0x21c880 in fontsvc binary)
 
 **Revert before next boot:** `config/kernel.arm64.toml` `go_mem_limit=256` → `24`
+
+
+---
+
+## Linux/fs delegate consistency investigation (2026-04-24)
+
+### Architecture (confirmed)
+- **Linux shepherd** (`maz/linux`) handles all path-based syscalls (`openat`, `getdents64`,
+  `read`, `write`, `renameat`, `fstat`, `unlinkat`, etc.). It maintains a per-shepherd
+  FD table and a write-buffer cache per FD.
+- **Linux delegates** all actual filesystem operations to **fs.maz** (`maz/fs`) over a
+  uring IPC channel (`ProtoFSIPCReq` / `ProtoFSIPCResp`). The `fsclient.Client` in
+  `mazarin/fsclient` wraps the IPC.
+- **fs.maz** runs a single-goroutine select loop (`maz/fs/main.go:223`) over both the
+  delegate channel and the IPC channel — so all ext2 access is **serial**. Comment at
+  `main.go:220-221` confirms: *"Both are processed in the main goroutine to avoid
+  concurrent filesystem access (ext2 is not thread-safe)."*
+- The on-disk filesystem implementation is `shared/fs/ext2/`. Two mounts: read-only root
+  (block device) and read-write `/tmp` (in-memory ramdisk via MemBlockDevice).
+
+### Bug A — directory enumeration loses entries  ✅ ROOT CAUSE FOUND
+
+**Location**: `maz/linux/syscalls.go:548-584`, function `sysGetdents64`.
+
+The IPC ReadDir call uses pagination: `fs.ReadDir(handle, startIdx)` returns
+`(dataLen, entryCount, err)` where `entryCount` is how many dirents fs.maz packed
+into its shared data area (size **65536 bytes**, capacity ~1500 dirents). Linux
+then copies the response into the *caller's* user buffer:
+
+```go
+dataLen, entryCount, err := h.fs.ReadDir(e.handle, int(e.offset))
+n := dataLen
+if n > len(buf) {
+    n = len(buf)        // truncate to user buf (typically 4096 bytes)
+}
+copy(buf[:n], h.fs.DataSlice(n))
+e.offset += int64(entryCount)  // BUG: advances by what fs marshalled, not what was delivered
+```
+
+If fs.maz marshalled 1500 entries (~65KB) but the user buffer is only 4KB and
+holds ~80 dirents, the offset jumps to 1500. The next `getdents64` call asks
+fs.maz for entries from index 1500+, **silently skipping the ~1420 dirents in
+the middle that were marshalled but never delivered to userspace.**
+
+This explains exactly the observed behavior: walked 209/317 emlx files, with
+the largest "Messages" directory (231 entries) the worst affected.
+
+**Fix**: advance `e.offset` by the number of dirent records that actually fit
+in the truncated copy, not by `entryCount`. Easiest implementation is to walk
+the dirent records in the buffer up to `n` bytes and count them. Alternatively,
+have fs.maz pack only as many dirents as fit in `min(fsDataLen, requestedSize)`
+where the user passes their buf size in the request payload.
+
+### Bug B — write/open ENOENT on freshly-created file  ⚠️ NEEDS MORE DATA
+
+**Symptoms**:
+- `[fti] SCORCH ASYNC ERROR: source: persister, persist error: ... open .../000000000016.zap: no such file or directory`
+- `[fti] SCORCH ASYNC ERROR: source: merger, persist error: merging err: open .../000000000067.zap: no such file or directory`
+
+**What we ruled out**:
+- ❌ Concurrency: fs.maz is strictly single-goroutine.
+- ❌ ext2 directory-block enumeration: `LookupDir → ReadDir` walks all data blocks
+  of the dir inode (`shared/fs/ext2/reader.go:285-339`). So path lookup should
+  succeed even for huge directories.
+- ❌ Long-lived inode/dirent cache: `shared/fs/ext2/reader.go` has only a
+  per-call indirect-block-pointer cache.
+
+**Suspect areas**:
+- linux's per-FD write buffer (`syscalls.go:362,873-912`) defers IPC writes
+  until close/fsync. Close DOES flush (`sysClose:157`), but the flush is
+  *best-effort: ignore error on close* — a silent drop here would leave the
+  file empty/missing on disk.
+- ext2 `Rename` (`writer.go:631`) does add-then-remove, not atomic; if the
+  add succeeds and remove fails, file has both names. If a fault aborts mid-
+  rename, file may have neither name. SCORCH uses tmpfile+rename for atomic
+  publish, so a partial rename matters.
+- ext2 `addDirEntry` (`writer.go:248`) walks directory blocks to find slack;
+  writer.go uses linear allocation. Possible bug: a write after delete could
+  reuse a slot in a way that confuses subsequent lookups. Needs trace.
+
+**Next step**: instrument fs.maz's `ipcOpen`, `ipcWrite`, `ipcRename`, and
+`ipcReadDir` with `klog.Criticalf` traces showing path + result + (for opens)
+whether O_CREAT was set + (for renames) old/new paths + (for dir ops) which
+inode + the entry count returned. Reproduce the bleve ENOENT and inspect the
+sequence of fs operations leading up to it.
+
+
+---
+
+## Bug A — empirical validation (2026-04-24, 60s ARM64 HVF run)
+
+After applying the `deliveredDirents` fix in `sysGetdents64`:
+
+| Metric                      | Before (broken) | After (fix)  |
+|-----------------------------|-----------------|--------------|
+| `emlxImport: walked` count  | 209             | **309**      |
+| messages parsed             | 204             | 306          |
+| `emlxImport: skip`          | 5               | 3            |
+| `emlxImport: walk error`    | 3               | 8            |
+| FTI deadlock                | yes             | no           |
+| `cleaning up dead shepherd` | yes             | no           |
+| FTI documents indexed       | ~5 (then died)  | 306          |
+
+The +100 newly-visible files match the missing-from-readdir hypothesis exactly
+(the 231-entry `Messages/` dir was the worst victim and now mostly works).
+The persistent 11 file failures (8 walk + 3 skip) are NOT directory truncation
+— they're the same dirent-listing-vs-lookup gap that powers Bug B.
+
+`[linux] getdents64: fs marshalled X entries (Y B), user buf Z B held W entries`
+fired 83 times — every truncation case where the new code path correctly
+preserved the un-delivered entries for the next call.
+
+---
+
+## Bug B — refined diagnosis (2026-04-24)
+
+### Trace data (after Bug B instrumentation in `maz/fs/fsipc.go`)
+- 579 successful `OPEN ok`
+- 362 successful `OPEN+CREAT ok`
+- 5 `OPEN FAIL`:
+  - `/tmp/maildb-16/badger/MANIFEST` (`ext2: not found`) — **benign** (badger
+    probes-then-creates).
+  - `/tmp/maildb-16/badger/KEYREGISTRY` — **benign** (same pattern).
+  - `/tmp/fti-15/blev` — **benign** (typo'd path bleve probes for).
+  - `/tmp/fti-15/bleve/store/0000000000a2.zap` — **REAL Bug B**.
+  - `/tmp/fti-15/bleve/store/0000000000b4.zap` — **REAL Bug B**.
+- 2 `RENAME ok`, 327 `REMOVE ok`, 0 `*FAIL` of either.
+- 86,804 successful `WRITE` (untraced after fix #2 to avoid UART backpressure).
+- 3 `SCORCH ASYNC ERROR` lines mention exactly the same two `.zap` files.
+
+### What this rules in / out
+- ✅ Files ARE being created successfully (we see the OPEN+CREAT ok earlier in
+  the log for the failing files — need to grep the next run to capture both
+  sides).
+- ✅ The failure happens minutes after creation, by which time many neighboring
+  files in `bleve/store/` have been REMOVE'd (327 successful removes).
+- ❌ NOT a bleve-specific bug — emlx walker on `/data` shows the same shape
+  (filepath.Walk lists files that subsequent `os.Open` can't find).
+- ❌ NOT concurrency (fs.maz strictly single-goroutine) and NOT ext2 dir-block
+  enumeration (LookupDir walks all blocks).
+
+### New leading hypothesis
+The `327 REMOVE ok` count is large (~1.6× the failing dir's max population at
+any one time). Bleve's segment merger creates a new merged segment, opens
+several old segments to read from, then REMOVES the old ones. If `removeDirEntry`
+in `shared/fs/ext2/writer.go` mutates dirent `reclen` slack in a way that
+later invalidates a sibling entry's offset (e.g., by extending the previous
+record's reclen to swallow a neighbor that's still being looked up by name),
+that would produce exactly this pattern.
+
+### Concrete next step
+Re-run, grep the trace for the 2 failing `.zap` files. Capture:
+1. The OPEN+CREAT ok line (proves it was created and what handle/inum).
+2. Every subsequent OPEN/REMOVE/RENAME of any file in the same `bleve/store/`
+   directory between create and the eventual OPEN FAIL.
+3. Compare against `removeDirEntry` (`shared/fs/ext2/writer.go`) — look for
+   the slack-coalesce logic that might consume a sibling.
+
+### Bug A fix code reference
+`maz/linux/syscalls.go::sysGetdents64` and new helper `deliveredDirents`.

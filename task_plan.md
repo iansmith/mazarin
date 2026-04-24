@@ -1,4 +1,19 @@
 # Task Plan — Mazarin / Mazzy
+
+## TOP OF STACK: mail-dumb easy part (resumed 2026-04-24)
+
+Back on mail-dumb easy part after a diversion to fix the fs↔linux delegate
+deadlock (see progress.md "Session 2026-04-24" and findings.md
+"Fs ↔ Linux Delegate Handler Deadlock"). The deadlock fix — two-lane
+delegate handler (stdout vs. file lane) in the linux shepherd — is
+complete, built clean on ARM64 / x86_64, stable in a 60s HVF boot, and
+`fmt.Printf` from fs handlers is now visible on the linux console.
+
+Next: mail-dumb easy part — body display, PageUp/PageDown, mark-read,
+delete, and polish. Status from before the diversion follows.
+
+---
+
 ## STATUS: 2026-04-23 (mail-dumb hard part COMPLETE — easy part next)
 
 **Done (this session):** Smart cache Phases S1–S4 all complete. Virtual scroll GridTable, MailCache
@@ -783,3 +798,83 @@ name starts with a policy-matched package prefix.
 | Eager binding (not lazy .plt resolver) | Fail at Open time on missing symbol, not at first call |
 | riscv64 stays on legacy .maz+maz-reloc path | riscv64 PIE emission in mazlink is Phase 7; legacy path still works |
 | One shepherd binary, everything else is a plugin | Collapsed architecture; simpler than per-app shepherd binaries |
+
+
+---
+## NEW INVESTIGATION (2026-04-24): linux/fs delegate consistency bugs
+
+### Triggering observations
+- maildb's emlx walker enumerated only **209/317** files in current.mbox tree (one
+  Messages dir has 231 entries; many are invisible to readdir).
+- 5 walked-but-open-failed files (`open … : no such file or directory` after
+  filepath.Walk reported them).
+- 3 `lstat … : no such file or directory` walk errors.
+- fti's bleve SCORCH backend logs persistent ENOENT on segments it just wrote
+  (`open /tmp/fti-N/bleve/store/000000000016.zap: no such file or directory`).
+
+### Hypotheses
+- **H1**: linux's `getdents` delegate (or the fs shepherd's ReadDir) only yields
+  entries from the first ext2 directory block; large dirs whose entries span
+  multiple blocks lose later entries.
+- **H2**: A read-after-write inconsistency between linux's path-resolution layer
+  (`openat`/`lstat`) and the fs/ext2 backing store — file is on disk but not
+  visible by name immediately after creation. May be inode/dirent cache or
+  rename-atomicity related.
+
+### Phases
+- [ ] **P1: Map the call graph.** Identify which shepherd handles which delegate:
+  linux (`maz/linux`) for path syscalls; fs (`maz/fs`) for LoadFile/ReadFilePages.
+  Document the read path from `os.Open(path)` in a userspace shepherd all the way
+  down to `shared/fs/ext2/reader.go`.
+- [ ] **P2: Bug A (directory enumeration).** Inspect linux's getdents/readdir
+  delegate. Check whether it walks all blocks of a directory inode or stops at
+  the first. Compare with the working `shared/fs/ext2/reader.go::ReadDir` which
+  does walk all blocks. Find the gap.
+- [ ] **P3: Bug B (write/open ENOENT).** Trace the path bleve takes to write a
+  segment file to /tmp (which lives on the linux shepherd's ramdisk, not on
+  ext2). Find linux's tmpfs/ramdisk implementation. Identify whether new file
+  visibility lags the write, or rename atomicity is broken.
+- [ ] **P4: Propose fixes** with test plan for each.
+
+### Decisions / non-goals
+- This investigation is read-only first; no patches in this phase.
+- Bug A and Bug B *may* share root cause (a single dirent-cache layer that's
+  inconsistent) or may be entirely separate (Bug A in fs/ext2 path, Bug B in
+  linux's tmpfs). The investigation is open to either outcome.
+
+### Status update (2026-04-24, end of P1+P2+P3-instrumentation)
+- [x] **P1: Map the call graph** — done. See findings.md "Architecture (confirmed)".
+- [x] **P2: Bug A (directory enumeration)** — **FIXED + VALIDATED in 60s ARM64 HVF run**:
+  - Root cause: `maz/linux/syscalls.go::sysGetdents64` advanced `e.offset` by the
+    number of dirents fs.maz marshalled (~1500 in 65KB) rather than the number that
+    fit in the user's 4KB buffer (~80). Dropped the difference silently.
+  - Fix: new `deliveredDirents(src, maxBytes)` helper walks the linux_dirent64
+    records in the truncated buffer and counts how many fully fit; offset advances
+    by that count instead. Diagnostic line emitted on every truncated call.
+  - Empirical result: emlx walker now sees **309/317** files (was 209). 306 parsed
+    cleanly. 83 truncation reports fired, all in expected dirs.
+- [x] **P3-instrumentation: Bug B trace plumbing** — done in `maz/fs/fsipc.go`:
+  - `fsHandle` gained a `path` field so handle-based ops know the file name.
+  - `tmpTrace`/`isTmpPath` helpers emit `[fs:tmp] OP path=… …` lines for any
+    operation under `/tmp/`.
+  - **Two iterations to get the trace right:**
+    1. First attempt used `fmt.Printf` → DEADLOCK (linux ↔ fs.maz IPC cycle).
+       Fixed by switching to `sys.UartWriteString` (direct UART, no IPC).
+    2. Second attempt traced every successful WRITE → **86,804 traces / ~13 MB
+       to slow polled UART** → multi-second pauses on every body-fetch. Fixed
+       by removing the successful-WRITE trace; kept WRITE FAIL.
+- [ ] **P3: Bug B (write/open ENOENT)** — partial: ruled out concurrency and ext2-side
+  dir block enumeration. Trace data so far:
+  - 5 OPEN FAIL events captured. **3 are benign** (bleve/badger probing for
+    optional metadata files, `MANIFEST`, `KEYREGISTRY`, etc.).
+  - **2 are real Bug B**: `0000000000a2.zap` and `0000000000b4.zap` — bleve created
+    these segments earlier in the same run but the merger/persister can't open
+    them later. Same symptom as the 8 emlx walk-errors and 3 emlx skips, so Bug B
+    is broader than just bleve.
+  - Next: re-run, find the OPEN+CREAT for the failing zap files in the trace,
+    walk forward through every subsequent op (RENAME, REMOVE on neighboring
+    files in the same dir) until the lookup fails. Hypothesis to confirm or
+    reject: ext2 `removeDirEntry` (writer.go) re-coalesces slack in a way that
+    invalidates a sibling entry's reclen.
+- [ ] **P4: Propose fixes** — Bug A fix landed. Bug B fix design pending more
+  trace data on the create-then-fail sequence.

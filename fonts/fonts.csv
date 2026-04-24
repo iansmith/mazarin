@@ -142,3 +142,12 @@ LatinModernRoman,Italic,lmroman9-italic.otf,9
 LatinModernRoman,Italic,lmroman10-italic.otf,10
 LatinModernRoman,Italic,lmroman12-italic.otf,12
 LatinModernRoman,BoldItalic,lmroman10-bolditalic.otf,10
+# louis14 default sans-serif and serif (used by HTML rendering for unstyled text)
+lmsans10,Regular,lmsans10-regular.otf,0
+lmsans10,Bold,lmsans10-bold.otf,0
+lmsans10,Italic,lmsans10-oblique.otf,0
+lmsans10,BoldItalic,lmsans10-boldoblique.otf,0
+lmroman10,Regular,lmroman10-regular.otf,0
+lmroman10,Bold,lmroman10-bold.otf,0
+lmroman10,Italic,lmroman10-italic.otf,0
+lmroman10,BoldItalic,lmroman10-bolditalic.otf,0

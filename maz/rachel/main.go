@@ -1517,59 +1517,6 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 	}
 }
 
-// TestOnlyOnRamdisk copies the directory structure and files from /data
-// to /tmp/data so that shepherds can write to paths under /tmp/data that
-// mirror the read-only data disk layout.
-func TestOnlyOnRamdisk() {
-	fmt.Println("[rachel] TestOnlyOnRamdisk: mirroring /data → /tmp/data")
-	if err := copyTree("/data", "/tmp/data"); err != nil {
-		fmt.Printf("[rachel] TestOnlyOnRamdisk: %v\n", err)
-	}
-	// Create /tmp/data/fti for full-text index storage (bleve + badger).
-	if err := os.MkdirAll("/tmp/data/fti", 0755); err != nil {
-		fmt.Printf("[rachel] TestOnlyOnRamdisk: mkdir /tmp/data/fti: %v\n", err)
-	}
-}
-
-// copyTree recursively copies a directory tree from src to dst, creating
-// directories and copying files.
-func copyTree(src, dst string) error {
-	if err := os.MkdirAll(dst, 0755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dst, err)
-	}
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return fmt.Errorf("readdir %s: %w", src, err)
-	}
-	for _, e := range entries {
-		srcPath := src + "/" + e.Name()
-		dstPath := dst + "/" + e.Name()
-		if e.IsDir() {
-			if err := copyTree(srcPath, dstPath); err != nil {
-				return err
-			}
-		} else {
-			if err := copyFile(srcPath, dstPath); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// copyFile copies a single file from src to dst.
-func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", src, err)
-	}
-	if err := os.WriteFile(dst, data, 0644); err != nil {
-		return fmt.Errorf("write %s: %w", dst, err)
-	}
-	fmt.Printf("[rachel] copied %s (%d bytes)\n", dst, len(data))
-	return nil
-}
-
 // MazEntryPoint holds a reference to MazarinMain to prevent DCE of the
 // plugin entry point. The generic shepherd host looks up MazarinMain via
 // mazdl; without this reference the linker would drop the symbol.
@@ -1833,15 +1780,12 @@ func MazarinMain() {
 	sys.SetReady(true)
 	fmt.Printf("[rachel] Ready=true\n")
 
-	// Mirror /data to /tmp/data after linux is ready, since mkdirat is
-	// delegated to the linux shepherd which can't start until rachel is Ready.
-	go func() {
-		if err := sys.WaitForShepherdReady("linux", 30); err != nil {
-			fmt.Printf("[rachel] TestOnlyOnRamdisk: linux not ready: %v\n", err)
-			return
-		}
-		TestOnlyOnRamdisk()
-	}()
+	// Note: rachel no longer mirrors /data → /tmp/data. fti and maildb
+	// each store their indexes inside their own per-shepherd scratch
+	// dir (set by sys.SetupScratchDir to /tmp/<name>-<sid>) using
+	// cwd-relative paths, so nothing depends on /tmp/data existing.
+	// This sidesteps the linux fs delegate's "function not implemented"
+	// failures on /tmp writes during early boot.
 
 	// Record time at rachel ready for blit rate reporting.
 	blitRateStart = time.Now()

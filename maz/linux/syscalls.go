@@ -574,13 +574,57 @@ func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
 		req.Reply(EOK) // no more entries
 		return
 	}
-	n := dataLen
-	if n > len(buf) {
-		n = len(buf)
+	src := h.fs.DataSlice(dataLen)
+
+	// fs.maz packs as many dirents as fit in its 65KB shared data window;
+	// the user's buffer is typically 4KB. We must NOT advance e.offset by
+	// entryCount when the user buffer can't hold all of them — doing so
+	// silently drops the dirents that didn't fit, breaking filepath.Walk
+	// on directories with more than ~80 entries (Bug A in findings.md).
+	//
+	// Instead: walk the dirent records inside the truncated copy, count
+	// how many actually fit, and advance offset by that count. The next
+	// getdents64 call will pick up at the first dropped entry.
+	delivered := deliveredDirents(src, len(buf))
+	n := delivered.bytes
+	if n > 0 {
+		copy(buf[:n], src[:n])
 	}
-	copy(buf[:n], h.fs.DataSlice(n))
-	e.offset += int64(entryCount) // entries marshaled
+	e.offset += int64(delivered.count)
+	if delivered.count != entryCount {
+		fmt.Printf("[linux] getdents64: fs marshalled %d entries (%d B), user buf %d B held %d entries (%d B)\n",
+			entryCount, dataLen, len(buf), delivered.count, n)
+	}
 	req.Reply(int64(n))
+}
+
+// deliveredDirents walks the linux_dirent64 records in src and returns
+// how many full records fit inside maxBytes (rounded down to a record
+// boundary), plus the byte length consumed by those records. Each
+// record's reclen lives at bytes [16:18] of its header.
+func deliveredDirents(src []byte, maxBytes int) struct {
+	bytes int
+	count int
+} {
+	var out struct {
+		bytes int
+		count int
+	}
+	off := 0
+	for off+18 <= len(src) {
+		// reclen is at offset 16 within the record (after ino[8] + offset[8]).
+		reclen := int(uint16(src[off+16]) | uint16(src[off+17])<<8)
+		if reclen <= 0 || off+reclen > len(src) {
+			break // malformed or runs past the buffer
+		}
+		if off+reclen > maxBytes {
+			break // doesn't fit in user buf
+		}
+		off += reclen
+		out.count++
+	}
+	out.bytes = off
+	return out
 }
 
 func (h *syscallHandler) sysFaccessat(req sys.SyscallRequest) {

@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -61,8 +62,13 @@ type shepherdState struct {
 }
 
 // sidStates maps shepherd SIDs to their refcount state.
-// Only accessed from the delegate handler goroutine (single-goroutine safety).
-var sidStates = make(map[int16]*shepherdState)
+// Accessed from both the file-lane and stdout-lane delegate goroutines, so
+// every touch goes through sidStatesMu. It's a counter map (plus dying bit),
+// not fs state — the lock surface is trivial.
+var (
+	sidStatesMu sync.Mutex
+	sidStates   = make(map[int16]*shepherdState)
+)
 
 // globalHandler is the syscall handler, set during main() startup.
 // Accessed from the delegate handler goroutine for per-SID cleanup on death.
@@ -72,9 +78,10 @@ var globalHandler *syscallHandler
 // The delegate handler enqueues; the drainer (main goroutine) dequeues.
 var reqQueue = queue.New[*readDataResponse]()
 
-// getOrCreateSIDState returns the shepherdState for the given SID, creating one
-// with refcount=1 if it doesn't exist.
-func getOrCreateSIDState(sid int16) *shepherdState {
+// getOrCreateSIDStateLocked returns the shepherdState for the given SID,
+// creating one with refcount=1 if it doesn't exist. Caller must hold
+// sidStatesMu.
+func getOrCreateSIDStateLocked(sid int16) *shepherdState {
 	st := sidStates[sid]
 	if st == nil {
 		st = &shepherdState{refcount: 1}
@@ -85,24 +92,32 @@ func getOrCreateSIDState(sid int16) *shepherdState {
 
 // sidIncRef increments the refcount for the given SID.
 func sidIncRef(sid int16) {
-	st := getOrCreateSIDState(sid)
+	sidStatesMu.Lock()
+	st := getOrCreateSIDStateLocked(sid)
 	st.refcount++
+	sidStatesMu.Unlock()
 }
 
 // sidDecRef decrements the refcount for the given SID. If the shepherd is
 // dying and refcount has reached 1 (baseline), all I/O has drained — clean
 // up per-SID state and ACK to the kernel.
 func sidDecRef(sid int16) {
+	sidStatesMu.Lock()
 	st := sidStates[sid]
 	if st == nil {
+		sidStatesMu.Unlock()
 		return
 	}
 	st.refcount--
-	if st.dying && st.refcount <= 1 {
+	drained := st.dying && st.refcount <= 1
+	if drained {
+		delete(sidStates, sid)
+	}
+	sidStatesMu.Unlock()
+	if drained {
 		if globalHandler != nil {
 			globalHandler.cleanupShepherd(sid)
 		}
-		delete(sidStates, sid)
 		sys.DeathAck(sid)
 		sys.UartWriteString(fmt.Sprintf("[linux] DeathAck sent for SID %d\n", sid))
 	}
@@ -112,8 +127,10 @@ func sidDecRef(sid int16) {
 // Drains any queued stdin reads for the dead SID (they'll never be fulfilled),
 // then checks if all I/O has drained. ACKs immediately if refcount<=1.
 func handleDeathNotification(deadSID int16) {
-	st := getOrCreateSIDState(deadSID)
+	sidStatesMu.Lock()
+	st := getOrCreateSIDStateLocked(deadSID)
 	st.dying = true
+	sidStatesMu.Unlock()
 
 	// Drain queued stdin reads for the dead SID. These will never be
 	// fulfilled since the shepherd is gone. Reply with 0 (EOF) and
@@ -123,36 +140,83 @@ func handleDeathNotification(deadSID int16) {
 	})
 	for _, rdr := range staleReads {
 		rdr.req.Reply(0) // SyscallReply no-ops the wake for dead threads
-		st.refcount--    // paired with sidIncRef in sysRead stdin branch
 	}
+
+	sidStatesMu.Lock()
+	st.refcount -= int32(len(staleReads)) // paired with sidIncRef in sysRead stdin branch
+	refcount := st.refcount
+	drained := refcount <= 1
+	if drained {
+		delete(sidStates, deadSID)
+	}
+	sidStatesMu.Unlock()
+
 	if len(staleReads) > 0 {
 		sys.UartWriteString(fmt.Sprintf("[linux] drained %d stale stdin reads for SID %d\n", len(staleReads), deadSID))
 	}
 
-	sys.UartWriteString(fmt.Sprintf("[linux] death notification for SID %d, refcount=%d\n", deadSID, st.refcount))
-	if st.refcount <= 1 {
+	sys.UartWriteString(fmt.Sprintf("[linux] death notification for SID %d, refcount=%d\n", deadSID, refcount))
+	if drained {
 		// All I/O drained — clean up per-shepherd filesystem state (FDs, flocks).
 		if globalHandler != nil {
 			globalHandler.cleanupShepherd(deadSID)
 		}
-		delete(sidStates, deadSID)
 		sys.DeathAck(deadSID)
 		sys.UartWriteString(fmt.Sprintf("[linux] DeathAck sent immediately for SID %d\n", deadSID))
 	}
 }
 
-// startUringDelegateHandler runs a goroutine that processes delegated syscalls
-// received via uring Dispatcher. Write to fd 1/2 is echoed to UART and
-// forwarded to the line accumulator. All other syscalls go to syscallHandler.
-// Death notifications are also processed here for single-goroutine safety.
-func startUringDelegateHandler(delegateCh chan any, handler *syscallHandler, suppressSerialCopy bool) <-chan delegateMsg {
+// startUringDelegateHandler spawns two goroutines that consume the delegate
+// lanes split in startUringDispatchers:
+//
+//   - File lane (delegateCh): file-system syscalls (may block on fsclient),
+//     stdin reads (async via reqQueue), and notifications (death, idleFlush,
+//     stdinDecRef). Single goroutine — preserves existing serialization
+//     required by syscallHandler's per-shepherd maps and by fsclient's shared
+//     data area.
+//
+//   - Stdout lane (stdoutCh): only Write(fd ≤ 2). Runs concurrently with the
+//     file lane so fs.maz's fmt.Printf can complete even while the file lane
+//     is blocked inside fsclient.call waiting for fs to respond. Touches
+//     only sidStates (mutex-guarded) and dataCh — never fsclient.
+//
+// suppressSerialCopy is retained for API parity but no longer consulted in
+// this function (the kernel already pushed bytes to the TX ring before
+// delegating; we just reply and forward to the line accumulator).
+func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallRequest, handler *syscallHandler, suppressSerialCopy bool) <-chan delegateMsg {
+	_ = suppressSerialCopy
 	dataCh := make(chan delegateMsg, 32)
-	// Forward stdin decRef completions to the delegate channel.
+	// Forward stdin decRef completions to the delegate (file) channel.
 	go func() {
 		for sid := range stdinDecRefCh {
 			delegateCh <- stdinDecRefNotification{sid: sid}
 		}
 	}()
+	// Stdout lane — handles fd≤2 Writes only; never blocks on fsclient.
+	go func() {
+		for v := range stdoutCh {
+			sid := v.CallerPID
+			fd := byte(v.Arg0())
+			sidIncRef(sid)
+			data := v.Data()
+			if data == nil {
+				v.Reply(0)
+				sidDecRef(sid)
+				continue
+			}
+			dataCopy := make([]byte, len(data))
+			copy(dataCopy, data)
+			// Kernel already pushed bytes to PL011 TX ring before
+			// delegating — no need to echo to UART here.
+			v.Reply(int64(len(data)))
+			sidDecRef(sid)
+			select {
+			case dataCh <- delegateMsg{fd: fd, data: dataCopy}:
+			default:
+			}
+		}
+	}()
+	// File lane — everything else.
 	go func() {
 		for raw := range delegateCh {
 			switch v := raw.(type) {
@@ -167,29 +231,6 @@ func startUringDelegateHandler(delegateCh chan any, handler *syscallHandler, sup
 
 			case sys.SyscallRequest:
 				sid := v.CallerPID
-				if v.SysID == sysid.Write {
-					fd := byte(v.Arg0())
-					if fd <= 2 {
-						sidIncRef(sid)
-						data := v.Data()
-						if data == nil {
-							v.Reply(0)
-							sidDecRef(sid)
-							continue
-						}
-						dataCopy := make([]byte, len(data))
-						copy(dataCopy, data)
-						// Kernel already pushed bytes to PL011 TX ring before
-						// delegating — no need to echo to UART here.
-						v.Reply(int64(len(data)))
-						sidDecRef(sid)
-						select {
-						case dataCh <- delegateMsg{fd: fd, data: dataCopy}:
-						default:
-						}
-						continue
-					}
-				}
 				// For stdin reads, sidIncRef happens at enqueue time in sysRead,
 				// and sidDecRef happens in fulfillRead. For all other syscalls,
 				// the request completes synchronously here.
@@ -233,10 +274,16 @@ func addCRBeforeLF(data []byte) []byte {
 
 // startUringDispatchers sets up two uring Dispatchers to avoid a single-reader
 // deadlock. Ring 0 handles shepherd IPC (fs responses, WM, fonts, death).
-// Ring 1 handles kernel delegate requests. Two independent reader goroutines
-// mean the delegate reader can block on delegateCh without preventing IPC
-// response delivery.
-func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, wmCh chan any, fontReplyCh chan any) {
+// Ring 1 handles kernel delegate requests.
+//
+// Ring 1's reader routes delegate requests to one of two lanes. Write(fd ≤ 2)
+// goes to stdoutCh — a separate goroutine that never blocks on fsclient. All
+// other requests go to delegateCh (file lane). This prevents the fs↔linux
+// deadlock where fs.maz's fmt.Printf (→ Write fd=1 back through linux) would
+// queue behind a file-lane goroutine that was itself blocked inside
+// fsclient.call waiting for fs to respond. See findings.md "Fs ↔ Linux
+// Delegate Handler Deadlock" for the full cycle.
+func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdoutCh chan sys.SyscallRequest, wmCh chan any, fontReplyCh chan any) {
 	// Ring 0: shepherd IPC
 	ipcDispatcher := uring.NewDispatcher() // ring 0 (default)
 	ipcDispatcher.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
@@ -244,7 +291,7 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, wmCh 
 	ipcDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
 	ipcDispatcher.OnDeath(func(deadSID int16) {
 		sys.UartWriteString(fmt.Sprintf("[linux] shepherd %d died\n", deadSID))
-		// Route through delegateCh so all sidStates access is single-goroutine.
+		// Route through delegateCh so death handling runs on the file lane.
 		delegateCh <- deathNotification{deadSID: deadSID}
 	})
 	// Kernel sends this just before WFI when no threads are ready.
@@ -258,9 +305,20 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, wmCh 
 	})
 	ipcDispatcher.Start()
 
-	// Ring 1: kernel delegate requests
+	// Ring 1: kernel delegate requests — route fd≤2 Writes to stdoutCh, rest
+	// to delegateCh. Runs in ring 1's reader goroutine, so keep it minimal.
 	delegateDispatcher := uring.NewDispatcherWithRing(1)
-	delegateDispatcher.On(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, delegateCh)
+	delegateDispatcher.OnFunc(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, func(v any) {
+		req, ok := v.(sys.SyscallRequest)
+		if !ok {
+			return
+		}
+		if req.SysID == sysid.Write && byte(req.Arg0()) <= 2 {
+			stdoutCh <- req
+			return
+		}
+		delegateCh <- req
+	})
 	delegateDispatcher.Start()
 }
 
@@ -378,7 +436,10 @@ func MazarinMain() {
 	tempWMCh := make(chan any, 8)
 	tempFontReplyCh := make(chan any, 8)
 	delegateCh := make(chan any, 8)
-	startUringDispatchers(fsClient, delegateCh, tempWMCh, tempFontReplyCh)
+	// stdoutCh receives Write(fd≤2) requests so they bypass the file lane
+	// and can be processed while the file lane is blocked on fsclient.
+	stdoutCh := make(chan sys.SyscallRequest, 32)
+	startUringDispatchers(fsClient, delegateCh, stdoutCh, tempWMCh, tempFontReplyCh)
 	if err := fsClient.Connect(); err != nil {
 		panic(fmt.Sprintf("[linux] FATAL: fsclient.Connect: %v", err))
 	}
@@ -455,7 +516,7 @@ func MazarinMain() {
 
 	var delegateDataCh <-chan delegateMsg
 	if delegateErr == nil {
-		delegateDataCh = startUringDelegateHandler(delegateCh, handler, suppressSerialCopy)
+		delegateDataCh = startUringDelegateHandler(delegateCh, stdoutCh, handler, suppressSerialCopy)
 	}
 
 	// 7. Serial port soft IRQ.

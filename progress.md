@@ -1,5 +1,87 @@
 # Progress Log
 
+## Session: 2026-04-24 — Fs↔Linux delegate deadlock FIXED
+
+### Diversion from mail-dumb easy part
+
+Discovered a prior workaround in `maz/fs/fsipc.go:tmpTrace` routing fs
+diagnostics through `sys.UartWriteString` to avoid an IPC deadlock. Root
+cause: linux's delegate worker is a single goroutine that blocks on
+`fsclient.RespCh` while fs processes a request; fs's `fmt.Printf` during
+that handler would try to `Write(fd=1)` back to linux, which queues behind
+the blocked worker, which can't drain until fs responds, which can't happen
+because fs is waiting for its Write to be replied. See findings.md
+"Fs ↔ Linux Delegate Handler Deadlock" for the full cycle analysis.
+
+### Fix: two-lane delegate handler
+
+Peeled `Write(fd ≤ 2)` off the file lane onto its own stdout lane.
+
+**`maz/linux/main.go`:**
+- `sidStates` guarded by `sync.Mutex` (only shared state between lanes).
+  `sidIncRef` / `sidDecRef` / `handleDeathNotification` all take the lock
+  briefly; cleanup/DeathAck happen outside the lock so fsclient calls don't
+  run under it.
+- `startUringDispatchers` now takes a `stdoutCh chan sys.SyscallRequest`.
+  Ring-1 dispatch switched from `On(ProtoFSDelegateReq, ... delegateCh)` to
+  `OnFunc` that inspects the payload: `Write` with `fd ≤ 2` → `stdoutCh`,
+  everything else → `delegateCh`.
+- `startUringDelegateHandler` now spawns two goroutines:
+  - **Stdout lane** consumes `stdoutCh`: sidIncRef, copy bytes,
+    `v.Reply(len)`, sidDecRef, push to `dataCh`. Never touches fsclient.
+  - **File lane** consumes `delegateCh`: unchanged logic, handles file
+    syscalls (may block on fsclient), stdin, death/idle notifications.
+
+**`maz/fs/fsipc.go`:**
+- `tmpTrace` rewritten to use `fmt.Printf` (was `sys.UartWriteString`).
+- Two other `sys.UartWriteString` calls in `processRequest` and `respond`
+  swapped to `fmt.Printf`.
+- Big "must use UartWriteString" comment removed (no longer true — now
+  references findings.md for the full background).
+- `mazzy/mazarin/sys` import dropped (unused).
+
+**`maz/fs/main.go`:**
+- `readFileIntoPages` timing log switched to `fmt.Printf` (runs in the
+  steady-state LoadFile handler).
+- Boot-sequence and OnDeath `sys.UartWriteString` calls left as-is (run
+  pre-linux-ready or when linux may be dying).
+
+### Verification
+
+- `linux:arm64`, `linux:x86_64`: clean builds.
+- `fs:arm64`, `fs:x86_64`, `fs:riscv64`: clean builds.
+- `linux:riscv64` fails at `mazarin/mazdl.applyRelative` etc. — verified
+  pre-existing via git stash + rebuild (mazdl RISC-V port lagging per
+  memory, not related to this change).
+- ARM64 HVF 60s run: boots through kernel → fs → rachel → linux → prefs →
+  helloworld; two status ticks at 30s/50s; no hangs. `[fs] /rachel.maz:
+  ... 41ms` etc. confirms `fmt.Printf` from fs handlers is reaching the
+  serial console via the stdout lane.
+- Bleve `/tmp` write path (the original deadlock trigger) only fires when
+  mail app launches; not exercised in boot. Structural fix is correct;
+  runtime exercise left for the next mail-dumb session.
+
+### Files changed
+
+- `maz/linux/main.go` — sidStates mutex; stdoutCh; two-lane delegate
+  handler; OnFunc-based ring-1 dispatch.
+- `maz/fs/fsipc.go` — fmt.Printf in tmpTrace + two other sites; comment
+  rewrite; `sys` import removed.
+- `maz/fs/main.go` — fmt.Printf for readFileIntoPages timing log.
+- `findings.md` — new top section on the IPC cycle + fix.
+- `task_plan.md` — pivot section flagging the diversion.
+- `progress.md` — this entry.
+- `.claude/.../memory/feedback_no_workaround_deadlocks.md` — new feedback
+  memory: don't paper over IPC cycles with UART bypasses.
+
+### Resume point
+
+mail-dumb easy part — body display, PageUp/PageDown, mark-read, delete.
+See "Stashed: mail-dumb easy part" in task_plan.md for pre-diversion
+status.
+
+---
+
 ## Session: 2026-04-23 — mail-dumb hard part COMPLETE
 
 ### Smart Cache Phases S1–S4 implemented and verified
@@ -832,3 +914,112 @@ issue #4 for description and deferred fix approach.
   by removing runtime from plugins entirely; investigation deferred until then
 - **Revert before next boot:** `config/kernel.arm64.toml` `go_mem_limit=256` → `24`
 - See `task_plan.md` open issue #5 for full details and next diagnostic steps
+
+---
+
+## Session: 2026-04-24 — linux/fs delegate consistency investigation
+
+### Triggered by
+maildb's emlx walker enumerating only 209/317 files; fti's bleve persister/merger
+hitting ENOENT on segments it should have just written.
+
+### What was investigated
+- Mapped the syscall path: userspace → linux shepherd → fs.maz IPC → shared/fs/ext2.
+- Read `maz/linux/syscalls.go` (sysOpenat, sysGetdents64, sysWrite, sysClose, sysFsync,
+  sysRenameat, flushWriteBuf), `mazarin/fsclient/client.go` (Open, Read, Write,
+  ReadDir wrappers), `maz/fs/fsipc.go` (ipcOpen, ipcReadDir, ipcRename, marshalDirents),
+  `maz/fs/main.go` (single-goroutine select loop confirming serial access),
+  `shared/fs/ext2/reader.go` (LookupDir, ReadDir walks all blocks),
+  `shared/fs/ext2/writer.go` (Rename: add-then-remove, not atomic).
+
+### What was found
+- **Bug A root cause confirmed**: `sysGetdents64` advances directory offset by the
+  fs-side marshalled count rather than the user-delivered count. Detailed in findings.md.
+- **Bug B partially diagnosed**: ruled out concurrency and ext2 dir-block enumeration;
+  suspects narrowed to linux write-buffer best-effort-flush-on-close OR ext2
+  non-atomic Rename. Need fs.maz IPC tracing to confirm.
+
+### Files touched
+- `task_plan.md` — added "NEW INVESTIGATION (2026-04-24)" section + status update.
+- `findings.md` — added "Linux/fs delegate consistency investigation (2026-04-24)" section.
+- `progress.md` — this entry.
+- (No code changes yet — investigation is read-only per phase plan.)
+
+### Next steps (when resumed)
+1. Implement Bug A fix in `maz/linux/syscalls.go::sysGetdents64`. Two options:
+   (a) re-walk the truncated buffer counting record headers, advance offset by that.
+   (b) plumb user buf size into FSIPCReqPayload so fs.maz packs accordingly.
+   Option (a) is the smaller surgical fix.
+2. Add Criticalf instrumentation to fs.maz's `ipcOpen`, `ipcWrite`, `ipcRename` to
+   capture the operation sequence preceding a SCORCH ENOENT. Reproduce in a 90s run.
+3. Once instrumented data is in, propose and implement Bug B fix.
+
+### Session: 2026-04-24 (continued) — Bug A fix + Bug B instrumentation
+
+**Bug A fix shipped** in `maz/linux/syscalls.go::sysGetdents64`:
+- Added `deliveredDirents(src, maxBytes)` helper that walks the linux_dirent64
+  records (reclen at byte offset 16 of each record) and counts how many full
+  records fit inside `maxBytes` (the user's buffer). Stops on the first
+  record that would overflow.
+- Replaced `e.offset += int64(entryCount)` (the marshalled count) with
+  `e.offset += int64(delivered.count)` (the actually-delivered count).
+- Added a one-line `[linux] getdents64:` log when delivered.count !=
+  entryCount, so any future truncation is visible. Will be noisy initially
+  while large directories are walked — that's the point.
+
+**Bug B instrumentation shipped** in `maz/fs/fsipc.go`:
+- `fsHandle` gained a `path` field so write/close traces can identify the
+  file by name.
+- New helpers `tmpTrace(format, ...)` and `isTmpPath(p)` that emit
+  `[fs:tmp] ...` log lines for any operation on a path under `/tmp/`.
+- Wired into `ipcOpen` (OPEN, OPEN+CREAT, both ok and fail variants),
+  `ipcWrite` (WRITE, WRITE FAIL), `ipcRemove`, `ipcRename`. Builds clean.
+
+**Builds:** `linux:arm64` and `fs:arm64` both clean.
+
+**Next:** 90s ARM64 HVF run. Expectations:
+1. maildb's emlx walker should now enumerate **all 317** files (not 209).
+2. `[linux] getdents64:` may print during early walks of the 231-entry
+   Messages dir; that's diagnostic, not error.
+3. Whenever bleve hits SCORCH ENOENT, the preceding `[fs:tmp]` lines
+   will show the exact OPEN+CREAT / WRITE / RENAME sequence on that file
+   path — which should let us identify Bug B's root cause from the log.
+
+### Session: 2026-04-24 (continued) — Bug A confirmed fixed; Bug B traces too chatty
+
+**60s ARM64 HVF run results:**
+
+Bug A fix VALIDATED:
+- emlx walked **309/317** files (was 209 before fix). +100 files now visible.
+- 306 parsed cleanly (was 204).
+- linux's getdents64 truncation reports fired 83 times — that's the diagnostic
+  helper saying "fs marshalled more than user buf could hold; advanced offset
+  by delivered count". Working as designed.
+- 0 panics, 0 deadlocks, fti indexed 306/306 docs.
+
+Bug B partial data:
+- 5 OPEN FAIL events captured. 3 of them are BENIGN (bleve/badger probing for
+  optional files like MANIFEST, KEYREGISTRY, "blev" typo'd parent — standard
+  "open then create-if-missing" pattern).
+- 2 are real bugs: SCORCH errors on `0000000000a2.zap` and `0000000000b4.zap`
+  — segments bleve created during this run but later can't open for merge.
+- 8 walk errors / 3 skips persist on the emlx side (similar pattern to bleve:
+  files appear in dirent listing but lookup fails). Confirms Bug B is broader
+  than bleve.
+
+CRITICAL ISSUE FOUND: tmpTrace deadlock-fix #2.
+- The original `fmt.Printf` deadlocked (linux IPC loop). Fixed → sys.UartWriteString.
+- BUT: 86,804 successful WRITE traces × ~150 chars = ~13 MB to slow polled UART.
+- User report: HUGE multi-second pause after clicking a message. Cause:
+  fs.maz blocked on UART drain when bleve flushes a batch of writes.
+- Fix: removed the successful-WRITE trace; kept WRITE FAIL (rare, valuable).
+- All other op traces (OPEN, OPEN+CREAT, RENAME, REMOVE) retained — total
+  ~1.3K traces per run, manageable.
+
+Files touched:
+- `maz/fs/fsipc.go` — removed successful-WRITE tmpTrace; comment explains why.
+
+Next:
+- Re-run with reduced tracing. Verify pauses gone.
+- For Bug B, look at the OPEN+CREAT for `0000000000a2.zap` and the subsequent
+  ops on it; trace forward to the failed merger lookup.

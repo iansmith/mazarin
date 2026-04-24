@@ -195,21 +195,76 @@ func (dc *DrawContextImpl) Pop() {
 // rectangles are supported (all current callers use DrawRectangle).
 // If a clip is already active, the new clip is intersected with it.
 func (dc *DrawContextImpl) Clip() {
+	// Clear the path on every exit path — including panics or early returns —
+	// so a malformed clip request from one caller (e.g. a renderer panicking
+	// mid-Clip on a rounded path) doesn't leave residual segments that would
+	// then poison the next caller's DrawRectangle+Clip pair.
+	defer dc.ClearPath()
+
 	if len(dc.path) == 0 {
 		return
 	}
-	rect, ok := dc.pathIsAxisAlignedRect()
-	if !ok {
-		panic("non-rectangular Clip() not supported")
+	var r image.Rectangle
+	if rect, ok := dc.pathIsAxisAlignedRect(); ok {
+		r = image.Rect(int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+	} else {
+		// Non-rectangular path (rounded rect, arc, etc.). Fall back to the
+		// path's bounding box instead of panicking — losing rounded corners
+		// is far better than crashing the shepherd. Callers that need exact
+		// non-rect clipping can switch to a clipMask-based path.
+		r = dc.pathBoundingBox()
 	}
-	r := image.Rect(int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
 	if dc.gs.hasClipRect {
 		r = r.Intersect(dc.gs.clipRect)
 	}
 	dc.gs.clipRect = r
 	dc.gs.hasClipRect = true
 	dc.gs.clipMask = nil
-	dc.ClearPath()
+}
+
+// pathBoundingBox returns the integer-pixel bounding rectangle of every point
+// in the current path. Used as a fallback for Clip() when the path isn't a
+// simple axis-aligned rectangle.
+func (dc *DrawContextImpl) pathBoundingBox() image.Rectangle {
+	if len(dc.path) == 0 {
+		return image.Rectangle{}
+	}
+	minX, minY := math.Inf(1), math.Inf(1)
+	maxX, maxY := math.Inf(-1), math.Inf(-1)
+	for _, seg := range dc.path {
+		// Each pathSeg holds up to 3 (x,y) pairs in args[0..5]; only the
+		// pairs actually written by the op contribute. To keep this simple
+		// and correct we walk all 6 floats but treat unset pairs (both 0)
+		// as a no-op. That matches MoveTo/LineTo/Quadratic/Cubic which
+		// always overwrite the relevant slots before appending.
+		pairs := []struct{ x, y float64 }{
+			{seg.args[0], seg.args[1]},
+			{seg.args[2], seg.args[3]},
+			{seg.args[4], seg.args[5]},
+		}
+		for _, p := range pairs {
+			if p.x == 0 && p.y == 0 {
+				continue
+			}
+			if p.x < minX {
+				minX = p.x
+			}
+			if p.x > maxX {
+				maxX = p.x
+			}
+			if p.y < minY {
+				minY = p.y
+			}
+			if p.y > maxY {
+				maxY = p.y
+			}
+		}
+	}
+	if math.IsInf(minX, 1) {
+		return image.Rectangle{}
+	}
+	return image.Rect(int(math.Floor(minX)), int(math.Floor(minY)),
+		int(math.Ceil(maxX)), int(math.Ceil(maxY)))
 }
 
 // pathIsAxisAlignedRect returns the bounding rectangle if the current

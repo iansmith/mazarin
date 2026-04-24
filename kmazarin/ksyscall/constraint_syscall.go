@@ -170,11 +170,19 @@ func SyscallAttrWrite(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) int64 {
 	// Check ownership.
 	pid, _ := getCurrentThreadSIDAndTID()
 	if node.Owner != uint16(pid) {
+		// Criticalf bypasses the soft-IRQ ring, so this lands on the UART
+		// even when the writing shepherd is about to die from the
+		// resulting EPERM panic. Without it the diagnostic disappears.
+		klog.Criticalf("[attr]",
+			"[attr] AttrWrite EPERM: slot=%d node.Owner=%d caller pid=%d kind=%d\n",
+			slot, node.Owner, pid, node.Kind)
 		return -1 // EPERM
 	}
 
 	// Cannot write to constraint attributes.
 	if node.Kind == flat.AttrKindConstraint {
+		klog.Criticalf("[attr]",
+			"[attr] AttrWrite EPERM: slot=%d is constraint kind\n", slot)
 		return -1 // EPERM
 	}
 
