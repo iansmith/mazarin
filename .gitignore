@@ -86,6 +86,9 @@ fonts/
 /helloworld
 
 # Stray shepherd/tool binaries
+# (Created when `go build ./maz/<name>` is run from the repo root
+# instead of going through `$GO tool task`. The Taskfile writes to
+# build/ — never edit this list to "allow" a root binary.)
 /fs
 /stdio
 /keymapper
@@ -94,8 +97,16 @@ fonts/
 /maildb
 /mail-ui
 /versai
+/fti
+/mail
 
 # Old directories (should be removed)
 src/
 flash/
 /enable-mazzy
+
+# Personal / runtime mail data (never committed — pre-existing .gitkeep
+# placeholders and the gmail sample stay tracked because git ignores
+# rules don't untrack files, but new content like current.mbox/ or
+# .DS_Store is blocked.)
+data/mail/
