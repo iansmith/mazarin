@@ -15,6 +15,18 @@ type TextLayout interface {
 	// font-level metrics including a FontID for subsequent calls.
 	OpenFont(req OpenFontRequest) (FontMetrics, error)
 
+	// OpenTemporaryFont opens a font for a single render scope.
+	// Forwards to [GlyphProvider.OpenTemporaryFont]; callers must
+	// pair with [CloseTemporaryFont] using the returned FontID.
+	// CloseTemporaryFont is a no-op for permanent-range fontIDs (the
+	// dedupe path inside the provider may return one), so a renderer
+	// can defer-close every fontID it opens without inspection.
+	OpenTemporaryFont(req OpenFontRequest) (FontMetrics, error)
+
+	// CloseTemporaryFont releases a fontID returned by
+	// OpenTemporaryFont. See [GlyphProvider.CloseTemporaryFont].
+	CloseTemporaryFont(fontID int32) error
+
 	// LayoutText shapes text and rasterizes each glyph, returning
 	// positioned glyphs ready for compositing.
 	LayoutText(params ShapingParams) (*TextRun, error)
@@ -86,19 +98,52 @@ func (tl *HarfBuzzTextLayout) OpenFont(req OpenFontRequest) (FontMetrics, error)
 	if err != nil {
 		return FontMetrics{}, err
 	}
-
-	// Register with shaper if not already done.
-	if tl.fonts[metrics.FontID] == nil {
-		face := tl.provider.Face(metrics.FontID)
-		tl.shaper.RegisterFont(metrics.FontID, face, req.Size)
-		tl.fonts[metrics.FontID] = &openedFont{
-			fontID:  metrics.FontID,
-			metrics: metrics,
-			face:    face,
-		}
-	}
-
+	tl.registerOpenedFont(metrics, req.Size)
 	return metrics, nil
+}
+
+// OpenTemporaryFont forwards to the provider's temp-pool open. Fontsvc-side
+// fontIDs returned through the temp pool may have wm.TempFontIDBase (0x1000)
+// OR'd in; with the current FontSvcGlyphProvider fallback path that never
+// happens (returns permanent-range fontIDs only). The shaper registration
+// path here is conservative: it only registers in-range IDs, so when the
+// real temp-pool IPC lands we'll either widen maxFonts or move to a sparse
+// map keyed by fontID. Both options preserve this method's semantics.
+func (tl *HarfBuzzTextLayout) OpenTemporaryFont(req OpenFontRequest) (FontMetrics, error) {
+	metrics, err := tl.provider.OpenTemporaryFont(req, nil)
+	if err != nil {
+		return FontMetrics{}, err
+	}
+	tl.registerOpenedFont(metrics, req.Size)
+	return metrics, nil
+}
+
+// CloseTemporaryFont forwards to the provider. No-op for permanent-range
+// fontIDs (which is what every fontID returned by the current provider
+// stubs is, until the temp-pool IPC lands).
+func (tl *HarfBuzzTextLayout) CloseTemporaryFont(fontID int32) error {
+	return tl.provider.CloseTemporaryFont(fontID)
+}
+
+// registerOpenedFont stages a freshly-returned font with the HarfBuzz
+// shaper if it hasn't already been seen at this fontID. Bounded by
+// maxFonts; out-of-range IDs (temp-pool with 0x1000 bit, once the real
+// IPC lands) skip registration here and would route through whatever
+// expanded scheme replaces the fixed-size tl.fonts table.
+func (tl *HarfBuzzTextLayout) registerOpenedFont(metrics FontMetrics, size int32) {
+	if metrics.FontID < 0 || metrics.FontID >= maxFonts {
+		return
+	}
+	if tl.fonts[metrics.FontID] != nil {
+		return
+	}
+	face := tl.provider.Face(metrics.FontID)
+	tl.shaper.RegisterFont(metrics.FontID, face, size)
+	tl.fonts[metrics.FontID] = &openedFont{
+		fontID:  metrics.FontID,
+		metrics: metrics,
+		face:    face,
+	}
 }
 
 // serializeFeatures returns a stable string key for a FontFeature slice.

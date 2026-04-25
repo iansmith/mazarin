@@ -44,6 +44,21 @@ type DrawContext interface {
 	// "AtkinsonHyperlegible"), not a filesystem path.
 	OpenFont(family string, variant, size int32) (FontMetrics, error)
 
+	// OpenTemporaryFont opens a font scoped to a single render pass.
+	// The returned fontID MUST be paired with [CloseTemporaryFont] at
+	// the end of the render. The provider may return a fontID from its
+	// permanent pool when the requested face is already loaded — in
+	// that case CloseTemporaryFont is a no-op. Callers (e.g. louis14's
+	// HTML renderer) can therefore defer-close every fontID they open
+	// without inspecting the ID. See [GlyphProvider.OpenTemporaryFont].
+	OpenTemporaryFont(family string, variant, size int32) (FontMetrics, error)
+
+	// CloseTemporaryFont releases a fontID returned by
+	// OpenTemporaryFont. Tolerates fontIDs in the permanent range
+	// (returns nil) so callers may close indiscriminately. See
+	// [GlyphProvider.CloseTemporaryFont].
+	CloseTemporaryFont(fontID int32) error
+
 	// RegisterBuffer registers a parsed font buffer with the underlying
 	// [GlyphProvider] under (family, variant). Used for CSS @font-face
 	// fonts, which are fetched/decompressed by the caller and shaped

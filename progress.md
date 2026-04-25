@@ -1,5 +1,169 @@
 # Progress Log
 
+## Session: 2026-04-25 (very late) — louis14 temp-font integration
+
+louis14 reached a stable state (Phase 13e′/13f LayoutUnit migration
+settled, mail-app:arm64 rebuilds cleanly), so we applied the call-site
+changes from `design/louis14_temp_fonts_plan.md` end-to-end with the
+mazzy plumbing they need.
+
+### Code shipped
+
+**mazzy side (interface plumbing, additive):**
+
+- `mazarin/textshape/layout.go::TextLayout` — interface gains
+  `OpenTemporaryFont(req)` and `CloseTemporaryFont(fontID)`.
+  `HarfBuzzTextLayout` implements both: open delegates to
+  `provider.OpenTemporaryFont(req, nil)`, close to
+  `provider.CloseTemporaryFont`. Shaper registration extracted into
+  `registerOpenedFont` shared by OpenFont and OpenTemporaryFont (and
+  bounds-checked so future temp-pool fontIDs with the 0x1000 bit
+  don't overflow the fixed-size `tl.fonts` table).
+- `mazarin/textshape/draw_context.go::DrawContext` — interface gains
+  `OpenTemporaryFont(family, variant, size)` and `CloseTemporaryFont`.
+  Doc comments call out the permanent-pool no-op semantics so callers
+  can defer-close indiscriminately.
+- `mazarin/textshape/draw_impl.go` — DrawContextImpl implements the
+  new methods, forwarding to TextLayout. Metrics-cache population
+  factored into `cacheFontMetrics` shared by OpenFont and
+  OpenTemporaryFont.
+- `mazarin/fontcache/provider.go::FontSvcGlyphProvider.OpenTemporaryFont`
+  — third path (fonts not in permanent pool, not registered) now
+  falls back to `OpenFont` instead of returning ENOSYS. Fonts go to
+  the permanent pool; CloseTemporaryFont is a no-op for them. Makes
+  the new API safe for callers (louis14) before the real temp-pool
+  IPC lands.
+
+**louis14 side (`pkg/render/render.go`):**
+
+- `Renderer` gains `tempFontIDs []int32` field — collects fontIDs
+  opened during the current Render call.
+- `openFont` switches `r.dc.OpenFont` → `r.dc.OpenTemporaryFont` and
+  appends each returned fontID to `tempFontIDs`.
+- New `closeTempFonts()` helper releases each ID via
+  `dc.CloseTemporaryFont` and drops the per-render `fontCache` so the
+  next render re-opens cleanly.
+- Both public entry points (`Render`, `RenderEmbedded`) reset
+  `tempFontIDs[:0]` on entry and `defer r.closeTempFonts()`.
+
+### Build / smoke status
+
+- `$GO tool task` (full ARM64 chain): clean — diplomat, kmazarin,
+  rachel, fontsvc, fs, linux, **mail.elf** (which had been blocked on
+  louis14's WIP layout migration earlier today).
+- `$GO tool task run-arm64-hvf TIMEOUT=30`: boots clean. fontsvc
+  registers handlers, font index loads, mail-app starts. No panics,
+  no `[fontsvc] no free font slots`, 0 SCORCH, 0 EISDIR. fti
+  completes its 317-doc indexing in ~17s, heap stable
+  (linux=6MB, fti=4MB).
+
+### Behavior at runtime
+
+Until `FontSvcGlyphProvider`'s real temp-pool IPC implementation
+lands, the new path is functionally equivalent to the old:
+
+- measure.go opens fonts via `OpenFont` (permanent pool).
+- render.go opens via `OpenTemporaryFont`. The provider's
+  permanent-first dedupe matches measure's open and returns the same
+  fontID. CloseTemporaryFont on those is a no-op.
+- @font-face fonts go through `findRegistered` → `openRegistered`
+  (in-process, allocates from the local provider table). Close is
+  also no-op for those (they're permanent-range from the provider's
+  point of view).
+
+So the louis14 changes are exercising the new entry points end-to-end
+without yet exercising the temp pool. The temp pool kicks in once
+`FontSvcGlyphProvider.OpenTemporaryFont` gets the real IPC path
+(SharePagesWithTarget for caller bytes, mask 0x1000 on receive,
+local temp slot table). Tracked in task_plan.md under the resumable
+temp-font work.
+
+### Files modified
+
+mazzy: `mazarin/textshape/{layout.go, draw_context.go, draw_impl.go}`,
+`mazarin/fontcache/provider.go`, `task_plan.md`, `progress.md`.
+
+louis14: `pkg/render/render.go`.
+
+---
+
+## Session: 2026-04-25 (evening) — GridFrame scrollbar (constraint-driven)
+
+Implemented the mail-header grid scrollbar (item 1 of two urgent UX
+items the user pulled forward over the temp-font work). Visibility,
+maximum scroll, and thumb fraction all flow through constraint
+programs over the grid's published attrs — no per-frame imperative
+wiring beyond geometry positioning.
+
+### Code shipped (mazzy)
+
+- `mazarin/mancini/greater_i64_bool.{vgo,vbc.go}` — new constraint
+  program: `a > b` returning bool. Drives scrollbar `Visible`.
+- `mazarin/mancini/nonneg_sub.{vgo,vbc.go}` — new constraint program:
+  `max(a-b, 0)` returning int64. Drives scrollbar `MaxAttr`.
+- `mazarin/mancini/thumb_frac_permille.{vgo,vbc.go}` — new constraint
+  program: `visible * 1000 / total` returning int64 (permille,
+  0..1000). Drives scrollbar `ThumbFracPermilleAttr`. Edge-clamped:
+  total ≤ 0 or visible ≥ total → 1000; visible ≤ 0 → 0.
+- `mazarin/mancini/bind.go` — three new helpers:
+  `GreaterI64Bool(aURI, bURI)`, `NonnegSubI64(aURI, bURI)`,
+  `ThumbFracPermille(visibleURI, totalURI)`.
+- `mazarin/mancini/std/scrollbar.go::Scrollbar` — adds optional
+  `ThumbFracPermilleAttr`. When set, ThumbFrac = permille / 1000
+  (constraint-driven). When nil, falls back to the legacy pixel-mode
+  `mainAxis / (mainAxis + max)` calc used by ScrollerVertical.
+- `mazarin/mancini/std/grid_table.go::GridTable` — promotes three
+  internal fields to published attrs:
+  - `TotalRowsAttr` (written by SetTotalRows)
+  - `ScrollOffsetAttr` (written by ScrollBy / MoveSelection /
+    clampScroll; *shared with the GridFrame scrollbar's ValueAttr*
+    so drags and arrow keys feed the same source of truth)
+  - `RowHeightAttr` (refreshed each Draw)
+  - `Draw` pulls ScrollOffsetAttr back at top so external mutators
+    (scrollbar drag) take effect on the next frame.
+- `mazarin/mancini/std/grid_table.go::GridFrame` — embeds a vertical
+  Scrollbar at the right edge:
+  ```
+  scrollNeededAttr = GreaterI64Bool(TotalRowsAttr, VisibleRowCountAttr)
+  scrollMaxAttr    = NonnegSubI64(TotalRowsAttr, VisibleRowCountAttr)
+  thumbFracAttr    = ThumbFracPermille(VisibleRowCountAttr, TotalRowsAttr)
+  scrollbar.Visible             = EqualBool(scrollNeededAttr)   ← user-required
+  scrollbar.ValueAttr           = grid.ScrollOffsetAttr (shared)
+  scrollbar.MaxAttr             = scrollMaxAttr
+  scrollbar.ThumbFracPermilleAttr = thumbFracAttr
+  ```
+- `GridFrame.Draw` shrinks the grid subtree's effective draw width by
+  the scrollbar track width when `scrollbar.Visible()` (the
+  constraint-driven gate) is true; positions the scrollbar at the
+  right edge after dividers.
+
+### Design choice: ThumbFrac via constraint
+
+The user pushed back on an early draft that branched inside
+`Scrollbar.Draw` (row-mode vs pixel-mode). Cleaner answer: source
+ThumbFrac entirely from the constraint network so the scrollbar has
+no idea what its consumer is doing. `ThumbFracPermilleAttr` is the
+single hook; `ThumbFracPermille(visible, total)` is the program; both
+are shared between GridFrame and the (paused) ConsoleFrame work.
+
+### Build / smoke status
+
+- `$GO tool task mancini:build`: clean.
+- rachel / versai / calc / clocks all build clean against the new
+  mancini surface.
+- Smoke test deferred to the louis14 unblock (mail-app:arm64 was
+  blocked on louis14's WIP layout migration at the time).
+
+### Console rewrite (item 2) — PAUSED
+
+Foundation building blocks (the three constraint programs +
+ThumbFracPermilleAttr on Scrollbar) are general — ConsoleFrame will
+reuse them line-for-line. Detailed resume notes in `task_plan.md`
+under "Resumable: Console rewrite". User explicitly paused this to
+unblock mail-app via louis14 changes.
+
+---
+
 ## Session: 2026-04-25 (evening, continued) — Diversion #7 temp fonts foundation
 
 After closing Diversion #6 (committed `70e50d2`) the verification run

@@ -227,7 +227,9 @@ func (p *FontSvcGlyphProvider) allocFontID() int32 {
 	return -1
 }
 
-// OpenTemporaryFont — IPC-side stub. The full implementation will:
+// OpenTemporaryFont — IPC-side stub with safe fallback to OpenFont.
+//
+// The full implementation will:
 //   - check the permanent pool first (return that fontID if hit)
 //   - if data is non-nil, allocate IPC pages, copy bytes, SharePages
 //     to fontsvc, send RequestOpenTemporaryFont, get back a 0x1000|idx
@@ -238,9 +240,13 @@ func (p *FontSvcGlyphProvider) allocFontID() int32 {
 //     under the masked index (with isTemp=true)
 //
 // The wire protocol (wm.OpenTemporaryFont / wm.OpenTemporaryFontReply)
-// and the fontsvc temp pool are pending. Until then this returns an
-// error so callers fall back to OpenFont — current renderers (which
-// don't use OpenTemporaryFont yet) are unaffected.
+// and the fontsvc-side temp pool are landed (commits f976421 + d559029);
+// the client-side IPC plumbing for SharePagesWithTarget + tier-1 cache
+// reception is still pending. Until that lands, the third path falls
+// back to OpenFont — fontIDs returned land in the permanent pool, and
+// CloseTemporaryFont is a no-op for permanent-range IDs. This makes
+// the call safe for callers that have already switched to the new API
+// (e.g. louis14's HTML renderer) without exercising the temp pool yet.
 func (p *FontSvcGlyphProvider) OpenTemporaryFont(req textshape.OpenFontRequest, data []byte) (textshape.FontMetrics, error) {
 	// Permanent-first: if already open in the regular slot table, reuse.
 	for i := int32(0); i < MaxFonts; i++ {
@@ -255,7 +261,11 @@ func (p *FontSvcGlyphProvider) OpenTemporaryFont(req textshape.OpenFontRequest, 
 		return p.openRegistered(req, reg)
 	}
 	_ = data
-	return textshape.FontMetrics{}, errors.New("OpenTemporaryFont: temp pool IPC not yet implemented")
+	// Fallback: defer to the permanent-pool OpenFont path. CloseTemporaryFont
+	// for the resulting permanent-range fontID is a no-op, so the renderer's
+	// open/close discipline still works correctly — it just doesn't recycle
+	// slots until the real IPC path lands.
+	return p.OpenFont(req)
 }
 
 // CloseTemporaryFont — IPC-side stub. The full implementation will:

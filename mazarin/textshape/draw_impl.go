@@ -941,11 +941,48 @@ func (dc *DrawContextImpl) OpenFont(family string, variant, size int32) (FontMet
 	if err != nil {
 		return FontMetrics{}, err
 	}
+	dc.cacheFontMetrics(m)
+	return m, nil
+}
+
+// OpenTemporaryFont forwards to the underlying TextLayout's temp-pool
+// open. Caches the returned metrics the same way OpenFont does so
+// subsequent GetFontMetrics(fontID) calls work uniformly. Callers must
+// pair with CloseTemporaryFont once the render scope ends; see the
+// [DrawContext.OpenTemporaryFont] doc comment for permanent-fontID
+// no-op semantics.
+func (dc *DrawContextImpl) OpenTemporaryFont(family string, variant, size int32) (FontMetrics, error) {
+	m, err := dc.tl.OpenTemporaryFont(OpenFontRequest{
+		Family:  family,
+		Variant: variant,
+		Size:    size,
+	})
+	if err != nil {
+		return FontMetrics{}, err
+	}
+	dc.cacheFontMetrics(m)
+	return m, nil
+}
+
+// CloseTemporaryFont releases a temporary fontID previously returned by
+// OpenTemporaryFont. Forwards to the TextLayout (and through to the
+// provider). The metrics cache entry is left in place — permanent-range
+// fontIDs may still be reused by other callers, and temp-range entries
+// will be overwritten on the next OpenTemporaryFont with the same ID.
+func (dc *DrawContextImpl) CloseTemporaryFont(fontID int32) error {
+	return dc.tl.CloseTemporaryFont(fontID)
+}
+
+// cacheFontMetrics stores metrics in the per-fontID cache so
+// GetFontMetrics works without going back through the TextLayout.
+// Bounds-checked; out-of-range fontIDs (e.g. temp-pool 0x1000+ once
+// the real IPC lands) silently skip cache population — those callers
+// will pay a small lookup cost via tl.CachedFontMetrics fallback.
+func (dc *DrawContextImpl) cacheFontMetrics(m FontMetrics) {
 	if m.FontID >= 0 && int(m.FontID) < len(dc.metrics) {
 		cp := m
 		dc.metrics[m.FontID] = &cp
 	}
-	return m, nil
 }
 
 // RegisterBuffer forwards a font buffer registration to the underlying

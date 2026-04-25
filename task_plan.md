@@ -1,41 +1,148 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: Mail UX urgent — grid scrollbar + console rewrite
+## TOP OF STACK: louis14 temp-font integration (resumed)
 
-User has paused the temp-font work (louis14 can't be touched right
-now — Phase 13e′/13f LayoutUnit migration in progress over there)
-and pulled two more urgent mail-app items forward:
+louis14 reached a stable state — the Phase 13e′/13f `LayoutUnit`
+migration that was blocking `mail-app:arm64` is settled. We're now
+applying the call-site changes captured in
+`design/louis14_temp_fonts_plan.md` so the temp-font foundation
+landed in mazzy (commits f976421 + d559029) is exercised end-to-end.
 
-1. **Mail header grid: scrollbar for overflow.** The grid of message
-   headers needs a vertical scrollbar that appears only when the
-   collection has more items than fit in the viewing area. Driving
-   the scrollbar moves the *virtual* cursor position the same way
-   the down-arrow key does — the actual label interactors stay
-   fixed, content scrolls underneath. (No interactor recycling
-   beyond what's already in place.)
+After louis14 changes land:
+1. Smoke-test mail-app rendering HTML (verify temp slots recycle,
+   permanent pool stays bounded, no leaks across many clicks).
+2. Resume the deferred mazzy-side temp-font work:
+   - `FontSvcGlyphProvider` real IPC implementation (uring open/close
+     + SharePagesWithTarget for caller bytes + tier-1 cache page mmap
+     on receive + mask `0x1000` on receive).
+   - `InternalGlyphProvider` callback wiring (two new
+     `FontSvcInjector` methods for in-process temp-font use).
+   - Hook `CleanupShepherdFonts(deadSID)` into rachel's
+     `handleShepherdDeath`.
+   - fontsvc shared-bytes path (`msg.FontDataVA != 0`) — needs
+     kernel mapping primitive.
 
-2. **Console interactor rewrite.** Replace the current console
-   implementation with one that shares the mail-header grid's row
-   logic — ideally literally the same component. Two layers:
-   - **Display:** fixed set of row interactors, count determined by
-     viewing-area height (stack as many full rows as fit, never
-     a partial row at the bottom).
-   - **Buffer:** ring buffer of 500 lines behind the display.
-     Scrollback (later) reads from the ring buffer; the display
-     window is the tail by default.
+---
 
-### Mail program follow-ups (deferred, recorded so they don't drop)
+## Resumable: Console rewrite (paused mid-flight, grid scrollbar landed)
 
-These came up while closing diversion #6 / #7 and during the
-"what's next" survey; user paused them in favor of the two items
-above. Listed in priority order based on what we last observed:
+**Grid scrollbar (item 1) is DONE — committed `cc230e5`.** Visibility,
+max-scroll, and thumb fraction are all driven by constraint programs
+(`GreaterI64Bool`, `NonnegSubI64`, `ThumbFracPermille`) over the
+grid's published `TotalRowsAttr` / `VisibleRowCountAttr` /
+`ScrollOffsetAttr`. Scrollbar.ValueAttr is shared with
+`grid.ScrollOffsetAttr` so drag and arrow keys feed the same source
+of truth. GridFrame.Draw shrinks the grid subtree's draw width by
+the scrollbar track width when `scrollbar.Visible()` is true.
+
+**Console rewrite (item 2) — NOT STARTED.** Resume here:
+
+### Spec (verbatim from user 2026-04-25)
+
+- Use the **same logic — preferably the same exact code** as the mail
+  header grid's row machinery.
+- Fixed set of row interactors that show text; behind them a **500-line
+  ring buffer** holds the most recent lines.
+- Number of rows is **determined by viewing-area height** — stack as
+  many full rows as will fit, NEVER a partial row at the bottom.
+- Switch console rows to **DynamicLabel** (drop the existing
+  `consoleLine` mono renderer). User accepts proportional font as
+  the trade-off for shared row logic.
+- Console exports the **same value attributes the grid does**: line
+  height, visible line count, total line count.
+- Console gets a scrollbar, **same shape as the grid scrollbar** —
+  reuse `mancini.GreaterI64Bool` / `mancini.ThumbFracPermille` /
+  `mancini.NonnegSubI64`. The scroll-needed constraint is identical.
+
+### Concrete plan
+
+**Files to touch:**
+- `mazarin/mancini/std/console.go` — rewrite from `consoleLine` →
+  `DynamicLabel`, dynamic row count, 500-line ring buffer.
+- `mazarin/mancini/std/console_frame.go` — NEW. Analogous to
+  `GridFrame`: NeuBox + Console + Scrollbar at right edge.
+  Constraint-driven Visible / Max / ThumbFrac off Console's
+  published attrs.
+- Callers of `NewConsole` / `NewConsoleWithBox` — switch to
+  `NewConsoleFrame` where the scrollbar is wanted (see `grep -rn
+  NewConsoleWithBox` for hit list; mancini test program is one,
+  there may be others in `tools/visuals`).
+
+**Console fields/attrs to publish (mirror GridTable shape):**
+- `LineHeightAttr` (already exists as `lineHeightAttr`; rename
+  capitalized, refresh each Draw — matches `RowHeightAttr`).
+- `VisibleLineCountAttr` (NEW — analogue of `VisibleRowCountAttr`;
+  count of full rows that fit; computed in Draw via the same
+  `floor((h - headerArea) / lineH)` math, but with `headerArea = 0`).
+- `TotalLineCountAttr` (NEW — analogue of `TotalRowsAttr`; `len(content)`,
+  capped at 500). Updated in `AddLine` / `HandleByte`.
+- `ScrollOffsetAttr` (NEW — analogue, lines from start of buffer to
+  first visible). Default value: keeps display tail-anchored unless
+  scrollbar is dragged.
+
+**Display orientation:** console is **bottom-anchored** (newest line
+at the bottom slot) by default. When ScrollOffsetAttr is at its max
+(= TotalLineCount - VisibleLineCount), display is "live" tail.
+Scrollbar drag pulls the user back in history; tail-anchoring resumes
+when ScrollOffset is manually pushed back to max OR (preferably) on
+any new AddLine when the user is currently at max.
+
+**Ring buffer:** the existing `content []lineData` + `trimBuffer()`
+already has the right shape. Just bump `maxBuf` to **500** unconditionally
+(drop the `rows * 10, min 200` rule). That removes a coupling between
+display row count and buffer depth — the user explicitly wants the
+ring at 500 regardless of display height.
+
+**Row pool resize:** mirror `GridTable.buildSlotPool` — grow-only,
+indexed by epoch, never destroys slots so attribute-table doesn't
+overflow on resize churn (this was a prior bug the grid pool
+specifically guards against). New labels are children of the
+console's layout; their constraint URIs include the epoch.
+
+**Per-line color:** `DynamicLabel.Color` is a public field; set it
+each Draw from `content[idx].color`. (Existing fd-based stderr-red
+behavior continues to populate `lineData.color` in HandleByte.)
+
+**ConsoleFrame visibility / scrollbar wiring:**
+```
+scrollNeededAttr  = ConstraintBool(GreaterI64Bool(TotalLineCountAttr.URI(), VisibleLineCountAttr.URI()))
+scrollMaxAttr     = ConstraintI64(NonnegSubI64(TotalLineCountAttr.URI(), VisibleLineCountAttr.URI()))
+thumbFracAttr     = ConstraintI64(ThumbFracPermille(VisibleLineCountAttr.URI(), TotalLineCountAttr.URI()))
+scrollbar.Visible = SwapToConstraint(EqualBool(scrollNeededAttr.URI()))
+scrollbar.ValueAttr             = console.ScrollOffsetAttr   (shared)
+scrollbar.MaxAttr               = scrollMaxAttr
+scrollbar.ThumbFracPermilleAttr = thumbFracAttr
+```
+
+(Identical pattern to `GridFrame`'s scrollbar wiring — line-by-line
+parallel to the constructor block in `grid_table.go` ~line 159–198.)
+
+**Mono vs. proportional:** open question if user has already
+committed to proportional via DynamicLabel (their words: "switch to
+DynamicLabel"). If they later want mono back, options are: (a) add a
+`Feature.Mono` style and route DynamicLabel through it; (b) add a
+`MonoDynamicLabel` variant. Don't pre-build either — wait for the
+ask.
+
+**Callers to migrate:**
+```
+grep -rn "NewConsole\b\|NewConsoleWithBox" /Users/iansmith/mazzy
+```
+(at least one in `mazarin/mancini/tools/visuals` likely.)
+
+**Validation:** $GO tool task mancini:build clean. Build whichever
+visual test program drives the console. Smoke-test in run-arm64-hvf
+once mail-app/everything else builds clean.
+
+### Mail program follow-ups (deferred — recorded so they don't drop)
+
+Listed in priority order:
 
 - **HTML body-pane robustness when temp fonts unavailable.** The
   fontsvc IPC stub still returns ENOSYS for caller-shared bytes;
   louis14's HTML renderer will need a graceful fallback chain
   (`@font-face` → registered buffer → fontsvc OpenFont → default
-  sans). Wired up once temp-font Phase 2 lands and louis14 changes
-  are coordinated.
+  sans). Wired up once temp-font Phase 2 lands.
 - **Click→body fetch latency / prefetch-ahead audit.** 5 clicks
   produced 12 body fetches in the verification run — explore
   whether the prefetch is excessive and whether bounded LRU on
@@ -48,24 +155,6 @@ above. Listed in priority order based on what we last observed:
   since the uring.Send EAGAIN retry fix; keep watching. If it
   recurs the new error message will surface senderSID + actual
   errno.
-
-### When the temp-font work resumes
-
-Foundation is committed (d559029 + f976421). Next items, in order:
-
-1. `FontSvcGlyphProvider` real IPC implementation (uring temp
-   open/close + SharePagesWithTarget for caller bytes + tier-1
-   cache page mmap on receive + mask 0x1000 on receive).
-2. `InternalGlyphProvider` callback wiring (two new
-   `FontSvcInjector` methods).
-3. Hook `CleanupShepherdFonts(deadSID)` into rachel's
-   `handleShepherdDeath`.
-4. fontsvc shared-bytes path (msg.FontDataVA != 0) — needs
-   kernel mapping primitive.
-5. louis14 call-site changes per
-   `design/louis14_temp_fonts_plan.md` — user-coordinated.
-6. Smoke test once mail.elf builds again (currently blocked on
-   louis14 LayoutUnit migration).
 
 ---
 
