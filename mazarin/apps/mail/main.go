@@ -393,12 +393,6 @@ func main() {
 		case resp := <-mailRespCh:
 			handleMailResponse(resp)
 			redraw("mail-resp")
-			if cache != nil {
-				first := gridFrame.FirstVisibleMsgNumAttr().Get()
-				last := gridFrame.LastVisibleMsgNumAttr().Get()
-				vis := gridFrame.VisibleRowCountAttr().Get()
-				cache.Rebalance(first, last, vis)
-			}
 
 		case <-clickTimer:
 			clickTimer = nil
@@ -407,18 +401,6 @@ func main() {
 			}
 
 		case <-eagerCh:
-			if cache != nil {
-				first := gridFrame.FirstVisibleMsgNumAttr().Get()
-				last := gridFrame.LastVisibleMsgNumAttr().Get()
-				vis := gridFrame.VisibleRowCountAttr().Get()
-				cache.Rebalance(first, last, vis)
-			}
-			if gridFrame != nil && cache != nil {
-				sel := gridFrame.SelectedAttr().Get()
-				if sel >= 0 && sel != lastBodyMsgNum && !bodyInFlight {
-					requestBody(sel, mailproto.BodyVariantHTML)
-				}
-			}
 			redraw("eagerCh")
 
 		case <-throbTicker.C:
@@ -427,6 +409,28 @@ func main() {
 			redraw("chooser-tick")
 
 		case <-time.After(500 * time.Millisecond):
+		}
+
+		// Run rebalance + body-fetch checks after every iteration, not
+		// gated on which select case fired. Eager dirty notifications
+		// from a click's setSelected → publishScrollAttrs frequently
+		// queue while the wmCh handler is still running; the next
+		// iteration's drainDirty would otherwise discard them and the
+		// eagerCh case would never see the change. Both calls are
+		// idempotent — cache.Rebalance short-circuits when the window
+		// hasn't moved, and requestBody is gated on
+		// (sel != lastBodyMsgNum && !bodyInFlight).
+		if cache != nil {
+			first := gridFrame.FirstVisibleMsgNumAttr().Get()
+			last := gridFrame.LastVisibleMsgNumAttr().Get()
+			vis := gridFrame.VisibleRowCountAttr().Get()
+			cache.Rebalance(first, last, vis)
+		}
+		if gridFrame != nil && cache != nil {
+			sel := gridFrame.SelectedAttr().Get()
+			if sel >= 0 && sel != lastBodyMsgNum && !bodyInFlight {
+				requestBody(sel, mailproto.BodyVariantHTML)
+			}
 		}
 	}
 }
