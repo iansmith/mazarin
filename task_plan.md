@@ -1,6 +1,75 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: Font slot exhaustion — temporary font support
+## TOP OF STACK: Mail UX urgent — grid scrollbar + console rewrite
+
+User has paused the temp-font work (louis14 can't be touched right
+now — Phase 13e′/13f LayoutUnit migration in progress over there)
+and pulled two more urgent mail-app items forward:
+
+1. **Mail header grid: scrollbar for overflow.** The grid of message
+   headers needs a vertical scrollbar that appears only when the
+   collection has more items than fit in the viewing area. Driving
+   the scrollbar moves the *virtual* cursor position the same way
+   the down-arrow key does — the actual label interactors stay
+   fixed, content scrolls underneath. (No interactor recycling
+   beyond what's already in place.)
+
+2. **Console interactor rewrite.** Replace the current console
+   implementation with one that shares the mail-header grid's row
+   logic — ideally literally the same component. Two layers:
+   - **Display:** fixed set of row interactors, count determined by
+     viewing-area height (stack as many full rows as fit, never
+     a partial row at the bottom).
+   - **Buffer:** ring buffer of 500 lines behind the display.
+     Scrollback (later) reads from the ring buffer; the display
+     window is the tail by default.
+
+### Mail program follow-ups (deferred, recorded so they don't drop)
+
+These came up while closing diversion #6 / #7 and during the
+"what's next" survey; user paused them in favor of the two items
+above. Listed in priority order based on what we last observed:
+
+- **HTML body-pane robustness when temp fonts unavailable.** The
+  fontsvc IPC stub still returns ENOSYS for caller-shared bytes;
+  louis14's HTML renderer will need a graceful fallback chain
+  (`@font-face` → registered buffer → fontsvc OpenFont → default
+  sans). Wired up once temp-font Phase 2 lands and louis14 changes
+  are coordinated.
+- **Click→body fetch latency / prefetch-ahead audit.** 5 clicks
+  produced 12 body fetches in the verification run — explore
+  whether the prefetch is excessive and whether bounded LRU on
+  body cache helps tail latency.
+- **maildb working set instrumentation.** ~140 MB steady state
+  attributed to badger LSM. Add a periodic `[maildb:mem]` log
+  that breaks down LSM-on-memory vs. heap so we can confirm it's
+  bounded across longer runs.
+- **linux-ui transient fontsvc-boot wedge.** Hasn't reproduced
+  since the uring.Send EAGAIN retry fix; keep watching. If it
+  recurs the new error message will surface senderSID + actual
+  errno.
+
+### When the temp-font work resumes
+
+Foundation is committed (d559029 + f976421). Next items, in order:
+
+1. `FontSvcGlyphProvider` real IPC implementation (uring temp
+   open/close + SharePagesWithTarget for caller bytes + tier-1
+   cache page mmap on receive + mask 0x1000 on receive).
+2. `InternalGlyphProvider` callback wiring (two new
+   `FontSvcInjector` methods).
+3. Hook `CleanupShepherdFonts(deadSID)` into rachel's
+   `handleShepherdDeath`.
+4. fontsvc shared-bytes path (msg.FontDataVA != 0) — needs
+   kernel mapping primitive.
+5. louis14 call-site changes per
+   `design/louis14_temp_fonts_plan.md` — user-coordinated.
+6. Smoke test once mail.elf builds again (currently blocked on
+   louis14 LayoutUnit migration).
+
+---
+
+## Diversion #7 (paused mid-flight): Font slot exhaustion — temporary font support
 
 ### Problem
 

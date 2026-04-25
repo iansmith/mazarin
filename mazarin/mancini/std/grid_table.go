@@ -40,6 +40,26 @@ type GridFrame struct {
 
 	grid     *GridTable
 	dividers []*Divider
+
+	// Vertical scrollbar at the right edge — appears when
+	// TotalRows > VisibleRowCount via a constraint program. Value/Max/
+	// Total are kept in row units (not pixels) and fed by per-frame
+	// imperative writes from GridFrame.Draw to keep the scrollbar's
+	// thumb math aligned with what GridTable scrolls.
+	scrollbar         *Scrollbar
+	scrollNeededAttr  *attr.Attribute[bool]   // constraint: TotalRowsAttr > VisibleRowCountAttr
+	scrollMaxAttr     *attr.Attribute[int64]  // value attr — written each Draw to (totalRows - visible).
+	scrollTrackWidth  int64
+}
+
+// scrollbarTrackWidth returns the pixel thickness of GridFrame's
+// vertical scrollbar (matches the std default; kept as a method so
+// the constant lives in one place).
+func (gf *GridFrame) scrollbarTrackWidth() int64 {
+	if gf.scrollTrackWidth > 0 {
+		return gf.scrollTrackWidth
+	}
+	return int64(math.Ceil(defaultScrollbarThick))
 }
 
 // NewGridFrame creates a fully-wired grid frame. myName is the GridFrame
@@ -136,6 +156,49 @@ func NewGridFrame(myName, parent string, pal mancini.Palette, theme mancini.Them
 		gf.dividers[1].SetupXConstraint(gf.dividers[0])
 	}
 
+	// --- Vertical scrollbar (constraint-driven appearance) ---
+	//
+	// Three derived attrs sourced entirely from the grid's published
+	// state (TotalRowsAttr, VisibleRowCountAttr, ScrollOffsetAttr):
+	//
+	//   scrollNeeded = TotalRows > VisibleRowCount        (drives Visible)
+	//   scrollMax    = max(TotalRows - VisibleRowCount, 0) (drives MaxAttr)
+	//   thumbFrac    = visible / total (in permille)       (drives ThumbFrac)
+	//
+	// ValueAttr is shared with grid.ScrollOffsetAttr so scrollbar drags
+	// directly mutate the grid's scroll state; GridTable.Draw reads the
+	// attr back. Pure dataflow — no per-frame imperative writes here for
+	// the scrollbar wiring. Only Draw orchestration (positioning) and
+	// the grid's effective draw-width shrink remain in GridFrame.Draw.
+	gf.scrollNeededAttr = attr.ConstraintBool(
+		mancini.LayoutURI(myName, mancini.DataTypeBool, mancini.LayoutProp("scrollNeeded")),
+		mancini.GreaterI64Bool(grid.TotalRowsAttr.URI(), grid.VisibleRowCountAttr.URI()))
+	gf.scrollMaxAttr = attr.ConstraintI64(
+		gridURI(myName, "scrollMax"),
+		mancini.NonnegSubI64(grid.TotalRowsAttr.URI(), grid.VisibleRowCountAttr.URI()))
+	thumbFracAttr := attr.ConstraintI64(
+		gridURI(myName, "thumbFracPermille"),
+		mancini.ThumbFracPermille(grid.VisibleRowCountAttr.URI(), grid.TotalRowsAttr.URI()))
+
+	sbName := myName + "_sb"
+	sbLH := mancini.NewLayoutAttributesBase(sbName, myName)
+	sbLH.Width = attr.ValueI64(
+		mancini.LayoutURI(sbName, mancini.DataTypeInt64, mancini.LayoutWidth),
+		gf.scrollbarTrackWidth())
+	sbLH.Height = attr.ValueI64(
+		mancini.LayoutURI(sbName, mancini.DataTypeInt64, mancini.LayoutHeight),
+		0)
+	sbLH.InitBounds(sbName)
+	// Visible = scrollNeeded — the rule the user named explicitly.
+	attr.SwapToConstraint(sbLH.Visible, mancini.EqualBool(gf.scrollNeededAttr.URI()))
+
+	scrollbar := NewScrollbar(sbLH, theme, true,
+		float64(gf.scrollbarTrackWidth()), 1.0, 0.0, false)
+	scrollbar.ValueAttr = grid.ScrollOffsetAttr
+	scrollbar.MaxAttr = gf.scrollMaxAttr
+	scrollbar.ThumbFracPermilleAttr = thumbFracAttr
+	gf.scrollbar = scrollbar
+
 	return gf
 }
 
@@ -228,9 +291,24 @@ func (gf *GridFrame) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 		contentH = 0
 	}
 
+	// Effective grid width: shrink by trackWidth when the scrollbar is
+	// visible. The visibility itself is constraint-driven (scrollNeededAttr);
+	// the width adjustment here is the local presentation consequence.
+	gridDrawW := w
+	scrollbarVisible := gf.scrollbar != nil && gf.scrollbar.Visible()
+	if scrollbarVisible {
+		gridDrawW = w - gf.scrollbarTrackWidth()
+		if gridDrawW < 0 {
+			gridDrawW = 0
+		}
+	}
+
 	// Draw grid subtree (margin → box → table) in the content area.
 	for _, child := range gf.GetChildren() {
 		if _, isDivider := child.(*Divider); isDivider {
+			continue
+		}
+		if child == gf.scrollbar {
 			continue
 		}
 		if l, ok := child.(mancini.Layouter); ok {
@@ -239,7 +317,7 @@ func (gf *GridFrame) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 				clh.X.Set(x)
 				clh.Y.Set(contentY)
 				if !clh.Width.IsConstraint() {
-					clh.Width.Set(w)
+					clh.Width.Set(gridDrawW)
 				}
 				if !clh.Height.IsConstraint() {
 					clh.Height.Set(contentH)
@@ -250,7 +328,7 @@ func (gf *GridFrame) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 			cs.SetDC(dc)
 		}
 		if d, ok := child.(mancini.NewDrawer); ok {
-			d.Draw(child, x, contentY, w, contentH, damage)
+			d.Draw(child, x, contentY, gridDrawW, contentH, damage)
 		}
 	}
 
@@ -308,6 +386,20 @@ func (gf *GridFrame) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 		div.Draw(div, actualDivX, y, divW, h, damage)
 	}
 
+	// Scrollbar draw — Visible() is the constraint-driven gate; when
+	// false the scrollbar Draw early-returns without rendering.
+	if gf.scrollbar != nil {
+		tw := gf.scrollbarTrackWidth()
+		sbX := x + w - tw
+		sbLH := gf.scrollbar.GetLayout()
+		sbLH.X.Set(sbX)
+		sbLH.Y.Set(contentY)
+		sbLH.Width.Set(tw)
+		sbLH.Height.Set(contentH)
+		gf.scrollbar.SetDC(dc)
+		gf.scrollbar.Draw(gf.scrollbar, sbX, contentY, tw, contentH, damage)
+	}
+
 	gf.Interactor.SnapshotDamage()
 }
 
@@ -359,15 +451,22 @@ type GridTable struct {
 	SelectedSetPagesAttr  *attr.Attribute[int64]   // ceil(count/512): pages needed for full IPC transfer
 
 	// Virtual scroll fields — active when rowFactory != nil.
-	TotalRows    int64          // total collection size; set via SetTotalRows
-	scrollOffset int64          // index of row shown in slot 0
-	visibleCount int64          // slots that fully fit; recomputed in Draw
+	totalRows    int64          // total collection size; set via SetTotalRows. Mirrors TotalRowsAttr for hot-path reads.
+	scrollOffset int64          // index of row shown in slot 0. Mirrors ScrollOffsetAttr for hot-path reads.
+	visibleCount int64          // slots that fully fit; recomputed in Draw. Mirrors VisibleRowCountAttr.
 	rowFactory   func() GridRow // creates new slot data objects; nil = legacy AddRow mode
 	poolEpoch    int            // incremented on rebuild; ensures unique widget URIs
 	slotPool     []GridRow      // fixed pool of virtual slot data objects
 	slotWidgets  []*RowPercentage
 	slotLabels   [][]*DynamicLabel
 
+	// Published attrs — exposed to the constraint network. Scroll
+	// containers (GridFrame's scrollbar) and viewers can bind to these.
+	// Total/Visible/RowHeight together let consumers compute their own
+	// derivatives (e.g. scrollNeeded = TotalRows > VisibleRowCount).
+	TotalRowsAttr          *attr.Attribute[int64] // collection size; written by SetTotalRows
+	ScrollOffsetAttr       *attr.Attribute[int64] // current scroll position in rows; read on draw, mutated by scrollbar
+	RowHeightAttr          *attr.Attribute[int64] // current row height in pixels; refreshed each Draw
 	FirstVisibleMsgNumAttr *attr.Attribute[int64]
 	LastVisibleMsgNumAttr  *attr.Attribute[int64]
 	VisibleRowCountAttr    *attr.Attribute[int64]
@@ -474,6 +573,9 @@ func NewGridTable(myName, parent string, pal mancini.Palette,
 		SelectedSetAttr:      attr.ValueCollI64(attr.ShepherdURI("int64", myName+"/selectedSet"), nil),
 		SelectedSetCountAttr: attr.ValueI64(attr.ShepherdURI("int64", myName+"/selectedSetCount"), 0),
 		SelectedSetPagesAttr: attr.ValueI64(attr.ShepherdURI("int64", myName+"/selectedSetPages"), 0),
+		TotalRowsAttr:          attr.ValueI64(gridURI(myName, "totalRows"), 0),
+		ScrollOffsetAttr:       attr.ValueI64(gridURI(myName, "scrollOffset"), 0),
+		RowHeightAttr:          attr.ValueI64(gridURI(myName, "rowHeight"), initialFS+6),
 		FirstVisibleMsgNumAttr: attr.ValueI64(gridURI(myName, "firstVisible"), -1),
 		LastVisibleMsgNumAttr:  attr.ValueI64(gridURI(myName, "lastVisible"), -1),
 		VisibleRowCountAttr:    attr.ValueI64(gridURI(myName, "visibleCount"), 0),
@@ -610,9 +712,14 @@ func (gt *GridTable) AddRow(row GridRow) func() {
 // --- Virtual scroll API ---
 
 // SetTotalRows sets the total collection size used for scroll clamping.
+// Updates both the cached field (for hot-path reads in Draw) and the
+// published TotalRowsAttr that scroll containers bind to via the
+// constraint network.
 func (gt *GridTable) SetTotalRows(n int64) {
-	gt.TotalRows = n
+	gt.totalRows = n
+	gt.TotalRowsAttr.Set(n)
 	gt.clampScroll()
+	gt.ScrollOffsetAttr.Set(gt.scrollOffset)
 }
 
 // SetRowFactory sets the factory used to create virtual slot data objects
@@ -628,6 +735,7 @@ func (gt *GridTable) SetRowFactory(f func() GridRow) {
 func (gt *GridTable) ScrollBy(delta int64) {
 	gt.scrollOffset += delta
 	gt.clampScroll()
+	gt.ScrollOffsetAttr.Set(gt.scrollOffset)
 	gt.applyScrollToSlots()
 	gt.publishScrollAttrs()
 	gt.DamageAll()
@@ -637,7 +745,7 @@ func (gt *GridTable) ScrollBy(delta int64) {
 // If nothing is currently selected, the first visible row is used as the starting point.
 // Scrolls to keep the new selection within the visible window.
 func (gt *GridTable) MoveSelection(delta int64) {
-	if gt.TotalRows == 0 {
+	if gt.totalRows == 0 {
 		return
 	}
 	cur := gt.selectedMsgNum
@@ -648,8 +756,8 @@ func (gt *GridTable) MoveSelection(delta int64) {
 	if next < 0 {
 		next = 0
 	}
-	if next >= gt.TotalRows {
-		next = gt.TotalRows - 1
+	if next >= gt.totalRows {
+		next = gt.totalRows - 1
 	}
 	msgNum := uint32(next)
 	gt.selectedMsgNum = next
@@ -664,13 +772,14 @@ func (gt *GridTable) MoveSelection(delta int64) {
 		gt.scrollOffset = next - gt.visibleCount + 1
 	}
 	gt.clampScroll()
+	gt.ScrollOffsetAttr.Set(gt.scrollOffset)
 	gt.applyScrollToSlots()
 	gt.publishScrollAttrs()
 	gt.DamageAll()
 }
 
 func (gt *GridTable) clampScroll() {
-	max := gt.TotalRows - gt.visibleCount
+	max := gt.totalRows - gt.visibleCount
 	if max < 0 {
 		max = 0
 	}
@@ -764,7 +873,7 @@ func (gt *GridTable) buildSlotPool(count int64) {
 
 // publishScrollAttrs writes the three visibility attrs from the current state.
 func (gt *GridTable) publishScrollAttrs() {
-	if gt.visibleCount == 0 || gt.TotalRows == 0 {
+	if gt.visibleCount == 0 || gt.totalRows == 0 {
 		gt.FirstVisibleMsgNumAttr.Set(-1)
 		gt.LastVisibleMsgNumAttr.Set(-1)
 		gt.VisibleRowCountAttr.Set(0)
@@ -772,8 +881,8 @@ func (gt *GridTable) publishScrollAttrs() {
 	}
 	first := gt.scrollOffset
 	last := gt.scrollOffset + gt.visibleCount - 1
-	if last >= gt.TotalRows {
-		last = gt.TotalRows - 1
+	if last >= gt.totalRows {
+		last = gt.totalRows - 1
 	}
 	gt.FirstVisibleMsgNumAttr.Set(first)
 	gt.LastVisibleMsgNumAttr.Set(last)
@@ -954,13 +1063,25 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 	dc.FillRectangle(float64(x), float64(y), float64(w), float64(h))
 
 	rh := gt.rowHeight()
+	gt.RowHeightAttr.Set(rh)
 
 	// --- Virtual scroll path ---
 	if gt.rowFactory != nil {
+		// Pull scrollOffset back from the published attr so external
+		// drivers (the GridFrame scrollbar's drag handler writing
+		// ScrollOffsetAttr) see their changes reflected on the next draw.
+		// MoveSelection / ScrollBy keep the field and the attr in sync;
+		// scrollbar-driven changes only touch the attr.
+		if extOff := gt.ScrollOffsetAttr.Get(); extOff != gt.scrollOffset {
+			gt.scrollOffset = extOff
+			gt.applyScrollToSlots()
+			gt.publishScrollAttrs()
+		}
 		newVC := gt.computeVisibleCount(h, rh)
 		if newVC != gt.visibleCount {
 			gt.visibleCount = newVC
 			gt.clampScroll()
+			gt.ScrollOffsetAttr.Set(gt.scrollOffset)
 			gt.buildSlotPool(newVC)
 		}
 
@@ -992,7 +1113,7 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 
 		// Draw data slots.
 		drawCount := gt.visibleCount
-		if avail := gt.TotalRows - gt.scrollOffset; avail < drawCount {
+		if avail := gt.totalRows - gt.scrollOffset; avail < drawCount {
 			drawCount = avail
 		}
 		if drawCount < 0 {

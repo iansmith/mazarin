@@ -1,0 +1,7 @@
+func nonnegSub() int64 {
+	v := derefI64("_a_") - derefI64("_b_")
+	if v < 0 {
+		v = 0
+	}
+	return v
+}

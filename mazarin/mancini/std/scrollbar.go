@@ -47,6 +47,16 @@ type Scrollbar struct {
 	ValueAttr *attr.Attribute[int64]
 	MaxAttr   *attr.Attribute[int64]
 
+	// ThumbFracPermilleAttr (optional) sources ThumbFrac entirely from
+	// the constraint network. Value is in permille (0..1000) so it can
+	// stay int64 like everything else. When set, Scrollbar.Draw uses
+	// it directly: ThumbFrac = clamp(permille, 0, 1000) / 1000. The
+	// pixel-based mainAxis/(mainAxis+max) fallback is bypassed —
+	// callers whose Value/Max are not in pixels (row-based scrollers
+	// like GridFrame, ConsoleFrame) provide a constraint program that
+	// computes visible/total in permille (mancini.ThumbFracPermille).
+	ThumbFracPermilleAttr *attr.Attribute[int64]
+
 	// Drag state — active during ClickDraggable interaction.
 	dragOffset  float64 // offset within thumb where press occurred
 	dragOrigPos float64 // ThumbPos at drag start, for revert on outside release
@@ -120,16 +130,34 @@ func (s *Scrollbar) Draw(self mancini.Interactor, x, y, w, h int64, damage image
 				val = maxVal
 			}
 			s.ThumbPos = float64(val) / float64(maxVal)
-			// ThumbFrac = viewportHeight / virtualHeight
-			// maxVal = virtualHeight - viewportHeight
-			// so viewportHeight = h, virtualHeight = h + maxVal
+		} else {
+			s.ThumbPos = 0
+		}
+	}
+	switch {
+	case s.ThumbFracPermilleAttr != nil:
+		// Source ThumbFrac purely from the constraint network — works
+		// uniformly for pixel-based and row-based scrollers; no Draw-time
+		// branching needed.
+		permille := s.ThumbFracPermilleAttr.Get()
+		if permille < 0 {
+			permille = 0
+		}
+		if permille > 1000 {
+			permille = 1000
+		}
+		s.ThumbFrac = float64(permille) / 1000.0
+	case s.ValueAttr != nil && s.MaxAttr != nil:
+		// Pixel-mode legacy fallback: ThumbFrac = mainAxis/(mainAxis+max).
+		// maxVal = virtualHeight - viewportHeight; viewport = h.
+		maxVal := s.MaxAttr.Get()
+		if maxVal > 0 {
 			mainAxis := h
 			if !s.IsVertical {
 				mainAxis = w
 			}
 			s.ThumbFrac = float64(mainAxis) / float64(int64(mainAxis) + maxVal)
 		} else {
-			s.ThumbPos = 0
 			s.ThumbFrac = 1.0
 		}
 	}

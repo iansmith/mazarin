@@ -1,0 +1,14 @@
+func thumbFracPermille() int64 {
+	visible := derefI64("_visible_")
+	total := derefI64("_total_")
+	if total <= 0 {
+		return 1000
+	}
+	if visible >= total {
+		return 1000
+	}
+	if visible <= 0 {
+		return 0
+	}
+	return visible * 1000 / total
+}

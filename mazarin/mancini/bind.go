@@ -124,6 +124,32 @@ func EqualBool(sourceURI string) *vm.Program {
 	return BindStrings(ProgIdentityBool, "_source_", sourceURI)
 }
 
+// GreaterI64Bool returns a constraint program that evaluates `a > b`,
+// where a and b are int64 source attributes. Used by scrollable
+// containers (GridFrame, ConsoleFrame) to drive scrollbar visibility:
+// `total > visible → scrollNeeded`.
+func GreaterI64Bool(aURI, bURI string) *vm.Program {
+	return BindStrings(ProgGreaterI64Bool, "_a_", aURI, "_b_", bURI)
+}
+
+// ThumbFracPermille returns a constraint program that computes the
+// scrollbar thumb fraction in permille (0..1000) from a `visible`
+// count and `total` count. Both URIs hold int64 attributes in the
+// SAME UNITS (rows for row-based scrollers, pixels for pixel-based).
+// Edge cases: total ≤ 0 or visible ≥ total → 1000 (full track);
+// visible ≤ 0 → 0. Output binds to Scrollbar.ThumbFracPermilleAttr.
+func ThumbFracPermille(visibleURI, totalURI string) *vm.Program {
+	return BindStrings(ProgThumbFracPermille, "_visible_", visibleURI, "_total_", totalURI)
+}
+
+// NonnegSubI64 returns a constraint program that computes `max(a - b, 0)`,
+// where a and b are int64 source attributes. Used for scrollbar Max
+// values (`max(total - visible, 0)`) to ensure a sensible range even
+// when visible momentarily exceeds total during a layout transition.
+func NonnegSubI64(aURI, bURI string) *vm.Program {
+	return BindStrings(ProgNonnegSub, "_a_", aURI, "_b_", bURI)
+}
+
 // EqualStr returns a constraint program that mirrors a string source attribute.
 // The returned program reads sourceURI and returns its value unchanged.
 func EqualStr(sourceURI string) *vm.Program {
