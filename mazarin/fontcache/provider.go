@@ -227,6 +227,51 @@ func (p *FontSvcGlyphProvider) allocFontID() int32 {
 	return -1
 }
 
+// OpenTemporaryFont — IPC-side stub. The full implementation will:
+//   - check the permanent pool first (return that fontID if hit)
+//   - if data is non-nil, allocate IPC pages, copy bytes, SharePages
+//     to fontsvc, send RequestOpenTemporaryFont, get back a 0x1000|idx
+//     fontID
+//   - if data is nil, send RequestOpenTemporaryFont with FontDataVA=0,
+//     fontsvc resolves from the registered map or filesystem
+//   - track the returned fontID in the provider's local fonts table
+//     under the masked index (with isTemp=true)
+//
+// The wire protocol (wm.OpenTemporaryFont / wm.OpenTemporaryFontReply)
+// and the fontsvc temp pool are pending. Until then this returns an
+// error so callers fall back to OpenFont — current renderers (which
+// don't use OpenTemporaryFont yet) are unaffected.
+func (p *FontSvcGlyphProvider) OpenTemporaryFont(req textshape.OpenFontRequest, data []byte) (textshape.FontMetrics, error) {
+	// Permanent-first: if already open in the regular slot table, reuse.
+	for i := int32(0); i < MaxFonts; i++ {
+		if p.fonts[i] != nil && p.fonts[i].family == req.Family &&
+			p.fonts[i].variant == req.Variant && p.fonts[i].size == req.Size {
+			return p.fonts[i].metrics, nil
+		}
+	}
+	// Pre-registered (CSS @font-face via RegisterBuffer): same in-process
+	// path as today's OpenFont — no IPC, no temp slot needed.
+	if reg := p.findRegistered(req.Family, req.Variant); reg != nil {
+		return p.openRegistered(req, reg)
+	}
+	_ = data
+	return textshape.FontMetrics{}, errors.New("OpenTemporaryFont: temp pool IPC not yet implemented")
+}
+
+// CloseTemporaryFont — IPC-side stub. The full implementation will:
+//   - if fontID is in permanent range (0x0000-0x003F): no-op
+//   - if fontID is in temp range (0x1000-0x101F): send
+//     RequestCloseTemporaryFont to fontsvc, free local provider entry,
+//     FreePages on the shared font-data buffer
+//   - tolerate unknown / out-of-range / double-close fontIDs (return nil)
+//
+// Until the IPC is wired, this is a no-op. Unknown fontIDs return nil
+// per the interface contract.
+func (p *FontSvcGlyphProvider) CloseTemporaryFont(fontID int32) error {
+	_ = fontID
+	return nil
+}
+
 // DumpGlyphStats prints glyph lookup statistics.
 func DumpGlyphStats() {
 	sys.UartWriteString("[provider] glyph stats: tier1=" + strconv.FormatInt(glyphTier1Hits.Load(), 10) +

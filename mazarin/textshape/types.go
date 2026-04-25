@@ -125,6 +125,33 @@ type GlyphProvider interface {
 	// registration. Calling RegisterBuffer again with the same
 	// (family, variant) replaces the prior registration.
 	RegisterBuffer(family string, variant int32, data []byte) error
+
+	// OpenTemporaryFont opens a font for a single render scope. Callers
+	// MUST call CloseTemporaryFont with the returned fontID once the
+	// render is complete. Used for CSS @font-face fonts and other
+	// per-page font loads where keeping the slot allocated forever
+	// would exhaust the permanent pool.
+	//
+	// The returned FontMetrics may have a fontID in either the
+	// permanent or temporary range — providers MAY satisfy a temporary
+	// open from the permanent pool when the same (family, variant, size)
+	// is already loaded there (the permanent-first optimization).
+	// CloseTemporaryFont is a no-op for fontIDs in the permanent range.
+	//
+	// data is the font's raw bytes for CSS @font-face fonts whose
+	// (family, variant) wasn't pre-registered via RegisterBuffer; pass
+	// nil to indicate the font should be resolved from the permanent
+	// store / filesystem / fontsvc registered map. data is retained by
+	// reference until CloseTemporaryFont; callers must not mutate it
+	// during that window.
+	OpenTemporaryFont(req OpenFontRequest, data []byte) (FontMetrics, error)
+
+	// CloseTemporaryFont releases a fontID returned by OpenTemporaryFont.
+	// No-op for fontIDs in the permanent range. Implementations MUST
+	// tolerate double-close and unknown fontIDs (return nil), since
+	// renderers may track fontIDs across multiple call sites and a
+	// single close pass is the simplest discipline.
+	CloseTemporaryFont(fontID int32) error
 }
 
 // Direction specifies the text flow direction.

@@ -173,6 +173,42 @@ func (p *InternalGlyphProvider) ResetOpenedFonts() {
 	}
 }
 
+// OpenTemporaryFont — internal-callback stub. The full implementation
+// will register two new callbacks with the fontsvc host
+// (internalOpenTemporaryFont, internalCloseTemporaryFont) and route
+// through them, sharing the fontsvc temp pool with the IPC path. Until
+// then, fall back to the existing in-process registered-buffer path
+// (which is what rachel needs today since rachel doesn't render HTML
+// itself — mail-app does, via FontSvcGlyphProvider).
+func (p *InternalGlyphProvider) OpenTemporaryFont(req textshape.OpenFontRequest, data []byte) (textshape.FontMetrics, error) {
+	// Permanent-first: if already open, reuse.
+	for i := int32(0); i < MaxFonts; i++ {
+		if p.fonts[i] != nil && p.fonts[i].metrics.FontID == i {
+			// Internal slots don't track family/variant/size beyond the
+			// metrics; we don't have a clean way to dedupe here without
+			// adding fields. Defer to the callback path once it's
+			// registered. For now, fall through to the registered-buffer
+			// path or callback OpenFont.
+		}
+	}
+	if reg := p.findRegistered(req.Family, req.Variant); reg != nil {
+		return p.openRegistered(req, reg)
+	}
+	_ = data
+	// No callback path for OpenTemporaryFont yet; degrade to OpenFont.
+	return p.OpenFont(req)
+}
+
+// CloseTemporaryFont — internal-callback stub. The full implementation
+// will route through a fontsvc-registered close callback. For now
+// it's a no-op since OpenTemporaryFont currently routes through the
+// existing OpenFont path (which doesn't have a per-font close in the
+// callback API).
+func (p *InternalGlyphProvider) CloseTemporaryFont(fontID int32) error {
+	_ = fontID
+	return nil
+}
+
 // Face implements textshape.GlyphProvider.
 func (p *InternalGlyphProvider) Face(fontID int32) *goFont.Face {
 	if fontID < 0 || fontID >= MaxFonts || p.fonts[fontID] == nil {

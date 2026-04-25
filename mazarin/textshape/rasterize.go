@@ -367,6 +367,68 @@ func (p *DirectGlyphProvider) allocFontID() int32 {
 	return -1
 }
 
+// OpenTemporaryFont opens a font for a single render scope. Caller must
+// pair this with CloseTemporaryFont. In DirectGlyphProvider there's no
+// IPC and no separate temp pool — the slot table is shared with OpenFont.
+// CloseTemporaryFont actually releases the slot, giving callers per-font
+// close semantics that the visualtest harness can use in place of
+// session-wide ResetOpenedFonts.
+//
+// If the requested (family, variant, size) is already cached (permanent-
+// first), returns the existing fontID — close on that fontID is a no-op
+// against an already-released slot, which we tolerate via the unknown-
+// fontID guard.
+//
+// If data is non-nil and the (family, variant) isn't already registered
+// via RegisterBuffer, the data is registered as a transient buffer for
+// the duration of the open. The buffer is NOT removed from the
+// registered map by CloseTemporaryFont — callers that want full cleanup
+// of @font-face buffers need explicit unregister support (TODO if a
+// real louis14 standalone use case demands it).
+func (p *DirectGlyphProvider) OpenTemporaryFont(req OpenFontRequest, data []byte) (FontMetrics, error) {
+	// Permanent-first: reuse existing slot if the same key is loaded.
+	if id := p.findCachedFont(req.Family, req.Variant, req.Size); id >= 0 {
+		return p.metricsFor(id), nil
+	}
+	// If caller passed bytes for a not-yet-registered family/variant,
+	// register them so OpenFont's existing path can find them.
+	if len(data) > 0 && p.findRegistered(req.Family, req.Variant) == nil {
+		if err := p.RegisterBuffer(req.Family, req.Variant, data); err != nil {
+			return FontMetrics{}, err
+		}
+	}
+	return p.OpenFont(req)
+}
+
+// CloseTemporaryFont releases the slot allocated for a temporary font.
+// Tolerates double-close, unknown fontIDs, and out-of-range fontIDs by
+// returning nil — renderers may track fontIDs across multiple call
+// sites and a single close pass is the simplest discipline.
+//
+// In DirectGlyphProvider all fontIDs share the same slot table, so any
+// valid in-range fontID releases its slot. The IPC providers
+// (FontSvcGlyphProvider, InternalGlyphProvider) layer additional
+// permanent/temp distinction on top via a 0x1000 base bit, but that's
+// invisible at this layer.
+func (p *DirectGlyphProvider) CloseTemporaryFont(fontID int32) error {
+	if fontID < 0 || fontID >= maxFonts {
+		return nil
+	}
+	df := p.fonts[fontID]
+	if df == nil {
+		return nil
+	}
+	// Unmap the font data if it was mmap'd from disk and isn't the
+	// same buffer as a registered face (registered buffers are
+	// caller-owned). ResetOpenedFonts has the analogous logic; we
+	// duplicate it here for the per-font path.
+	if df.fontData != nil && p.findRegistered(df.family, df.variant) == nil {
+		_ = syscall.Munmap(df.fontData)
+	}
+	p.fonts[fontID] = nil
+	return nil
+}
+
 func (p *DirectGlyphProvider) metricsFor(fontID int32) FontMetrics {
 	df := p.fonts[fontID]
 	return computeFontMetricsWithData(df.face, df.scale, fontID, df.fontData)
