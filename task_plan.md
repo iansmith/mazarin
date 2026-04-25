@@ -1,6 +1,135 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: ✅ Diversion #6 CLOSED (2026-04-25 evening)
+## TOP OF STACK: Font slot exhaustion — temporary font support
+
+### Problem
+
+fontsvc's slot table (currently 256, just bumped from 32 in `cde2c29`)
+is fixed-size. Each `OpenFont(family, variant, size)` consumes a slot.
+HTML rendering with CSS `@font-face` registers many distinct fonts per
+page, and even at 256 slots a click-heavy session exhausts it
+(observed: late-run `[fontsvc] no free font slots` repetition).
+
+Without per-font lifecycle tracking, fontsvc has no way to know when a
+font is no longer in use, so it can't recycle slots safely.
+
+### Constraint that rules out simple options
+
+We can't make slots size-independent (collapsing all sizes of a face
+into one slot): some fonts are designed with size-specific glyphs that
+look different at display vs. print sizes — different glyph shapes,
+not just scaled. The size IS part of the font's identity. Permanent
+slot-per-(family, variant, size) is the right grain.
+
+### Design — "mushy middle"
+
+Two pools inside fontsvc, with explicit lifecycle for the temp pool:
+
+- **Permanent pool: 64 slots.** For UI fonts that get loaded once and
+  stay forever (window chrome, mancini widgets, mail row, default sans/
+  serif/mono). If the pool fills, `OpenFont` returns a clean error —
+  no eviction, no LRU. The system has a small, bounded set of UI fonts;
+  64 is plenty.
+- **Temporary pool: 32 slots.** For HTML rendering where each page
+  load brings its own `@font-face` set, scoped to one render. Renderers
+  call `OpenTemporaryFont` and `CloseTemporaryFont` as a pair. If the
+  pool fills mid-render, `OpenTemporaryFont` returns an error and the
+  renderer falls back to the default font for that face (degrades
+  gracefully to a less-authored look — page still renders).
+
+### fontID encoding
+
+| Range            | Meaning           | Internal index           |
+|------------------|-------------------|--------------------------|
+| `0x0000–0x003F`  | Permanent (64)    | `fontID`                 |
+| `0x1000–0x101F`  | Temporary (32)    | `fontID & 0x0FFF`        |
+| anything else    | Reject `-EINVAL`  |                          |
+
+The `0x1000` base bit makes mistakes self-evident in any dump or trace
+— a `fontID=0x1003` line tells you immediately which pool and index.
+
+### Same code path as permanent (after the parse step)
+
+- Temporary fonts get the **full type-I glyph cache built in shared
+  pages**, same as permanent. The amortization bet: pre-render all
+  glyphs once, share via SharePages, vs. paying per-glyph tier-2 IPC
+  for every shaped character. For Latin workloads the bulk-render cost
+  is much less than the running tier-2 traffic of a full page.
+- Same `Face` parsing, same `buildGlyphCache`, same `SharePagesWithTarget`,
+  same `GlyphByGID` tier-1 → tier-2 fallback. Only differences:
+  - allocated from `tempFonts[32]` instead of `fonts[64]`
+  - `0x1000` base bit on returned fontID at the IPC boundary
+  - per-shepherd ownership tracking (`ownedTemps map[sid][]tempFontID`)
+    drained on `CloseTemporaryFont` and on shepherd-death cleanup
+
+### `OpenTemporaryFont` checks permanent first
+
+If the requested `(family, variant, size)` is already loaded in the
+permanent pool, `OpenTemporaryFont` returns that fontID (no temp
+allocation, no `0x1000` bit). Caller is expected to call `CloseTemporaryFont`
+on whatever fontID it received; close is a no-op for fontIDs in the
+permanent range. This lets a system-wide preferred font (e.g., default
+sans set up in shared infrastructure or louis14) be reused by HTML
+without consuming a temp slot per request.
+
+### Per-shepherd ownership + death cleanup
+
+fontsvc tracks `(temp fontID → owner SID)` via the existing
+shepherd-death subscription path. When a shepherd dies with open temp
+fonts, fontsvc closes them automatically — same hygiene as linux's
+`orphanHandles` from the `mmap-survives-close` work in #6. Permanent
+fonts ignore shepherd death (they're shared infrastructure).
+
+### Source bytes for `@font-face`
+
+When `OpenTemporaryFont` is requested for a font registered via
+`RegisterBuffer` (CSS `@font-face`), the bytes flow through the
+existing data-page mechanism: caller allocates pages, copies bytes,
+SharePages to fontsvc, fontsvc parses Face from the shared region.
+fontsvc tracks the page mapping for the lifetime of the temp font and
+unmaps on `CloseTemporaryFont`, after which the caller is free to
+`FreePages`.
+
+### Provider implementations
+
+- **`FontSvcGlyphProvider`** (uring IPC to fontsvc): full machinery —
+  `0x1000` mask on send/receive, page sharing for font bytes, tier-1
+  cache reception via SharePages.
+- **`InternalGlyphProvider`** (rachel internal, callbacks to fontsvc
+  in same address space): two new callbacks added to `FontSvcInjector`
+  (`internalOpenTemporaryFont`, `internalCloseTemporaryFont`). Uses the
+  same fontsvc temp pool internally; the `0x1000` bit isn't surfaced
+  externally because there's no IPC boundary, but is preserved
+  internally for unified accounting.
+- **`DirectGlyphProvider`** (louis14 standalone, no fontsvc):
+  `OpenTemporaryFont` allocates from the same slot table as
+  `OpenFont`, `CloseTemporaryFont` actually releases the slot. Gives
+  per-font close that the visualtest harness can use instead of
+  session-wide `ResetOpenedFonts`.
+
+### Implementation order
+
+1. **mazzy-side first** — add the two methods to `textshape.GlyphProvider`,
+   implement in all three providers, add IPC messages and fontsvc
+   handlers, wire the per-shepherd ownership tracking. Build clean.
+   Verify nothing currently using `OpenFont` is affected (no behavioral
+   change to existing path).
+2. **louis14-side coordination** — see `docs/louis14_temp_fonts_plan.md`
+   for the call-site changes (HTML renderer's `openFont`, render scope,
+   close discipline). Don't touch louis14 yet — user-coordinated.
+3. **Integration test** — fontsvc temp pool exercised end-to-end via
+   mail-app rendering HTML. Verify temp slots recycle, permanent pool
+   stays bounded, no leaks across many clicks.
+
+### Open follow-ups carried forward from #6
+
+- maildb's 140 MB heap (badger LSM working set, bounded — monitor)
+- linux-ui transient fontsvc-boot wedge (improved error message in
+  place; not seen since uring retry fix)
+
+---
+
+## ✅ Diversion #6 CLOSED (2026-04-25 evening) — preserved below for context
 
 After landing four root-cause fixes the system runs stably with full
 click→body fetch flow and zero SCORCH errors over a 180s run with five

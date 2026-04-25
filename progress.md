@@ -1982,3 +1982,71 @@ work):**
 **Resuming mail-dumb:** the easy part is unblocked. Diversion stack
 #1–#6 all closed (#1 RISC-V removal, #2 paper sketch only, #3 windows
 fix, #4 fstatat fix, #5 linux-ui notify fix, #6 this session).
+
+### Session: 2026-04-25 (very late) — Diversion #7 starts: temp font support
+
+Follow-up from #6's verification run, which surfaced
+`[fontsvc] no free font slots` repetition late in the run. Even at
+256 slots (bumped from 32 in `cde2c29`), HTML rendering with CSS
+`@font-face` will exhaust the table — the workload simply has too
+many distinct fonts × sizes for a fixed-size pool.
+
+**Constraint that ruled out simple options:** size-independent slots
+(collapsing all sizes of a face into one slot) won't work. Some fonts
+have size-specific glyphs designed to look different at display vs.
+print sizes — different shapes, not just scaled. The size IS part of
+the font's identity.
+
+**Design — "mushy middle"** agreed with user (Ian):
+- Permanent pool: 64 slots. Hard error when full, no eviction.
+- Temporary pool: 32 slots. Per-render lifecycle (open/close pair).
+- Temp fontIDs use `0x1000` base bit so dumps are unambiguous about
+  which pool.
+- Permanent-first check inside `OpenTemporaryFont` lets shared default
+  fonts (sans/serif/mono) be reused without consuming a temp slot.
+- Same code path as permanent after the parse step — full type-I
+  glyph cache built in shared pages. Amortization bet: bulk-render
+  cost lower than running tier-2 traffic of a full page.
+- Per-shepherd ownership tracking so shepherd-death cleanup releases
+  any open temp fonts, mirroring the `orphanHandles` pattern from #6.
+- Source bytes for `@font-face` flow via existing data-page
+  mechanism (caller allocates pages, SharePages to fontsvc, fontsvc
+  parses Face from shared region).
+
+**Provider implementations** (three flavors):
+- `FontSvcGlyphProvider` (uring IPC to fontsvc): full machinery — 0x1000
+  mask, page-sharing for bytes, tier-1 cache reception.
+- `InternalGlyphProvider` (rachel internal, callbacks): two new
+  callbacks added to `FontSvcInjector`. Shares fontsvc temp pool
+  internally; 0x1000 bit not surfaced (no IPC boundary).
+- `DirectGlyphProvider` (louis14 standalone, no fontsvc): same slot
+  table as `OpenFont`, `CloseTemporaryFont` actually releases the
+  slot. Gives per-font close that visualtest harness can adopt.
+
+**Implementation order (planned):**
+1. Mazzy-side: interface extension, all three provider impls, fontsvc
+   temp pool + IPC + ownership tracking. Existing `OpenFont` path
+   unchanged. Build clean.
+2. Verify mazzy alone — no regression.
+3. (Coordinated with user) louis14 changes per
+   `design/louis14_temp_fonts_plan.md`. Renderer.openFont switches to
+   `OpenTemporaryFont`, deferred close at end of `Render`.
+4. Integration test with mail-app rendering many distinct HTML
+   messages.
+
+**louis14 plan committed** to `design/louis14_temp_fonts_plan.md` —
+detailed step list with rationale, recommendations on each unsettled
+question, and explicit coordination checkpoints. **Not yet applied to
+louis14**; user-coordinated.
+
+**Architectural note revisited:** rachel uses `InternalGlyphProvider`
+because fontsvc.maz is loaded as a plugin inside rachel's address space
+(not a separate shepherd) — `SharePages` to your own SID is rejected
+by the kernel, so the IPC path is unavailable in-process. Internal
+callbacks are the only option. Co-locating fontsvc inside rachel
+avoids a chicken-and-egg between the WM and the font subsystem at
+boot.
+
+**Open follow-ups carried forward from #6:** maildb's 140 MB heap
+(badger LSM working set, bounded — monitor); linux-ui transient
+fontsvc-boot wedge (uring retry fix in place; not seen since).
