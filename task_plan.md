@@ -1,26 +1,162 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: louis14 temp-font integration (resumed)
+## TOP OF STACK: real temp-pool IPC, redesigned around RegisterBuffer
 
-louis14 reached a stable state — the Phase 13e′/13f `LayoutUnit`
-migration that was blocking `mail-app:arm64` is settled. We're now
-applying the call-site changes captured in
-`design/louis14_temp_fonts_plan.md` so the temp-font foundation
-landed in mazzy (commits f976421 + d559029) is exercised end-to-end.
+louis14 is now calling `OpenTemporaryFont` / `CloseTemporaryFont`
+through the DrawContext (commit `f41f5c4d` on `fix/flexbox-fast`),
+and the mazzy-side surface is plumbed (commit `37b4abe`). Today
+every call still routes through the `FontSvcGlyphProvider` fallback
+to `OpenFont` and lands in the permanent pool — the temp pool stays
+empty. To make the temp pool active, we need to wire the IPC client.
 
-After louis14 changes land:
-1. Smoke-test mail-app rendering HTML (verify temp slots recycle,
-   permanent pool stays bounded, no leaks across many clicks).
-2. Resume the deferred mazzy-side temp-font work:
-   - `FontSvcGlyphProvider` real IPC implementation (uring open/close
-     + SharePagesWithTarget for caller bytes + tier-1 cache page mmap
-     on receive + mask `0x1000` on receive).
-   - `InternalGlyphProvider` callback wiring (two new
-     `FontSvcInjector` methods for in-process temp-font use).
-   - Hook `CleanupShepherdFonts(deadSID)` into rachel's
-     `handleShepherdDeath`.
-   - fontsvc shared-bytes path (`msg.FontDataVA != 0`) — needs
-     kernel mapping primitive.
+**Key insight (user, 2026-04-25):** louis14 already has an
+unambiguous "this is a temporary font and here are the bytes" signal
+— `text.FontRegistry.RegisterFontFace` → `provider.RegisterBuffer`.
+Every call to `RegisterBuffer` originates from `RegisterFontFace`,
+which is only called for CSS `@font-face` rules. There are no other
+callers in either repo. So `RegisterBuffer` IS the moment we know
+(a) this font is per-page-temporary, (b) we have the bytes in hand.
+
+**Today the bytes never reach fontsvc.** `FontSvcGlyphProvider.RegisterBuffer`
+just stuffs them into a local `registered` map; `openRegistered`
+parses the Face *in-process in the shepherd* and rasterizes glyphs
+locally via `textshape.RenderGlyph` (the `if ff.registered` branch
+in `GlyphByGID`). Fontsvc has no idea the font exists. This means
+the permanent-pool exhaustion problem isn't actually solved by the
+foundation as it stands — `@font-face` fonts accumulate in
+the shepherd's local `p.fonts[]` table the same way as before.
+
+### Redesigned plan
+
+`FontSvcGlyphProvider.RegisterBuffer` should push the bytes to
+fontsvc **at register time**, not lazily on first open:
+
+1. Allocate IPC pages, copy bytes, `SharePagesWithTarget(fontsvc)`
+   ONCE at register time.
+2. Send a new `wm.RegisterFontBuffer` IPC: "remember (family,
+   variant) → these mapped pages". Fontsvc records the mapping; no
+   Face parsing yet (different sizes will each parse on first open).
+3. Fontsvc holds the bytes mapped indefinitely in its own
+   `registeredBytes` map keyed by (family, variant). The mapping
+   survives across many `OpenTemporaryFont` / `CloseTemporaryFont`
+   pairs. Bytes are unmapped only on `wm.UnregisterFontBuffer` (or
+   shepherd death cleanup) — louis14 doesn't currently call that,
+   but the IPC is worth defining for completeness.
+4. On `OpenTemporaryFont(family, variant, size)`: fontsvc looks up
+   its registered bytes, parses Face, builds tier-1 glyph cache
+   for THIS size, allocates a temp slot, returns `0x1000 | idx`.
+5. `CloseTemporaryFont(0x1000|idx)`: frees the temp slot + tier-1
+   cache pages. Bytes stay registered.
+
+Why this is cleaner than "pass `FontDataVA` on every OpenTemporaryFont":
+
+- Bytes flow ONCE (at register), not per-open. No expensive page
+  copy in a render hot path.
+- Different sizes of the same `@font-face` font naturally share
+  bytes but get separate tier-1 caches.
+- Eliminates the `msg.FontDataVA != 0` ENOSYS branch entirely; the
+  kernel mapping primitive happens at register time, not in render.
+- Retires the in-process `openRegistered` path: shepherd no longer
+  holds raw bytes or rasterizes locally for `@font-face` fonts —
+  fontsvc owns it like any other font. Memory footprint drops.
+
+### Harfbuzz 256-slot constraint — must fix in this work
+
+`textshape` has three fixed-size arrays sized at `maxFonts = 256`:
+`HarfBuzzShaper.fonts`, `HarfBuzzTextLayout.fonts`,
+`DrawContextImpl.metrics`. A fontID of `0x1001` indexes past all
+three. The current `registerOpenedFont` bounds check (commit
+`37b4abe`) silently skips registration for out-of-range IDs — no
+crash, but DrawText for that fontID silently fails to render.
+
+**Fix: keep `0x1000` strictly at the wire boundary.** The
+`FontSvcGlyphProvider`:
+
+- Stores temp fontsvcFonts in a separate `tempFonts [MaxTempFonts]`
+  table (paired with `fonts [MaxFonts]` for permanent).
+- Returns *client-local* fontIDs in `[MaxFonts, MaxFonts+MaxTempFonts)`
+  = `[32, 64)` — well inside the 256-element textshape arrays.
+- Translates client ID ↔ server ID at the IPC boundary:
+  - Send: server_id = `0x1000 | (client_id - MaxFonts)`
+  - Recv: client_id = `MaxFonts + (server_id & 0x0FFF)`
+- Server-side dumps and `[fontsvc]` traces still use the `0x1000`
+  tag (debug-friendly there); client-side dumps use small ints with
+  the convention `fontID >= 32 → temp`.
+
+### Implementation work order
+
+1. **Wire types** (`shared/wm/uring_font.go`):
+   - `wm.RegisterFontBuffer` (family/variant + FontDataVA + len + numPages)
+   - `wm.RegisterFontBufferReply` (errcode)
+   - `wm.UnregisterFontBuffer` (family/variant)
+   - `wm.UnregisterFontBufferReply` (errcode)
+   - Encode/Decode + dispatch in DecodeFontRequest/DecodeFontResponse.
+
+2. **Fontsvc handlers** (`maz/fontsvc/main.go`):
+   - `registeredBytes map[(family,variant)] → mappedPages`
+   - `handleRegisterFontBuffer`: validate, store mapping.
+   - `handleUnregisterFontBuffer`: unmap + remove.
+   - Update `handleOpenTemporaryFont`: when family is in
+     `registeredBytes`, parse Face from THOSE pages (skip filesystem
+     resolution). Build tier-1 cache for the requested size.
+   - Per-shepherd cleanup in `CleanupShepherdFonts(deadSID)` should
+     also unmap any registeredBytes the dead shepherd registered.
+
+3. **Client `FontSvcGlyphProvider`** (`mazarin/fontcache/provider.go`):
+   - Add `tempFonts [MaxTempFonts]*fontsvcFont`.
+   - `RegisterBuffer`: allocate pages, copy bytes,
+     `SharePagesWithTarget(fontsvc)`, send `wm.RegisterFontBuffer`,
+     wait for reply. Drop the local in-process Face / `registered`
+     map (or keep it as a backup for the rare case fontsvc dies?).
+   - `OpenTemporaryFont`:
+     - Permanent-first dedupe (unchanged).
+     - Otherwise: build `wm.OpenTemporaryFont` with `FontDataVA = 0`
+       (registration was the bytes path), send via uring, wait for
+       reply. Mask `0x1000`, store in `tempFonts[idx]`, return
+       client_id = `MaxFonts + idx`.
+   - `CloseTemporaryFont`:
+     - For client_id < MaxFonts: no-op (permanent).
+     - For client_id >= MaxFonts: translate to server_id, send
+       `wm.CloseTemporaryFont`, drop local entry.
+   - Adjust `Face` and `GlyphByGID` to dispatch on
+     `client_id >= MaxFonts` to the `tempFonts` table.
+
+4. **FontCache helper** (`mazarin/fontcache/fontcache.go` or
+   wherever FontCache lives): add `SendOpenTemporaryFont`,
+   `SendCloseTemporaryFont`, `SendRegisterFontBuffer`,
+   `SendUnregisterFontBuffer` mirroring `SendOpenFont` shape.
+
+5. **`InternalGlyphProvider`** (rachel-internal, host = fontsvc):
+   - In-process equivalent of the same flow, but no IPC — direct
+     callbacks like the existing `internalOpenFont` /
+     `internalGlyphByGID`. New: `internalRegisterFontBuffer`,
+     `internalOpenTemporaryFont`, `internalCloseTemporaryFont`.
+   - Two new `FontSvcInjector` interface methods for these.
+
+6. **Hook `CleanupShepherdFonts` into rachel's death handler**
+   (`maz/rachel/main.go::handleShepherdDeath`) so dead shepherds'
+   temp slots AND registered bytes get released.
+
+7. **Validate**: full ARM64 HVF run, click through several
+   distinct HTML messages with `@font-face` rules, watch
+   per-fontsvc memstats. Permanent pool should stay bounded; temp
+   pool should fill and drain across click → render → close cycles.
+
+### Open question / risk
+
+- **Where does mail-app currently get `@font-face` data?** Need to
+  confirm the fetcher path: HTML body → CSS parser → `@font-face`
+  rule → URL → ?. In particular, are the URLs `data:` URIs
+  embedded in the message, or HTTP fetches? `data:` is fine
+  (synchronous decode); HTTP would need network plumbing that may
+  not exist. If the email corpus rarely has `@font-face` (most
+  emails use system fonts), the temp-pool work is a smaller win
+  than expected and we should profile before optimizing.
+
+After this lands:
+- Smoke-test mail-app rendering many distinct HTML messages.
+- Confirm `[fontsvc] no free font slots` does NOT recur.
+- Resume console rewrite (item below).
 
 ---
 
