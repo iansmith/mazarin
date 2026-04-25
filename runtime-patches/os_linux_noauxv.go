@@ -10,7 +10,7 @@
 // On x86_64: kmazarinUART uses COM1 (port 0x3F8) via assembly helper in sys_linux_amd64.s
 // On ARM64:  kmazarinUART writes directly to MMIO UART (defined in os_linux_arm64.go)
 
-//go:build linux && !arm && !arm64 && !loong64 && !mips && !mipsle && !mips64 && !mips64le && !s390x && !ppc64 && !ppc64le
+//go:build linux && !arm && !arm64 && !mips && !mipsle && !mips64 && !mips64le && !s390x && !ppc64 && !ppc64le
 
 package runtime
 

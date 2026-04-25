@@ -1,5 +1,3 @@
-//go:build !riscv64
-
 package main
 
 // initSigreturnVDSO is a no-op on ARM64 and x86_64.

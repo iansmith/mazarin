@@ -1,5 +1,3 @@
-//go:build !riscv64
-
 package kmem
 
 // SigreturnVDSOVA is unused on ARM64 and x86_64.

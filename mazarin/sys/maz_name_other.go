@@ -1,4 +1,4 @@
-//go:build linux && !riscv64
+//go:build linux
 
 package sys
 

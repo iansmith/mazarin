@@ -1,7 +1,7 @@
 // Mazzy overlay: Register .maz module pclntab with Go runtime for stack traces
 // and cross-module type deduplication.
 
-//go:build linux && (amd64 || arm64 || riscv64)
+//go:build linux && (amd64 || arm64)
 
 package runtime
 

@@ -570,10 +570,6 @@ func simpleMain() {
 	// Must be called before EnableTimerIRQ().
 	initTimerFrequency()
 
-	// Parse RISC-V ISA extensions from DTB for riscv_hwprobe syscall.
-	// No-op on ARM64/x86_64.
-	initHWProbeFromDTB()
-
 	// Cache interrupt controller pointer for per-arch IRQ enable/disable
 	initInterruptController()
 

@@ -51,22 +51,3 @@ tasks:
           {{.GCFLAGS}} -o {{.HELLOWORLD_MAZ_AMD64}} ./maz/helloworld
       - '{{.GO}} tool go-echo "helloworld.maz (x86_64) ready at {{.HELLOWORLD_MAZ_AMD64}}"'
 
-  riscv64:
-    desc: Build helloworld.maz for RISC-V 64-bit (legacy thin-stub toolchain — mazlink/mazgo not yet ported)
-    run: once
-    deps: [':check-env', ':maz-overlay']
-    sources:
-      - 'maz/helloworld/**/*.go'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
-      - '{{.MAZ_OVERLAY_JSON}}'
-    generates:
-      - '{{.HELLOWORLD_MAZ_RISCV64}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building helloworld.maz for RISC-V 64-bit (fixed-address slot 1)..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} -ldflags="-T 0x32000000" {{.GCFLAGS}} -o {{.HELLOWORLD_MAZ_RISCV64}} ./maz/helloworld'
-      - '{{.GO}} tool go-echo "Fixing negative ELF offsets from -T flag..."'
-      - '{{.GO}} tool fix-go-elf -no-bootstrap {{.HELLOWORLD_MAZ_RISCV64}}'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.HELLOWORLD_MAZ_RISCV64}} {{.THIN_MANIFEST}}'
-      - '{{.GO}} tool go-echo "helloworld.maz (RISC-V 64-bit) ready at {{.HELLOWORLD_MAZ_RISCV64}}"'

@@ -50,9 +50,6 @@ $GO tool task run
 # Run x86_64 diplomat+kmazarin
 $GO tool task run-x86_64
 
-# Run RISC-V diplomat+kmazarin
-$GO tool task run-riscv64
-
 # Run with custom timeout
 $GO tool task run TIMEOUT=30
 
@@ -112,9 +109,8 @@ This project uses a single Go module (`mazzy`). Build is managed by Taskfile (`T
 ```bash
 # Build
 $GO tool task                    # Build diplomat + kmazarin for ARM64 (default)
-$GO tool task kmazarin-arm64     # Build kmazarin kernel (ARM64)
-$GO tool task kmazarin-x86_64    # Build kmazarin kernel (x86_64)
-$GO tool task kmazarin-riscv64   # Build kmazarin kernel (RISC-V)
+$GO tool task kmazarin:arm64     # Build kmazarin kernel (ARM64)
+$GO tool task kmazarin:x86_64    # Build kmazarin kernel (x86_64)
 $GO tool task clean              # Remove build artifacts
 $GO tool task --list             # Show all available tasks
 
@@ -122,10 +118,8 @@ $GO tool task --list             # Show all available tasks
 $GO tool task run                      # ARM64 diplomat+kmazarin (5s timeout)
 $GO tool task run TIMEOUT=30           # ARM64 with 30s timeout
 $GO tool task run-x86_64              # x86_64 diplomat+kmazarin (5s timeout)
-$GO tool task run-riscv64             # RISC-V diplomat+kmazarin (5s timeout)
 $GO tool task stop-arm64               # Stop ARM64 QEMU
 $GO tool task stop-x86_64             # Stop x86_64 QEMU
-$GO tool task stop-riscv64            # Stop RISC-V QEMU
 ```
 
 All build and run operations go through `$GO tool task`. See `design/TASK.md` for comprehensive documentation.
@@ -146,16 +140,11 @@ $GO tool task run TIMEOUT=30   # 30 second run
 # 3. Build and run (x86_64)
 $GO tool task run-x86_64 TIMEOUT=10
 
-# 4. Build and run (RISC-V)
-$GO tool task run-riscv64 TIMEOUT=10
-
-# 5. View output / interact
+# 4. View output / interact
 $GO tool safe-serial-read /tmp/diplomat-arm64-serial.log   # ARM64 log
 $GO tool safe-serial-read /tmp/diplomat-serial.log         # x86_64 log
-$GO tool safe-serial-read /tmp/diplomat-riscv64-serial.log # RISC-V log
 $GO tool task stop-arm64               # Stop ARM64 QEMU (port 4446)
 $GO tool task stop-x86_64             # Stop x86_64 QEMU (port 4445)
-$GO tool task stop-riscv64            # Stop RISC-V QEMU (port 4447)
 ```
 
 Output is written to `/tmp/diplomat-serial.log` (x86_64) or `/tmp/diplomat-arm64-serial.log` (ARM64).
@@ -181,7 +170,6 @@ Output is written to `/tmp/diplomat-serial.log` (x86_64) or `/tmp/diplomat-arm64
 QEMU runs with TCP monitors on different ports per architecture:
 - **ARM64**: port 4446
 - **x86_64**: port 4445
-- **RISC-V**: port 4447
 
 ```bash
 # ARM64 diplomat+kmazarin
@@ -189,9 +177,6 @@ echo "info registers" | nc 127.0.0.1 4446
 
 # x86_64 diplomat+kmazarin
 echo "info registers" | nc 127.0.0.1 4445
-
-# RISC-V diplomat+kmazarin
-echo "info registers" | nc 127.0.0.1 4447
 ```
 
 ## Binary Utilities (Cross-compilation)
@@ -372,12 +357,6 @@ in registers, second expects stack). The tail-call stub pattern avoids this.
 - Kmazarin kernel fully working (syscalls, threading, demand paging)
 - VirtIO PCI block driver ready (shared code with x86_64)
 - Diplomat ARM64 UEFI boot path needs completion
-
-### RISC-V (diplomat + kmazarin) - FULLY WORKING
-- Diplomat loaded via OpenSBI -kernel (UEFI firmware broken on RISC-V)
-- Kmazarin kernel fully working (syscalls, threading, demand paging)
-- VirtIO GPU, block, keyboard, mouse all working via PLIC interrupts
-- Userspace programs (rachel, stdio) run successfully
 
 ## Git Practices
 

@@ -1,5 +1,3 @@
-//go:build !riscv64
-
 package main
 
 // setupExternalInterrupts is a no-op on ARM64 and AMD64.

@@ -74,10 +74,8 @@ func main() {
 		efiName = "BOOTX64.EFI"
 	case "aa64":
 		efiName = "BOOTAA64.EFI"
-	case "riscv64":
-		efiName = "BOOTRISCV64.EFI"
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown arch %q: must be x64, aa64, or riscv64\n", *arch)
+		fmt.Fprintf(os.Stderr, "Unknown arch %q: must be x64 or aa64\n", *arch)
 		os.Exit(1)
 	}
 

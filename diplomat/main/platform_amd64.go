@@ -83,17 +83,13 @@ func readBlockVirtIOStub(lba uint64, buf []byte) error {
 
 
 
-// saveTextChecksum is a no-op on AMD64 — only used by RISC-V for verifying
-// code integrity through page table transitions.
-func saveTextChecksum(physBase uint64, textFilesz uint64) {}
-
 // The following stubs satisfy references from non-build-tagged files.
 // On AMD64, these code paths are never reached (UEFI boot uses different functions),
 // but the compiler requires the symbols to exist.
 
 // ReadBlockVirtIONoError reads a block using the UEFI block device on AMD64.
-// Called from shared code (fat32_walk.go, elf_loader.go) that was written for
-// RISC-V's allocation-free boot. On AMD64, delegates to the UEFI block I/O.
+// Called from shared code (fat32_walk.go, elf_loader.go). Delegates to the
+// UEFI block I/O.
 func ReadBlockVirtIONoError(lba uint64, buf []byte) {
 	err := globalBlockDev.ReadBlock(lba, buf)
 	if err != nil {

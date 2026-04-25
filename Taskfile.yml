@@ -1,24 +1,20 @@
 # Taskfile for mazzy - Go Native Toolchain Build (Shell-Free)
-# Builds diplomat UEFI bootloader + kmazarin kernel for ARM64, x86_64, and RISC-V
+# Builds diplomat UEFI bootloader + kmazarin kernel for ARM64 and x86_64
 #
 # Usage:
 #   task                          # Build diplomat + kmazarin for ARM64 (default)
 #   task run                      # Build and run ARM64 diplomat+kmazarin in QEMU
 #   task run-x86_64               # Build and run x86_64 diplomat+kmazarin in QEMU
-#   task run-riscv64              # Build and run RISC-V diplomat+kmazarin in QEMU
 #   task kmazarin-arm64           # Build kmazarin kernel (ARM64)
 #   task kmazarin-x86_64          # Build kmazarin kernel (x86_64)
-#   task kmazarin-riscv64         # Build kmazarin kernel (RISC-V)
 #   task disk-arm64               # Create ext2 disk image (ARM64 userspace)
 #   task disk-x86_64              # Create ext2 disk image (x86_64 userspace)
-#   task disk-riscv64             # Create ext2 disk image (RISC-V userspace)
 #   task clean                    # Remove build artifacts
 #
 # Environment:
 #   GO=/path/to/go                        # Go compiler (>= 1.24)
 #   QEMU=/path/to/qemu-system-aarch64     # QEMU ARM64 (>= 10.2)
 #   QEMU_X86_64=/path/to/qemu-system-x86_64  # QEMU x86_64 for diplomat
-#   QEMU_RISCV64=/path/to/qemu-system-riscv64  # QEMU RISC-V for diplomat
 #   OVMF=/path/to/edk2-x86_64-code.fd     # OVMF firmware for diplomat
 #   GOTOOLCHAIN=auto                      # Required
 #   DEBUG=1                               # Optional: disable optimizations
@@ -80,7 +76,6 @@ vars:
   GO: '{{env "GO" | default "go"}}'
   QEMU: '{{env "QEMU" | default "qemu-system-aarch64"}}'
   QEMU_X86_64: '{{env "QEMU_X86_64" | default "qemu-system-x86_64"}}'
-  QEMU_RISCV64: '{{env "QEMU_RISCV64" | default "qemu-system-riscv64"}}'
   OVMF: '{{env "OVMF" | default ""}}'
   DEBUG: '{{env "DEBUG" | default ""}}'
 
@@ -166,28 +161,6 @@ vars:
   MAIL_AMD64_ELF: '{{.BUILD_DIR}}/mail-amd64.elf'
   DISK_AMD64_IMAGE: '{{.BUILD_DIR}}/disk-amd64.img'
 
-  # RISC-V 64-bit userspace programs
-  RACHEL_RISCV64_ELF: '{{.BUILD_DIR}}/rachel-riscv64.elf'
-  LINUX_RISCV64_ELF: '{{.BUILD_DIR}}/linux-riscv64.elf'
-  MAILDB_RISCV64_ELF: '{{.BUILD_DIR}}/maildb-riscv64.elf'
-  FTI_RISCV64_ELF: '{{.BUILD_DIR}}/fti-riscv64.elf'
-  FS_RISCV64_ELF: '{{.BUILD_DIR}}/fs-riscv64.elf'
-  ATTRTEST_RISCV64_ELF: '{{.BUILD_DIR}}/attrtest-riscv64.elf'
-  HANDLETEST_RISCV64_ELF: '{{.BUILD_DIR}}/handletest-riscv64.elf'
-  CLOCKTEST_RISCV64_ELF: '{{.BUILD_DIR}}/clocktest-riscv64.elf'
-  CLOCKS_RISCV64_ELF: '{{.BUILD_DIR}}/clocks-riscv64.elf'
-  VERSAI_RISCV64_ELF: '{{.BUILD_DIR}}/versai-riscv64.elf'
-  CALC_RISCV64_ELF: '{{.BUILD_DIR}}/calc-riscv64.elf'
-  MAIL_RISCV64_ELF: '{{.BUILD_DIR}}/mail-riscv64.elf'
-  HELLOWORLD_MAZ_RISCV64: '{{.BUILD_DIR}}/helloworld-riscv64.maz'
-  PREFS_MAZ_RISCV64: '{{.BUILD_DIR}}/prefs-riscv64.maz'
-  FONTSVC_MAZ_RISCV64: '{{.BUILD_DIR}}/fontsvc-riscv64.maz'
-  KEYMAPPER_MAZ_RISCV64: '{{.BUILD_DIR}}/keymapper-riscv64.maz'
-  LINUX_UI_MAZ_RISCV64: '{{.BUILD_DIR}}/linux-ui-riscv64.maz'
-  MAIL_UI_MAZ_RISCV64: '{{.BUILD_DIR}}/mail-ui-riscv64.maz'
-  DISK_RISCV64_IMAGE: '{{.BUILD_DIR}}/disk-riscv64.img'
-  BOOT_RISCV64_IMAGE: '{{.BUILD_DIR}}/boot-riscv64.img'
-
   # Fonts base image (built once, used as -base for disk images)
   LOUIS14_DIR: '{{env "LOUIS14_DIR" | default "../louis14"}}'
   FONTS_DIR:   '{{env "FONTS_DIR"   | default "../louis14/fonts"}}'
@@ -204,16 +177,9 @@ vars:
   ESP_ARM64_IMAGE: '{{.BUILD_DIR}}/esp-arm64.img'
   OVMF_ARM64: '{{env "OVMF_ARM64" | default ""}}'
 
-  # Diplomat RISC-V 64-bit (ELF, loaded via -kernel — UEFI firmware broken on RISC-V)
-  DIPLOMAT_RISCV64_ELF: '{{.BUILD_DIR}}/diplomat-riscv64.elf'
-
   # Kmazarin AMD64 (for diplomat x86_64 boot)
   KMAZARIN_AMD64_ELF: '{{.BUILD_DIR}}/kmazarin-amd64.elf'
   KMAZARIN_AMD64_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-amd64-overlay.json'
-
-  # Kmazarin RISC-V 64-bit (for diplomat riscv64 boot)
-  KMAZARIN_RISCV64_ELF: '{{.BUILD_DIR}}/kmazarin-riscv64.elf'
-  KMAZARIN_RISCV64_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-riscv64-overlay.json'
 
   # Runtime patches directory
   RUNTIME_PATCHES_DIR: runtime-patches
@@ -244,16 +210,13 @@ vars:
   MAZ_EXIT_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-exit-overlay.json'
 
   # Shepherd overlay — adds //go:noinline + keep-alive to prevent DCE of runtime functions
-  # Per-architecture because sigctxt methods differ (ARM64: r0-r29, x86_64: rax/rbx, RISC-V: different)
+  # Per-architecture because sigctxt methods differ (ARM64: r0-r29, x86_64: rax/rbx)
   SHEPHERD_OVERLAY_DIR: '{{.BUILD_DIR}}/shepherd-overlay'
   SHEPHERD_OVERLAY_JSON: '{{.BUILD_DIR}}/shepherd-overlay.json'
   MERGED_SHEPHERD_OVERLAY_JSON: '{{.BUILD_DIR}}/merged-shepherd-overlay.json'
   SHEPHERD_OVERLAY_AMD64_DIR: '{{.BUILD_DIR}}/shepherd-overlay-amd64'
   SHEPHERD_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/shepherd-overlay-amd64.json'
   MERGED_SHEPHERD_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/merged-shepherd-overlay-amd64.json'
-  SHEPHERD_OVERLAY_RISCV64_DIR: '{{.BUILD_DIR}}/shepherd-overlay-riscv64'
-  SHEPHERD_OVERLAY_RISCV64_JSON: '{{.BUILD_DIR}}/shepherd-overlay-riscv64.json'
-  MERGED_SHEPHERD_OVERLAY_RISCV64_JSON: '{{.BUILD_DIR}}/merged-shepherd-overlay-riscv64.json'
 
 tasks:
   # ===========================================================================
@@ -515,19 +478,6 @@ tasks:
       - '{{.GO}} tool go-echo "Generating shepherd overlay for x86_64 (//go:noinline + keep-alive)..."'
       - 'TARGET_GOARCH=amd64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.SHEPHERD_OVERLAY_AMD64_DIR}} -overlay={{.SHEPHERD_OVERLAY_AMD64_JSON}} -mode=shepherd'
 
-  shepherd-overlay-riscv64:
-    run: once
-    method: checksum
-    desc: Generate shepherd overlay for RISC-V (//go:noinline + keep-alive for all stubbable runtime functions)
-    deps: [build-dir]
-    sources:
-      - 'cmd/gen-ast-stubs/**/*.go'
-    generates:
-      - '{{.SHEPHERD_OVERLAY_RISCV64_JSON}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Generating shepherd overlay for RISC-V (//go:noinline + keep-alive)..."'
-      - 'TARGET_GOARCH=riscv64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.SHEPHERD_OVERLAY_RISCV64_DIR}} -overlay={{.SHEPHERD_OVERLAY_RISCV64_JSON}} -mode=shepherd'
-
   merged-shepherd-overlay:
     run: once
     method: checksum
@@ -555,20 +505,6 @@ tasks:
     cmds:
       - '{{.GO}} tool go-echo "Merging shepherd + userspace overlays (x86_64)..."'
       - '{{.GO}} tool gen-overlay -type merge -base {{.SHEPHERD_OVERLAY_AMD64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
-
-  merged-shepherd-overlay-riscv64:
-    run: once
-    method: checksum
-    desc: Merge shepherd + userspace overlays for RISC-V disk shepherd builds
-    deps: [shepherd-overlay-riscv64, mazarin:userspace-overlay]
-    sources:
-      - '{{.SHEPHERD_OVERLAY_RISCV64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-    generates:
-      - '{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Merging shepherd + userspace overlays (RISC-V)..."'
-      - '{{.GO}} tool gen-overlay -type merge -base {{.SHEPHERD_OVERLAY_RISCV64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
 
   # ===========================================================================
   # Boot Image Conversion
@@ -606,12 +542,6 @@ tasks:
     cmds:
       - '{{.GO}} tool go-cp {{.FS_AMD64_ELF}} kmazarin/kmazarin/fs.elf'
 
-  stage-embedded-fs-riscv64:
-    desc: Copy fs-riscv64.elf into kmazarin/kmazarin/ for go:embed
-    deps: [fs:riscv64]
-    cmds:
-      - '{{.GO}} tool go-cp {{.FS_RISCV64_ELF}} kmazarin/kmazarin/fs.elf'
-
   # ===========================================================================
   # Stage Embedded kernel.toml for go:embed
   # ===========================================================================
@@ -630,11 +560,6 @@ tasks:
     desc: Copy kernel.amd64.toml into kmazarin/kmazarin/ for go:embed
     cmds:
       - '{{.GO}} tool go-cp config/kernel.amd64.toml kmazarin/kmazarin/kernel.toml'
-
-  stage-kernel-config-riscv64:
-    desc: Copy kernel.riscv64.toml into kmazarin/kmazarin/ for go:embed
-    cmds:
-      - '{{.GO}} tool go-cp config/kernel.riscv64.toml kmazarin/kmazarin/kernel.toml'
 
   # ===========================================================================
   # Kmazarin Kernel Build
@@ -727,10 +652,6 @@ tasks:
   userspace-build-x86_64:
     desc: Build all x86_64 userspace programs (shepherds + test programs)
     deps: [rachel:x86_64, linux:x86_64, fs:x86_64, clocks:x86_64, versai:x86_64, calc:x86_64, mail-app:x86_64, handletest:x86_64, clocktest:x86_64, fti:x86_64, maildb:x86_64, mail-ui:amd64]
-
-  userspace-build-riscv64:
-    desc: Build all RISC-V userspace programs (shepherds, .maz/.mzr modules, test programs)
-    deps: [rachel:riscv64, linux:riscv64, fs:riscv64, clocks:riscv64, versai:riscv64, calc:riscv64, mail-app:riscv64, handletest:riscv64, clocktest:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64, keymapper:riscv64, linux-ui:riscv64, fti:riscv64, maildb:riscv64, mail-ui:riscv64]
 
   # ===========================================================================
   # Disk Image
@@ -856,72 +777,6 @@ tasks:
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
       - '{{.GO}} tool mkext2 -o {{.DISK_AMD64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.BUILD_DIR}}/disk-staging-amd64/shepherd.elf {{.BUILD_DIR}}/disk-staging-amd64/rachel.maz {{.BUILD_DIR}}/disk-staging-amd64/linux.maz {{.BUILD_DIR}}/disk-staging-amd64/fs.elf {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocktest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.elf {{.BUILD_DIR}}/disk-staging-amd64/mail.elf {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/fti.elf {{.BUILD_DIR}}/disk-staging-amd64/maildb.elf {{.BUILD_DIR}}/disk-staging-amd64/maildb.maz {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/startup.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
-
-  disk-riscv64:
-    desc: Create ext2 disk image with RISC-V 64-bit maz binaries and kmazarin kernel
-    deps: [rachel:riscv64, linux:riscv64, fs:riscv64, handletest:riscv64, clocktest:riscv64, clocks:riscv64, mail-app:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64, keymapper:riscv64, linux-ui:riscv64, fti:riscv64, maildb:riscv64, mail-ui:riscv64, kmazarin:riscv64, convert-boot-image]
-    method: checksum
-    vars:
-      MKEXT2_FONTS:
-        sh: test -d "{{.FONTS_DIR}}" && echo "-dir /fonts={{.FONTS_DIR}}" || echo ""
-    sources:
-      - '{{.RACHEL_RISCV64_ELF}}'
-      - '{{.LINUX_RISCV64_ELF}}'
-      - '{{.FS_RISCV64_ELF}}'
-      - '{{.HANDLETEST_RISCV64_ELF}}'
-      - '{{.CLOCKTEST_RISCV64_ELF}}'
-      - '{{.CLOCKS_RISCV64_ELF}}'
-      - '{{.MAIL_RISCV64_ELF}}'
-      - '{{.HELLOWORLD_MAZ_RISCV64}}'
-      - '{{.PREFS_MAZ_RISCV64}}'
-      - '{{.FONTSVC_MAZ_RISCV64}}'
-      - '{{.LINUX_UI_MAZ_RISCV64}}'
-      - '{{.FTI_RISCV64_ELF}}'
-      - '{{.MAILDB_RISCV64_ELF}}'
-      - '{{.MAIL_UI_MAZ_RISCV64}}'
-      - '{{.KMAZARIN_RISCV64_ELF}}'
-      - '{{.BUILD_DIR}}/boot-image.bin'
-      - 'config/startup.riscv64.toml'
-      - 'user/**/*'
-      - 'data/**/*'
-    generates:
-      - '{{.DISK_RISCV64_IMAGE}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Creating ext2 disk image for RISC-V 64-bit..."'
-      - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-riscv64'
-      - '{{.GO}} tool go-cp {{.RACHEL_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/rachel.elf'
-      - '{{.GO}} tool go-cp {{.LINUX_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/linux.elf'
-      - '{{.GO}} tool go-cp {{.FS_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/fs.elf'
-      - '{{.GO}} tool go-cp {{.HANDLETEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf'
-      - '{{.GO}} tool go-cp {{.CLOCKTEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/clocktest.elf'
-      - '{{.GO}} tool go-cp {{.CLOCKS_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/clocks.elf'
-      - '{{.GO}} tool go-cp {{.HELLOWORLD_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr'
-      - '{{.GO}} tool go-cp {{.PREFS_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/prefs.mzr'
-      - '{{.GO}} tool go-cp {{.FONTSVC_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/fontsvc.mzr'
-      - '{{.GO}} tool go-cp {{.KEYMAPPER_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/keymapper.mzr'
-      - '{{.GO}} tool go-cp {{.LINUX_UI_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/linux-ui.mzr'
-      - '{{.GO}} tool go-cp {{.MAIL_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/mail.elf'
-      - '{{.GO}} tool go-cp {{.FTI_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/fti.elf'
-      - '{{.GO}} tool go-cp {{.MAILDB_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/maildb.elf'
-      - '{{.GO}} tool go-cp {{.MAIL_UI_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/mail-ui.mzr'
-      - '{{.GO}} tool go-cp config/startup.riscv64.toml {{.BUILD_DIR}}/disk-staging-riscv64/startup.toml'
-      - '{{.GO}} tool go-cp config/rachel.riscv64.toml {{.BUILD_DIR}}/disk-staging-riscv64/rachel.toml'
-      - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_RISCV64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.BUILD_DIR}}/disk-staging-riscv64/rachel.elf {{.BUILD_DIR}}/disk-staging-riscv64/linux.elf {{.BUILD_DIR}}/disk-staging-riscv64/fs.elf {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocktest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocks.elf {{.BUILD_DIR}}/disk-staging-riscv64/mail.elf {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr {{.BUILD_DIR}}/disk-staging-riscv64/prefs.mzr {{.BUILD_DIR}}/disk-staging-riscv64/fontsvc.mzr {{.BUILD_DIR}}/disk-staging-riscv64/keymapper.mzr {{.BUILD_DIR}}/disk-staging-riscv64/linux-ui.mzr {{.BUILD_DIR}}/disk-staging-riscv64/fti.elf {{.BUILD_DIR}}/disk-staging-riscv64/maildb.elf {{.BUILD_DIR}}/disk-staging-riscv64/mail-ui.mzr {{.BUILD_DIR}}/disk-staging-riscv64/startup.toml {{.BUILD_DIR}}/disk-staging-riscv64/rachel.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
-      - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
-
-  boot-riscv64:
-    desc: Create FAT32 boot image for RISC-V diplomat (contains kmazarin kernel)
-    deps: [kmazarin:riscv64]
-    method: checksum
-    sources:
-      - '{{.KMAZARIN_RISCV64_ELF}}'
-    generates:
-      - '{{.BOOT_RISCV64_IMAGE}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Creating RISC-V FAT32 boot image..."'
-      - '{{.GO}} tool mkfat32 -o {{.BOOT_RISCV64_IMAGE}} -pad 64 {{.KMAZARIN_RISCV64_ELF}}'
-      - '{{.GO}} tool go-echo "RISC-V boot image created at {{.BOOT_RISCV64_IMAGE}}"'
 
   # ===========================================================================
   # Run Tasks
@@ -1086,80 +941,6 @@ tasks:
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
 
-  run-riscv64:
-    desc: "Run RISC-V diplomat+kmazarin in QEMU via OpenSBI -kernel (TIMEOUT=N for timeout, default=5s)"
-    deps: [diplomat:riscv64, boot-riscv64, disk-riscv64]
-    vars:
-      TIMEOUT: '{{.TIMEOUT | default "5"}}'
-      LOG_FILE: /tmp/diplomat-riscv64-serial.log
-    cmds:
-      - task: stop-riscv64
-      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - '{{.GO}} tool go-echo "Starting RISC-V diplomat+kmazarin in QEMU (timeout {{.TIMEOUT}}s)..."'
-      - task: run-riscv64-background
-      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
-      - task: stop-riscv64
-      - '{{.GO}} tool go-sleep 0.3'
-      - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "=== Diplomat RISC-V 64-bit Serial Output ==="'
-      - '{{.GO}} tool safe-serial-read {{.LOG_FILE}}'
-      - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
-
-  run-riscv64-background:
-    desc: Start QEMU with RISC-V diplomat via OpenSBI -kernel in background (internal task)
-    internal: true
-    vars:
-      LOG_FILE: /tmp/diplomat-riscv64-serial.log
-      # VIRTIO_TRANSPORT options: "pci" (default) or "mmio" (legacy RISC-V fallback)
-      VIRTIO_TRANSPORT: '{{.VIRTIO_TRANSPORT | default "pci"}}'
-    cmds:
-      - |
-        {{if eq .VIRTIO_TRANSPORT "mmio"}}
-        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-device,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false
-        {{else}}
-        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.BOOT_RISCV64_IMAGE}},format=raw,if=none,id=boot-mmio,readonly=on -device virtio-blk-device,drive=boot-mmio -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0,file.locking=off -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false
-        {{end}}
-      - '{{.GO}} tool go-echo "QEMU (RISC-V diplomat via OpenSBI, VirtIO {{.VIRTIO_TRANSPORT}}) started in background"'
-      - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4447"'
-      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
-
-  # ===========================================================================
-  # Direct Kernel Boot (RISC-V) - Bypass UEFI
-  # ===========================================================================
-
-  run-riscv64-direct:
-    desc: "Run RISC-V kmazarin directly with OpenSBI (no UEFI, TIMEOUT=N for timeout, default=5s)"
-    deps: [kmazarin:riscv64, disk-arm64]
-    vars:
-      TIMEOUT: '{{.TIMEOUT | default "5"}}'
-      LOG_FILE: /tmp/kmazarin-riscv64-serial.log
-    cmds:
-      - task: stop-riscv64-direct
-      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - '{{.GO}} tool go-echo "Starting RISC-V kmazarin with direct kernel boot (timeout {{.TIMEOUT}}s)..."'
-      - task: run-riscv64-direct-background
-      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
-      - task: stop-riscv64-direct
-      - '{{.GO}} tool go-sleep 0.3'
-      - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "=== RISC-V Kmazarin Serial Output ==="'
-      - '{{.GO}} tool safe-serial-read {{.LOG_FILE}}'
-      - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
-
-  run-riscv64-direct-background:
-    desc: Start QEMU with direct RISC-V kernel boot in background (internal task)
-    internal: true
-    vars:
-      LOG_FILE: /tmp/kmazarin-riscv64-serial.log
-      OPENSBI: '{{dir .QEMU_RISCV64}}/../share/qemu/opensbi-riscv64-generic-fw_dynamic.bin'
-    cmds:
-      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -cpu rv64 -m 2G -bios {{.OPENSBI}} -kernel {{.KMAZARIN_RISCV64_ELF}} -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4448,server,nowait -display {{.DISPLAY}} -no-reboot'
-      - '{{.GO}} tool go-echo "QEMU (RISC-V direct kernel boot) started in background"'
-      - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4448"'
-      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
-
   # ===========================================================================
   # Stop Tasks
   # ===========================================================================
@@ -1175,20 +956,6 @@ tasks:
     desc: Stop ARM64 QEMU instance
     cmds:
       - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4446'
-        ignore_error: true
-      - '{{.GO}} tool go-sleep 0.5'
-
-  stop-riscv64:
-    desc: Stop RISC-V diplomat QEMU instance
-    cmds:
-      - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4447'
-        ignore_error: true
-      - '{{.GO}} tool go-sleep 0.5'
-
-  stop-riscv64-direct:
-    desc: Stop RISC-V direct kernel boot QEMU instance
-    cmds:
-      - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4448'
         ignore_error: true
       - '{{.GO}} tool go-sleep 0.5'
 
@@ -1244,8 +1011,8 @@ tasks:
   # ===========================================================================
 
   all:
-    desc: Build diplomat + kmazarin for all architectures (x86_64, ARM64, RISC-V)
-    deps: [diplomat:esp-x86_64-kmazarin, diplomat:esp-arm64, diplomat:riscv64, disk-arm64, disk-x86_64, disk-riscv64]
+    desc: Build diplomat + kmazarin for all architectures (x86_64, ARM64)
+    deps: [diplomat:esp-x86_64-kmazarin, diplomat:esp-arm64, disk-arm64, disk-x86_64]
 
   default:
     desc: Build diplomat + kmazarin for ARM64 (default target)

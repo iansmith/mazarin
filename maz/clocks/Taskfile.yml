@@ -35,19 +35,3 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKS_AMD64_ELF}} ./maz/clocks'
       - '{{.GO}} tool go-echo "Clocks x86_64 built at {{.CLOCKS_AMD64_ELF}}"'
 
-  riscv64:
-    desc: Build clocks (RISC-V 64-bit)
-    run: once
-    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
-    sources:
-      - 'maz/clocks/**/*'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.CLOCKS_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building clocks for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKS_RISCV64_ELF}} ./maz/clocks'
-      - '{{.GO}} tool go-echo "Clocks RISC-V 64-bit built at {{.CLOCKS_RISCV64_ELF}}"'

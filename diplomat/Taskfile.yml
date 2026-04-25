@@ -50,29 +50,6 @@ tasks:
       - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat-arm64.elf {{.BUILD_DIR}}/diplomat-arm64.efi'
       - '{{.GO}} tool go-echo "Diplomat ARM64 EFI ready at {{.BUILD_DIR}}/diplomat-arm64.efi"'
 
-  riscv64:
-    desc: Build diplomat for RISC-V 64-bit (ELF, loaded via QEMU -kernel)
-    deps: [':check-env', ':build-dir', 'linux-overlay']
-    sources:
-      - 'diplomat/**/*.go'
-      - 'diplomat/**/*.s'
-      - 'shared/**/*.go'
-      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
-      - 'runtime-patches/diplomat-linux/**/*'
-    generates:
-      - '{{.DIPLOMAT_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building diplomat for RISC-V 64-bit (ELF for -kernel loading)..."'
-      # Build as Linux ELF with runtime patches — no elf2pe conversion needed.
-      # UEFI firmware is broken on RISC-V, so we load via QEMU -kernel + OpenSBI.
-      # Link at 0x80200000 (standard RISC-V kernel load address, after OpenSBI)
-      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0 -T 0x80200000" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.DIPLOMAT_RISCV64_ELF}} ./diplomat/main'
-      - '{{.GO}} tool go-echo "Patching entry point to _rt0_riscv64_linux..."'
-      - '{{.GO}} tool patch-entry {{.DIPLOMAT_RISCV64_ELF}} _rt0_riscv64_linux'
-      - '{{.GO}} tool go-echo "Fixing ELF for QEMU compatibility..."'
-      - '{{.GO}} tool fix-go-elf {{.DIPLOMAT_RISCV64_ELF}}'
-      - '{{.GO}} tool go-echo "Diplomat RISC-V 64-bit ELF ready at {{.DIPLOMAT_RISCV64_ELF}}"'
-
   testkernel:
     desc: Build minimal test kernel for diplomat ELF loader testing
     deps: [':build-dir', ':mktestkernel:build']

@@ -53,21 +53,3 @@ tasks:
           {{.GCFLAGS}} -o {{.LINUX_MAZ_AMD64}} ./maz/linux
       - '{{.GO}} tool go-echo "linux.maz (x86_64) ready at {{.LINUX_MAZ_AMD64}}"'
 
-  riscv64:
-    desc: Build linux shepherd (RISC-V 64-bit) — legacy ET_EXEC, stays on SysLoadMaz until Phase 7
-    run: once
-    deps: [':check-env', ':merged-shepherd-overlay-riscv64']
-    sources:
-      - 'maz/**/*.go'
-      - 'maz/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_RISCV64_DIR}}/**/*'
-    generates:
-      - '{{.LINUX_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building linux for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.LINUX_RISCV64_ELF}} ./maz/linux'
-      - '{{.GO}} tool go-echo "Stdio RISC-V 64-bit built at {{.LINUX_RISCV64_ELF}}"'

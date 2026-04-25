@@ -71,21 +71,3 @@ tasks:
           {{.GCFLAGS}} -o {{.MAILDB_MAZ_AMD64}} ./maz/maildb
       - '{{.GO}} tool go-echo "maildb.maz (x86_64) ready at {{.MAILDB_MAZ_AMD64}}"'
 
-  riscv64:
-    desc: Build maildb shepherd (RISC-V 64-bit) — legacy ET_EXEC, stays on SysLoadMaz until Phase 7
-    run: once
-    deps: [':check-env', ':merged-shepherd-overlay-riscv64']
-    sources:
-      - 'maz/**/*.go'
-      - 'maz/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_RISCV64_DIR}}/**/*'
-    generates:
-      - '{{.MAILDB_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building maildb for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.MAILDB_RISCV64_ELF}} ./maz/maildb'
-      - '{{.GO}} tool go-echo "maildb RISC-V 64-bit built at {{.MAILDB_RISCV64_ELF}}"'

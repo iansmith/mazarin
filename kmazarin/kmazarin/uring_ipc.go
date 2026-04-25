@@ -1,4 +1,4 @@
-//go:build arm64 || amd64 || riscv64
+//go:build arm64 || amd64
 
 package main
 
@@ -364,6 +364,7 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 func KernelWriteToRing(targetSID int16, msg *ipc.UringIPCMsg) (int64, uintptr) {
 	return UringSendKernel(-1, targetSID, 0, uintptr(unsafe.Pointer(msg)))
 }
+
 
 // KernelWriteToRingFromIRQ is a nosplit-safe version of KernelWriteToRing
 // for use from IRQ top-half handlers. Always writes to ring 0.

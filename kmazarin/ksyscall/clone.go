@@ -1,4 +1,4 @@
-//go:build arm64 || riscv64
+//go:build arm64
 
 package ksyscall
 

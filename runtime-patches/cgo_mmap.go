@@ -12,7 +12,7 @@
 // Heap bounds are passed via custom auxv entries (AT_KMAZARIN_HEAP_START/END)
 // and parsed by archauxv() in os_linux_arm64.go BEFORE this code runs.
 
-//go:build (linux && (amd64 || arm64 || loong64 || riscv64)) || (freebsd && amd64)
+//go:build (linux && (amd64 || arm64)) || (freebsd && amd64)
 
 package runtime
 

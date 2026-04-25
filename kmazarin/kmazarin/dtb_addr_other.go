@@ -1,5 +1,3 @@
-//go:build !riscv64
-
 package main
 
 // dtbVirtAddr converts a DTB physical address to its kernel virtual address.

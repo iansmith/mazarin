@@ -27,19 +27,6 @@ tasks:
     cmds:
       - '{{.GO}} tool gen-overlay -type kmazarin-amd64 -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_AMD64_OVERLAY_JSON}}'
 
-  riscv64-overlay:
-    run: once
-    method: checksum
-    desc: Generate runtime overlay JSON for kmazarin (RISC-V 64-bit)
-    deps: [':build-dir']
-    sources:
-      - '{{.RUNTIME_PATCHES_DIR}}/**/*.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/**/*.s'
-    generates:
-      - '{{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
-    cmds:
-      - '{{.GO}} tool gen-overlay -type kmazarin-riscv64 -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
-
   arm64:
     desc: Build kmazarin kernel (ARM64)
     run: once
@@ -90,23 +77,3 @@ tasks:
       - '{{.GO}} tool fix-go-elf {{.KMAZARIN_AMD64_ELF}}'
       - '{{.GO}} tool go-echo "Kmazarin x86_64 kernel built at {{.KMAZARIN_AMD64_ELF}} (NOTE: not relocated to high memory yet)"'
 
-  riscv64:
-    desc: Build kmazarin kernel (RISC-V 64-bit)
-    run: once
-    deps: [':check-env', 'riscv64-overlay', ':stage-embedded-fs-riscv64', ':stage-kernel-config-riscv64']
-    sources:
-      - '**/*.go'
-      - '**/*.s'
-      - 'kmazarin/fs.elf'
-      - 'kmazarin/kernel.toml'
-      - '../shared/**/*.go'
-      - '{{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
-      - '{{.RUNTIME_PATCHES_DIR}}/*.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/*.s'
-      - '{{.RUNTIME_PATCHES_DIR}}/syscall/*.go'
-    generates:
-      - '{{.KMAZARIN_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building kmazarin kernel for RISC-V 64-bit (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.KMAZARIN_RISCV64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_RISCV64_ELF}} ./kmazarin/kmazarin'
-      - '{{.GO}} tool go-echo "Kmazarin RISC-V 64-bit kernel built at {{.KMAZARIN_RISCV64_ELF}}"'

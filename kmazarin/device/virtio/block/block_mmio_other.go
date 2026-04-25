@@ -1,5 +1,3 @@
-//go:build !riscv64
-
 package block
 
 // findVirtIOBlockMMIO is a no-op on non-RISC-V architectures.

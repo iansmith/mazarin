@@ -23,13 +23,11 @@ import (
 
 // Relocation types for .maz_imports entries
 const (
-	RelocBL_ARM64  uint8 = 0 // ARM64 BL instruction (26-bit signed offset × 4)
-	RelocCALL_X86  uint8 = 1 // x86_64 CALL instruction (E8 + 32-bit relative)
-	RelocPTR64     uint8 = 2 // 8-byte absolute pointer (data sections)
-	RelocJAL_RISCV uint8 = 3 // RISC-V JAL instruction (20-bit J-immediate × 2)
-	RelocB_ARM64   uint8 = 4 // ARM64 B (unconditional branch, no link) — body trampoline
-	RelocJMP_X86   uint8 = 5 // x86_64 JMP rel32 (E9) — body trampoline
-	RelocJ_RISCV   uint8 = 6 // RISC-V J (JAL x0) — body trampoline
+	RelocBL_ARM64 uint8 = 0 // ARM64 BL instruction (26-bit signed offset × 4)
+	RelocCALL_X86 uint8 = 1 // x86_64 CALL instruction (E8 + 32-bit relative)
+	RelocPTR64    uint8 = 2 // 8-byte absolute pointer (data sections)
+	RelocB_ARM64  uint8 = 4 // ARM64 B (unconditional branch, no link) — body trampoline
+	RelocJMP_X86  uint8 = 5 // x86_64 JMP rel32 (E9) — body trampoline
 )
 
 // importEntry is the on-disk format of a .maz_imports entry (16 bytes).
@@ -299,8 +297,8 @@ func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64
 
 // isThinStub checks if the function at the given VA is a thin stub.
 // It recognizes both:
-//   - Legacy: for{} loop → NOP+B.-4 (ARM64), INT3+JMP (x86), NOP+J.-4 (RISC-V)
-//   - New: _thinStubPanic call → BL/CALL/JAL to _thinStubPanic within first 20 instructions
+//   - Legacy: for{} loop → NOP+B.-4 (ARM64), INT3+JMP (x86)
+//   - New: _thinStubPanic call → BL/CALL to _thinStubPanic within first 20 instructions
 func isThinStub(machine elf.Machine, textData []byte, textAddr, funcAddr uint64, panicHelperAddrs []uint64) bool {
 	offset := funcAddr - textAddr
 	switch machine {
@@ -308,8 +306,6 @@ func isThinStub(machine elf.Machine, textData []byte, textAddr, funcAddr uint64,
 		return isThinStubARM64(textData, offset, funcAddr, panicHelperAddrs)
 	case elf.EM_X86_64:
 		return isThinStubX86_64(textData, offset, funcAddr, panicHelperAddrs)
-	case elf.EM_RISCV:
-		return isThinStubRISCV64(textData, offset, funcAddr, panicHelperAddrs)
 	}
 	return false
 }
@@ -384,52 +380,6 @@ func isThinStubX86_64(textData []byte, offset, funcAddr uint64, panicHelperAddrs
 	return false
 }
 
-// isThinStubRISCV64 checks RISC-V stub patterns.
-func isThinStubRISCV64(textData []byte, offset, funcAddr uint64, panicHelperAddrs []uint64) bool {
-	// Legacy: NOP (0x00000013) + J .-4 (0xffdff06f)
-	if offset+8 <= uint64(len(textData)) {
-		insn0 := binary.LittleEndian.Uint32(textData[offset:])
-		insn1 := binary.LittleEndian.Uint32(textData[offset+4:])
-		if insn0 == 0x00000013 && insn1 == 0xffdff06f {
-			return true
-		}
-	}
-
-	// New pattern: scan first 20 instructions for JAL ra targeting _thinStubPanic
-	if len(panicHelperAddrs) == 0 {
-		return false
-	}
-	maxScan := uint64(80)
-	for i := uint64(0); i < maxScan && offset+i+4 <= uint64(len(textData)); i += 4 {
-		insn := binary.LittleEndian.Uint32(textData[offset+i:])
-		// JAL rd, offset: opcode = 0x6F, rd = x1 (ra)
-		if insn&0x7F != 0x6F {
-			continue
-		}
-		rd := (insn >> 7) & 0x1F
-		if rd != 1 {
-			continue
-		}
-		// Decode J-immediate
-		imm20 := (insn >> 31) & 1
-		imm10_1 := (insn >> 21) & 0x3FF
-		imm11 := (insn >> 20) & 1
-		imm19_12 := (insn >> 12) & 0xFF
-		imm := (imm20 << 20) | (imm19_12 << 12) | (imm11 << 11) | (imm10_1 << 1)
-		if imm20 != 0 {
-			imm |= 0xFFE00000
-		}
-		pc := funcAddr + i
-		target := uint64(int64(pc) + int64(int32(imm)))
-		for _, addr := range panicHelperAddrs {
-			if target == addr {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // runtimeAsmSymbols lists assembly-implemented runtime functions whose
 // bodies must be patched to trampoline to the host shepherd's versions.
 // These can't be stubbed by gen-ast-stubs (they're assembly, not Go source).
@@ -464,8 +414,6 @@ func findRuntimeAsmSymbols(f *elf.File) []importRef {
 		relocType = RelocB_ARM64
 	case elf.EM_X86_64:
 		relocType = RelocJMP_X86
-	case elf.EM_RISCV:
-		relocType = RelocJ_RISCV
 	default:
 		return nil
 	}
@@ -514,8 +462,6 @@ func findUnreachedStubs(f *elf.File, stubAddrs map[string]uint64, existingImport
 		relocType = RelocB_ARM64
 	case elf.EM_X86_64:
 		relocType = RelocJMP_X86
-	case elf.EM_RISCV:
-		relocType = RelocJ_RISCV
 	default:
 		return nil
 	}
@@ -558,8 +504,6 @@ func scanText(f *elf.File, stubAddrs map[string]uint64, addrToName map[uint64]st
 		imports = scanTextARM64(data, text.Addr, stubAddrs, addrToName)
 	case elf.EM_X86_64:
 		imports = scanTextX86_64(data, text.Addr, stubAddrs, addrToName)
-	case elf.EM_RISCV:
-		imports = scanTextRISCV64(data, text.Addr, stubAddrs, addrToName)
 	}
 
 	return imports
@@ -623,57 +567,6 @@ func scanTextX86_64(data []byte, baseAddr uint64, stubAddrs map[string]uint64, a
 				segOffset:  uint32(pc),
 				name:       name,
 				relocType:  RelocCALL_X86,
-			})
-		}
-	}
-
-	return imports
-}
-
-// scanTextRISCV64 scans RISC-V .text for JAL instructions targeting stubs.
-func scanTextRISCV64(data []byte, baseAddr uint64, stubAddrs map[string]uint64, addrToName map[uint64]string) []importRef {
-	var imports []importRef
-
-	for i := 0; i+3 < len(data); i += 2 { // RISC-V has 16-bit aligned instructions
-		if i+3 >= len(data) {
-			break
-		}
-
-		insn := binary.LittleEndian.Uint32(data[i:])
-
-		// JAL rd, offset: opcode bits [6:0] = 1101111 (0x6F)
-		// We only care about JAL ra (rd=1, i.e. function calls)
-		if insn&0x7F != 0x6F {
-			continue
-		}
-
-		// Check rd = x1 (ra) — bits [11:7]
-		rd := (insn >> 7) & 0x1F
-		if rd != 1 {
-			continue
-		}
-
-		// Decode J-immediate: imm[20|10:1|11|19:12]
-		imm20 := (insn >> 31) & 1
-		imm10_1 := (insn >> 21) & 0x3FF
-		imm11 := (insn >> 20) & 1
-		imm19_12 := (insn >> 12) & 0xFF
-
-		imm := (imm20 << 20) | (imm19_12 << 12) | (imm11 << 11) | (imm10_1 << 1)
-		// Sign extend from bit 20
-		if imm20 != 0 {
-			imm |= 0xFFE00000
-		}
-
-		pc := baseAddr + uint64(i)
-		target := uint64(int64(pc) + int64(int32(imm)))
-
-		if name, ok := addrToName[target]; ok {
-			imports = append(imports, importRef{
-				fileOffset: uint64(i),
-				segOffset:  uint32(pc),
-				name:       name,
-				relocType:  RelocJAL_RISCV,
 			})
 		}
 	}

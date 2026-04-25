@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// KMAZARIN OVERLAY: Added riscv64 to the exclusion list so that cgo_mmap.go
-// provides mmap/munmap for riscv64 (bump allocator, no ECALL needed).
+// KMAZARIN OVERLAY: cgo_mmap.go provides the bump-allocator mmap/munmap on
+// every supported arch, so this stock-Go declaration file never compiles in.
 
-//go:build !aix && !darwin && !js && !((linux && (amd64 || arm64 || loong64 || riscv64)) || (freebsd && amd64)) && !openbsd && !plan9 && !solaris && !windows
+//go:build !aix && !darwin && !js && !((linux && (amd64 || arm64)) || (freebsd && amd64)) && !openbsd && !plan9 && !solaris && !windows
 
 package runtime
 

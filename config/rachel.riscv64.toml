@@ -1,9 +1,0 @@
-# rachel.riscv64.toml — rachel window manager configuration
-
-# Keyboard layout: "us", "dvorak-qwerty", or "identity".
-# Case-insensitive. Passed to keymapper.maz at startup.
-keymap = "dvorak-qwerty"
-
-# Default text font size in pixels. Published as an attribute so
-# shepherd applications can bind their own TextSize to it.
-defaultTextFontSize = 22

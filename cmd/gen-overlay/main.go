@@ -24,7 +24,7 @@ type Overlay struct {
 }
 
 func main() {
-	overlayType := flag.String("type", "", "overlay type: kmazarin, kmazarin-amd64, kmazarin-riscv64, userspace, maz-exit, merge")
+	overlayType := flag.String("type", "", "overlay type: kmazarin, kmazarin-amd64, userspace, maz-exit, merge")
 	patchesDir := flag.String("patches", "", "directory containing patch files")
 	output := flag.String("o", "", "output JSON file")
 	baseOverlay := flag.String("base", "", "base overlay JSON (for -type merge)")
@@ -36,7 +36,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Types:\n")
 		fmt.Fprintf(os.Stderr, "  kmazarin         - Kernel runtime patches (ARM64)\n")
 		fmt.Fprintf(os.Stderr, "  kmazarin-amd64   - Kernel runtime patches (x86_64)\n")
-		fmt.Fprintf(os.Stderr, "  kmazarin-riscv64 - Kernel runtime patches (RISC-V 64)\n")
 		fmt.Fprintf(os.Stderr, "  userspace        - Userspace runtime patches\n")
 		fmt.Fprintf(os.Stderr, "  cardinal-linux   - Cardinal bootloader runtime patches (Linux ARM64→bare metal)\n")
 		fmt.Fprintf(os.Stderr, "  diplomat         - UEFI bootloader runtime patches (Windows→UEFI, deprecated)\n")
@@ -96,8 +95,6 @@ func main() {
 		err = buildKmazarinOverlay(&overlay, goroot, absPatchesDir)
 	case "kmazarin-amd64":
 		err = buildKmazarinAMD64Overlay(&overlay, goroot, absPatchesDir)
-	case "kmazarin-riscv64":
-		err = buildKmazarinRISCV64Overlay(&overlay, goroot, absPatchesDir)
 	case "userspace":
 		err = buildUserspaceOverlay(&overlay, goroot, absPatchesDir)
 	case "maz-exit":
@@ -220,50 +217,12 @@ func buildKmazarinAMD64Overlay(overlay *Overlay, goroot, patchesDir string) erro
 	return nil
 }
 
-func buildKmazarinRISCV64Overlay(overlay *Overlay, goroot, patchesDir string) error {
-	// Kmazarin patches for RISC-V 64-bit runtime — same arch-independent patches as ARM64/AMD64,
-	// but with riscv64-specific os_linux and sys_linux files.
-	runtimePatches := map[string]string{
-		"runtime/cgo_mmap.go":            "cgo_mmap.go",
-		"runtime/mmap.go":                "mmap.go",
-		"runtime/malloc.go":              "malloc.go",
-		"runtime/mcache.go":              "mcache.go",
-		"runtime/os_linux_noauxv.go":     "os_linux_noauxv.go",
-		"runtime/preempt.go":             "preempt.go",
-		"runtime/sys_linux_riscv64.s":    "sys_linux_riscv64.s",
-		"runtime/rt0_linux_riscv64.s":    "rt0_linux_riscv64.s",
-		"runtime/sigaction.go":           "sigaction.go",
-		"runtime/tagptr_64bit.go":        "tagptr_64bit.go",
-		"runtime/fds_unix.go":            "fds_unix.go",
-	}
-
-	for goFile, patchFile := range runtimePatches {
-		src := filepath.Join(goroot, "src", goFile)
-		dst := filepath.Join(patchesDir, patchFile)
-		if _, err := os.Stat(dst); err != nil {
-			return fmt.Errorf("patch file not found: %s", dst)
-		}
-		overlay.Replace[src] = dst
-	}
-
-	// Syscall patch
-	syscallSrc := filepath.Join(goroot, "src", "syscall/syscall_linux.go")
-	syscallDst := filepath.Join(patchesDir, "syscall/syscall_linux.go")
-	if _, err := os.Stat(syscallDst); err != nil {
-		return fmt.Errorf("patch file not found: %s", syscallDst)
-	}
-	overlay.Replace[syscallSrc] = syscallDst
-
-	return nil
-}
-
 func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 	// Userspace patches
 	patches := map[string]string{
 		"syscall/syscall_linux.go":    "syscall_linux.go",
 		"syscall/asm_linux_arm64.s":   "asm_linux_arm64.s",
 		"syscall/asm_linux_amd64.s":   "asm_linux_amd64.s",
-		"syscall/asm_linux_riscv64.s": "asm_linux_riscv64.s",
 		"runtime/cgo_mmap.go":         "runtime/cgo_mmap.go",
 
 		"runtime/maz_moduledata.go":     "runtime/maz_moduledata.go",
@@ -432,17 +391,15 @@ func buildMazlinkOverlay(overlay *Overlay, goroot, patchesDir string) error {
 
 func buildDiplomatLinuxOverlay(overlay *Overlay, goroot, patchesDir string) error {
 	// Diplomat patches for Linux runtime to make it UEFI-compatible.
-	// We're building with GOOS=linux GOARCH={amd64,riscv64}, so we patch the Linux syscall/runtime.
+	// We're building with GOOS=linux GOARCH={amd64,arm64}, so we patch the Linux syscall/runtime.
 	//
 	// Critical patches:
 	// - syscall_linux.go: Centralize syscall routing
 	// - sys_linux_amd64.s: Stub out all syscall instructions (write1, exit, futex, etc.) for x86_64
-	// - rt0_linux_riscv64.s: Trampoline entry point for RISC-V OpenSBI boot
 	patches := map[string]string{
 		"syscall/syscall_linux.go":     "syscall_linux.go",
 		"runtime/sys_linux_amd64.s":    "sys_linux_amd64.s",
 		"runtime/sys_linux_arm64.s":    "sys_linux_arm64.s",
-		"runtime/rt0_linux_riscv64.s":  "trampoline_riscv64.s",
 		"debug/elf/file.go":            "elf_file.go",
 		"debug/elf/reader.go":          "elf_reader.go",
 	}

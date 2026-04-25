@@ -35,19 +35,3 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.VERSAI_AMD64_ELF}} ./mazarin/apps/versai'
       - '{{.GO}} tool go-echo "Versai x86_64 built at {{.VERSAI_AMD64_ELF}}"'
 
-  riscv64:
-    desc: Build versai (RISC-V 64-bit)
-    run: once
-    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
-    sources:
-      - 'mazarin/apps/versai/**/*'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.VERSAI_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building versai for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.VERSAI_RISCV64_ELF}} ./mazarin/apps/versai'
-      - '{{.GO}} tool go-echo "Versai RISC-V 64-bit built at {{.VERSAI_RISCV64_ELF}}"'

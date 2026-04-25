@@ -519,8 +519,6 @@ func relocTypeName(m elf.Machine, t uint32) string {
 		return elf.R_X86_64(t).String()
 	case elf.EM_386:
 		return elf.R_386(t).String()
-	case elf.EM_RISCV:
-		return elf.R_RISCV(t).String()
 	}
 	return fmt.Sprintf("R_%s_%d", m, t)
 }

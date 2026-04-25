@@ -33,18 +33,3 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.ATTRTEST_AMD64_ELF}} ./maz/attrtest'
       - '{{.GO}} tool go-echo "Attrtest x86_64 built at {{.ATTRTEST_AMD64_ELF}}"'
 
-  riscv64:
-    desc: Build attrtest (RISC-V 64-bit)
-    run: once
-    deps: [':check-env', ':mazarin:userspace-overlay']
-    sources:
-      - 'maz/attrtest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.ATTRTEST_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building attrtest for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.ATTRTEST_RISCV64_ELF}} ./maz/attrtest'
-      - '{{.GO}} tool go-echo "Attrtest RISC-V 64-bit built at {{.ATTRTEST_RISCV64_ELF}}"'

@@ -22,7 +22,6 @@ const (
 	elfTypeDyn     = 3
 	elfMachineX64     = 0x3E
 	elfMachineARM64   = 0xB7
-	elfMachineRISCV64 = 0xF3
 	elfPTLoad         = 1
 	elfEhdrSize    = 64 // ELF64 header size
 	elfPhdrSize    = 56 // ELF64 program header size
@@ -1385,27 +1384,21 @@ func findInDirNoError(fs *fat32.FileSystem, cluster uint32, name string) *Simple
 
 // findFileNoError finds a file without allocating error interfaces (for early boot).
 // Panics on failure instead of returning errors.
-// Searches multiple locations: root directory (RISC-V minimal disk) and /EFI/Linux/.
+// Searches /EFI/Linux/KMAZARIN.ELF (ARM64/AMD64 disk layout).
 func findFileNoError(fs *fat32.FileSystem, path string) *SimpleFile {
 	root := fs.RootCluster()
 	var entry *SimpleDirEntry
 
-	// Try RISC-V minimal disk layout: kmazarin-riscv64.elf in root
-	entry = findInDirSoft(fs, root, "kmazarin-riscv64.elf")
-
-	// Try /EFI/Linux/KMAZARIN.ELF (ARM64/AMD64 disk layout)
-	if entry == nil {
-		efiDir := findInDirSoft(fs, root, "EFI")
-		if efiDir != nil && efiDir.IsDir {
-			linuxDir := findInDirSoft(fs, efiDir.Cluster, "LINUX")
-			if linuxDir != nil && linuxDir.IsDir {
-				entry = findInDirSoft(fs, linuxDir.Cluster, "KMAZARIN.ELF")
-			}
+	efiDir := findInDirSoft(fs, root, "EFI")
+	if efiDir != nil && efiDir.IsDir {
+		linuxDir := findInDirSoft(fs, efiDir.Cluster, "LINUX")
+		if linuxDir != nil && linuxDir.IsDir {
+			entry = findInDirSoft(fs, linuxDir.Cluster, "KMAZARIN.ELF")
 		}
 	}
 
 	if entry == nil {
-		printString("ERROR: kernel not found in root or /EFI/Linux/\r\n")
+		printString("ERROR: kernel not found in /EFI/Linux/\r\n")
 		for {}
 	}
 
@@ -1557,16 +1550,8 @@ func LoadKernelNoError(fsys *fat32.FileSystem, path string) *LoadedKernel {
 		}
 	}
 
-	// DEBUG: Verify text segment integrity after copy and save checksum for later checks
+	// DEBUG: Verify text segment integrity after copy
 	verifyCodeIntegrityRange(physBase, tempBuf, lowestVirt, &phdrs, ehdr.Phnum, "after segment copy")
-	// Save checksum of the text segment for later verification in PrepareKernelVMRISCV
-	for i := uint16(0); i < ehdr.Phnum; i++ {
-		ph := &phdrs[i]
-		if ph.Type == elfPTLoad && ph.Filesz > 0 && (ph.Flags&1) != 0 {
-			saveTextChecksum(physBase+(ph.Vaddr-lowestVirt), ph.Filesz)
-			break
-		}
-	}
 
 	result := dNew[LoadedKernel]()
 	if result == nil {
