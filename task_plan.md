@@ -69,19 +69,55 @@ three. The current `registerOpenedFont` bounds check (commit
 `37b4abe`) silently skips registration for out-of-range IDs — no
 crash, but DrawText for that fontID silently fails to render.
 
-**Fix: keep `0x1000` strictly at the wire boundary.** The
-`FontSvcGlyphProvider`:
+**Fix: table-based translation in `FontSvcGlyphProvider`, no
+arithmetic between client and server fontIDs.** An earlier draft
+of this plan proposed allocating client-local fontIDs in
+`[MaxFonts, MaxFonts+MaxTempFonts)` and translating via subtraction;
+that bakes the values of `MaxFonts` (in `fontcache/protocol.go`)
+and `MaxTempFonts` (in `maz/fontsvc/main.go`) into every IPC
+boundary crossing. If anyone bumps either constant the translation
+breaks silently — server-side fontID 50 (now a legitimate permanent
+ID under MaxFonts=64) would collide with the client's "temp range
+starts at 32" rule.
 
-- Stores temp fontsvcFonts in a separate `tempFonts [MaxTempFonts]`
-  table (paired with `fonts [MaxFonts]` for permanent).
-- Returns *client-local* fontIDs in `[MaxFonts, MaxFonts+MaxTempFonts)`
-  = `[32, 64)` — well inside the 256-element textshape arrays.
-- Translates client ID ↔ server ID at the IPC boundary:
-  - Send: server_id = `0x1000 | (client_id - MaxFonts)`
-  - Recv: client_id = `MaxFonts + (server_id & 0x0FFF)`
-- Server-side dumps and `[fontsvc]` traces still use the `0x1000`
-  tag (debug-friendly there); client-side dumps use small ints with
-  the convention `fontID >= 32 → temp`.
+Cleaner: store the server fontID in the slot, look it up on send.
+No math.
+
+```go
+type fontsvcFont struct {
+    ...
+    serverFontID int32  // whatever fontsvc returned (0x1001, 0x1003, 50,
+                        //   anything — opaque to the client at runtime)
+    kind         slotKind // permanent vs temporary, decided when populated
+}
+
+// FontSvcGlyphProvider:
+slots [textshape.MaxFonts]*fontsvcFont
+```
+
+- **On open:** send IPC. Receive whatever fontsvc returns. Allocate
+  the next free index in `slots[]`. Store `slot.serverFontID =
+  received`. Return the slot index upstream. The slot index is a
+  small int < 256 that the textshape layer can index its arrays
+  with directly.
+- **On send (close, glyph request):** look up
+  `slots[client_id].serverFontID`, send that. Pure storage lookup.
+- **Perm vs temp dispatch inside the provider** (tier-1 cache routing,
+  glyph IPC routing): `slot.kind` field set when the slot is
+  populated. Never derived from arithmetic on the fontID.
+
+Properties:
+
+- The `0x1000` debug tag is preserved at the wire and in fontsvc
+  traces (debug-friendly there) but is invisible to the client at
+  runtime — fontsvc could change its tagging scheme tomorrow and
+  the client wouldn't notice.
+- `MaxFonts` and `MaxTempFonts` are server-side bookkeeping; the
+  client doesn't reference them.
+- Bumping either pool size requires no client change.
+- The only client-side coupling is `slots[]` size =
+  `textshape.MaxFonts` (its upstream array index ceiling). Raising
+  that one constant is a local change; nothing else needs to track.
 
 ### Implementation work order
 
@@ -103,23 +139,36 @@ crash, but DrawText for that fontID silently fails to render.
      also unmap any registeredBytes the dead shepherd registered.
 
 3. **Client `FontSvcGlyphProvider`** (`mazarin/fontcache/provider.go`):
-   - Add `tempFonts [MaxTempFonts]*fontsvcFont`.
+   - Replace the `fonts [MaxFonts]*fontsvcFont` array with a
+     larger `slots [SlotTableSize]*fontsvcFont` (where
+     `SlotTableSize = textshape.MaxFonts`, currently 256).
+   - Add `serverFontID int32` and `kind slotKind` fields to
+     `fontsvcFont`.
    - `RegisterBuffer`: allocate pages, copy bytes,
      `SharePagesWithTarget(fontsvc)`, send `wm.RegisterFontBuffer`,
      wait for reply. Drop the local in-process Face / `registered`
      map (or keep it as a backup for the rare case fontsvc dies?).
    - `OpenTemporaryFont`:
      - Permanent-first dedupe (unchanged).
-     - Otherwise: build `wm.OpenTemporaryFont` with `FontDataVA = 0`
-       (registration was the bytes path), send via uring, wait for
-       reply. Mask `0x1000`, store in `tempFonts[idx]`, return
-       client_id = `MaxFonts + idx`.
+     - Otherwise: send `wm.OpenTemporaryFont` (registration already
+       handed bytes over), wait for reply. Allocate next free
+       index in `slots[]`, populate slot with
+       `serverFontID = reply.FontID, kind = kindTemp`. Return the
+       slot index upstream — small int < 256, indexable into the
+       textshape arrays directly.
    - `CloseTemporaryFont`:
-     - For client_id < MaxFonts: no-op (permanent).
-     - For client_id >= MaxFonts: translate to server_id, send
-       `wm.CloseTemporaryFont`, drop local entry.
-   - Adjust `Face` and `GlyphByGID` to dispatch on
-     `client_id >= MaxFonts` to the `tempFonts` table.
+     - For `slots[client_id].kind == kindPermanent`: no-op.
+     - For `kindTemp`: send `wm.CloseTemporaryFont` with
+       `slots[client_id].serverFontID` as the FontID field, then
+       drop the local slot entry.
+   - `Face` / `GlyphByGID`: dispatch on `slot.kind` (no fontID
+     arithmetic).
+   - `OpenFont` (permanent path): same flow but `kind =
+     kindPermanent`. Note that fontsvc currently returns small-int
+     fontIDs in [0, MaxFonts) for permanent — those *will* match
+     the client slot index for now (sequential allocation aligns)
+     but the client should NOT depend on that match; it stores
+     `serverFontID` and looks it up on every send.
 
 4. **FontCache helper** (`mazarin/fontcache/fontcache.go` or
    wherever FontCache lives): add `SendOpenTemporaryFont`,
