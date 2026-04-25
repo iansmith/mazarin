@@ -114,12 +114,64 @@ unmaps on `CloseTemporaryFont`, after which the caller is free to
    handlers, wire the per-shepherd ownership tracking. Build clean.
    Verify nothing currently using `OpenFont` is affected (no behavioral
    change to existing path).
-2. **louis14-side coordination** — see `docs/louis14_temp_fonts_plan.md`
+2. **louis14-side coordination** — see `design/louis14_temp_fonts_plan.md`
    for the call-site changes (HTML renderer's `openFont`, render scope,
    close discipline). Don't touch louis14 yet — user-coordinated.
 3. **Integration test** — fontsvc temp pool exercised end-to-end via
    mail-app rendering HTML. Verify temp slots recycle, permanent pool
    stays bounded, no leaks across many clicks.
+
+### Progress (2026-04-25 evening, this session)
+
+**Foundation landed and compiles clean across rachel, fontsvc, fontcache,
+textshape, wm:**
+
+- IPC types (`shared/wm/uring_font.go`): `MsgTypeOpenTemporaryFont/Reply`
+  + `MsgTypeCloseTemporaryFont/Reply`, struct definitions, `TempFontIDBase
+  = 0x1000`, `IsTempFontID` helper, full Encode/Decode wired into
+  `DecodeFontRequest` / `DecodeFontResponseFromPayload`.
+- `textshape.GlyphProvider` interface gained `OpenTemporaryFont` /
+  `CloseTemporaryFont`. `DirectGlyphProvider` (louis14 standalone) has
+  the real implementation: permanent-first dedupe via `findCachedFont`,
+  Munmap on close. `FontSvcGlyphProvider` and `InternalGlyphProvider`
+  are stubs with comments pointing at the next pass.
+- fontsvc temp pool added (`maz/fontsvc/main.go`): `tempFonts[32]` +
+  `tempFontOwner[32]`, `allocTempFontID`, `findCachedTempFont`,
+  `resolveFontID` masking off `0x1000`. Handlers
+  `handleOpenTemporaryFont` / `handleCloseTemporaryFont` /
+  `CleanupShepherdFonts` / `releaseTempSlot` implemented. Fresh-open
+  filesystem path uses extracted helpers `resolveFamilyPath` /
+  `loadAndParseFont` / `buildTempCache` / `shareCacheAndReplyTemp`.
+- Cross-module callback wiring: two new methods on `FontSvcInjector`
+  (`RegisterOpenTemporaryFontHandler`, `RegisterCloseTemporaryFontHandler`),
+  matching `FontSvcInit` fields, fontsvc registers
+  `handleOpenTemporaryFontCallback` / `handleCloseTemporaryFontCallback`,
+  rachel's dispatcher fans out to them on `wm.OpenTemporaryFont` /
+  `wm.CloseTemporaryFont` cases.
+
+**Still to do:**
+
+1. `FontSvcGlyphProvider.OpenTemporaryFont` / `CloseTemporaryFont`:
+   real IPC implementation. SharePagesWithTarget for caller-supplied
+   bytes path (msg.FontDataVA != 0). Tier-1 cache reception (mmap of
+   shared cache pages from fontsvc). Mask `0x1000` bit on receive.
+2. `InternalGlyphProvider`: extend `FontSvcInjector` with
+   `RegisterInternalOpenTemporaryFont` / `RegisterInternalCloseTemporaryFont`
+   so rachel's in-process callers (window chrome) can use temp pool.
+   Currently stub falls through to `OpenFont` — fine for rachel because
+   rachel doesn't render HTML, but worth wiring for consistency.
+3. Hook `CleanupShepherdFonts(deadSID)` into rachel's
+   `handleShepherdDeath` so temp slots get freed when a shepherd dies
+   mid-render.
+4. fontsvc's `OpenTemporaryFont` with shared bytes (`msg.FontDataVA != 0`)
+   currently returns `-ENOSYS`. Needs the kernel-side mapping primitive
+   to receive the caller's pages.
+5. louis14 changes per `design/louis14_temp_fonts_plan.md` — user-coordinated,
+   triggered when user is ready.
+6. Smoke test (currently blocked: louis14 has uncommitted Phase 13e′/13f
+   `LayoutUnit` migration that breaks `mail.elf` build —
+   `pkg/layout/flex_layout.go` callers haven't been updated to use
+   `.Float64()` on `ResolveInlineSize`/`ResolveBlockSize` returns).
 
 ### Open follow-ups carried forward from #6
 

@@ -32,6 +32,9 @@ func init() {
 	if MazarinShepherdAddr == nil {
 		panic("unreachable")
 	}
+	for i := range tempFontOwner {
+		tempFontOwner[i] = -1
+	}
 }
 
 // MazarinShepherd receives the FontSvcInjector injection from rachel.
@@ -55,6 +58,8 @@ func MazarinShepherd(injected interface{}) error {
 	// values instead of interface{} to avoid cross-.maz type assertions.
 	inj.RegisterOpenFontHandler(handleOpenFontCallback)
 	inj.RegisterRequestGlyphHandler(handleRequestGlyphCallback)
+	inj.RegisterOpenTemporaryFontHandler(handleOpenTemporaryFontCallback)
+	inj.RegisterCloseTemporaryFontHandler(handleCloseTemporaryFontCallback)
 
 	// Register in-process font callbacks so rachel can use fonts directly
 	// without uring IPC or SharePages (can't share pages with yourself).
@@ -81,6 +86,22 @@ type fontSlot struct {
 }
 
 var fonts [fontcache.MaxFonts]fontSlot
+
+// MaxTempFonts is the size of the temporary-font pool. Distinct from
+// the permanent pool (`fonts`) — temp fonts have explicit lifecycle
+// via OpenTemporaryFont/CloseTemporaryFont and are recycled per render
+// scope. fontIDs returned for temp slots are OR'd with wm.TempFontIDBase
+// (0x1000) at the IPC boundary so dumps unambiguously identify which
+// pool a fontID belongs to.
+const MaxTempFonts = 32
+
+// tempFonts is the temp pool. Each in-use slot also stores the owning
+// shepherd SID so per-shepherd death cleanup can release any opens
+// that the shepherd never closed (panic mid-render, killed, etc.).
+var tempFonts [MaxTempFonts]fontSlot
+
+// tempFontOwner[i] is the SID that opened tempFonts[i]. -1 = free.
+var tempFontOwner [MaxTempFonts]int16
 
 // fontIdx resolves family names to filesystem paths. Loaded lazily.
 var fontIdx *textshape.FontIndex
@@ -128,6 +149,57 @@ func allocFontID() int32 {
 	return -1
 }
 
+// allocTempFontID finds the next free temp slot. Returns the local
+// index (0..MaxTempFonts-1); the IPC layer adds wm.TempFontIDBase
+// before returning to clients.
+func allocTempFontID() int32 {
+	for i := int32(0); i < MaxTempFonts; i++ {
+		if !tempFonts[i].inUse {
+			return i
+		}
+	}
+	return -1
+}
+
+// findCachedTempFont checks if (path, variant, size) is already
+// loaded in the temp pool. Used to dedupe within a single render
+// when the same face/size is requested multiple times.
+func findCachedTempFont(path string, variant int32, size int32) int32 {
+	for i := int32(0); i < MaxTempFonts; i++ {
+		if tempFonts[i].inUse && tempFonts[i].path == path &&
+			tempFonts[i].variant == variant && tempFonts[i].size == size {
+			return i
+		}
+	}
+	return -1
+}
+
+// resolveFontID returns a pointer to the slot for fontID, masking off
+// the wm.TempFontIDBase bit if present. Returns nil for invalid IDs.
+// Used by Face/GlyphByGID lookups that need to handle both pools.
+func resolveFontID(fontID int32) *fontSlot {
+	if fontID < 0 {
+		return nil
+	}
+	if (fontID & wm.TempFontIDBase) != 0 {
+		idx := fontID & wm.TempFontIDMask
+		if idx < 0 || idx >= MaxTempFonts {
+			return nil
+		}
+		if !tempFonts[idx].inUse {
+			return nil
+		}
+		return &tempFonts[idx]
+	}
+	if fontID >= fontcache.MaxFonts {
+		return nil
+	}
+	if !fonts[fontID].inUse {
+		return nil
+	}
+	return &fonts[fontID]
+}
+
 // findCachedFont checks if (path, variant, size) is already loaded.
 func findCachedFont(path string, variant int32, size int32) int32 {
 	for i := int32(0); i < fontcache.MaxFonts; i++ {
@@ -170,6 +242,21 @@ func handleOpenFontCallback(senderSID int, variant, size int32, path [100]byte) 
 func handleRequestGlyphCallback(senderSID int, fontID, gid, codepoint int32) {
 	rg := &wm.RequestGlyph{FontID: fontID, GID: gid, Codepoint: codepoint}
 	handleRequestGlyph(senderSID, rg)
+}
+
+// handleOpenTemporaryFontCallback adapts rachel's typed-struct dispatch
+// to fontsvc's pointer-taking handler. msg is passed by value across the
+// shepherd→fontsvc callback boundary; we take its address to keep the
+// existing handler shape (consistent with handleOpenFont).
+func handleOpenTemporaryFontCallback(senderSID int, msg wm.OpenTemporaryFont) {
+	handleOpenTemporaryFont(senderSID, &msg)
+}
+
+// handleCloseTemporaryFontCallback similarly adapts the close-side
+// dispatch. fontID is passed scalar; we wrap it for the existing handler.
+func handleCloseTemporaryFontCallback(senderSID int, fontID int32) {
+	ctf := wm.CloseTemporaryFont{FontID: fontID}
+	handleCloseTemporaryFont(senderSID, &ctf)
 }
 
 // ensureFontIndex loads the font index lazily.
@@ -406,6 +493,349 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 	}
 }
 
+// resolveFamilyPath looks up (family, variant) in the font index and
+// returns the absolute /fonts/ path, picking the optical size best
+// matching `size`. Returns ok=false if the index can't be loaded or
+// the family is unknown.
+func resolveFamilyPath(family string, variant, size int32) (string, bool) {
+	if err := ensureFontIndex(); err != nil {
+		return "", false
+	}
+	style := textshape.VariantToStyle(variant)
+	filename := fontIdx.ResolveOptical(family, style, int(size))
+	if filename == "" {
+		rawPuts("[fontsvc] unknown font family: " + family + "/" + style + "\n")
+		return "", false
+	}
+	return "/fonts/" + filename, true
+}
+
+// loadAndParseFont loads a font file from FAT32 and parses the Face.
+// Returns parseErr=true on either failure (already logged); returns
+// the live byte slice (backed by the kernel-allocated load pages) and
+// the parsed Face on success.
+func loadAndParseFont(path string) (*goFont.Face, []byte, bool) {
+	result, loadErr := sys.LoadFile(path)
+	if loadErr != nil {
+		rawPuts("[fontsvc] LoadFile failed: " + path + "\n")
+		return nil, nil, true
+	}
+	fontData := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
+	face, err := goFont.ParseTTF(bytes.NewReader(fontData))
+	if err != nil {
+		rawPuts("[fontsvc] ParseTTF failed for " + path + ": " + err.Error() + "\n")
+		return nil, nil, true
+	}
+	return face, fontData, false
+}
+
+// buildTempCache computes scale and builds the V2 glyph cache for a
+// temp slot. The cache header records fontID with wm.TempFontIDBase
+// OR'd in so dumps tag it as temp. Returns ok=false on AllocPages OOM
+// (already logged).
+func buildTempCache(face *goFont.Face, fontData []byte, size int32, idx int32) (float32, []byte, bool) {
+	_ = fontData // reserved for future use (e.g. on-disk subsetting)
+	upem := float32(face.Upem())
+	scale := float32(size) / upem
+
+	fontIDForCache := idx | wm.TempFontIDBase
+	metrics := textshape.ComputeFontMetrics(face, scale, fontIDForCache)
+
+	maxCachePages := (textshape.MaxCacheSize + 4095) / 4096
+	cache, err := mem.AllocPagesSlice(maxCachePages, mem.PageFontCache)
+	if err != nil {
+		rawPuts("[fontsvc] AllocPagesSlice for temp cache failed (OOM)\n")
+		return 0, nil, false
+	}
+	cache = textshape.BuildGlyphCacheInto(cache, face, scale, uint32(fontIDForCache), size, metrics)
+	return scale, cache, true
+}
+
+// shareCacheAndReplyTemp shares the slot's cache + font-data pages
+// with the requesting shepherd and sends an OpenTemporaryFontReply.
+// `idx` selects either tempFonts[idx] (when isTemp=true) or fonts[idx]
+// (when isTemp=false, the permanent-first fallback). The fontID
+// returned to the caller carries TempFontIDBase only when isTemp=true.
+//
+// Unlike shareCacheAndReply (the permanent path), this routine does
+// NOT cache shared VAs in sharedVAs[] — temp slots have a short
+// lifecycle (Close → release → potentially reused with different
+// content) so caching mappings would tag stale data with old VAs.
+func shareCacheAndReplyTemp(conn *shepherdConn, connIdx int, senderSID int, idx int32, isTemp bool) {
+	_ = conn
+	_ = connIdx
+	var slot *fontSlot
+	var fontIDToSend int32
+	if isTemp {
+		slot = &tempFonts[idx]
+		fontIDToSend = idx | wm.TempFontIDBase
+	} else {
+		slot = &fonts[idx]
+		fontIDToSend = idx
+	}
+	cache := slot.cache
+
+	type v2Hdr struct {
+		Magic     uint32
+		Version   uint32
+		PointSize int32
+		FontID    uint32
+		NumGlyphs uint32
+		NumCPMap  uint32
+		GIDMapOff uint32
+		CPMapOff  uint32
+		TotalSize uint32
+	}
+	hdr := (*v2Hdr)(unsafe.Pointer(&cache[0]))
+	cacheUsed := hdr.TotalSize
+	numCachePages := int32((int(cacheUsed) + 4095) / 4096)
+	if numCachePages < 1 {
+		numCachePages = 1
+	}
+
+	cacheBase := uintptr(unsafe.Pointer(&cache[0]))
+	var cacheFirstVA uintptr
+	for i := int32(0); i < numCachePages; i++ {
+		pageVA := cacheBase + uintptr(i)*4096
+		targetVA, err := sys.SharePages(senderSID, pageVA)
+		if err != nil {
+			rawPuts("[fontsvc] SharePages temp cache failed for page ")
+			rawPutsInt(int(i))
+			rawPuts("\n")
+			sendOpenTempFontError(senderSID)
+			return
+		}
+		if i == 0 {
+			cacheFirstVA = targetVA
+		}
+	}
+
+	numFontPages := int32((len(slot.fontData) + 4095) / 4096)
+	var fontFirstVA uintptr
+	if numFontPages > 0 {
+		fontBase := uintptr(unsafe.Pointer(&slot.fontData[0]))
+		for i := int32(0); i < numFontPages; i++ {
+			pageVA := fontBase + uintptr(i)*4096
+			targetVA, err := sys.SharePages(senderSID, pageVA)
+			if err != nil {
+				rawPuts("[fontsvc] SharePages temp font failed for page ")
+				rawPutsInt(int(i))
+				rawPuts("\n")
+				sendOpenTempFontError(senderSID)
+				return
+			}
+			if i == 0 {
+				fontFirstVA = targetVA
+			}
+		}
+	}
+
+	metrics := textshape.ComputeFontMetrics(slot.face, slot.scale, fontIDToSend)
+	encoded := wm.EncodeOpenTemporaryFontReply(&wm.OpenTemporaryFontReply{
+		FontID:        fontIDToSend,
+		NumCachePages: numCachePages,
+		CacheAddr:     uint64(cacheFirstVA),
+		CacheSize:     uint64(cacheUsed),
+		Height:        metrics.Height,
+		Ascent:        metrics.Ascent,
+		Descent:       metrics.Descent,
+		NumFontPages:  numFontPages,
+		FontAddr:      uint64(fontFirstVA),
+		FontSize:      uint64(len(slot.fontData)),
+	})
+	if err := uring.Send(senderSID, &encoded); err != nil {
+		rawPuts("[fontsvc] uring.Send OpenTemporaryFontReply FAILED: ")
+		rawPuts(err.Error())
+		rawPuts("\n")
+	}
+}
+
+// handleOpenTemporaryFont allocates a slot in the temp pool, parses the
+// face from caller-shared bytes (or falls back to filesystem if the
+// caller passed FontDataVA=0 and the family resolves), builds the
+// type-I glyph cache, and shares it back to the caller. Returns
+// fontID with wm.TempFontIDBase OR'd in. Permanent-first: if the
+// requested (family, variant, size) is already loaded in the
+// permanent pool, returns that fontID with NO temp bit and no new
+// allocation. Caller's CloseTemporaryFont is a no-op for those.
+func handleOpenTemporaryFont(senderSID int, msg *wm.OpenTemporaryFont) {
+	family := cstring(msg.Path[:])
+
+	// Permanent-first: dedupe against existing permanent slots.
+	if fontID := findCachedFont(family, msg.Variant, msg.Size); fontID >= 0 {
+		conn, connIdx := getOrCreateConn(senderSID)
+		if conn == nil {
+			sendOpenTempFontError(senderSID)
+			return
+		}
+		shareCacheAndReplyTemp(conn, connIdx, senderSID, fontID, false)
+		return
+	}
+
+	// Temp-pool dedupe: same (family, variant, size) opened twice in one
+	// render scope reuses the slot. The caller is expected to close it
+	// the same number of times it opened — fontsvc-side refcount on
+	// temp slots is left as a future addition; for now we trust the
+	// renderer's per-render scope discipline (defer-close-all).
+	if idx := findCachedTempFont(family, msg.Variant, msg.Size); idx >= 0 {
+		conn, connIdx := getOrCreateConn(senderSID)
+		if conn == nil {
+			sendOpenTempFontError(senderSID)
+			return
+		}
+		// Share cache pages back (already populated). Mark as temp on
+		// the wire by OR'ing TempFontIDBase.
+		shareCacheAndReplyTemp(conn, connIdx, senderSID, idx, true)
+		return
+	}
+
+	// Fresh temp open. We need the bytes; either from caller-shared
+	// pages or from filesystem. For the IPC stub this run just supports
+	// the filesystem path (load via existing loadOrCacheFont, but place
+	// the result in the temp pool). The shared-bytes path requires
+	// kernel-side mapping primitives that are wired up in the next pass;
+	// returning -ENOSYS for that case so renderers see a clean error
+	// instead of a half-loaded slot.
+	if msg.FontDataVA != 0 {
+		rawPuts("[fontsvc] OpenTemporaryFont with shared bytes not yet wired — returning ENOSYS\n")
+		sendOpenTempFontError(senderSID)
+		return
+	}
+
+	idx := allocTempFontID()
+	if idx < 0 {
+		rawPuts("[fontsvc] OpenTemporaryFont: temp pool full\n")
+		sendOpenTempFontError(senderSID)
+		return
+	}
+
+	// Filesystem path: parse Face the same way loadOrCacheFont does, but
+	// write into tempFonts[idx] instead of fonts[]. Reuse the existing
+	// font index lookup. This reuses code paths so Latin fonts go through
+	// the same buildGlyphCache as permanent.
+	path, ok := resolveFamilyPath(family, msg.Variant, msg.Size)
+	if !ok {
+		sendOpenTempFontError(senderSID)
+		return
+	}
+	face, fontData, parseErr := loadAndParseFont(path)
+	if parseErr {
+		sendOpenTempFontError(senderSID)
+		return
+	}
+
+	scale, cache, ok := buildTempCache(face, fontData, msg.Size, idx)
+	if !ok {
+		sendOpenTempFontError(senderSID)
+		return
+	}
+
+	tempFonts[idx] = fontSlot{
+		inUse:    true,
+		path:     family,
+		variant:  msg.Variant,
+		size:     msg.Size,
+		cache:    cache,
+		face:     face,
+		fontData: fontData,
+		scale:    scale,
+	}
+	tempFontOwner[idx] = int16(senderSID)
+
+	conn, connIdx := getOrCreateConn(senderSID)
+	if conn == nil {
+		// Roll back the allocation.
+		tempFonts[idx] = fontSlot{}
+		tempFontOwner[idx] = -1
+		sendOpenTempFontError(senderSID)
+		return
+	}
+	shareCacheAndReplyTemp(conn, connIdx, senderSID, idx, true)
+}
+
+// handleCloseTemporaryFont releases a temp slot, frees its cache pages,
+// and unmaps any shared font-data pages that the caller had handed in
+// (when the bytes-path is wired). Permanent-range fontIDs are accepted
+// as a no-op for caller convenience.
+func handleCloseTemporaryFont(senderSID int, msg *wm.CloseTemporaryFont) {
+	fontID := msg.FontID
+
+	// Permanent-range fontID — no-op success.
+	if fontID >= 0 && fontID < fontcache.MaxFonts {
+		sendCloseTempFontReply(senderSID, fontID, 0)
+		return
+	}
+
+	if (fontID & wm.TempFontIDBase) == 0 {
+		sendCloseTempFontReply(senderSID, fontID, -22) // EINVAL
+		return
+	}
+	idx := fontID & wm.TempFontIDMask
+	if idx < 0 || idx >= MaxTempFonts || !tempFonts[idx].inUse {
+		sendCloseTempFontReply(senderSID, fontID, -3) // ESRCH
+		return
+	}
+	if tempFontOwner[idx] != int16(senderSID) {
+		// Cross-shepherd close attempt — refuse. Death cleanup is the
+		// only legitimate cross-shepherd path and it goes through
+		// CleanupShepherdFonts directly.
+		sendCloseTempFontReply(senderSID, fontID, -1) // EPERM
+		return
+	}
+
+	releaseTempSlot(idx)
+	sendCloseTempFontReply(senderSID, fontID, 0)
+}
+
+// CleanupShepherdFonts releases every temp slot owned by deadSID. Called
+// by the host (rachel) when a shepherd dies. Mirrors linux's
+// orphanHandles cleanup pattern from diversion #6: handles that survive
+// a close-without-clean-shutdown get released here.
+//
+// Exported so rachel can call it from handleShepherdDeath. Wiring is
+// deferred until the user confirms the rachel-side hook; see
+// design/louis14_temp_fonts_plan.md.
+func CleanupShepherdFonts(deadSID int) {
+	for i := int32(0); i < MaxTempFonts; i++ {
+		if tempFonts[i].inUse && tempFontOwner[i] == int16(deadSID) {
+			releaseTempSlot(i)
+		}
+	}
+}
+
+// releaseTempSlot frees the cache and font-data pages and clears the
+// slot. Caller has already validated the index.
+func releaseTempSlot(idx int32) {
+	// TODO: when the shared-bytes path lands, unmap the caller's font-data
+	// pages from fontsvc's address space here before clearing fontData.
+	tempFonts[idx] = fontSlot{}
+	tempFontOwner[idx] = -1
+}
+
+// sendOpenTempFontError replies with a sentinel fontID indicating failure.
+func sendOpenTempFontError(senderSID int) {
+	encoded := wm.EncodeOpenTemporaryFontReply(&wm.OpenTemporaryFontReply{FontID: -1})
+	if err := uring.Send(senderSID, &encoded); err != nil {
+		rawPuts("[fontsvc] uring.Send OpenTemporaryFontReply error path failed: ")
+		rawPuts(err.Error())
+		rawPuts("\n")
+	}
+}
+
+// sendCloseTempFontReply replies to a CloseTemporaryFont request with
+// the given errno (0 on success).
+func sendCloseTempFontReply(senderSID int, fontID, errCode int32) {
+	encoded := wm.EncodeCloseTemporaryFontReply(&wm.CloseTemporaryFontReply{
+		FontID:  fontID,
+		ErrCode: errCode,
+	})
+	if err := uring.Send(senderSID, &encoded); err != nil {
+		rawPuts("[fontsvc] uring.Send CloseTemporaryFontReply failed: ")
+		rawPuts(err.Error())
+		rawPuts("\n")
+	}
+}
+
 func handleRequestGlyph(senderSID int, msg *wm.RequestGlyph) {
 	conn, _ := shepherds.get(senderSID)
 	if conn == nil {
@@ -414,12 +844,11 @@ func handleRequestGlyph(senderSID int, msg *wm.RequestGlyph) {
 	}
 
 	fontID := msg.FontID
-	if fontID < 0 || fontID >= fontcache.MaxFonts || !fonts[fontID].inUse {
+	slot := resolveFontID(fontID)
+	if slot == nil {
 		rawPuts("[fontsvc] RequestGlyph: invalid fontID\n")
 		return
 	}
-
-	slot := &fonts[fontID]
 
 	// Resolve GID: prefer msg.GID, fall back to codepoint→GID via NominalGlyph.
 	gid := goFont.GID(msg.GID)
@@ -576,11 +1005,10 @@ func internalOpenFont(family string, variant, size int32) (fontcache.InternalOpe
 // glyph rendering. Same code path as handleRequestGlyph but returns
 // the glyph data directly.
 func internalGlyphByGID(fontID int32, gid uint32) (fontcache.InternalGlyphResult, bool) {
-	if fontID < 0 || fontID >= fontcache.MaxFonts || !fonts[fontID].inUse {
+	slot := resolveFontID(fontID)
+	if slot == nil {
 		return fontcache.InternalGlyphResult{}, false
 	}
-
-	slot := &fonts[fontID]
 	info, alpha := textshape.RenderGlyph(slot.face, goFont.GID(gid), slot.scale)
 	if info == nil {
 		return fontcache.InternalGlyphResult{}, true // ok but no renderable outline

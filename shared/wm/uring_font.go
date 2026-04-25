@@ -10,11 +10,29 @@ import (
 
 // Font MsgType values stored at Payload[0:4].
 const (
-	MsgTypeOpenFont      uint32 = 100
-	MsgTypeOpenFontReply uint32 = 101
-	MsgTypeRequestGlyph  uint32 = 102
-	MsgTypeGlyphReply    uint32 = 103
+	MsgTypeOpenFont               uint32 = 100
+	MsgTypeOpenFontReply          uint32 = 101
+	MsgTypeRequestGlyph           uint32 = 102
+	MsgTypeGlyphReply             uint32 = 103
+	MsgTypeOpenTemporaryFont      uint32 = 104
+	MsgTypeOpenTemporaryFontReply uint32 = 105
+	MsgTypeCloseTemporaryFont     uint32 = 106
+	MsgTypeCloseTemporaryFontReply uint32 = 107
 )
+
+// TempFontIDBase is OR'd into temporary fontIDs returned across the IPC
+// boundary so dumps and traces immediately distinguish the temp pool
+// from the permanent pool. fontsvc and the IPC providers mask it off
+// (fontID & TempFontIDMask) before indexing the local slot table.
+const (
+	TempFontIDBase = int32(0x1000)
+	TempFontIDMask = int32(0x0FFF)
+)
+
+// IsTempFontID reports whether a fontID is in the temporary pool range.
+func IsTempFontID(fontID int32) bool {
+	return fontID >= TempFontIDBase && fontID < (TempFontIDBase|0x0FFF)+1
+}
 
 // --- Typed message structs (font protocol) ---
 
@@ -56,6 +74,64 @@ type GlyphReply struct {
 	GlyphSize   uint32
 }
 
+// OpenTemporaryFont opens a font for one render scope. Caller pairs
+// with CloseTemporaryFont. Layout (108 bytes — fits in Payload[4:112]):
+//
+//	[ 0:80] Path        — family name, null-terminated
+//	[80:84] Variant     — 0=Reg, 1=Bold, 2=Italic, ...
+//	[84:88] Size        — point size
+//	[88:96] FontDataVA  — fontsvc-side VA of shared font bytes (0 = none)
+//	[96:104] FontDataLen — size of the font-data buffer in bytes
+//	[104:108] NumPages  — number of pages backing FontDataVA (for unmap)
+//
+// FontDataVA == 0 means the font should be resolved from the registered
+// map (CSS @font-face previously RegisterBuffer'd) or the filesystem;
+// fontsvc returns -ENOENT if neither hits. When FontDataVA != 0 the
+// caller has SharePagesWithTarget'd the bytes into fontsvc's address
+// space; fontsvc parses Face directly from those pages and unmaps them
+// on CloseTemporaryFont.
+type OpenTemporaryFont struct {
+	Path        [80]byte
+	Variant     int32
+	Size        int32
+	FontDataVA  uint64
+	FontDataLen uint64
+	NumPages    uint32
+}
+
+// OpenTemporaryFontReply is fontsvc's response. FontID has TempFontIDBase
+// (0x1000) OR'd in when the request hit the temp pool; FontID is in the
+// regular [0, MaxFonts) range when the permanent-first check matched
+// (caller's CloseTemporaryFont is then a no-op).
+type OpenTemporaryFontReply struct {
+	FontID        int32
+	NumCachePages int32
+	CacheAddr     uint64
+	CacheSize     uint64
+	Height        int32
+	Ascent        int32
+	Descent       int32
+	NumFontPages  int32
+	FontAddr      uint64
+	FontSize      uint64
+}
+
+// CloseTemporaryFont releases a temporary font. fontID must be in the
+// temp range (TempFontIDBase..TempFontIDBase+MaxTempFonts-1); fontsvc
+// validates this and returns -EINVAL otherwise. After successful close
+// the caller is free to FreePages on the font-data buffer it shared.
+type CloseTemporaryFont struct {
+	FontID int32
+}
+
+// CloseTemporaryFontReply confirms a CloseTemporaryFont. ErrCode is 0
+// on success, negative errno on failure (-EINVAL for out-of-range
+// fontID, -ESRCH for unknown / already-closed).
+type CloseTemporaryFontReply struct {
+	FontID  int32
+	ErrCode int32
+}
+
 // --- Encode functions ---
 
 func EncodeOpenFont(of *OpenFont) ipc.UringIPCMsg {
@@ -90,6 +166,38 @@ func EncodeGlyphReply(gr *GlyphReply) ipc.UringIPCMsg {
 	return msg
 }
 
+func EncodeOpenTemporaryFont(otf *OpenTemporaryFont) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFontRequest
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeOpenTemporaryFont
+	*(*OpenTemporaryFont)(unsafe.Pointer(&msg.Payload[4])) = *otf
+	return msg
+}
+
+func EncodeOpenTemporaryFontReply(otfr *OpenTemporaryFontReply) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFontResponse
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeOpenTemporaryFontReply
+	*(*OpenTemporaryFontReply)(unsafe.Pointer(&msg.Payload[4])) = *otfr
+	return msg
+}
+
+func EncodeCloseTemporaryFont(ctf *CloseTemporaryFont) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFontRequest
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeCloseTemporaryFont
+	*(*CloseTemporaryFont)(unsafe.Pointer(&msg.Payload[4])) = *ctf
+	return msg
+}
+
+func EncodeCloseTemporaryFontReply(ctfr *CloseTemporaryFontReply) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFontResponse
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeCloseTemporaryFontReply
+	*(*CloseTemporaryFontReply)(unsafe.Pointer(&msg.Payload[4])) = *ctfr
+	return msg
+}
+
 // --- Decode functions ---
 
 // FontRequestMsg wraps a decoded font request with the sender's SID,
@@ -117,6 +225,16 @@ func DecodeFontRequest(msg *ipc.UringIPCMsg) any {
 			SenderSID: senderSID,
 			Msg:       *(*RequestGlyph)(unsafe.Pointer(&msg.Payload[4])),
 		}
+	case MsgTypeOpenTemporaryFont:
+		return FontRequestMsg{
+			SenderSID: senderSID,
+			Msg:       *(*OpenTemporaryFont)(unsafe.Pointer(&msg.Payload[4])),
+		}
+	case MsgTypeCloseTemporaryFont:
+		return FontRequestMsg{
+			SenderSID: senderSID,
+			Msg:       *(*CloseTemporaryFont)(unsafe.Pointer(&msg.Payload[4])),
+		}
 	default:
 		panic("wm.DecodeFontRequest: unknown message type")
 	}
@@ -142,6 +260,10 @@ func DecodeFontResponseFromPayload(payload []byte) any {
 		return *(*OpenFontReply)(unsafe.Pointer(&payload[4]))
 	case MsgTypeGlyphReply:
 		return *(*GlyphReply)(unsafe.Pointer(&payload[4]))
+	case MsgTypeOpenTemporaryFontReply:
+		return *(*OpenTemporaryFontReply)(unsafe.Pointer(&payload[4]))
+	case MsgTypeCloseTemporaryFontReply:
+		return *(*CloseTemporaryFontReply)(unsafe.Pointer(&payload[4]))
 	default:
 		return nil
 	}

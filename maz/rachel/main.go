@@ -1700,6 +1700,8 @@ func MazarinMain() {
 	if initData.HandleOpenFont != nil {
 		openFontCb := initData.HandleOpenFont
 		glyphCb := initData.HandleRequestGlyph
+		openTempCb := initData.HandleOpenTemporaryFont
+		closeTempCb := initData.HandleCloseTemporaryFont
 		disp.OnFunc(ipc.ProtoFontRequest, wm.DecodeFontRequest, func(raw any) {
 			// Type switch in rachel's runtime context (correct type metadata).
 			frm := raw.(wm.FontRequestMsg)
@@ -1709,6 +1711,14 @@ func MazarinMain() {
 				openFontCb(sid, msg.Variant, msg.Size, msg.Path)
 			case wm.RequestGlyph:
 				glyphCb(sid, msg.FontID, msg.GID, msg.Codepoint)
+			case wm.OpenTemporaryFont:
+				if openTempCb != nil {
+					openTempCb(sid, msg)
+				}
+			case wm.CloseTemporaryFont:
+				if closeTempCb != nil {
+					closeTempCb(sid, msg.FontID)
+				}
 			}
 		})
 		fmt.Printf("[rachel] font requests wired to fontsvc callbacks\n")

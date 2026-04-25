@@ -3,6 +3,10 @@
 // pre-rendered glyph data via shared pages.
 package fontcache
 
+import (
+	"mazzy/shared/wm"
+)
+
 // MaxFonts is the maximum number of concurrently open fonts (IDs 0–31).
 const MaxFonts = 32
 
@@ -27,6 +31,8 @@ const MaxFonts = 32
 type FontSvcInjector interface {
 	RegisterOpenFontHandler(handler func(senderSID int, variant, size int32, path [100]byte))
 	RegisterRequestGlyphHandler(handler func(senderSID int, fontID, gid, codepoint int32))
+	RegisterOpenTemporaryFontHandler(handler func(senderSID int, msg wm.OpenTemporaryFont))
+	RegisterCloseTemporaryFontHandler(handler func(senderSID int, fontID int32))
 	RegisterInternalOpenFont(handler func(family string, variant, size int32) (InternalOpenFontResult, bool))
 	RegisterInternalGlyphByGID(handler func(fontID int32, gid uint32) (InternalGlyphResult, bool))
 }
@@ -50,10 +56,12 @@ type InternalGlyphResult struct {
 // FontSvcInit implements FontSvcInjector. The host (rachel) creates this
 // and passes it to fontsvc.maz's MazarinShepherd.
 type FontSvcInit struct {
-	HandleOpenFont         func(senderSID int, variant, size int32, path [100]byte)
-	HandleRequestGlyph     func(senderSID int, fontID, gid, codepoint int32)
-	InternalOpenFont       func(family string, variant, size int32) (InternalOpenFontResult, bool)
-	InternalGlyphByGID     func(fontID int32, gid uint32) (InternalGlyphResult, bool)
+	HandleOpenFont          func(senderSID int, variant, size int32, path [100]byte)
+	HandleRequestGlyph      func(senderSID int, fontID, gid, codepoint int32)
+	HandleOpenTemporaryFont func(senderSID int, msg wm.OpenTemporaryFont)
+	HandleCloseTemporaryFont func(senderSID int, fontID int32)
+	InternalOpenFont        func(family string, variant, size int32) (InternalOpenFontResult, bool)
+	InternalGlyphByGID      func(fontID int32, gid uint32) (InternalGlyphResult, bool)
 }
 
 // RegisterOpenFontHandler implements FontSvcInjector.
@@ -64,6 +72,16 @@ func (f *FontSvcInit) RegisterOpenFontHandler(handler func(senderSID int, varian
 // RegisterRequestGlyphHandler implements FontSvcInjector.
 func (f *FontSvcInit) RegisterRequestGlyphHandler(handler func(senderSID int, fontID, gid, codepoint int32)) {
 	f.HandleRequestGlyph = handler
+}
+
+// RegisterOpenTemporaryFontHandler implements FontSvcInjector.
+func (f *FontSvcInit) RegisterOpenTemporaryFontHandler(handler func(senderSID int, msg wm.OpenTemporaryFont)) {
+	f.HandleOpenTemporaryFont = handler
+}
+
+// RegisterCloseTemporaryFontHandler implements FontSvcInjector.
+func (f *FontSvcInit) RegisterCloseTemporaryFontHandler(handler func(senderSID int, fontID int32)) {
+	f.HandleCloseTemporaryFont = handler
 }
 
 // RegisterInternalOpenFont implements FontSvcInjector.
