@@ -1083,6 +1083,12 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 			gt.clampScroll()
 			gt.ScrollOffsetAttr.Set(gt.scrollOffset)
 			gt.buildSlotPool(newVC)
+			// Publish so mail-app's eagerCh-driven cache.Rebalance sees
+			// non-zero VisibleRowCountAttr (it short-circuits at 0) and
+			// fetches headers + prefetch around the visible window. Also
+			// covers initial draw (0 → N) which is when downstream
+			// consumers most need the values.
+			gt.publishScrollAttrs()
 		}
 
 		pcts := gt.currentPercents()
