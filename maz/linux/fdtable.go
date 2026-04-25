@@ -40,6 +40,7 @@ const (
 type fdEntry struct {
 	kind   fdKind
 	handle uint32 // fs-side handle (from IPC OpOpen)
+	inum   uint32 // ext2 inode number — stable identity for cache keys
 	offset int64  // current byte position
 	size   uint32 // cached file size
 	ftype  uint8  // ftFile or ftDir

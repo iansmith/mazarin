@@ -234,6 +234,7 @@ func main() {
 		mh.setStores(db, msNew, csNew)
 		sys.SetReady(true)
 		fmt.Println("[maildb] Ready=true (first message in badger, fti+import in background)")
+		sys.StartMemStatsLogger("maildb", 0)
 	}
 
 	// onMessage is called from the import goroutine after each message is

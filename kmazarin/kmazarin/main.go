@@ -137,6 +137,10 @@ func init() {
 	// MUST happen before any clone syscalls!
 	InitThreads()
 
+	// Wire on-demand [status] dump trigger so .maz programs can call
+	// sys.DumpKernelStatus() when they observe interesting events.
+	ksyscall.EpochStatusDumpFn = RequestEpochStatusDump
+
 	// Initialize soft IRQ subsystem (static allocation, no heap needed)
 	InitSoftIRQ()
 

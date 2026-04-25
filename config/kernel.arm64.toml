@@ -7,11 +7,18 @@ kernel_budget_mb = 64
 go_mem_limit = 256
 kernel_mem_limit = 24
 
-# GC tuning — set very high so GOMEMLIMIT is the governor.
-# With a low gc_percentage, GOGC fires at its minimum heap threshold (~4MB)
-# regardless of GOMEMLIMIT, causing thousands of unnecessary GC cycles.
-gc_percentage = 10000
-gc_percent_kernel = 10000
+# GC tuning — Go's stdlib default (100). With GOGC=100 the collector fires
+# when the heap has doubled since the previous live set. Lower values
+# (5–50) compact more aggressively at the cost of more pauses; higher
+# values (1000+) let the heap drift large and rely on GOMEMLIMIT as the
+# governor. We learned the hard way that 10000 effectively disables
+# routine GC: in long-running shepherds (linux especially) the heap
+# climbs into the hundreds of MB before GOMEMLIMIT kicks in, by which
+# point the kernel's user-page budget across all shepherds is already
+# exhausted. 100 is the sweet spot — frequent enough that real leaks
+# show up in memstats, infrequent enough not to cost real CPU.
+gc_percentage = 100
+gc_percent_kernel = 100
 
 # Scheduling
 # Timer tick rate in Hz (330 = ~3ms ticks). Controls deadline processing

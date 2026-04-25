@@ -3,12 +3,85 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"unsafe"
 
 	"mazzy/mazarin/uring"
 	"mazzy/shared/fs/ext2"
 	"mazzy/shared/ipc"
 )
+
+// isZapPath gates the [fs:open .zap] traces. Pairs with the same
+// helper in maz/linux to let us compare what each side sees for
+// the same .zap path (create vs reopen).
+func isZapPath(p string) bool {
+	return strings.HasSuffix(p, ".zap")
+}
+
+// fsRPCSeq counts requests entering processRequest. Diagnostic for
+// the linux-shepherd dispatch-loop freeze: paired ENTER/REPLY traces
+// let us tell whether fs.maz is processing requests during the freeze.
+// If linux fired fs.Stat with seq=N but fs.maz never logs a matching
+// ENTER, the uring path itself wedged. If fs.maz logs ENTER for op=Stat
+// path=P but no REPLY, fs.maz is wedged inside ext2.
+var fsRPCSeq int64
+
+// fsRPCShouldTrace gates the [fs:rpc ENTER]/[fs:rpc REPLY] diagnostic
+// traces to path-bearing ops only. Read/Write/Close/Sync/Fstat are
+// handle-based and fire so frequently (one Read per 4KiB chunk) that
+// tracing them saturates the UART, suppressing kernel [status] output.
+// The freeze hypothesis we're chasing wedges on path resolution
+// (Fstatat / Open / Readlinkat) — handle ops are noise in that context.
+func fsRPCShouldTrace(op uint16) bool {
+	switch op {
+	case ipc.FSOpOpen, ipc.FSOpStat, ipc.FSOpMkdir, ipc.FSOpRemove,
+		ipc.FSOpRename, ipc.FSOpReadDir, ipc.FSOpAccess, ipc.FSOpResolve,
+		ipc.FSOpSetMode, ipc.FSOpSetTimes, ipc.FSOpTruncate:
+		return true
+	}
+	return false
+}
+
+// fsOpName returns a short human label for an FSOp code.
+func fsOpName(op uint16) string {
+	switch op {
+	case ipc.FSOpConnect:
+		return "Connect"
+	case ipc.FSOpOpen:
+		return "Open"
+	case ipc.FSOpClose:
+		return "Close"
+	case ipc.FSOpRead:
+		return "Read"
+	case ipc.FSOpWrite:
+		return "Write"
+	case ipc.FSOpStat:
+		return "Stat"
+	case ipc.FSOpFstat:
+		return "Fstat"
+	case ipc.FSOpMkdir:
+		return "Mkdir"
+	case ipc.FSOpRemove:
+		return "Remove"
+	case ipc.FSOpRename:
+		return "Rename"
+	case ipc.FSOpReadDir:
+		return "ReadDir"
+	case ipc.FSOpAccess:
+		return "Access"
+	case ipc.FSOpResolve:
+		return "Resolve"
+	case ipc.FSOpSetMode:
+		return "SetMode"
+	case ipc.FSOpSetTimes:
+		return "SetTimes"
+	case ipc.FSOpSync:
+		return "Sync"
+	case ipc.FSOpTruncate:
+		return "Truncate"
+	}
+	return "?"
+}
 
 const maxFSHandles = 256
 
@@ -109,6 +182,11 @@ func (s *fsIPCServer) processRequest(raw fsIPCRequest, mt *mountTable) {
 		return
 	}
 
+	// noise: fs:rpc ENTER/REPLY traces disabled — the volume was starving
+	// rachel's input loop and suppressing kernel [status] output. Re-enable
+	// (use fsRPCShouldTrace to gate) only when actively diagnosing fs.maz
+	// dispatch behavior.
+
 	var resp ipc.FSIPCRespPayload
 	resp.ReqID = req.ReqID
 
@@ -202,35 +280,93 @@ func (s *fsIPCServer) ipcOpen(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *i
 	mode := uint16(req.Mode)
 
 	const oCREAT = 0x40
+	const oEXCL = 0x80
+	zapTrace := isZapPath(path)
 
 	inum, err := fsys.ResolveInode(relPath)
 	if err != nil {
 		if err == ext2.ErrNotFound && (flags&oCREAT) != 0 {
 			f, createErr := fsys.Create(relPath, mode|ext2.PermOwnerRW)
 			if createErr != nil {
+				if zapTrace {
+					fmt.Printf("[fs:open .zap CREATE FAIL] path=%q rel=%q err=%v\n", path, relPath, createErr)
+				}
 				resp.Err = ext2ToErrno(createErr)
 				return
 			}
-			h := &fsHandle{kind: kind, inum: f.InodeNum(), size: f.Size(), ftype: ext2.FTFile, path: path}
+			newInum := f.InodeNum()
+			h := &fsHandle{kind: kind, inum: newInum, size: f.Size(), ftype: ext2.FTFile, path: path}
 			f.Close()
 			handle := conn.allocHandle(h)
 			if handle == 0 {
+				// Per-conn handle table is full. Linux returns EMFILE here,
+				// but the file open is supposed to be atomic — either
+				// fully succeed or leave no trace. We've already added a
+				// dirent + allocated an inode in Create, so undo both
+				// before returning the error. Without this rollback the
+				// caller sees EMFILE while the file persists on disk with
+				// no pin, which can later be GC'd by callers like bleve's
+				// removeOldZapFiles even though they think the create
+				// failed cleanly.
+				if rmErr := fsys.Remove(relPath); rmErr != nil {
+					fmt.Printf("[fs:open EMFILE-rollback] path=%q inum=%d Remove err=%v\n",
+						path, newInum, rmErr)
+				}
 				resp.Err = -24 // EMFILE
 				return
 			}
 			fsys.PinInode(h.inum)
-			resp.Result0 = uint64(handle)
+			// Pack inum into Result0 upper 32 bits so the linux shepherd
+			// can key its mmap page cache by inode rather than fd. Linux
+			// semantics keep mmap pages alive across close; the cache
+			// must therefore be inode-keyed so fd reuse can't collide.
+			resp.Result0 = uint64(h.inum)<<32 | uint64(handle)
 			resp.Result1 = uint64(h.ftype)<<32 | uint64(h.size)
 			return
+		}
+		if zapTrace {
+			fmt.Printf("[fs:open .zap RESOLVE FAIL] path=%q rel=%q flags=0x%x oCREAT=%v err=%v\n",
+				path, relPath, flags, (flags&oCREAT) != 0, err)
 		}
 		resp.Err = ext2ToErrno(err)
 		return
 	}
+
+	// Linux semantics: open(path, O_CREAT|O_EXCL) returns EEXIST when the
+	// file already exists. Caller relies on this for atomic "create-only"
+	// patterns (lock files, fresh segment files). Returning the existing
+	// handle silently violates the contract.
+	if (flags&(oCREAT|oEXCL)) == (oCREAT | oEXCL) {
+		if zapTrace {
+			fmt.Printf("[fs:open .zap EEXIST] path=%q inum=%d flags=0x%x\n", path, inum, flags)
+		}
+		resp.Err = -17 // EEXIST
+		return
+	}
 	inode, err := fsys.ReadInode(inum)
 	if err != nil {
+		if zapTrace {
+			fmt.Printf("[fs:open .zap READINODE FAIL] path=%q inum=%d err=%v\n", path, inum, err)
+		}
 		resp.Err = ext2ToErrno(err)
 		return
 	}
+
+	// Linux semantics: open(dir_path, O_RDWR|O_WRONLY) returns EISDIR.
+	// Without this check, ipcOpen happily returns a handle whose ftype=FTDir,
+	// and the caller's eventual write hits "is a directory" deep in ext2 — far
+	// from where the path resolved. Surfacing EISDIR at open time identifies
+	// the offending path immediately and gives bleve the standard error it
+	// already knows how to handle.
+	const oWRONLY = 0x1
+	const oRDWR = 0x2
+	if inode.IsDir() && (flags&(oWRONLY|oRDWR)) != 0 {
+		fmt.Printf("[fs:open EISDIR-on-write] path=%q inum=%d flags=0x%x mode=0x%x\n",
+			path, inum, flags, inode.Mode)
+		resp.Err = -21 // EISDIR
+		return
+	}
+
 	h := &fsHandle{kind: kind, inum: inum, size: inode.Size, ftype: ext2.FTFile, isDir: inode.IsDir(), path: path}
 	if inode.IsDir() {
 		h.ftype = ext2.FTDir
@@ -241,7 +377,7 @@ func (s *fsIPCServer) ipcOpen(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *i
 		return
 	}
 	fsys.PinInode(h.inum)
-	resp.Result0 = uint64(handle)
+	resp.Result0 = uint64(h.inum)<<32 | uint64(handle)
 	resp.Result1 = uint64(h.ftype)<<32 | uint64(h.size)
 }
 

@@ -296,6 +296,7 @@ func main() {
 	app.SendBlit()
 	fmt.Printf("[mail:timing] initial draw: %v\n", time.Since(t0))
 	fmt.Printf("[mail:timing] TOTAL startup: %v\n", time.Since(t0))
+	sys.StartMemStatsLogger("mail", 0)
 
 	// 13. Request initial mail collection from maildb.
 	go requestCreateCollection()

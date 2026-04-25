@@ -373,6 +373,14 @@ type Thread struct {
 	SyscallSPSR   uint64  // SPSR for this thread's current syscall (processor state)
 	SyscallSwitch uintptr // Context switch target for clone (0 = no switch, else ptr to ThreadContext)
 
+	// Delegate-block instrumentation: when a thread enters ThreadBlockedDelegate
+	// in BlockForDelegatedSyscall, ksyscall first calls RecordDelegateBlock to
+	// stash the timer tick + sysID. printEpochStatus reads these for any thread
+	// still in ThreadBlockedDelegate so we can identify stuck delegated syscalls.
+	// Both fields are zero when the thread is not blocked on a delegate.
+	DelegateBlockSinceTick uint64 // kirq counter when blocking started (0 = not blocked)
+	DelegateBlockSysID     uint16 // sysid.ID being delegated
+
 	// Saved callee-saved registers for clone on AMD64.
 	// The standard Go runtime's clone keeps mp/gp/fn in R13/R9/R12 (callee-saved)
 	// rather than storing them on the child stack (which ARM64 does).
@@ -1207,6 +1215,22 @@ func processDeadlinesPostLock(cnt uint64) {
 // The bottom-half goroutine compares against its local copy to deduplicate.
 var epochStatusCounter uint64
 
+// RequestEpochStatusDump asks the bottom-half goroutine to print one
+// extra [status] snapshot. Wired into ksyscall.EpochStatusDumpFn so
+// that .maz programs can request a dump via sys.DumpKernelStatus when
+// they observe an interesting event (slow syscall, async error, etc.).
+// Safe to call from any context — it just bumps a counter and pokes
+// a buffered channel (drops if already pending).
+//
+//go:nosplit
+func RequestEpochStatusDump() {
+	atomic.AddUint64(&epochStatusCounter, 1)
+	select {
+	case epochStatusChan <- struct{}{}:
+	default:
+	}
+}
+
 //go:noinline
 func printEpochStatus() {
 	// Uptime
@@ -1217,13 +1241,16 @@ func printEpochStatus() {
 		uptimeSec = elapsed / freq
 	}
 
-	// Thread state summary
+	// Thread state summary + collect per-stuck-delegate diagnostics.
 	var nReady, nFutex, nSleep, nSoftIRQ, nRunning, nMailbox, nDelegate int
+	delegateInfo := ""
+	nowTick := kirq.ReadCounterValue()
 	for i := 0; i < threadArraySize; i++ {
 		if !threadListInUse[i] {
 			continue
 		}
-		switch threadListData[i].State {
+		t := &threadListData[i]
+		switch t.State {
 		case ThreadReady:
 			nReady++
 		case ThreadRunning:
@@ -1238,6 +1265,12 @@ func printEpochStatus() {
 			nMailbox++
 		case ThreadBlockedDelegate:
 			nDelegate++
+			var blockedMs uint64
+			if freq > 0 && t.DelegateBlockSinceTick != 0 && nowTick > t.DelegateBlockSinceTick {
+				blockedMs = ((nowTick - t.DelegateBlockSinceTick) * 1000) / freq
+			}
+			delegateInfo += fmt.Sprintf(" tid=%d/sid=%d/sysid=%d/for=%dms",
+				int(t.TID), int(t.PID), int(t.DelegateBlockSysID), blockedMs)
 		}
 	}
 
@@ -1311,7 +1344,8 @@ func printEpochStatus() {
 			"  svc/shepherd:%s\n"+
 			"  svc/sysid:%s\n"+
 			"  svc/delegated:%s\n"+
-			"  gc cycles:%s\n",
+			"  gc cycles:%s\n"+
+			"  delegate stuck:%s\n",
 		uptimeSec, totalSVC, actualHz, tcs,
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
@@ -1320,6 +1354,7 @@ func printEpochStatus() {
 		sysIDDelta,
 		sysIDDelegDelta,
 		gcInfo,
+		delegateInfo,
 	)
 }
 

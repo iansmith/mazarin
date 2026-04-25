@@ -7,9 +7,12 @@ kernel_budget_mb = 32
 go_mem_limit = 24
 kernel_mem_limit = 24
 
-# GC tuning — set very high so GOMEMLIMIT is the governor.
-gc_percentage = 10000
-gc_percent_kernel = 10000
+# GC tuning — Go's stdlib default (100). See kernel.arm64.toml for the
+# full rationale; the short version: 10000 disables routine GC and lets
+# the heap drift large until GOMEMLIMIT kicks in, but by then the
+# kernel's user-page budget is already exhausted in multi-shepherd runs.
+gc_percentage = 100
+gc_percent_kernel = 100
 
 # Scheduling
 kernel_tick_rate = 330

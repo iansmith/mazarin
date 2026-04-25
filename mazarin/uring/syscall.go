@@ -13,6 +13,7 @@ package uring
 import (
 	"mazzy/shared/ipc"
 	"mazzy/shared/mazzy"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -69,27 +70,55 @@ func ConnectWithRing(targetUringID uint64, ringIdx int) (handle int, err error) 
 }
 
 // Send sends a 128-byte message to a target shepherd's uring ring 0.
+//
+// Retries on EAGAIN (target ring full) up to sendRetryLimit times, yielding
+// the goroutine between attempts so the receiver has a chance to drain.
+// On Linux, write to a full pipe blocks; the closest equivalent here is a
+// bounded userspace retry. After the retry budget is exhausted the EAGAIN
+// is surfaced to the caller — at which point fontsvc / similar reply paths
+// have a real problem (receiver is wedged, not just slow) and dropping the
+// message preserves the prior behavior.
 func Send(targetSID int, msg *ipc.UringIPCMsg) error {
 	return SendWithRing(targetSID, msg, 0)
 }
+
+// sendRetryLimit caps how long we'll spin on EAGAIN. At the budget below
+// (~256 yields), even a heavily-loaded receiver gets ample opportunity to
+// drain a single 128-byte slot before we give up.
+const sendRetryLimit = 256
 
 // SendWithRing sends a 128-byte message to a specific ring on the target shepherd.
 // ringIdx selects which ring on the target (0 = default, 1-2 = additional).
 //
 // Uses RawSyscall (P held) because this is a fast non-blocking operation.
+// Retries on EAGAIN (target ring full) up to sendRetryLimit times with a
+// runtime.Gosched between attempts. Without this retry, transient bursts
+// (e.g. linux-ui asking fontsvc for several fonts during boot) fail
+// silently when the target's reader hasn't yet drained the prior message.
 func SendWithRing(targetSID int, msg *ipc.UringIPCMsg, ringIdx int) error {
-	r1, _, errno := syscall.RawSyscall6(mazzy.SysUringSend,
-		uintptr(targetSID),
-		uintptr(unsafe.Pointer(msg)),
-		uintptr(ringIdx),
-		0, 0, 0)
-	if errno != 0 {
-		return errno
+	for attempt := 0; ; attempt++ {
+		r1, _, errno := syscall.RawSyscall6(mazzy.SysUringSend,
+			uintptr(targetSID),
+			uintptr(unsafe.Pointer(msg)),
+			uintptr(ringIdx),
+			0, 0, 0)
+		if errno != 0 {
+			if errno == syscall.EAGAIN && attempt < sendRetryLimit {
+				runtime.Gosched()
+				continue
+			}
+			return errno
+		}
+		if int64(r1) < 0 {
+			err := syscall.Errno(-int64(r1))
+			if err == syscall.EAGAIN && attempt < sendRetryLimit {
+				runtime.Gosched()
+				continue
+			}
+			return err
+		}
+		return nil
 	}
-	if int64(r1) < 0 {
-		return syscall.Errno(-int64(r1))
-	}
-	return nil
 }
 
 // Recv blocks until a message arrives on the caller's uring ring 0.

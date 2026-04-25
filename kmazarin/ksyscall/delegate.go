@@ -493,6 +493,7 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	}
 
 	// Block the caller until the handler replies via SyscallReply.
+	RecordDelegateBlock(uint16(id))
 	ctx := blockForDelegatedSyscall()
 	if ctx == 0 {
 		klog.Errf("[DLG:block] NO NEXT THREAD, EAGAIN\n")
@@ -586,29 +587,68 @@ func allocAndCopyCallerString(handlerSID int16, handlerShepherd *proc.Shepherd, 
 	}
 	zeroPage(scratchVA)
 
-	// Copy up to the end of the caller's current page.
-	// This avoids faulting on an adjacent unmapped page.
-	maxCopy := uintptr(4096) - (callerStrVA & 0xFFF)
-	if maxCopy > 4096 {
-		maxCopy = 4096
-	}
+	// Copy the caller's null-terminated string into our scratch page.
+	// Two-phase to avoid faulting on an unmapped successor page when the
+	// string ends well inside its current page:
+	//   phase 1 — copy up to the end of the caller's current page; this is
+	//             always safe since we already faulted on it implicitly via
+	//             the syscall path.
+	//   phase 2 — if no null was found in phase 1, the string crosses a
+	//             page boundary. Continue copying into the rest of the
+	//             scratch page; CopyFromUser walks pages and returns false
+	//             on any unmapped page, in which case we report an error.
+	//
+	// Without phase 2 we silently truncated paths whose first null sits on
+	// the next page, producing a partial path string at the IPC layer.
+	// That manifested as bleve's `os.OpenFile(".../seg.zap", ...)` arriving
+	// at fs.maz as `/tmp/fti-N/bleve` (the prefix), which then resolved to
+	// the bleve directory's inode and produced spurious EISDIR/ENOENT.
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(scratchVA)), 4096)
 
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(scratchVA)), maxCopy)
-	if !kmem.CopyFromUser(dst, callerStrVA, int(maxCopy)) {
+	firstChunk := uintptr(4096) - (callerStrVA & 0xFFF)
+	if firstChunk > 4096 {
+		firstChunk = 4096
+	}
+	if !kmem.CopyFromUser(dst[:firstChunk], callerStrVA, int(firstChunk)) {
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
 
-	// Find the null terminator to determine actual string length
+	// Find the null terminator to determine actual string length.
 	var strLen uint64
-	for i := uintptr(0); i < maxCopy; i++ {
+	hasNull := false
+	for i := uintptr(0); i < firstChunk; i++ {
 		if dst[i] == 0 {
 			strLen = uint64(i)
+			hasNull = true
 			break
 		}
 	}
-	if strLen == 0 && maxCopy > 0 && dst[0] != 0 {
-		strLen = uint64(maxCopy)
+
+	// Phase 2: string spans into the next page. Copy more, but bound to
+	// the scratch page (4 KB cap on path length, matching PATH_MAX-ish).
+	if !hasNull && firstChunk < 4096 {
+		secondChunk := uintptr(4096) - firstChunk
+		if !kmem.CopyFromUser(dst[firstChunk:firstChunk+secondChunk], callerStrVA+firstChunk, int(secondChunk)) {
+			// Successor page unmapped — caller passed a string that runs
+			// off the end of mapped memory without a terminator.
+			kmem.ReleasePageByPA(pa)
+			return 0, 0, 0
+		}
+		for i := firstChunk; i < firstChunk+secondChunk; i++ {
+			if dst[i] == 0 {
+				strLen = uint64(i)
+				hasNull = true
+				break
+			}
+		}
+	}
+
+	if !hasNull {
+		// String exceeded scratch page (≥4 KB without a null) — reject
+		// rather than passing an unterminated buffer.
+		kmem.ReleasePageByPA(pa)
+		return 0, 0, 0
 	}
 
 	va := bumpAllocForShepherd(handlerShepherd, 4096)
@@ -987,6 +1027,14 @@ func wakeDelegateCallerThread(pid int16, tid int32, returnVal int64)
 
 //go:linkname wakeDelegateCallerThreadNoReturn main.WakeDelegateCallerThreadNoReturn
 func wakeDelegateCallerThreadNoReturn(pid int16, tid int32)
+
+// RecordDelegateBlock stamps the current thread's DelegateBlockSinceTick +
+// DelegateBlockSysID. Implemented in main; we call it just before
+// blockForDelegatedSyscall so printEpochStatus can identify stuck delegated
+// syscalls by (sid, sysid, blocked-for).
+//
+//go:linkname RecordDelegateBlock main.RecordDelegateBlock
+func RecordDelegateBlock(sysID uint16)
 
 //go:linkname readThreadRAX main.ReadThreadRAX
 func readThreadRAX(pid int16, tid int32) uint64

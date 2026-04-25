@@ -398,7 +398,11 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 		FontSize:      uint64(len(slot.fontData)),
 	})
 	if err := uring.Send(senderSID, &encoded); err != nil {
-		rawPuts("[fontsvc] uring.Send OpenFontReply failed\n")
+		rawPuts("[fontsvc] uring.Send OpenFontReply FAILED: senderSID=")
+		rawPutsInt(senderSID)
+		rawPuts(" err=")
+		rawPuts(err.Error())
+		rawPuts("\n")
 	}
 }
 

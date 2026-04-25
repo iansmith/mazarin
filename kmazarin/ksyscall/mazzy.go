@@ -75,6 +75,17 @@ var mazzySyscallTable = [67]SyscallHandler{
 	66: SyscallRegisterStdioWriteRing, // RegisterStdioWriteRing = 0x1042 (split stdio onto its own ring)
 }
 
+// EpochStatusDumpFn, if non-nil, is invoked when userspace sends a
+// DebugPrint with marker == DebugMarkerStatusDump (0xDB7). Wired by
+// kmazarin's main init to RequestEpochStatusDump so a .maz program
+// can ask "what is the kernel doing right now?" on demand.
+var EpochStatusDumpFn func()
+
+// DebugMarkerStatusDump is the SyscallDebugPrint marker that triggers
+// an immediate [status] dump. Userspace sends it via
+// mazarin/sys.DumpKernelStatus.
+const DebugMarkerStatusDump = 0xDB7
+
 // SyscallDebugPrint prints debug arguments from userspace.
 // arg0 = marker/id, arg1-arg5 = values to print
 // Special case: if v1-v5 are all 0 and marker < 256, print marker as a character
@@ -84,6 +95,10 @@ func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
 	// Special case: single character output — always go to serial for debugging.
 	if v1 == 0 && v2 == 0 && v3 == 0 && v4 == 0 && v5 == 0 && marker < 256 {
 		serial.PollWrite(byte(marker))
+		return 0
+	}
+	if marker == DebugMarkerStatusDump && EpochStatusDumpFn != nil {
+		EpochStatusDumpFn()
 		return 0
 	}
 	// Full debug print — disabled during investigation

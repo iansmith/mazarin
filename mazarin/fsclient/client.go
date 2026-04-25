@@ -10,12 +10,21 @@
 //
 // Bulk data (paths, read/write buffers, stat results) flows through a shared
 // data area — caller-owned pages mapped into fs's address space via SharePages.
+//
+// All public methods are safe to call from multiple goroutines concurrently.
+// Each method holds c.mu for the entire setPath / data-area-write / send /
+// receive / data-area-read sequence so that concurrent callers can't corrupt
+// each other's path or response data. Without this lock the shared data area
+// is racy: goroutine A's setPath can be overwritten by goroutine B's setPath
+// before A's IPC request reaches fs, producing scrambled paths and the
+// EISDIR/ENOENT failures that mimic dirent/inode bookkeeping bugs.
 package fsclient
 
 import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"unsafe"
 
 	"mazzy/mazarin/mem"
@@ -35,10 +44,15 @@ type Client struct {
 	//   dispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.RespCh)
 	RespCh chan any
 
+	// mu serializes everything that touches the shared data area or
+	// expects a response on RespCh — i.e., effectively every public
+	// method. nextID is also mu-protected.
+	mu sync.Mutex
+
 	localVA  uintptr // data area VA in our address space
 	remoteVA uintptr // data area VA in fs's address space
 	dataLen  int     // data area size in bytes
-	nextID   uint32
+	nextID   uint32  // protected by mu
 }
 
 // New creates a new fs client targeting the given shepherd ID.
@@ -75,11 +89,13 @@ func (c *Client) Connect() error {
 	c.remoteVA = remote
 
 	// Send connect handshake.
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpConnect,
 		DataVA:  uint64(c.remoteVA),
 		DataLen: uint32(c.dataLen),
 	})
+	c.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -89,8 +105,10 @@ func (c *Client) Connect() error {
 	return nil
 }
 
-// call sends a request and blocks for the response.
-func (c *Client) call(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, error) {
+// callLocked sends a request and blocks for the response. Caller must hold
+// c.mu — that's how we keep nextID consistent and stop two goroutines from
+// each consuming the other's RespCh value.
+func (c *Client) callLocked(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, error) {
 	c.nextID++
 	req.ReqID = c.nextID
 	if req.DataVA == 0 {
@@ -110,17 +128,20 @@ func (c *Client) call(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, error) {
 	return resp, nil
 }
 
-// DataLen returns the shared data area size in bytes.
+// DataLen returns the shared data area size in bytes. Constant — safe to
+// call without the lock.
 func (c *Client) DataLen() int { return c.dataLen }
 
-// dataArea returns the local shared data area as a byte slice.
+// dataArea returns the local shared data area as a byte slice. Caller must
+// hold c.mu while reading or writing — the returned slice is the live
+// shared region and concurrent callers will trample it.
 func (c *Client) dataArea() []byte {
 	return unsafe.Slice((*byte)(unsafe.Pointer(c.localVA)), c.dataLen)
 }
 
-// setPath writes a null-terminated path to the start of the data area,
-// returns the length including the null terminator.
-func (c *Client) setPath(path string) uint16 {
+// setPathLocked writes a null-terminated path to the start of the data area
+// and returns the length including the null. Caller must hold c.mu.
+func (c *Client) setPathLocked(path string) uint16 {
 	area := c.dataArea()
 	n := len(path)
 	if n >= len(area) {
@@ -134,27 +155,38 @@ func (c *Client) setPath(path string) uint16 {
 // --- File Operations ---
 
 // Open opens a file on the fs shepherd.
-// Returns (handle, ftype, size, err). ftype: 1=file, 2=dir.
-func (c *Client) Open(path string, flags, mode uint32) (handle uint32, ftype uint8, size uint32, err error) {
-	pathLen := c.setPath(path)
-	resp, callErr := c.call(&ipc.FSIPCReqPayload{
+// Returns (handle, inum, ftype, size, err). ftype: 1=file, 2=dir.
+// inum is the ext2 inode number, exposed so callers can key per-file
+// state by inode (matching Linux's VMA-survives-close semantic) rather
+// than by the fd-side handle.
+func (c *Client) Open(path string, flags, mode uint32) (handle uint32, inum uint32, ftype uint8, size uint32, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pathLen := c.setPathLocked(path)
+	resp, callErr := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpOpen,
 		PathLen: pathLen,
 		Flags:   flags,
 		Mode:    mode,
 	})
 	if callErr != nil {
-		return 0, 0, 0, callErr
+		return 0, 0, 0, 0, callErr
 	}
 	if resp.Err != 0 {
-		return 0, 0, 0, ErrnoErr(resp.Err)
+		return 0, 0, 0, 0, ErrnoErr(resp.Err)
 	}
-	return uint32(resp.Result0), uint8(resp.Result1 >> 32), uint32(resp.Result1 & 0xFFFFFFFF), nil
+	handle = uint32(resp.Result0)
+	inum = uint32(resp.Result0 >> 32)
+	ftype = uint8(resp.Result1 >> 32)
+	size = uint32(resp.Result1 & 0xFFFFFFFF)
+	return handle, inum, ftype, size, nil
 }
 
 // Close closes a handle.
 func (c *Client) Close(handle uint32) error {
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:     ipc.FSOpClose,
 		Handle: handle,
 	})
@@ -167,14 +199,20 @@ func (c *Client) Close(handle uint32) error {
 	return nil
 }
 
-// Read reads up to count bytes from handle at offset into buf.
-// Returns the number of bytes read. Data is in the shared data area;
-// the caller must copy it out before the next IPC call.
-func (c *Client) Read(handle uint32, offset int64, count int) (int, error) {
+// Read reads up to len(buf) bytes from handle at offset and copies them
+// into buf. Returns the number of bytes read.
+//
+// The shared data area copy happens under c.mu so a concurrent caller's
+// Stat/Read/ReadDir can't overwrite our response data before we've copied
+// it into the caller's buf.
+func (c *Client) Read(handle uint32, offset int64, buf []byte) (int, error) {
+	count := len(buf)
 	if count > c.dataLen {
 		count = c.dataLen
 	}
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:     ipc.FSOpRead,
 		Handle: handle,
 		Arg0:   uint64(offset),
@@ -186,39 +224,33 @@ func (c *Client) Read(handle uint32, offset int64, count int) (int, error) {
 	if resp.Err != 0 {
 		return 0, ErrnoErr(resp.Err)
 	}
-	return int(resp.DataLen), nil
-}
-
-// DataSlice returns a slice of the first n bytes from the shared data area.
-// Used after Read/Stat/ReadDir to access response data. The caller must
-// copy the data before the next IPC call.
-func (c *Client) DataSlice(n int) []byte {
-	area := c.dataArea()
-	if n > len(area) {
-		n = len(area)
+	n := int(resp.DataLen)
+	if n > 0 {
+		if n > len(buf) {
+			n = len(buf)
+		}
+		copy(buf[:n], c.dataArea()[:n])
 	}
-	return area[:n]
+	return n, nil
 }
 
-// WriteData copies data into the shared data area for write requests.
-// Returns the number of bytes copied.
-func (c *Client) WriteData(data []byte) int {
-	area := c.dataArea()
+// Write writes data to handle at offset. The data area copy and the IPC send
+// happen under c.mu so concurrent writers can't interleave.
+func (c *Client) Write(handle uint32, offset int64, data []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	n := len(data)
-	if n > len(area) {
-		n = len(area)
+	if n > c.dataLen {
+		n = c.dataLen
 	}
-	copy(area[:n], data[:n])
-	return n
-}
-
-// Write writes data to handle at offset. Caller must call WriteData first.
-func (c *Client) Write(handle uint32, offset int64, dataLen int) (int, error) {
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	if n > 0 {
+		copy(c.dataArea()[:n], data[:n])
+	}
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpWrite,
 		Handle:  handle,
 		Arg0:    uint64(offset),
-		DataLen: uint32(dataLen),
+		DataLen: uint32(n),
 	})
 	if err != nil {
 		return 0, err
@@ -229,35 +261,49 @@ func (c *Client) Write(handle uint32, offset int64, dataLen int) (int, error) {
 	return int(resp.Result0), nil
 }
 
-// Stat stats a path. Result is in the shared data area (128 bytes).
-func (c *Client) Stat(path string) (int32, error) {
-	pathLen := c.setPath(path)
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+// Stat stats a path. The 128-byte stat buf is copied into statBuf under the
+// lock. statBuf must be at least 128 bytes.
+func (c *Client) Stat(path string, statBuf []byte) (int32, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pathLen := c.setPathLocked(path)
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpStat,
 		PathLen: pathLen,
 	})
 	if err != nil {
 		return 0, err
 	}
+	if resp.Err == 0 && len(statBuf) >= 128 {
+		copy(statBuf[:128], c.dataArea()[:128])
+	}
 	return resp.Err, nil
 }
 
-// Fstat stats a handle. Result is in the shared data area (128 bytes).
-func (c *Client) Fstat(handle uint32) (int32, error) {
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+// Fstat stats a handle. The 128-byte stat buf is copied into statBuf under
+// the lock. statBuf must be at least 128 bytes.
+func (c *Client) Fstat(handle uint32, statBuf []byte) (int32, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:     ipc.FSOpFstat,
 		Handle: handle,
 	})
 	if err != nil {
 		return 0, err
 	}
+	if resp.Err == 0 && len(statBuf) >= 128 {
+		copy(statBuf[:128], c.dataArea()[:128])
+	}
 	return resp.Err, nil
 }
 
 // Mkdir creates a directory.
 func (c *Client) Mkdir(path string, mode uint32) error {
-	pathLen := c.setPath(path)
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pathLen := c.setPathLocked(path)
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpMkdir,
 		PathLen: pathLen,
 		Mode:    mode,
@@ -274,6 +320,8 @@ func (c *Client) Mkdir(path string, mode uint32) error {
 // Rename renames oldPath to newPath. Both paths are packed into the data area
 // as "oldPath\0newPath\0". Arg0 carries the offset of newPath.
 func (c *Client) Rename(oldPath, newPath string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	area := c.dataArea()
 	// Pack: oldpath\0newpath\0
 	n := copy(area, oldPath)
@@ -283,7 +331,7 @@ func (c *Client) Rename(oldPath, newPath string) error {
 	area[newOff+n2] = 0
 	totalLen := uint32(newOff + n2 + 1)
 
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpRename,
 		PathLen: uint16(n + 1), // oldpath + null
 		Arg0:    uint64(newOff),
@@ -300,8 +348,10 @@ func (c *Client) Rename(oldPath, newPath string) error {
 
 // Remove removes a file or directory.
 func (c *Client) Remove(path string) error {
-	pathLen := c.setPath(path)
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pathLen := c.setPathLocked(path)
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpRemove,
 		PathLen: pathLen,
 	})
@@ -314,10 +364,13 @@ func (c *Client) Remove(path string) error {
 	return nil
 }
 
-// ReadDir reads directory entries. Data is in shared data area.
-// Returns (dataLen, entryCount, err).
-func (c *Client) ReadDir(handle uint32, startIdx int) (int, int, error) {
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+// ReadDir reads directory entries into buf. Returns (bytesCopied,
+// entryCount, err). buf is typically a per-caller scratch buffer
+// (≥4 KB; fs.maz packs as many dirents as fit in its 64 KB window).
+func (c *Client) ReadDir(handle uint32, startIdx int, buf []byte) (int, int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:     ipc.FSOpReadDir,
 		Handle: handle,
 		Arg0:   uint64(startIdx),
@@ -328,13 +381,22 @@ func (c *Client) ReadDir(handle uint32, startIdx int) (int, int, error) {
 	if resp.Err != 0 {
 		return 0, 0, ErrnoErr(resp.Err)
 	}
-	return int(resp.DataLen), int(resp.Result0), nil
+	n := int(resp.DataLen)
+	if n > len(buf) {
+		n = len(buf)
+	}
+	if n > 0 {
+		copy(buf[:n], c.dataArea()[:n])
+	}
+	return n, int(resp.Result0), nil
 }
 
 // Access checks if a path exists.
 func (c *Client) Access(path string) error {
-	pathLen := c.setPath(path)
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pathLen := c.setPathLocked(path)
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpAccess,
 		PathLen: pathLen,
 	})
@@ -349,8 +411,10 @@ func (c *Client) Access(path string) error {
 
 // SetMode changes file permissions.
 func (c *Client) SetMode(path string, mode uint32) error {
-	pathLen := c.setPath(path)
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pathLen := c.setPathLocked(path)
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpSetMode,
 		PathLen: pathLen,
 		Mode:    mode,
@@ -366,8 +430,10 @@ func (c *Client) SetMode(path string, mode uint32) error {
 
 // SetTimes updates timestamps (no-op currently).
 func (c *Client) SetTimes(path string) error {
-	pathLen := c.setPath(path)
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pathLen := c.setPathLocked(path)
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpSetTimes,
 		PathLen: pathLen,
 	})
@@ -382,7 +448,9 @@ func (c *Client) SetTimes(path string) error {
 
 // Truncate sets the size of an open handle.
 func (c *Client) Truncate(handle uint32, size int64) error {
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:     ipc.FSOpTruncate,
 		Handle: handle,
 		Arg0:   uint64(size),
@@ -398,7 +466,9 @@ func (c *Client) Truncate(handle uint32, size int64) error {
 
 // Sync flushes filesystem metadata.
 func (c *Client) Sync() error {
-	resp, err := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
 		Op: ipc.FSOpSync,
 	})
 	if err != nil {
@@ -412,8 +482,10 @@ func (c *Client) Sync() error {
 
 // Resolve checks if a path exists and returns whether it's a directory + size.
 func (c *Client) Resolve(path string) (isDir bool, size uint32, err error) {
-	pathLen := c.setPath(path)
-	resp, callErr := c.call(&ipc.FSIPCReqPayload{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pathLen := c.setPathLocked(path)
+	resp, callErr := c.callLocked(&ipc.FSIPCReqPayload{
 		Op:      ipc.FSOpResolve,
 		PathLen: pathLen,
 	})

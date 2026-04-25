@@ -410,8 +410,7 @@ func (cs *collectionStore) addMessage(msgId string, ts time.Time) {
 		for _, sid := range coll.subscribers {
 			sendMailMsg(int(sid), &msg)
 		}
-		fmt.Printf("[maildb] CollectionAdd: collId=%d msgNum=%d newSize=%d\n",
-			coll.id, msgNum, coll.totalSize)
+		// noise: per-message CollectionAdd trace disabled during scorch ENOENT investigation
 	}
 }
 

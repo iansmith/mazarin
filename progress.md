@@ -1,5 +1,98 @@
 # Progress Log
 
+## Session: 2026-04-25 — task #8 Pin/Unpin landed, partial verification
+
+Implemented the inode-lifecycle Pin/Unpin plan from findings.md
+"Fix plan — inode lifecycle (approved 2026-04-25)". All four
+implementation steps landed exactly as specified.
+
+### Code shipped
+
+- `shared/fs/ext2/reader.go`: `pinMu sync.Mutex`, `inodeRefs
+  map[uint32]int`, `pendingFreeSet map[uint32]bool` on `FileSystem`;
+  initialized in `MountRW` (read-only mounts leave maps nil and the
+  Pin/Unpin no-op on `!fs.writable`).
+- `shared/fs/ext2/pin.go` (new): `PinInode`, `UnpinInode`,
+  `isInodePinnedLocked`, `markPendingFreeLocked`, `reclaimInode`
+  helper. UnpinInode runs deferred reclaim only when refs hit 0
+  AND inum is in `pendingFreeSet`.
+- `shared/fs/ext2/writer.go`: `Remove`, `WriteFile` overwrite
+  branch, `Rename` target-overwrite branch — all reordered to
+  remove the dirent first, then if `isInodePinnedLocked` mark
+  `pendingFreeSet` and skip; else free inline as before. Immediate-
+  free behavior unchanged on each path (Remove still zeroes inode,
+  Rename still doesn't — preserved verbatim).
+- `maz/fs/fsipc.go`: `ipcOpen` calls `fsys.PinInode(h.inum)` after
+  `conn.allocHandle` succeeds, both Create branch and regular open.
+  `ipcClose` widened to take `mt *mountTable` and calls
+  `mt.getFS(h.kind).UnpinInode(h.inum)` before `freeHandle`.
+  Audit confirmed `freeHandle` has only one caller (ipcClose).
+- mutex chosen (not lock-free) per follow-up notes — fs.maz is
+  sequential today but the fs.maz concurrency diversion will
+  exercise this immediately.
+
+### Build status
+
+- `$GO tool task fs:arm64`: clean.
+- `$GO tool task fs:x86_64`: clean.
+- `$GO tool task` (default arm64 — diplomat + kmazarin + disk +
+  ESP): clean.
+
+### Verification (180s ARM64 HVF)
+
+Boot reaches mail. fti indexes 14 docs cleanly, then:
+
+```
+[fti] SCORCH ASYNC ERROR: source: merger, persist error:
+merging err: open /tmp/fti-30/bleve/store/00000000001d.zap:
+no such file or directory (path=/tmp/fti-30/bleve/store)
+```
+
+After the SCORCH error, badger-side body fetch still served one
+click successfully (`[mail] body: 138219 bytes variant=1`), but
+subsequent clicks froze the UI — fti is in `corrupted` state and
+mail-ui's body path waits on a fti that can't reply cleanly.
+
+ENOENT-on-zap-reopen recurred *with* Pin/Unpin in place.
+
+### Honest read
+
+The fix is in shape exactly as planned, but the bleve symptom
+recurred. We have no signal yet whether the deferred-reclaim path
+fired even once: PinInode/UnpinInode/defer-free are silent. Two
+possibilities, no way to distinguish without instrumentation:
+
+1. Defer fires but ENOENT comes from a path the fix doesn't cover
+   (e.g. real bleve unlink, or fsync ordering).
+2. Defer never fires — handles are already closed by the time
+   dirents are lost; root cause is something other than
+   unlink-while-open.
+
+### Next step (planned, not started)
+
+Add one-shot instrumentation in:
+
+- `PinInode` (refs 0→1) — emit `[ext2:pin] inum=N`.
+- `UnpinInode` deferred-reclaim branch — emit
+  `[ext2:unpin defer-reclaim] inum=N`.
+- The pinned branch in `Remove`/`WriteFile`-overwrite/`Rename`-
+  overwrite — emit `[ext2:defer-free] op=... inum=N path=...`.
+
+Re-run, then update findings.md / task_plan.md based on which of
+the three outcomes (defer fires for .zap / never fires / fires
+for non-zap only) we observe.
+
+### Commits
+
+- `a04ce0a chore: remove RISC-V architecture support` (R1–R6 +
+  x86_64 OOM fix from R6).
+- `2d22496 feat: kernel/mail plumbing for bleve-on-tmpfs` (this
+  session's Pin/Unpin + the earlier pipe-buffered Write fd-gating
+  + ring split + linux-ui notify channel + x86_64 boot OOM fix +
+  doc updates).
+
+---
+
 ## Session: 2026-04-24 (later still) — linux-ui notify fix + bleve EISDIR found
 
 Continued Diversion #3 (Windows-not-shown). Two real bugs landed and one
@@ -1538,3 +1631,354 @@ Next:
 - Re-run with reduced tracing. Verify pauses gone.
 - For Bug B, look at the OPEN+CREAT for `0000000000a2.zap` and the subsequent
   ops on it; trace forward to the failed merger lookup.
+
+### Session: 2026-04-25 — Diversion #6 instrumentation landed
+
+Added three short-lived diagnostic hooks for the bleve scorch ENOENT
+verification, per task_plan.md "Next step (planned)".
+
+Files touched:
+- `shared/fs/ext2/pin.go` — `PinHook` (fired in `PinInode` only on the
+  0→1 transition) and `UnpinDeferReclaimHook` (fired in the
+  defer-reclaim branch of `UnpinInode`).
+- `shared/fs/ext2/writer.go` — `DeferFreeHook` (fired when the pinned
+  branch trips inside `Remove` / `WriteFile`-overwrite / `Rename`-
+  overwrite). op string identifies the call site; path is the full
+  user path (newPath for rename-overwrite).
+- `maz/fs/main.go` — wired all three to `fmt.Printf` next to the
+  existing `DirVerifyHook` block. Comment notes these are
+  diagnostic and must be stripped before closing diversion #6.
+
+Builds: `fs:arm64` and `fs:x86_64` clean. Default `task` build of
+diplomat+kmazarin succeeds; `rachel:arm64` failure (font interface
+mismatch in `maz/rachel/main.go:1738`) is pre-existing on master,
+unrelated to this work. Verified by stash-and-rebuild.
+
+Expectations for the next 90s ARM64 HVF run:
+- `[ext2:pin] inum=N` lines per file open into ext2 (every `ipcOpen`
+  on a regular file under /tmp/). Will be chatty.
+- `[ext2:unpin defer-reclaim] inum=N` should fire only on the actual
+  unlink-while-open path. If silent throughout the bleve scorch
+  failure window, the unlink-while-open hypothesis is wrong.
+- `[ext2:defer-free] op=... inum=N path=...` reveals which write-
+  side call is hitting a pinned inode. If `path` matches a `.zap`
+  file, fix shape is right and ENOENT comes from elsewhere
+  (fsync/ordering). If never fires for `.zap`, hypothesis is wrong.
+
+Next: 90s `run-arm64-hvf` and triage per the three-outcome table in
+task_plan.md.
+
+### Session: 2026-04-25 (cont'd) — instrumentation runs, hypothesis disproven, fontcache fix
+
+Two diagnostic runs and a side fix.
+
+**Side fix shipped first:** `mazarin/fontcache/internal_provider.go`
+gained `RegisterBuffer`, parallel `regMu`/`registered` map, plus an
+`openRegistered` path that allocates a local fontID, computes
+metrics via `textshape.ComputeFontMetricsWithData`, and serves
+`GlyphByGID` through `textshape.RenderGlyph` for `registered=true`
+slots. Mirrors `FontSvcGlyphProvider.openRegistered` and
+`DirectGlyphProvider.RegisterBuffer` so the buffer-registered path
+stays in-process — fontsvc never sees these fonts, no shared cache
+pages. Compile-time `var _ textshape.GlyphProvider =
+(*InternalGlyphProvider)(nil)` added. Builds: `rachel:arm64`,
+`rachel:x86_64`, `fontsvc:arm64`, `fontsvc:amd64`, default `task`
+all clean; `cd louis14 && go build ./...` clean.
+
+**Diagnostic run 1 — 90s ARM64 HVF:** 162 `[ext2:pin]` events,
+0 `[ext2:defer-free]`, 0 `[ext2:unpin defer-reclaim]`, 0 SCORCH.
+Click triggered a successful body fetch (138219 bytes). System
+went idle after — no errors but no throbbing animation either.
+Inconclusive on Pin/Unpin because SCORCH didn't reproduce.
+
+**Diagnostic run 2 — 180s ARM64 HVF:** 276 `[ext2:pin]`,
+**0 defer-free**, **0 defer-reclaim**, **1 SCORCH**:
+`error opening new segment at /tmp/fti-17/bleve/store/00000000002b.zap`.
+Defer never fired despite SCORCH firing — second outcome on the
+triage table. **Hypothesis disproven.**
+
+**Adjacent signal in run 2** worth noting:
+- Single click → next `Index()` took **13.7 seconds**.
+- 20-second gap in `[status]` lines (uptime 92s → 112s).
+- Later isolated `Index()` of a 1069-byte doc took **41.5 seconds**.
+- Suggests scheduling/IPC starvation under click load, not a
+  filesystem-data bug.
+
+**Cleanup landed:** stripped `PinHook`, `UnpinDeferReclaimHook`,
+`DeferFreeHook` and their three callsites + the `fmt.Printf`
+wirings in `maz/fs/main.go`. Pin/Unpin/pendingFreeSet code itself
+retained — it's defensive, zero cost on the cold path. `fs:arm64`
++ `fs:x86_64` rebuild clean.
+
+**Updated tracking:** `task_plan.md` TOP-OF-STACK title flipped to
+"DISPROVEN, pivoting", findings.md gained a "Pin/Unpin hypothesis
+disproven" section with three new candidate hypotheses.
+
+**Open:** await user direction on which next-step hypothesis to
+instrument:
+1. Linux shepherd write-buffer drop on close (probably ruled out
+   on its own — would manifest as empty file, not ENOENT).
+2. Path-resolution divergence between create and reopen.
+3. Same-PID scheduling stall during persister run, where the
+   13.7s/41.5s `Index()` stalls and the SCORCH ENOENT may share
+   a root cause.
+
+### Session: 2026-04-25 (cont'd, late) — diagnostics chase, three real bugs surface
+
+User picked option 2 (path-resolution). Several iterations ensued
+with progressively heavier traces. Each new run revealed *new*
+non-deterministic symptoms (stalled boot, dropped clicks, missing
+status snapshots, fontsvc errors) that didn't reproduce reliably.
+
+**Iterations:**
+1. Added `[lin:openat .zap]` ENTER/OK/FAIL traces and `[fs:open .zap]`
+   CREATE OK / RESOLVE FAIL / READINODE FAIL traces. Run reproduced
+   SCORCH ENOENT once but every ENTER had a matching success on both
+   sides — **path-resolution-divergence DISPROVEN** (every CREATE OK
+   inum matched the corresponding REOPEN OK inum).
+2. Pivoted to scheduling-stall hypothesis. Added kernel-side
+   `Thread.DelegateBlockSinceTick`/`DelegateBlockSysID` and
+   `delegate stuck:` line in `printEpochStatus`. Added
+   `sys.DumpKernelStatus` syscall-marker (0xDB7) so .maz can request
+   a status dump. Wired `[fti] SLOW Index()` and `SCORCH ASYNC ERROR`
+   to call it. Run produced clean delegate-stuck data:
+   `tid=687/sid=26/sysid=44/for=11273ms` showed fti+maildb threads
+   stuck on Fstatat for 70+ seconds, with mail-app's Readlinkat
+   joining at click. **The data was real.** Concluded the freeze
+   was a linux-shepherd dispatch-loop wedge.
+3. Added per-call `[lin:fstatat -> fs.Stat]` / `[fs:rpc ENTER/REPLY]`
+   traces to identify where in the linux→fs.maz chain the dispatch
+   wedged. Volumes ran 100s–1500s of lines per run.
+4. **Heisenbug surfaced.** Each run produced a different shape:
+   sometimes click-freeze, sometimes boot hang at fti load, sometimes
+   clean. Kernel `[status]` was suppressed in every run. `[DLG:W]`
+   prefixes appeared doubled in some runs (concurrent UART writers
+   stomping on each other).
+5. **Trim pass — disabled per-message and boot-noise prints in
+   maildb, fti, mazhost, fs/main.go LoadFile.** Saved ~600 lines/run.
+   Run still froze post-click; `[status]` still 0. Trim wasn't enough.
+6. **Restricted `[fs:rpc]` to path-bearing ops only** (Open/Stat/etc;
+   dropped Read/Write/Close/Sync/Fstat — the bulk). 1500 → 1290 lines.
+   Still froze; user clicked but no `[rachel:click]` event ever
+   logged — input pipeline was starved.
+7. **Disabled `[fs:rpc]` and `[lin:fstatat]` traces entirely.**
+   Improved `[fontsvc] uring.Send OpenFontReply FAILED` to log
+   `senderSID` + `err.Error()`. Run was clean: user reported clicks
+   worked, body fetch worked, inbox rendered normally. **The
+   click-freeze was Heisenbug-induced by the traces themselves.**
+
+**Three real bugs visible against the stable baseline:**
+
+1. **Diversion #6 EISDIR (the original task #7 — back in scope).**
+   286 SCORCH errors per 90s run, all of the form
+   `write /tmp/fti-N/bleve/store/XXXXXXXXXXXX.zap: is a directory`.
+   The `[fs:read EISDIR]` diagnostic shows the path resolved to
+   inum=12 (the bleve-store *directory*) with `ftype=2 isDir=true`.
+   Bleve's `OpenFile(.zap, O_RDWR|O_CREAT, 0600)` returns a handle
+   whose backing inode is a directory. `ipcOpen` doesn't enforce
+   Linux's `open(dir, O_RDWR) → EISDIR` rule.
+
+2. **emlxImport stale dirent (Bug B).** maildb's `filepath.Walk`
+   over `/data/mail/mbox/...` enumerates files whose subsequent
+   `lstat`/`open` returns ENOENT. ~6 walk errors per run. Same
+   shape as the bleve ENOENT we incorrectly chased early in the
+   session. Pin/Unpin didn't fix it.
+
+3. **linux-ui boot wedge (fontsvc uring.Send fail).** Seen
+   intermittently. linux-ui asks fontsvc for a font during
+   Bootstrap; fontsvc's `uring.Send(senderSID, &OpenFontReply)`
+   returns an error; linux-ui blocks forever. Improved error
+   message now in place to capture senderSID + error type.
+
+**Files touched (kept):**
+- `maz/maildb/mbox_import.go` — disabled `parse:`, `badger: stored`,
+  `fti: indexed N/N` per-message traces.
+- `maz/maildb/collection.go` — disabled `CollectionAdd:`.
+- `maz/fti/index_handler.go` — disabled `indexDocument:`,
+  per-doc `indexed`. Kept `SLOW Index() + DumpKernelStatus`.
+- `mazarin/mazhost/load.go` — disabled `LaunchMaz`/`loaded`/
+  `MazarinShepherd` boot traces.
+- `maz/fs/main.go` — disabled `[fs] %s: %d bytes` LoadFile trace.
+- `maz/fs/fsipc.go` — `[fs:rpc ENTER/REPLY]` instrumentation removed
+  (helper functions `fsRPCShouldTrace`/`fsOpName` left in place for
+  future reuse). `[fs:open .zap *FAIL]` retained.
+- `maz/linux/syscalls.go` — `[lin:fstatat -> / <-]` traces removed.
+  `[lin:openat .zap *FAIL]` retained. `fstatatSeq` left declared.
+- `maz/fontsvc/main.go` — `uring.Send OpenFontReply` failure now
+  logs senderSID + err.
+
+**Files touched (kept as fix candidates):**
+- `kmazarin/kmazarin/threads.go` — `Thread.DelegateBlockSinceTick`/
+  `DelegateBlockSysID` fields. `printEpochStatus` shows
+  `delegate stuck:` line. `RequestEpochStatusDump` exported.
+- `kmazarin/kmazarin/ipc_bridge.go` — `RecordDelegateBlock` setter,
+  delegate-block fields cleared on wake.
+- `kmazarin/kmazarin/main.go` — `ksyscall.EpochStatusDumpFn` wired.
+- `kmazarin/kmazarin/linkname_impl.go` — `recordDelegateBlock`
+  bridge.
+- `kmazarin/ksyscall/mazzy.go` — `DebugMarkerStatusDump = 0xDB7`,
+  marker handling in `SyscallDebugPrint`.
+- `kmazarin/ksyscall/delegate.go` — `RecordDelegateBlock` linkname
+  declaration; called before `blockForDelegatedSyscall`.
+- `mazarin/sys/syscall.go` — `DumpKernelStatus()` helper.
+
+**Just-landed targeted fix for bug #1 (Diversion #6 EISDIR):**
+`maz/fs/fsipc.go::ipcOpen` now rejects opens of directory inodes
+with `O_RDWR|O_WRONLY`, returning EISDIR immediately and logging
+`[fs:open EISDIR-on-write] path=... inum=N flags=0x... mode=0x...`.
+Linux semantics restored, EISDIR surfaces at open time, bleve gets
+the standard error shape it knows.
+
+**Next:** run with the EISDIR enforcement; expect either
+`[fs:open EISDIR-on-write]` traces for `.zap` paths (confirms
+path-resolves-to-dir is the upstream defect, drop into
+`Create`/`allocInode`) or no such traces (open succeeds, EISDIR
+arrives later — different bug, different angle).
+
+### Session: 2026-04-25 (very late) — EISDIR enforcement run + 4th bug discovered
+
+EISDIR-on-write check landed in `maz/fs/fsipc.go::ipcOpen` with
+trace `[fs:open EISDIR-on-write] path=... inum=N flags=0x... mode=0x...`.
+Built clean and ran 90s ARM64 HVF.
+
+**Run result:**
+- **0 `[fs:open EISDIR-on-write]` traces** fired.
+- **255 SCORCH errors**, but this time **all ENOENT** (not EISDIR).
+  Both merger reopens of existing segments and persister reopens of
+  just-created segments hit `no such file or directory`.
+- Kernel `[status]` line **reappeared** at uptime=26s (only one
+  snapshot — the system OOM-crashed shortly after).
+- `delegate stuck: tid=398/sid=20/sysid=63/for=47ms` — transient
+  Fdatasync, not a real freeze.
+- **`fatal error: runtime: out of memory`** at line 376, from a
+  shepherd's Go runtime trying to grow heap.
+
+**Per-SID memory at OOM point:**
+- SID=28 (mail-app): **371 MB**
+- SID=20 (fti): ~117 MB
+- SID=4 (maildb): ~200 MB
+- SID=2 (linux): ~197 MB
+- SID=0 (kernel/rachel): ~232 MB
+- Other shepherds: 100-240 MB each
+- Total user pages: > 1.5 GB
+
+**Findings:**
+1. **The EISDIR ↔ ENOENT variants are two faces of one bug.** Same
+   `shared/fs/ext2/writer.go` dirent/inode bookkeeping defect — sometimes
+   the `.zap` dirent points at a directory inum (EISDIR), sometimes
+   it doesn't exist at all (ENOENT). Pin/Unpin didn't fix it. Need
+   to look at `Create` / `allocInode` / `freeInode` /
+   `removeDirEntry` for the inconsistency.
+2. **Bug #4: mail-app memory leak.** 371 MB at 26s uptime, OOMs the
+   system. Independent of bugs #1-#3. Likely body buffers, glyph
+   caches, or backing-store accumulation.
+3. The OOM may be **upstream of the SCORCH variants** — under
+   memory pressure, ext2 metadata writes can fail in ways that
+   leave dirent and inode out of sync. So #4 may be triggering
+   #1/#2 indirectly. Worth checking by capping mail-app memory or
+   by running a shorter window before OOM hits.
+
+**Updated tracking:** task_plan.md TOP-OF-STACK rewritten (3-bugs
+section + Heisenbug retraction); findings.md gained "Three real
+bugs surfaced after silencing traces" and "Bug #4 mail-app memory
+blowup" sections.
+
+**Stopping point.** This is a clean stopping place: the click-freeze
+red herring is fully retracted with documented cause, the original
+Diversion #6 bug shape is back in scope with two-variant clarity, a
+new bug (#4 OOM) was found that may be feeding into the others, and
+all instrumentation is either tied to a real bug or zero-cost when
+quiet.
+
+**Resume points (any order):**
+- **Bug #1 (Diversion #6):** trace one `Create` call for a `.zap`
+  path end-to-end (parentInum, allocInode result, addDirEntry
+  outcome, post-condition `LookupDir(parent, name) == inum`).
+  Compare against a later failing reopen of the same path.
+- **Bug #4 (mail-app OOM):** dump mail-app's heap profile after
+  click+body-fetch; look for retained body buffers / glyph
+  caches / backing-store frames. Set GOMEMLIMIT to constrain.
+- **Bug #2 (emlxImport stale dirent):** likely same root cause as
+  #1 — defer until after #1 closes.
+- **Bug #3 (linux-ui font wedge):** improved error message is in
+  place; will surface the actual uring.Send error next time it
+  fires. Independent of #1/#4.
+
+### Session: 2026-04-25 (evening) — Diversion #6 CLOSED
+
+After kernel string-copy + fsclient mutex + GOGC=100 + uring retry,
+the system runs cleanly. Verified with a 180s ARM64 HVF run, 5 user
+clicks, 12 body fetches, 0 SCORCH, 0 OOM, 0 dead shepherds. linux's
+heap settled at ~5 MB (was 178 MB), fti at ~3 MB (was 87 MB), mail-app
+10–49 MB (was 15 MB stable), maildb 140 MB (badger working set,
+bounded by GC).
+
+**Files committed (this branch, feature/mail-dumb):**
+
+Kernel side:
+- `kmazarin/ksyscall/delegate.go` — `allocAndCopyCallerString` two-phase
+  copy across page boundaries.
+- `kmazarin/ksyscall/mazzy.go` — `DebugMarkerStatusDump = 0xDB7` +
+  `EpochStatusDumpFn` hook.
+- `kmazarin/kmazarin/threads.go` — `Thread.DelegateBlockSinceTick`/
+  `DelegateBlockSysID`, `RequestEpochStatusDump`,
+  `delegate stuck:` line in `printEpochStatus`.
+- `kmazarin/kmazarin/ipc_bridge.go` — `RecordDelegateBlock` setter,
+  delegate-block fields cleared on wake.
+- `kmazarin/kmazarin/main.go` — `ksyscall.EpochStatusDumpFn` wired.
+- `kmazarin/kmazarin/linkname_impl.go` — `recordDelegateBlock` bridge.
+- `config/kernel.{arm64,amd64}.toml` — `gc_percentage` 10000 → 100.
+
+mazarin side:
+- `mazarin/fsclient/client.go` — added `sync.Mutex`, refactored
+  `Read`/`Write`/`Stat`/`Fstat`/`ReadDir` to take buffers,
+  `Open` returns inum.
+- `mazarin/uring/syscall.go` — `SendWithRing` retries on EAGAIN.
+- `mazarin/sys/syscall.go` — `DumpKernelStatus` helper.
+- `mazarin/sys/memstats.go` (new) — periodic `runtime.MemStats` logger.
+- `mazarin/mazhost/load.go` — boot-noise prints removed.
+- `mazarin/apps/mail/main.go` — `StartMemStatsLogger("mail", 0)`.
+
+fs.maz side:
+- `maz/fs/fsipc.go` — EISDIR-on-write check, EMFILE rollback,
+  O_EXCL→EEXIST, packs inum into `Result0` upper 32 bits.
+- `maz/fs/main.go` — silenced LoadFile per-file trace.
+
+Linux shepherd side:
+- `maz/linux/syscalls.go` — refactored to use locked fsclient API,
+  inum-keyed page cache, orphan-handle tracking on close, O_CLOEXEC
+  one-shot warning, `[lin:openat .zap *FAIL]` traces.
+- `maz/linux/page_cache.go` — re-keyed from fd to inum, store
+  `Handle` per page, added `HasPagesFor` / `FlushAllPagesForInum`.
+- `maz/linux/fdtable.go` — `inum` field on `fdEntry`.
+- `maz/linux/main.go` — `StartMemStatsLogger("linux", 0)`.
+
+fti side:
+- `maz/fti/index_handler.go` — silenced per-doc traces, kept
+  SLOW Index() trigger that calls `sys.DumpKernelStatus()`.
+- `maz/fti/main.go` — SCORCH async error trigger, memstats logger.
+
+maildb side:
+- `maz/maildb/mbox_import.go` — silenced per-message parse/store
+  traces, kept emlx-walker error path.
+- `maz/maildb/main.go` — `StartMemStatsLogger("maildb", 0)`.
+- `maz/maildb/collection.go` — silenced CollectionAdd trace.
+
+fontsvc side:
+- `maz/fontsvc/main.go` — improved `uring.Send OpenFontReply FAILED`
+  error message (senderSID + err string), kept silent on success.
+
+**Open follow-ups (not blocking, can be addressed during mail-dumb
+work):**
+
+- `[fontsvc] no free font slots` repetition in late-run after many
+  distinct fonts requested. fontsvc's `MaxFonts=32` table fills up.
+  Either grow the table or LRU-evict.
+- maildb's 140 MB heap is bounded but worth periodic monitoring.
+- linux-ui transient fontsvc-boot wedge wasn't seen again after the
+  uring retry fix; the improved error message is in place for next
+  occurrence.
+
+**Resuming mail-dumb:** the easy part is unblocked. Diversion stack
+#1–#6 all closed (#1 RISC-V removal, #2 paper sketch only, #3 windows
+fix, #4 fstatat fix, #5 linux-ui notify fix, #6 this session).

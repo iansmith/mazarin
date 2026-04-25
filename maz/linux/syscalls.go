@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"unsafe"
 
 	"mazzy/mazarin/fsclient"
@@ -9,6 +11,30 @@ import (
 	"mazzy/shared/dlist"
 	"mazzy/shared/sysid"
 )
+
+// isZapPath returns true for bleve scorch *.zap segment files.
+// Diagnostic-only: gates the [lin:openat .zap] traces so we can
+// compare resolved paths between create and reopen of the same
+// segment (path-resolution-divergence hypothesis).
+func isZapPath(p string) bool {
+	return strings.HasSuffix(p, ".zap")
+}
+
+// fstatatSeq counts entries into sysFstatat. Diagnostic for the
+// linux-shepherd dispatch-loop freeze: when a thread is stuck in
+// ThreadBlockedDelegate on Fstatat, we want to know which seq is
+// in-flight so we can identify whether linux is stalled in
+// fs.Stat() or somewhere else.
+var fstatatSeq atomic.Int64
+
+// O_CLOEXEC = 0o2000000 on Linux ARM64. We don't implement exec, so
+// the close-on-exec semantic is silently a no-op. cloexecWarned ensures
+// we surface this once at boot for any caller that actually sets the
+// flag — bleve/bolt do, since Go's os package adds it by default on
+// Linux. If/when we add exec, this is the seam to wire it in.
+const oCLOEXEC = 0x80000
+
+var cloexecWarned atomic.Bool
 
 // syscallHandler processes delegated file syscalls for the linux shepherd.
 // Per-shepherd filesystem state (FD tables, flocks, CWD) is tracked in
@@ -18,15 +44,68 @@ type syscallHandler struct {
 	flocks    *flockTable
 	fs        *fsclient.Client
 	cache     *pageCache
+
+	// orphanHandles tracks fs handles whose owning fd has been closed
+	// but whose cached mmap pages still need a writeback path. Linux
+	// semantics: mappings survive close, so the handle must too. Keyed
+	// by sid → inum. Drained in sysMmapPageFlush after the last page
+	// for an inum is removed, and on shepherd death.
+	orphanHandles map[int16]map[uint32]uint32
 }
 
 func newSyscallHandler(fs *fsclient.Client) *syscallHandler {
 	return &syscallHandler{
-		shepherds: make(map[int16]*ShepherdFilesystemData),
-		flocks:    newFlockTable(),
-		fs:        fs,
-		cache:     newPageCache(),
+		shepherds:     make(map[int16]*ShepherdFilesystemData),
+		flocks:        newFlockTable(),
+		fs:            fs,
+		cache:         newPageCache(),
+		orphanHandles: make(map[int16]map[uint32]uint32),
 	}
+}
+
+// markOrphanHandle records that fs handle is being kept alive past sysClose
+// because cache pages for inum still reference it.
+func (h *syscallHandler) markOrphanHandle(sid int16, inum, handle uint32) {
+	m, ok := h.orphanHandles[sid]
+	if !ok {
+		m = make(map[uint32]uint32)
+		h.orphanHandles[sid] = m
+	}
+	m[inum] = handle
+}
+
+// closeOrphanHandleIfDrained closes the orphan fs handle for (sid, inum) if
+// the cache no longer has pages for it. Called after RemoveBatch rounds.
+func (h *syscallHandler) closeOrphanHandleIfDrained(sid int16, inum uint32) {
+	m, ok := h.orphanHandles[sid]
+	if !ok {
+		return
+	}
+	handle, ok := m[inum]
+	if !ok {
+		return
+	}
+	if h.cache.HasPagesFor(sid, inum) {
+		return
+	}
+	_ = h.fs.Close(handle)
+	delete(m, inum)
+	if len(m) == 0 {
+		delete(h.orphanHandles, sid)
+	}
+}
+
+// closeAllOrphanHandlesForSID closes every orphan handle for sid. Used in
+// shepherd death cleanup after the cache is fully drained.
+func (h *syscallHandler) closeAllOrphanHandlesForSID(sid int16) {
+	m, ok := h.orphanHandles[sid]
+	if !ok {
+		return
+	}
+	for _, handle := range m {
+		_ = h.fs.Close(handle)
+	}
+	delete(h.orphanHandles, sid)
 }
 
 // getShepherd returns the per-shepherd filesystem state for the given SID,
@@ -60,6 +139,12 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 			h.fs.Close(e.handle)
 		}
 	}
+	// Close any handles that were kept alive past close() because cached
+	// mmap pages were still live. The kernel-driven death-cleanup path
+	// (sysMmapPageFlush with fd=allFDs) already ran before this hook, so
+	// the cache is fully drained — but the orphan-handle table tracks
+	// handles independent of the cache.
+	h.closeAllOrphanHandlesForSID(sid)
 	h.cache.RemoveAll(sid)
 	delete(h.shepherds, sid)
 }
@@ -157,10 +242,20 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 	if e.writeBuf != nil && len(e.writeBuf) > 0 {
 		h.flushWriteBuf(req.CallerPID, fd, e) // best-effort; ignore error on close
 	}
+	// Linux semantics: mmap'd pages survive close. If the cache still has
+	// pages for this inode, leave the fs handle open so the eventual
+	// munmap (or shepherd death) can flush dirty pages back to disk via
+	// that handle. The page cache stores its own copy of `handle` in
+	// every entry, so even after fdt.free() the writeback path keeps
+	// working. The handle is released by closeOrphanHandleIfDrained when
+	// the last page for this inum is removed, or by death cleanup.
 	if e.handle != 0 {
-		h.fs.Close(e.handle)
+		if h.cache.HasPagesFor(req.CallerPID, e.inum) {
+			h.markOrphanHandle(req.CallerPID, e.inum, e.handle)
+		} else {
+			h.fs.Close(e.handle)
+		}
 	}
-	h.cache.RemoveFD(req.CallerPID, fd)
 	fdt.free(fd)
 	req.Reply(EOK)
 }
@@ -273,14 +368,16 @@ func (h *syscallHandler) sysFsync(req sys.SyscallRequest) {
 			}
 		}
 
-		// Flush dirty cached pages for this fd to ext2 BEFORE syncing.
+		// Flush dirty cached pages for this inode to ext2 BEFORE syncing.
 		// The pwrite fast path writes directly to cached pages without
 		// touching ext2. Without this flush, fdatasync/fsync would leave
 		// stale data on disk, causing mmap coherence failures after re-mmap
 		// (bbolt reads zeros for pages it just wrote).
-		h.cache.FlushAllPagesForFD(req.CallerPID, fd, func(offset int64, data []byte) (int, error) {
-			return h.writePageToExt2(req.CallerPID, fd, offset, data)
-		})
+		if e := fdt.get(fd); e != nil {
+			h.cache.FlushAllPagesForInum(req.CallerPID, e.inum, func(handle uint32, offset int64, data []byte) (int, error) {
+				return h.writePageByHandle(req.CallerPID, handle, offset, data)
+			})
+		}
 	}
 
 	if err := h.fs.Sync(); err != nil {
@@ -324,16 +421,34 @@ func (h *syscallHandler) sysFlock(req sys.SyscallRequest) {
 
 func (h *syscallHandler) sysOpenat(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT
-	absPath, e := fdt.resolveAt(int32(req.Args[0]), req.PathString())
+	rawPath := req.PathString()
+	absPath, e := fdt.resolveAt(int32(req.Args[0]), rawPath)
 	if e != 0 {
+		if isZapPath(rawPath) || isZapPath(absPath) {
+			fmt.Printf("[lin:openat .zap RESOLVEAT FAIL] dirfd=%d raw=%q err=%d\n",
+				int32(req.Args[0]), rawPath, e)
+		}
 		req.Reply(e)
 		return
 	}
 	flags := int32(req.Args[2])
 	mode := uint32(req.Args[3])
 
-	handle, ftype, size, err := h.fs.Open(absPath, uint32(flags), mode)
+	// Linux compat: warn once if a caller relies on O_CLOEXEC semantics.
+	// We don't implement exec so the flag is silently a no-op here. If
+	// exec is ever added, fds opened with O_CLOEXEC must close in the
+	// child — search for this warning to find the seam.
+	if uint32(flags)&oCLOEXEC != 0 && !cloexecWarned.Swap(true) {
+		fmt.Printf("[linux] WARNING: O_CLOEXEC requested (sid=%d path=%q) — silently ignored, fds inherit if exec is ever added\n",
+			req.CallerPID, absPath)
+	}
+
+	handle, inum, ftype, size, err := h.fs.Open(absPath, uint32(flags), mode)
 	if err != nil {
+		if isZapPath(absPath) {
+			fmt.Printf("[lin:openat .zap FAIL] abspath=%q flags=0x%x mode=0%o err=%v errno=%d\n",
+				absPath, uint32(flags), mode, err, errToErrno(err))
+		}
 		req.Reply(int64(errToErrno(err)))
 		return
 	}
@@ -353,6 +468,7 @@ func (h *syscallHandler) sysOpenat(req sys.SyscallRequest) {
 	entry := &fdEntry{
 		kind:   kind,
 		handle: handle,
+		inum:   inum,
 		size:   size,
 		ftype:  ftype,
 		flags:  flags,
@@ -387,7 +503,7 @@ func (h *syscallHandler) sysFstat(req sys.SyscallRequest) {
 		return
 	}
 
-	fsErr, err := h.fs.Fstat(e.handle)
+	fsErr, err := h.fs.Fstat(e.handle, buf[:128])
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -396,19 +512,26 @@ func (h *syscallHandler) sysFstat(req sys.SyscallRequest) {
 		req.Reply(int64(fsErr))
 		return
 	}
-
-	copy(buf[:128], h.fs.DataSlice(128))
 	req.Reply(128)
 }
 
 func (h *syscallHandler) sysFstatat(req sys.SyscallRequest) {
+	// noise: per-call ENTER/-> / <- traces disabled. Re-enable behind a
+	// guard if/when investigating fs.Stat blocking again. The kernel-side
+	// `delegate stuck:` diagnostic in printEpochStatus is sufficient to
+	// identify hung Fstatat threads without per-call UART pressure.
 	fdt := h.getShepherd(req.CallerPID).FDT
 	absPath, e := fdt.resolveAt(int32(req.Args[0]), req.PathString())
 	if e != 0 {
 		req.Reply(e)
 		return
 	}
-	fsErr, err := h.fs.Stat(absPath)
+	buf := req.DataBuf()
+	if buf == nil || len(buf) < 128 {
+		req.Reply(EFAULT)
+		return
+	}
+	fsErr, err := h.fs.Stat(absPath, buf[:128])
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -417,13 +540,6 @@ func (h *syscallHandler) sysFstatat(req sys.SyscallRequest) {
 		req.Reply(int64(fsErr))
 		return
 	}
-
-	buf := req.DataBuf()
-	if buf == nil || len(buf) < 128 {
-		req.Reply(EFAULT)
-		return
-	}
-	copy(buf[:128], h.fs.DataSlice(128))
 	req.Reply(128)
 }
 
@@ -540,7 +656,7 @@ func (h *syscallHandler) sysFtruncate(req sys.SyscallRequest) {
 		return
 	}
 	// Invalidate cached pages beyond the new size.
-	h.cache.RemoveRange(req.CallerPID, fd, newSize, 1<<62)
+	h.cache.RemoveRange(req.CallerPID, e.inum, newSize, 1<<62)
 	e.size = uint32(newSize)
 	req.Reply(EOK)
 }
@@ -564,7 +680,11 @@ func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
 		return
 	}
 
-	dataLen, _, err := h.fs.ReadDir(e.handle, int(e.offset))
+	// fs.maz packs as many dirents as fit in its shared data window, so
+	// we need a scratch buffer big enough to receive the full response.
+	// Allocate per-call (getdents64 is rare relative to read/write).
+	scratch := make([]byte, h.fs.DataLen())
+	dataLen, _, err := h.fs.ReadDir(e.handle, int(e.offset), scratch)
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -574,7 +694,7 @@ func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
 		req.Reply(EOK) // no more entries
 		return
 	}
-	src := h.fs.DataSlice(dataLen)
+	src := scratch[:dataLen]
 
 	// fs.maz packs as many dirents as fit in its 65KB shared data window;
 	// the user's buffer is typically 4KB. We must NOT advance e.offset by
@@ -809,7 +929,7 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 
 	// Check page cache first — if all pages in range are cached, read
 	// directly from cached pages (same physical pages as mmap'd memory).
-	if entries := h.cache.LookupRange(req.CallerPID, fd, e.offset, count); len(entries) > 0 {
+	if entries := h.cache.LookupRange(req.CallerPID, e.inum, e.offset, count); len(entries) > 0 {
 		if n, ok := readFromCachedPages(entries, e.offset, buf[:count], count, int64(e.size)); ok {
 			e.offset += int64(n)
 			req.Reply(int64(n))
@@ -817,14 +937,10 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 		}
 	}
 
-	n, err := h.fs.Read(e.handle, e.offset, count)
+	n, err := h.fs.Read(e.handle, e.offset, buf[:count])
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
-	}
-
-	if n > 0 {
-		copy(buf[:n], h.fs.DataSlice(n))
 	}
 	e.offset += int64(n)
 	req.Reply(int64(n))
@@ -841,13 +957,12 @@ func (h *syscallHandler) flushWriteBuf(pid int16, fd int, e *fdEntry) error {
 		if len(chunk) > winSize {
 			chunk = chunk[:winSize]
 		}
-		n := h.fs.WriteData(chunk)
-		written, err := h.fs.Write(e.handle, off, n)
+		written, err := h.fs.Write(e.handle, off, chunk)
 		if err != nil {
 			return err
 		}
 		// Keep cached pages coherent with what we just wrote.
-		if entries := h.cache.LookupRange(pid, fd, off, written); len(entries) > 0 {
+		if entries := h.cache.LookupRange(pid, e.inum, off, written); len(entries) > 0 {
 			updateCachedPages(entries, off, chunk[:written])
 		}
 		off += int64(written)
@@ -928,15 +1043,14 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 
 	// Direct write path: send data to ext2 immediately.
 	// Also used for the first chunk after a seek flushes the buffer.
-	n := h.fs.WriteData(data)
-	written, err := h.fs.Write(e.handle, e.offset, n)
+	written, err := h.fs.Write(e.handle, e.offset, data)
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
 	}
 
 	// Keep cached pages coherent with on-disk data.
-	if entries := h.cache.LookupRange(req.CallerPID, fd, e.offset, written); len(entries) > 0 {
+	if entries := h.cache.LookupRange(req.CallerPID, e.inum, e.offset, written); len(entries) > 0 {
 		updateCachedPages(entries, e.offset, data[:written])
 	}
 
@@ -987,20 +1101,17 @@ func (h *syscallHandler) sysPread64(req sys.SyscallRequest) {
 
 	// Check page cache first — if all pages in range are cached, read
 	// directly from cached pages (same physical pages as mmap'd memory).
-	if entries := h.cache.LookupRange(req.CallerPID, fd, offset, count); len(entries) > 0 {
+	if entries := h.cache.LookupRange(req.CallerPID, e.inum, offset, count); len(entries) > 0 {
 		if n, ok := readFromCachedPages(entries, offset, buf[:count], count, int64(e.size)); ok {
 			req.Reply(int64(n))
 			return
 		}
 	}
 
-	n, err := h.fs.Read(e.handle, offset, count)
+	n, err := h.fs.Read(e.handle, offset, buf[:count])
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
-	}
-	if n > 0 {
-		copy(buf[:n], h.fs.DataSlice(n))
 	}
 	req.Reply(int64(n))
 }
@@ -1033,8 +1144,7 @@ func (h *syscallHandler) sysPwrite64(req sys.SyscallRequest) {
 	// The old "fast path" that bypassed ext2 broke mmap/pwrite coherence:
 	// pwrite updated cached pages only, then bolt re-mmapped, new page faults
 	// read from ext2 which still had zeros → bbolt panic.
-	n := h.fs.WriteData(data)
-	written, err := h.fs.Write(e.handle, offset, n)
+	written, err := h.fs.Write(e.handle, offset, data)
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -1042,7 +1152,7 @@ func (h *syscallHandler) sysPwrite64(req sys.SyscallRequest) {
 
 	// Update any cached pages that overlap so mmap reads without
 	// re-faulting also see the new data.
-	if entries := h.cache.LookupRange(req.CallerPID, fd, offset, written); len(entries) > 0 {
+	if entries := h.cache.LookupRange(req.CallerPID, e.inum, offset, written); len(entries) > 0 {
 		updateCachedPages(entries, offset, data[:written])
 	}
 
@@ -1098,21 +1208,19 @@ func (h *syscallHandler) sysMmapPageFill(req sys.SyscallRequest) {
 		buf[i] = 0
 	}
 
-	n, err := h.fs.Read(e.handle, offset, count)
+	n, err := h.fs.Read(e.handle, offset, buf[:count])
 	if err != nil {
 		fmt.Printf("[mmap-fill] sid=%d fd=%d offset=%d READ ERR: %v\n", req.CallerPID, fd, offset, err)
 		req.Reply(int64(errToErrno(err)))
 		return
 	}
-	if n > 0 {
-		copy(buf[:n], h.fs.DataSlice(n))
-	}
 	// Verbose mmap-fill trace disabled — UART saturation starved CPU-bound shepherds.
 
 	// Record this page in the cache so read/pread/write/pwrite can
-	// see mmap'd data without going through ext2.
+	// see mmap'd data without going through ext2. Keyed by inode (not
+	// fd) so the page survives close per Linux semantics.
 	pageAlignedOffset := int64(req.Args[1]) &^ 0xFFF
-	h.cache.Add(req.CallerPID, fd, pageAlignedOffset, req.DataVA())
+	h.cache.Add(req.CallerPID, e.inum, pageAlignedOffset, req.DataVA(), e.handle)
 
 	req.Reply(int64(n))
 }
@@ -1151,25 +1259,42 @@ func (h *syscallHandler) sysMmapPageFlush(req sys.SyscallRequest) {
 		return
 	}
 
+	// The kernel sends fd from its file-mapping metadata. To address the
+	// page cache (now inode-keyed) we resolve fd→inum via FDT. If the fd
+	// has already been freed by sysClose (close-before-munmap, atypical
+	// for bbolt/scorch but possible in pathological orders), we fall
+	// back to the all-fds drain for this sid — better than leaking.
+	var inum uint32
+	inumKnown := false
+	if !allFDs {
+		fdt := h.getShepherd(callerSID).FDT
+		if e := fdt.get(fd); e != nil {
+			inum = e.inum
+			inumKnown = true
+		}
+	}
+
 	// Flush all pages to ext2. We flush everything (not just pages marked
 	// dirty via syscalls) because user writes through the mmap VA don't
 	// generate syscalls, so we have no way to track which pages changed.
-	if allFDs {
-		h.cache.FlushAllPagesForSID(callerSID, func(cacheFD int, offset int64, data []byte) (int, error) {
-			return h.writePageToExt2(callerSID, cacheFD, offset, data)
-		})
+	flushByHandle := func(handle uint32, offset int64, data []byte) (int, error) {
+		return h.writePageByHandle(callerSID, handle, offset, data)
+	}
+	if allFDs || !inumKnown {
+		h.cache.FlushAllPagesForSID(callerSID, flushByHandle)
 	} else {
-		h.cache.FlushAllPagesForFD(callerSID, fd, func(offset int64, data []byte) (int, error) {
-			return h.writePageToExt2(callerSID, fd, offset, data)
-		})
+		h.cache.FlushAllPagesForInum(callerSID, inum, flushByHandle)
 	}
 
 	// Remove up to 511 entries and write their VAs to the response page.
 	var removed []pageCacheEntry
-	if allFDs {
+	if allFDs || !inumKnown {
 		removed = h.cache.RemoveAllBatch(callerSID, maxFlushVAsPerRound)
 	} else {
-		removed = h.cache.RemoveRangeBatch(callerSID, fd, maxFlushVAsPerRound)
+		removed = h.cache.RemoveRangeBatch(callerSID, inum, maxFlushVAsPerRound)
+		// If this round drained the last pages for the inum, close the
+		// fs handle that was kept alive past sysClose for writeback.
+		h.closeOrphanHandleIfDrained(callerSID, inum)
 	}
 
 	// Write response: count + VA array
@@ -1193,8 +1318,7 @@ func (h *syscallHandler) writePageToExt2(sid int16, fd int, offset int64, data [
 	if e == nil || e.kind != fdKindFile {
 		return 0, nil // skip non-file fds
 	}
-	n := h.fs.WriteData(data)
-	written, err := h.fs.Write(e.handle, offset, n)
+	written, err := h.fs.Write(e.handle, offset, data)
 	if err != nil {
 		return 0, err
 	}
@@ -1202,6 +1326,29 @@ func (h *syscallHandler) writePageToExt2(sid int16, fd int, offset int64, data [
 	if uint32(endPos) > e.size {
 		e.size = uint32(endPos)
 	}
+	return written, nil
+}
+
+// writePageByHandle writes a single page to ext2 using a stored fs handle
+// directly, bypassing the FDT. Used by mmap flush paths because the cache
+// is keyed by inode and stores its own copy of the handle — the original
+// fd may have been closed (Linux semantics: mmap survives close) and the
+// FDT lookup would fail. The fs handle stays alive across close so long
+// as cache pages reference it (sysClose checks HasPagesFor).
+func (h *syscallHandler) writePageByHandle(sid int16, handle uint32, offset int64, data []byte) (int, error) {
+	if handle == 0 {
+		return 0, nil
+	}
+	written, err := h.fs.Write(handle, offset, data)
+	if err != nil {
+		return 0, err
+	}
+	// We don't update e.size here — if the fd is still open and the size
+	// changed, a subsequent fstat will go through to ext2 which returns
+	// the authoritative size. Keeping e.size stale is harmless because
+	// only the original fd's reads use it, and they typically don't
+	// straddle the just-flushed mmap region.
+	_ = sid
 	return written, nil
 }
 

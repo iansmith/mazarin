@@ -8,10 +8,28 @@ package main
 
 import (
 	"mazzy/kmazarin/asm"
+	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/proc"
 	"sync/atomic"
 	"unsafe"
 )
+
+// RecordDelegateBlock stamps the current thread with the sysID and current
+// timer tick before it transitions to ThreadBlockedDelegate. Called from
+// ksyscall.DelegateSyscall just before blockForDelegatedSyscall. printEpochStatus
+// reads these fields for any thread still in ThreadBlockedDelegate so we can
+// see exactly which delegated syscall is hung and for how long.
+//
+//go:nosplit
+//go:noinline
+func RecordDelegateBlock(sysID uint16) {
+	t := GetCurrentThread()
+	if t == nil {
+		return
+	}
+	t.DelegateBlockSinceTick = kirq.ReadCounterValue()
+	t.DelegateBlockSysID = sysID
+}
 
 // GetCurrentThreadPIDAndTID returns the PID and TID of the currently running thread.
 //
@@ -69,6 +87,8 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 	if t != nil && t.PID == proc.ShepherdId(pid) && t.State == ThreadBlockedDelegate {
 		t.Context.SetReturnValue(uint64(returnVal))
 		t.PreemptElapsed = 0
+		t.DelegateBlockSinceTick = 0
+		t.DelegateBlockSysID = 0
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 		asm.Dsb()
@@ -92,6 +112,8 @@ func WakeDelegateCallerThreadNoReturn(pid int16, tid int32) {
 	if t != nil && t.PID == proc.ShepherdId(pid) && t.State == ThreadBlockedDelegate {
 		// Do NOT call SetReturnValue — preserve all saved registers
 		t.PreemptElapsed = 0
+		t.DelegateBlockSinceTick = 0
+		t.DelegateBlockSysID = 0
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 		asm.Dsb()

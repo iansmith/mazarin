@@ -37,13 +37,12 @@ func LoadMazBootstrap(filename string, _ interface{}) (func(), uintptr, *merror.
 // goroutine with a pre-grown stack.
 func LaunchMaz(name string) {
 	path := sys.LoadMazByName("/" + name)
-	fmt.Printf("[mazhost] LaunchMaz(%q): loading %s...\n", name, path)
+	// noise: LaunchMaz boot trace disabled during scorch ENOENT investigation
 	mazMain, _, err := loadMazInternal(path)
 	if err != nil {
 		panic(fmt.Sprintf("[mazhost] LaunchMaz(%q) failed: %v", name, err))
 	}
 	go runWithLargeStack(mazMain)
-	fmt.Printf("[mazhost] LaunchMaz(%q): goroutine launched\n", name)
 }
 
 // RunMaz runs an already-loaded .maz func on a pre-grown stack.
@@ -93,7 +92,7 @@ func loadMazInternal(filename string) (func(), uintptr, *merror.Error) {
 	if err != nil {
 		return nil, 0, merror.ErrInvalidELF.Wrap(fmt.Sprintf("%s: OpenBytes: %v", filename, err))
 	}
-	fmt.Printf("[mazhost] loaded %s\n", filename)
+	// noise: per-load trace disabled during scorch ENOENT investigation
 
 	entryAddr, err := h.Sym("MazarinMain")
 	if err != nil {
@@ -105,7 +104,7 @@ func loadMazInternal(filename string) (func(), uintptr, *merror.Error) {
 	var shepherdAddr uintptr
 	if addr, sErr := h.Sym("MazarinShepherd"); sErr == nil {
 		shepherdAddr = addr
-		fmt.Printf("[mazhost] MazarinShepherd at 0x%X\n", shepherdAddr)
+		// noise: MazarinShepherd address trace disabled during scorch ENOENT investigation
 	}
 
 	type funcval struct{ fn uintptr }

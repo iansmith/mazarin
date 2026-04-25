@@ -580,6 +580,7 @@ func MazarinMain() {
 	// 8. Signal readiness.
 	sys.SetReady(true)
 	sys.UartWriteString("[linux] Ready=true\n")
+	sys.StartMemStatsLogger("linux", 0) // default 30s
 
 	// 9. Launch helloworld.maz.
 	mazhost.LaunchMaz("helloworld")

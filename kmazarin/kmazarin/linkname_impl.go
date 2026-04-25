@@ -71,6 +71,16 @@ func setSyscallCloneTLSForKsyscall(tls uint64) {
 	SetSyscallCloneTLS(tls)
 }
 
+// RecordDelegateBlock wrapper — records sysID + tick on the current thread
+// just before it blocks on a delegated syscall, so printEpochStatus can show
+// stuck-delegate diagnostics.
+//
+//go:linkname recordDelegateBlockForKsyscall mazzy/kmazarin/ksyscall.RecordDelegateBlock
+//go:nosplit
+func recordDelegateBlockForKsyscall(sysID uint16) {
+	RecordDelegateBlock(sysID)
+}
+
 // AddDeadline wrapper
 // Note: signature mismatch - main uses int16, ksyscall expects int32
 //

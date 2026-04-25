@@ -115,10 +115,9 @@ func (t *ftiTracker) sendLoop(ftiRespCh <-chan any, notify func(string)) {
 		totalBytes += int64(bodyLen)
 		totalDur += elapsed
 
-		mbps := float64(bodyLen) / elapsed.Seconds() / (1024 * 1024)
-		fmt.Printf("[maildb] fti: indexed %d/%d (%d bytes in %v, %.2f MB/s, cumulative %.2f MB/s)\n",
-			count, count, bodyLen, elapsed.Round(time.Microsecond),
-			mbps, float64(totalBytes)/totalDur.Seconds()/(1024*1024))
+		// noise: per-doc fti-indexed timing trace disabled during scorch ENOENT investigation
+		_ = bodyLen
+		_ = elapsed
 	}
 
 	if count > 0 {
@@ -298,8 +297,7 @@ func storeRawRFC822(raw []byte, state *importState) {
 		return
 	}
 	state.count++
-	fmt.Printf("[maildb] parse: msg %d id=%s subj=%q body=%d bytes\n",
-		state.count, headers["message-id"], headers["subject"], len(body))
+	// noise: per-message parse trace disabled during scorch ENOENT investigation
 
 	var storedMsgId string
 	var storedTs time.Time
@@ -557,8 +555,8 @@ func storeParsedMessage(db *badger.DB, headers map[string]string, body string, t
 		display += " — " + subject
 	}
 
-	fmt.Printf("[maildb] badger: stored %s (text=%d html=%d) (%s)\n",
-		messageId, len(textBody), len(htmlBody), display)
+	// noise: per-message badger-store trace disabled during scorch ENOENT investigation
+	_ = display
 	notify(fmt.Sprintf("Stored: %s", display))
 
 	// Enqueue for fti indexing (tracker sends one at a time).

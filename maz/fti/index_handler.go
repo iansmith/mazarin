@@ -8,9 +8,17 @@ import (
 
 	"github.com/blevesearch/bleve/v2"
 
+	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
 	"mazzy/shared/fti"
 )
+
+// slowIndexThreshold triggers an on-demand kernel [status] dump when
+// bleve.Index() takes longer than this. Diagnostic for the SCORCH
+// ENOENT investigation — typical Index() runs are ~50–150ms; anything
+// over 500ms means something else stalled the goroutine and we want
+// to see what the kernel was doing at that moment.
+const slowIndexThreshold = 500 * time.Millisecond
 
 // indexHandler processes IndexDocument requests by reading content from
 // shared memory pages and feeding it to bleve.
@@ -35,8 +43,7 @@ func (h *indexHandler) handleIndexDocument(req *fti.IndexDocument, senderSID int
 		return
 	}
 
-	fmt.Printf("[fti] indexDocument: id=%s type=%d bodyLen=%d pages=%d from SID=%d\n",
-		docId, req.DocType, req.BodyLen, req.NumPages, senderSID)
+	// noise: per-doc indexDocument trace disabled during scorch ENOENT investigation
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -87,12 +94,18 @@ func (h *indexHandler) handleIndexDocument(req *fti.IndexDocument, senderSID int
 	if err := h.index.Index(docId, doc); err != nil {
 		errMsg := fmt.Sprintf("bleve.Index: %v", err)
 		fmt.Printf("[fti] %s\n", errMsg)
+		sys.DumpKernelStatus()
 		h.sendError(int(senderSID), docId, errMsg)
 		return
 	}
 
 	elapsed := time.Since(t0)
-	fmt.Printf("[fti] indexed %s (%v)\n", docId, elapsed)
+	if elapsed > slowIndexThreshold {
+		fmt.Printf("[fti] SLOW Index() %s (%v) — requesting kernel status dump\n", docId, elapsed)
+		sys.DumpKernelStatus()
+	}
+	// noise: per-doc indexed-success trace disabled during scorch ENOENT investigation
+	_ = elapsed
 
 	// Send completion.
 	completed := fti.PackIndexingCompleted(docId)

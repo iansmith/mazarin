@@ -57,6 +57,7 @@ func main() {
 	// Register async error callback so persister/merger crashes are visible.
 	scorch.RegistryAsyncErrorCallbacks["log"] = func(err error, path string) {
 		fmt.Printf("[fti] SCORCH ASYNC ERROR: %v (path=%s)\n", err, path)
+		sys.DumpKernelStatus()
 	}
 
 	// Create bleve index with per-type document mappings.
@@ -97,6 +98,7 @@ func main() {
 	// Signal readiness.
 	sys.SetReady(true)
 	fmt.Println("[fti] Ready=true")
+	sys.StartMemStatsLogger("fti", 0)
 
 	// Block forever — the dispatcher goroutine handles everything.
 	select {}

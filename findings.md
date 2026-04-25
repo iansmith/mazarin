@@ -1568,6 +1568,65 @@ all tracked separately so we don't rewrite this scope mid-flight:
 Tracked as task #8 (re-scoped from "reject mmap on dir fds" to
 "inode-lifecycle correctness via Pin/Unpin").
 
+### Implementation status (2026-04-25, LANDED — verification mixed)
+
+All four implementation steps shipped exactly to spec in commit
+`2d22496 feat: kernel/mail plumbing for bleve-on-tmpfs`:
+
+- `shared/fs/ext2/reader.go` grew `pinMu sync.Mutex`, `inodeRefs
+  map[uint32]int`, `pendingFreeSet map[uint32]bool`. `MountRW`
+  initializes the maps; read-only mount leaves them nil and Pin/
+  Unpin no-op on `!fs.writable`.
+- `shared/fs/ext2/pin.go` (new) — `PinInode`, `UnpinInode`,
+  `isInodePinnedLocked`, `markPendingFreeLocked`, `reclaimInode`.
+  `UnpinInode` runs deferred reclaim (`freeInodeBlocks` + zero
+  inode + `freeInode`) only when refs reach 0 AND inum is in
+  `pendingFreeSet`.
+- `shared/fs/ext2/writer.go` — `Remove`, `WriteFile`-overwrite,
+  `Rename`-target-overwrite all reordered: `removeDirEntry` first,
+  then check `isInodePinnedLocked`; if pinned, `markPendingFree
+  Locked` and skip. Immediate-free behavior kept verbatim per path
+  (Remove zeroes the inode, Rename does not — matches the existing
+  inconsistency rather than introducing a behavior change).
+- `maz/fs/fsipc.go` — `ipcOpen` calls `fsys.PinInode(h.inum)`
+  after `conn.allocHandle` succeeds, both Create branch and
+  regular open. `ipcClose` widened to `(conn, req, resp, mt
+  *mountTable)` and calls `mt.getFS(h.kind).UnpinInode(h.inum)`
+  before `freeHandle`. `freeHandle` audited — only one caller.
+
+Build: `$GO tool task fs:arm64`, `fs:x86_64`, default arm64
+`task` all clean.
+
+**180s ARM64 HVF run:** boot reaches mail; fti indexes 14 docs
+cleanly; then:
+
+```
+[fti] SCORCH ASYNC ERROR: source: merger, persist error:
+merging err: open /tmp/fti-30/bleve/store/00000000001d.zap:
+no such file or directory
+```
+
+Body fetch via badger served one click successfully (`[mail]
+body: 138219 bytes variant=1`). Subsequent clicks froze the UI —
+fti's `corrupted` flag prevents further Index calls and mail-ui
+waits on a body path that can't reply.
+
+**Open question:** ENOENT-on-zap-reopen recurred *with* the fix
+in place. Pin/Unpin/defer-free are silent — we have no signal
+whether the deferred-reclaim path fired even once. Two
+possibilities, no way to distinguish without instrumentation:
+
+1. Defer fires for `.zap` files, but ENOENT comes from a path
+   the fix doesn't cover (real bleve unlink, or fsync ordering
+   in the merger persist path).
+2. Defer never fires — handles are already closed by the time
+   dirents are lost; the bug isn't unlink-while-open at all.
+
+**Next step (planned, not started): instrumentation.** One-shot
+prints in `PinInode` (refs 0→1), in `UnpinInode`'s deferred
+branch, and in the pinned branch of Remove/WriteFile-overwrite/
+Rename-overwrite. Re-run, then triage.
+
 ### FTI bleve persister panic — write/mmap coherence (CONFIRMED FIXED 2026-04-22)
 
 Bleve scorch's `persisterLoop` goroutine has a `defer recover()`. When it panics, it calls
@@ -2076,3 +2135,409 @@ Re-run, grep the trace for the 2 failing `.zap` files. Capture:
 
 ### Bug A fix code reference
 `maz/linux/syscalls.go::sysGetdents64` and new helper `deliveredDirents`.
+
+---
+
+## Pin/Unpin hypothesis disproven (2026-04-25)
+
+The unlink-while-open hypothesis (task #8 in task_plan.md) was tested
+with a three-hook diagnostic in `shared/fs/ext2/{pin.go,writer.go}` and
+`maz/fs/main.go`:
+
+| Hook                       | Fires when                                                   | Count in 180s run |
+|----------------------------|--------------------------------------------------------------|-------------------|
+| `[ext2:pin]`               | `PinInode` 0→1 (every regular-file open)                     | 276               |
+| `[ext2:unpin defer-reclaim]` | `UnpinInode` releases an inode marked pendingFreeSet         | **0**             |
+| `[ext2:defer-free]`        | Remove / WriteFile-overwrite / Rename-overwrite hits pinned inum | **0**             |
+
+The 180s ARM64 HVF run *did* reproduce SCORCH ENOENT
+(`error opening new segment at /tmp/fti-17/bleve/store/00000000002b.zap`)
+yet defer-free fired zero times. By the time bleve unlinks/replaces a
+file, no fs.maz handle is still holding that inum. Pin/Unpin can't help
+because there's nothing to defer.
+
+**Adjacent signal in the same run** (worth investigating separately):
+- One user click correlated with a 13.7-second `Index()` call on the
+  next document (`fti.go indexed ... 13.7s`).
+- A 20-second gap in `[status]` log lines (uptime 92s → 112s) where
+  the kernel emitted *no* status snapshots at all.
+- Later isolated `Index()` of a 1069-byte doc took **41.5 seconds**.
+- Suggests scheduling/IPC starvation around heavy IPC load (click
+  handling vs persister/merger goroutines), not a filesystem-data bug.
+
+### Hypotheses to consider for the actual root cause
+
+1. **Linux shepherd write-buffer drops bytes silently on close.** The
+   PersistSegmentBase path (`zapx/v16/build.go:34`) does
+   `OpenFile(O_RDWR|O_CREATE)` → `WriteTo` → `Sync` → `Close` and
+   returns nil. If linux's `flushWriteBuf` best-effort discards a
+   final write batch on close, the file would still appear created
+   (size 0 or short) but the persister's reopen would still succeed —
+   so this would manifest as "file present but empty/short", not
+   ENOENT. **Unlikely** unless the create path itself can fail
+   silently.
+
+2. **Path-resolution divergence.** Some part of linux's openat path
+   resolves `/tmp/fti-17/bleve/store/00000000002b.zap` differently
+   for create vs open (cwd drift, fdcwd flag mishandling).
+
+3. **Same-PID scheduling stall during persister run.** Under click
+   load, the persister goroutine's IPC for `OPEN` may time out and
+   the syscall layer returns ENOENT spuriously (vs blocking). The
+   13.7s/41.5s `Index()` stalls support that the system is
+   pathologically scheduled during click handling.
+
+### Code stripped 2026-04-25
+Diagnostic hooks removed from `shared/fs/ext2/pin.go`,
+`shared/fs/ext2/writer.go`, `maz/fs/main.go`. Pin/Unpin/pendingFreeSet
+machinery itself retained — it's defensive and harmless on the cold
+path (refs always 0 at unlink time in current usage).
+
+---
+
+## Three real bugs surfaced after silencing traces (2026-04-25 late)
+
+A multi-iteration loop chasing "click → 70-second freeze" produced
+several wrong diagnoses in sequence (path-resolution divergence,
+delegated-syscall stall, scheduling starvation). The final iteration
+silenced the high-volume `[fs:rpc]` and `[lin:fstatat]` traces and ran
+clean. **The freeze symptom did not reproduce.** The user reported the
+system was responsive: clicks worked, body fetch worked, inbox
+rendered.
+
+**Conclusion: the freeze was Heisenbug-induced by the diagnostic
+traces themselves.** Per-RPC `fmt.Printf` from fs.maz (~570 lines/run)
+combined with per-fstatat printf in linux saturated the UART
+sufficiently to:
+- starve rachel's input acquisition goroutine (no `[rachel:click]`
+  events in the entire freeze window),
+- block `klog.Criticalf`'s `[status]` periodic snapshot,
+- cause `[DLG:W][DLG:W]` doubled-prefix output (concurrent UART
+  writers stomping on each other),
+- and create the appearance of a 70+ second deadlock that ultimately
+  cleared once the trace burst subsided.
+
+The kernel-side instrumentation we added during this loop
+(`Thread.DelegateBlockSinceTick` / `DelegateBlockSysID`,
+`RecordDelegateBlock` linkname'd from ksyscall, `delegate stuck:` line
+in `printEpochStatus`, `sys.DumpKernelStatus` callable from .maz) is
+**kept**. It costs nothing when no thread is stuck and the data it
+produced under load was real and load-bearing for the (mistaken)
+delegate-stall hypothesis. Useful for future diagnoses.
+
+### Three bugs visible against the stable baseline
+
+**1. Diversion #6 EISDIR — bleve scorch persister.**
+
+```
+[fti] SCORCH ASYNC ERROR: source: persister, persist error:
+  segment: /tmp/fti-4/bleve/store/000000000060.zap persist err:
+  write /tmp/fti-4/bleve/store/000000000060.zap: is a directory
+```
+
+286 SCORCH errors in a single 90s run. This is the original
+Diversion #6 task #7 we'd been after before the unlink-while-open
+detour. The `[fs:read EISDIR]` diagnostic in fs.maz fired with:
+
+```
+[fs:read EISDIR] handle=228 path="/tmp/fti-4/bleve" inum=12 ftype=2
+                 isDir=true openSize=4096 offset=0 count=4096
+```
+
+Path resolution lands on the bleve-store directory inode (inum=12)
+— bleve `OpenFile(".../60.zap", O_RDWR|O_CREAT, 0600)` returns a
+handle whose backing inode is a directory. `ipcOpen` doesn't enforce
+Linux's `open(dir, O_RDWR) → EISDIR` rule, so the EISDIR surfaces only
+when the caller's first `write` hits an "is a directory" error deep
+in ext2. The follow-on Remove also fails (`got err removing file:
+000000000008.zap, err: ...: is a directory`), confirming the dirent
+points at a directory inode and not just a one-shot mistake.
+
+Open question: how does `.../60.zap` end up resolving to inum=12?
+Two suspects in `shared/fs/ext2/writer.go::Create`:
+- `allocInode()` bitmap drift → handing out an inum that's still in
+  use elsewhere.
+- Upstream dirent for the `.zap` already exists pointing at the
+  directory's inum before Create is even called.
+
+**Just-landed mitigation (2026-04-25):** `maz/fs/fsipc.go::ipcOpen`
+now rejects opens of directory inodes with `O_RDWR|O_WRONLY`,
+returning EISDIR immediately and logging
+`[fs:open EISDIR-on-write] path=... inum=... flags=... mode=...`.
+This (a) matches Linux semantics, (b) surfaces the offending path at
+open time instead of write time, (c) gives bleve the standard error
+shape it already handles.
+
+**Verification run (2026-04-25, 90s ARM64 HVF):**
+- 0 `[fs:open EISDIR-on-write]` traces fired (no `.zap` open hit a
+  directory inode this run).
+- 255 SCORCH errors — but **all ENOENT**, not EISDIR:
+  ```
+  [fti] SCORCH ASYNC ERROR: source: merger, persist error:
+    merging err: open /tmp/fti-20/bleve/store/000000000073.zap:
+    no such file or directory
+  ```
+- The accompanying `[fs:open .zap RESOLVE FAIL]` trace agrees the
+  file genuinely doesn't exist:
+  `path="/tmp/fti-20/bleve/store/000000000108.zap" oCREAT=false err=ext2: not found`.
+- Most failures are **merger** trying to reopen *existing* segments
+  for compaction; some are **persister** trying to reopen
+  just-created segments. Both report ENOENT.
+
+**Conclusion:** the underlying bug is dirent ↔ inode bookkeeping,
+and it manifests in two ways depending on timing:
+- **EISDIR variant** (prior run): the `.zap` dirent points at the
+  bleve-store *directory* inode (inum collision / bitmap drift).
+- **ENOENT variant** (this run): the `.zap` dirent doesn't exist at
+  all — bleve persisted a segment file but the dirent or inode is
+  gone by the time merger tries to reopen.
+
+Both reduce to "inode bookkeeping in `shared/fs/ext2/writer.go` is
+losing track of which inums belong to which dirents." The EISDIR
+enforcement is good Linux-semantics hygiene either way and stays.
+
+**Open: dive into `shared/fs/ext2/writer.go::Create` and `freeInode`.**
+The clearest hypothesis is that an inum is being freed (via Remove,
+WriteFile-overwrite, or Rename-overwrite) while its dirent still
+exists, OR the bitmap is being cleared but the on-disk inode
+mode/links aren't. Pin/Unpin was supposed to defer this; we kept
+the code but it's apparently not preventing the failure path.
+
+### Bug #4 — mail-app memory blowup → OOM crash
+
+**Discovered in this run.** Per-SID kernel memory dump from the OOM
+fault:
+```
+SID=1c: 172d6 pages (5cb58 KB)   ≈ 371 MB
+SID=0:  e8c8 pages (3a320 KB)    ≈ 232 MB
+SID=2:  c589 pages (31624 KB)    ≈ 197 MB
+SID=4:  c82a pages (320a8 KB)    ≈ 200 MB
+SID=e:  f026 pages (3c098 KB)    ≈ 240 MB
+...
+fatal error: runtime: out of memory
+```
+
+SID=28 (mail-app, the only shepherd in that range — mail was started
+last) holds 371 MB and the kernel's overall user-page total is over
+1.5 GB. The system OOMs at uptime ≈ 26s.
+
+This is **independent** of bugs #1, #2, #3. mail-app is leaking — most
+likely body buffers from fetched messages, glyph caches, or rendered
+backing store. Root cause not yet identified but it'll have its own
+investigation. Once memory pressure builds, file ops can fail in
+new and confusing ways (allocation failures during ext2 metadata
+writes), which may explain why the SCORCH variant changes between
+runs.
+
+### Summary — four bugs in scope
+
+1. **Diversion #6 dirent/inode bookkeeping** (EISDIR/ENOENT variants)
+   — `shared/fs/ext2/writer.go::{Create, allocInode, freeInode,
+   removeDirEntry}`. The active bug.
+2. **emlxImport stale dirent (Bug B)** — same root family as #1,
+   visible on read-only `/data/` walks.
+3. **linux-ui boot wedge** — `[fontsvc] uring.Send OpenFontReply
+   failed`, intermittent. Improved error logging in place.
+4. **mail-app memory blowup** — 371 MB resident at 26s, leads to
+   OOM panic. New finding.
+
+**2. `emlxImport` stale dirent (Bug B revisited).**
+
+```
+[maildb] emlxImport: walk error at /data/.../382874.emlx:
+         lstat ...: no such file or directory
+[maildb] emlxImport: skip /data/.../382978.emlx:
+         open ...: no such file or directory
+```
+
+~6 walk errors per run, plus more "skip" errors. `filepath.Walk`'s
+dirent enumeration lists files whose subsequent `lstat`/`open`
+returns ENOENT. Same shape as the bleve-side ENOENT we saw early in
+the session, but on the read-only `/data/...` mbox path. Confirms
+the bug isn't a write-side lifecycle — it's directory enumeration
+itself returning entries that don't actually exist (or that someone
+unlinks during the walk, but `/data/` is read-only so that's
+unlikely).
+
+This was the bug Pin/Unpin was supposed to fix and didn't. Still
+unresolved. May share root cause with bug #1 if both reduce to
+"dirent → inum mapping is incorrect."
+
+**3. `linux-ui` boot wedge (fontsvc uring.Send fail).**
+
+```
+[linuxapp] Bootstrap entered: Linux Console
+[fontsvc] uring.Send OpenFontReply failed
+... linux-ui never produces "backing store ready" or AppStart ...
+```
+
+Seen in 2 of the recent runs (intermittent). linux-ui calls
+fontsvc to open its console font during Bootstrap. fontsvc tries to
+reply via uring; `uring.Send` returns an error; fontsvc logs and
+moves on; linux-ui blocks forever waiting for a reply that never
+comes. No Linux Console window appears.
+
+Improved diagnostic now in place
+(`maz/fontsvc/main.go::handleOpenFont`):
+
+```go
+if err := uring.Send(senderSID, &encoded); err != nil {
+    rawPuts("[fontsvc] uring.Send OpenFontReply FAILED: senderSID=")
+    rawPutsInt(senderSID)
+    rawPuts(" err=")
+    rawPuts(err.Error())
+    rawPuts("\n")
+}
+```
+
+Next time it fires we'll see the actual uring error (EAGAIN? ESRCH?
+buffer full?) and which sender. Independent of bugs #1 and #2.
+
+### Why the trace reduction was decisive
+
+The session's per-run line counts:
+
+| Run shape                    | Total lines | Click freeze? | Kernel `[status]`? |
+|------------------------------|-------------|--------------|--------------------|
+| `[fs:rpc]` ENTER+REPLY all ops | ~1500       | yes          | 0                  |
+| `[fs:rpc]` path-bearing ops    | ~1290       | yes          | 0                  |
+| All fs:rpc + fstatat silenced  | ~990        | **no**       | 0 (other cause)    |
+
+Removing the per-RPC traces dropped trace volume by ~35% and
+eliminated the click-freeze entirely. The remaining `[status]`
+silence has a separate cause (likely the kernel klog goroutine being
+out-prioritized — not load-bearing for the EISDIR investigation).
+
+Lesson: when chasing scheduling-shaped symptoms, instrument with
+**counters and one-shot prints on failure**, not per-event ENTER/REPLY
+pairs. The kernel-side `delegate stuck:` line is a good template:
+it costs zero CPU/UART when nothing is wrong and produces a single
+line per stuck thread when something is.
+
+---
+
+## Diversion #6 closure (2026-04-25 evening)
+
+After the wrong-hypothesis chases (Pin/Unpin, path-resolution
+divergence, scheduling stall) and the Heisenbug retraction, four
+distinct root causes turned out to compound:
+
+### Root cause 1: kernel string-copy truncation
+
+`kmazarin/ksyscall/delegate.go::allocAndCopyCallerString` capped its
+`CopyFromUser` at the end of the caller's first page:
+```go
+maxCopy := uintptr(4096) - (callerStrVA & 0xFFF)
+...
+if !kmem.CopyFromUser(dst, callerStrVA, int(maxCopy)) { ... }
+for i := uintptr(0); i < maxCopy; i++ {
+    if dst[i] == 0 { strLen = uint64(i); break }
+}
+if strLen == 0 && maxCopy > 0 && dst[0] != 0 {
+    strLen = uint64(maxCopy)   // ← truncated, no null
+}
+```
+When Go's allocator placed the C-string near a page boundary, the
+returned string was a *prefix* of the real path. Bleve's
+`os.OpenFile("/tmp/fti-N/bleve/store/XXXXXXXXXXXX.zap", ...)` arrived
+at fs.maz as `"/tmp/fti-N/bleve"` (16 chars — exactly the page-end
+prefix), which resolved to the bleve directory's inode and produced
+EISDIR or ENOENT depending on race timing.
+
+**Fix:** two-phase copy. After the first page, if no null was found,
+follow into the next page (capped at the 4 KB scratch). If still no
+null, return an error rather than fabricate a strLen.
+
+### Root cause 2: fsclient.Client raced
+
+No mutex anywhere on the IPC client. linux shepherd's many concurrent
+delegate-handler goroutines all shared one `*fsclient.Client` and:
+- two goroutines called `setPath` → both overwrote the shared data
+  area, the later one's path won, but the earlier one's PathLen
+  pointed past a stale null;
+- `nextID++` was non-atomic;
+- multiple `<-c.RespCh` waiters could grab each other's responses.
+
+**Fix:** added `sync.Mutex` to `Client`. Every public method takes the
+lock for its full IPC round-trip (path setup → send → receive →
+data-area copy). `Read`/`Write`/`Stat`/`Fstat`/`ReadDir` were
+refactored to take a `buf` parameter so the data-area copy happens
+under the lock. The old `WriteData`/`DataSlice` methods were removed
+— they were the racy seam between two API calls.
+
+### Root cause 3: GC was effectively disabled
+
+`config/kernel.{arm64,amd64}.toml` had `gc_percentage = 10000`
+(GOGC=10000). The intent was to let `GOMEMLIMIT=256 MB` be the
+governor instead of frequent GC. In practice, long-running shepherds
+drifted to hundreds of MB heap without ever GCing, and the
+**kernel-side user-page budget** ran out across all shepherds before
+any individual shepherd hit GOMEMLIMIT. The OOM panic that killed
+linux was a symptom, not the cause; the *system* ran out of physical
+pages.
+
+Per-shepherd memstats (added in the same session) were the
+diagnostic: showed linux at 162 → 178 MB heap with `gc=0` over a 5s
+window, while other shepherds (different alloc patterns) had GC'd a
+few times.
+
+**Fix:** dropped `gc_percentage` to `100` (Go default). Linux's
+steady-state heap dropped from 178 MB → 5 MB. fti went 87 MB → 3 MB.
+Mail-app ~10–15 MB. maildb ~140 MB (badger LSM working set, bounded;
+GC fires when heap doubles from previous live set, which sits at the
+limit of badger's working memory).
+
+### Root cause 4: fontsvc dropped uring replies on EAGAIN
+
+`mazarin/uring/syscall.go::SendWithRing` is non-blocking; the kernel
+returns `-11 EAGAIN` when the target's ring is full. Fontsvc just
+logged "failed" and moved on — linux-ui's font request blocked
+forever waiting for a reply that was discarded. This was the
+intermittent "linux-ui window never appears" bug.
+
+**Fix:** `SendWithRing` now retries on EAGAIN with `runtime.Gosched()`
+between attempts (256-attempt budget — closest equivalent to Linux's
+"write to full pipe blocks until drain"). Applies system-wide so any
+sender benefits, not just fontsvc.
+
+### Side fixes that landed in the same session
+
+- **mmap-survives-close (Linux semantics).** Page cache re-keyed from
+  `(sid, fd, offset)` → `(sid, inum, offset)`. Cache now stores
+  `Handle` per page; `sysClose` no longer drains it. Orphan fs handles
+  whose owning fd has been closed are tracked in
+  `syscallHandler.orphanHandles` and released on the eventual
+  `sysMmapPageFlush` drain or shepherd death.
+- **`ipcOpen` Linux-compat polish.** EMFILE rollback, O_EXCL→EEXIST,
+  EISDIR-on-write enforcement.
+- **O_CLOEXEC one-shot warning** — visible seam if exec is ever added.
+- **Per-shepherd `runtime.MemStats` periodic logger** — load-bearing
+  for the GC diagnosis above.
+- **Kernel `delegate stuck:` line** + `Thread.DelegateBlockSinceTick`
+  / `RecordDelegateBlock`. Zero cost when no thread is stuck.
+- **`sys.DumpKernelStatus()`** — on-demand kernel `[status]` snapshot
+  via `SysDebugPrint` marker `0xDB7`. Wired into fti's SLOW Index()
+  and SCORCH paths.
+
+### Verification — 180s run, 5 user clicks
+
+- 5 `[rachel:click]` → 5 `[mail:click]` → 5 `[click-agent]` → 12
+  body fetches (some chain prefetch).
+- 0 SCORCH, 0 EISDIR, 0 OOM, 0 dead shepherd.
+- Heap stable across the run.
+- 1 `O_CLOEXEC` warning at boot (one-shot, per design).
+
+### Notes for future investigations in this neighborhood
+
+- The page cache is now inum-keyed and supports the close-survives-mmap
+  semantic. If fd reuse ever causes issues, the `orphanHandles` map is
+  the seam to investigate.
+- The kernel string-copy fix is a 4 KB max path; if anyone ever passes
+  a longer path, we now reject cleanly instead of truncating.
+- The Pin/Unpin code in `shared/fs/ext2/{pin.go,writer.go}` is kept
+  as defensive infrastructure even though we proved it didn't apply
+  to this bug. It's zero-cost on the cold path and the mechanism
+  itself is correct — it just wasn't the right hypothesis for #6.
+- GOGC=100 + GOMEMLIMIT=256 is the new baseline. If memory pressure
+  shows up later we can lower GOMEMLIMIT further (e.g., 128 MB) or
+  drop GOGC to 50 for tighter compaction.

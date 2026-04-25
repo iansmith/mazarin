@@ -325,8 +325,8 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 
 	n, rerr := file.ReadInto(dst[:fileSize])
 
-	fmt.Printf("[fs] %s: %d bytes, %d pages, %dms\n",
-		path, fileSize, numPages, time.Since(t0).Milliseconds())
+	// noise: per-LoadFile trace disabled during scorch ENOENT investigation
+	_ = t0
 
 	if rerr != nil {
 		// Free allocated pages on read failure to avoid leaking memory.
