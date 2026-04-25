@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	goFont "github.com/go-text/typesetting/font"
@@ -130,13 +131,28 @@ type directFont struct {
 	tier2    map[uint32]*tier2Glyph // overflow/ligature glyphs
 }
 
+// registeredFace holds a font face that was registered by buffer
+// (e.g. CSS @font-face) rather than resolved via filesystem.
+type registeredFace struct {
+	face     *goFont.Face
+	fontData []byte // caller-owned buffer; provider holds reference
+}
+
+// regKey identifies a registered face by family + variant.
+type regKey struct {
+	family  string
+	variant int32
+}
+
 // DirectGlyphProvider implements [GlyphProvider] using in-process
 // rasterization via [RenderGlyph]. This is the provider used on darwin
 // where fonts are loaded and rasterized directly, without fontsvc IPC.
 type DirectGlyphProvider struct {
-	fontDir   string
-	fontIndex *FontIndex
-	fonts     [maxFonts]*directFont
+	fontDir    string
+	fontIndex  *FontIndex
+	fonts      [maxFonts]*directFont
+	regMu      sync.Mutex
+	registered map[regKey]*registeredFace
 }
 
 // NewDirectGlyphProvider creates a DirectGlyphProvider that loads font
@@ -166,18 +182,23 @@ func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error)
 		return FontMetrics{}, errors.New("no free font slots (max 32)")
 	}
 
-	// Resolve family+variant to a filesystem path.
-	resolved := p.resolveFamily(req.Family, req.Variant)
-
 	// Reuse an already-parsed face if same family was loaded at different size.
 	existing := p.findExistingFont(req.Family, req.Variant)
 	var face *goFont.Face
 	var fontData []byte
-	if existing != nil {
+	switch {
+	case existing != nil:
 		face = existing.face
 		fontData = existing.fontData
-	} else {
-		// mmap the font file read-only.
+	case p.findRegistered(req.Family, req.Variant) != nil:
+		// Buffer registered via RegisterBuffer (e.g. CSS @font-face).
+		// Skip filesystem entirely.
+		reg := p.findRegistered(req.Family, req.Variant)
+		face = reg.face
+		fontData = reg.fontData
+	default:
+		// Resolve family+variant to a filesystem path and mmap.
+		resolved := p.resolveFamily(req.Family, req.Variant)
 		f, err := os.Open(resolved)
 		if err != nil {
 			return FontMetrics{}, fmt.Errorf("open font file %s: %w", resolved, err)
@@ -217,6 +238,40 @@ func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error)
 	p.fonts[fontID].cache = buildGlyphCache(face, scale, uint32(fontID), req.Size, m)
 
 	return m, nil
+}
+
+// RegisterBuffer registers a parsed font buffer under (family, variant).
+// Subsequent OpenFont calls for that key reuse the parsed face instead of
+// touching the filesystem. Used by CSS @font-face: caller fetches/decompresses
+// the font, then hands the buffer here. data is retained by reference.
+func (p *DirectGlyphProvider) RegisterBuffer(family string, variant int32, data []byte) error {
+	if family == "" {
+		return errors.New("RegisterBuffer: empty family")
+	}
+	if len(data) == 0 {
+		return errors.New("RegisterBuffer: empty data")
+	}
+	face, err := goFont.ParseTTF(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("RegisterBuffer: parse font: %w", err)
+	}
+	p.regMu.Lock()
+	defer p.regMu.Unlock()
+	if p.registered == nil {
+		p.registered = make(map[regKey]*registeredFace)
+	}
+	p.registered[regKey{family, variant}] = &registeredFace{face: face, fontData: data}
+	return nil
+}
+
+// findRegistered returns the registered face for (family, variant), or nil.
+func (p *DirectGlyphProvider) findRegistered(family string, variant int32) *registeredFace {
+	p.regMu.Lock()
+	defer p.regMu.Unlock()
+	if p.registered == nil {
+		return nil
+	}
+	return p.registered[regKey{family, variant}]
 }
 
 // resolveFamily converts a logical family name + variant to a filesystem path.
@@ -328,6 +383,17 @@ func (p *DirectGlyphProvider) metricsFor(fontID int32) FontMetrics {
 // (matching Blink's policy of preferring sTypo for modern fonts).
 func ComputeFontMetrics(face *goFont.Face, scale float32, fontID int32) FontMetrics {
 	return computeFontMetricsWithData(face, scale, fontID, nil)
+}
+
+// ComputeFontMetricsWithData builds FontMetrics, preferring OS/2 sTypo
+// metrics parsed from fontData when they are present. Falls back to the
+// Face's FontHExtents (hhea-based for fonts without USE_TYPO_METRICS).
+//
+// Exported so providers that load fonts outside the DirectGlyphProvider
+// path (e.g. FontSvcGlyphProvider's @font-face buffer registration) can
+// produce metrics consistent with the rest of the engine.
+func ComputeFontMetricsWithData(face *goFont.Face, scale float32, fontID int32, fontData []byte) FontMetrics {
+	return computeFontMetricsWithData(face, scale, fontID, fontData)
 }
 
 // computeFontMetricsWithData builds FontMetrics, preferring OS/2 sTypo

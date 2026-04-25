@@ -108,6 +108,23 @@ type GlyphProvider interface {
 	// identified by its GID (after HarfBuzz shaping). Returns nil
 	// info if the glyph has no renderable outline.
 	GlyphByGID(fontID int32, gid uint32) (*GlyphInfo, []byte, error)
+
+	// RegisterBuffer registers a font buffer (parsed TTF/OTF bytes) under
+	// the given (family, variant) key. Subsequent OpenFont calls with that
+	// (family, variant) use the registered face instead of resolving via
+	// filesystem (DirectGlyphProvider) or fontsvc IPC (FontSvcGlyphProvider).
+	//
+	// This is the seam used for CSS @font-face fonts: the caller fetches
+	// (and decompresses, e.g. WOFF1) the font data, then hands the buffer
+	// here for shaping. For FontSvcGlyphProvider, registered fonts run
+	// entirely in-process (no fontsvc IPC, no shared cache pages); on-demand
+	// rasterization is performed via [RenderGlyph] just like the
+	// DirectGlyphProvider tier-2 path.
+	//
+	// data is retained by reference; callers must not mutate it after
+	// registration. Calling RegisterBuffer again with the same
+	// (family, variant) replaces the prior registration.
+	RegisterBuffer(family string, variant int32, data []byte) error
 }
 
 // Direction specifies the text flow direction.

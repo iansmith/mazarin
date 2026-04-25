@@ -2,10 +2,12 @@ package fontcache
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"mazzy/mazarin/sys"
 	"mazarin/textshape"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -25,24 +27,42 @@ var (
 // fontsvc.maz for font loading and glyph cache access. Cache and font
 // file pages are shared read-only via SharePages.
 type FontSvcGlyphProvider struct {
-	fc    *FontCache
-	fonts [MaxFonts]*fontsvcFont
+	fc         *FontCache
+	fonts      [MaxFonts]*fontsvcFont
+	regMu      sync.Mutex
+	registered map[regKey]*registeredFace
+	nextRegID  int32 // next FontID to assign for buffer-registered fonts
 }
 
 type fontsvcFont struct {
-	face     *goFont.Face        // parsed from shared font file pages
-	fontData []byte              // shared font file pages (unsafe.Slice)
-	cache    []byte              // shared V2 cache pages (unsafe.Slice)
-	tier2    map[uint32]*tier2Glyph
-	metrics  textshape.FontMetrics
-	family   string              // logical font family name
-	variant  int32
-	size     int32
+	face       *goFont.Face // parsed from shared font file pages, or registered buffer
+	fontData   []byte       // shared font file pages (unsafe.Slice), or registered buffer
+	cache      []byte       // shared V2 cache pages (unsafe.Slice); nil for registered
+	tier2      map[uint32]*tier2Glyph
+	metrics    textshape.FontMetrics
+	family     string // logical font family name
+	variant    int32
+	size       int32
+	registered bool    // true if opened via RegisterBuffer (in-process, no IPC)
+	scale      float32 // pointSize / upem, for in-process RenderGlyph
 }
 
 type tier2Glyph struct {
 	info  textshape.GlyphInfo
 	alpha []byte
+}
+
+// regKey identifies a registered face by family + variant.
+type regKey struct {
+	family  string
+	variant int32
+}
+
+// registeredFace holds a font face registered via RegisterBuffer
+// (e.g. CSS @font-face) rather than fetched via fontsvc IPC.
+type registeredFace struct {
+	face     *goFont.Face
+	fontData []byte // caller-owned buffer; provider holds reference
 }
 
 // Compile-time check that FontSvcGlyphProvider implements textshape.GlyphProvider.
@@ -56,12 +76,22 @@ func NewFontSvcGlyphProvider(fc *FontCache) *FontSvcGlyphProvider {
 // OpenFont sends an OpenFont request to fontsvc. fontsvc builds a V2 cache,
 // shares cache and font file pages, and returns metrics. The provider parses
 // a local Face from the shared font file pages for HarfBuzz.
+//
+// If the (family, variant) was previously registered via RegisterBuffer
+// (e.g. CSS @font-face), OpenFont skips fontsvc entirely and serves the
+// face in-process. RenderGlyph runs locally on tier-2 misses, with no
+// shared cache pages.
 func (p *FontSvcGlyphProvider) OpenFont(req textshape.OpenFontRequest) (textshape.FontMetrics, error) {
-	// Check if already opened with matching path/variant/size.
+	// Check if already opened with matching family/variant/size.
 	for i := int32(0); i < MaxFonts; i++ {
 		if p.fonts[i] != nil && p.fonts[i].family == req.Family && p.fonts[i].variant == req.Variant && p.fonts[i].size == req.Size {
 			return p.fonts[i].metrics, nil
 		}
+	}
+
+	// Check registered buffer (CSS @font-face). Stays in-process.
+	if reg := p.findRegistered(req.Family, req.Variant); reg != nil {
+		return p.openRegistered(req, reg)
 	}
 
 	// Send family name to fontsvc — server resolves to filesystem path.
@@ -122,6 +152,81 @@ func (p *FontSvcGlyphProvider) OpenFont(req textshape.OpenFontRequest) (textshap
 	return metrics, nil
 }
 
+// RegisterBuffer registers a parsed font buffer under (family, variant).
+// Subsequent OpenFont calls for that key serve the face in-process — no
+// fontsvc IPC, no shared cache pages, no protocol changes in fontsvc.maz.
+// Used by CSS @font-face: caller fetches/decompresses the font, then
+// hands the buffer here. data is retained by reference.
+func (p *FontSvcGlyphProvider) RegisterBuffer(family string, variant int32, data []byte) error {
+	if family == "" {
+		return errors.New("RegisterBuffer: empty family")
+	}
+	if len(data) == 0 {
+		return errors.New("RegisterBuffer: empty data")
+	}
+	face, err := goFont.ParseTTF(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("RegisterBuffer: parse font: %w", err)
+	}
+	p.regMu.Lock()
+	defer p.regMu.Unlock()
+	if p.registered == nil {
+		p.registered = make(map[regKey]*registeredFace)
+	}
+	p.registered[regKey{family, variant}] = &registeredFace{face: face, fontData: data}
+	return nil
+}
+
+// findRegistered returns the registered face for (family, variant), or nil.
+func (p *FontSvcGlyphProvider) findRegistered(family string, variant int32) *registeredFace {
+	p.regMu.Lock()
+	defer p.regMu.Unlock()
+	if p.registered == nil {
+		return nil
+	}
+	return p.registered[regKey{family, variant}]
+}
+
+// openRegistered opens a font from a previously-registered buffer entirely
+// in-process. No IPC, no shared cache pages. RenderGlyph runs locally on
+// tier-2 misses (mirrors DirectGlyphProvider's tier-2 path).
+func (p *FontSvcGlyphProvider) openRegistered(req textshape.OpenFontRequest, reg *registeredFace) (textshape.FontMetrics, error) {
+	fontID := p.allocFontID()
+	if fontID < 0 {
+		return textshape.FontMetrics{}, errors.New("no free font slots")
+	}
+
+	upem := float32(reg.face.Upem())
+	scale := float32(req.Size) / upem
+	metrics := textshape.ComputeFontMetricsWithData(reg.face, scale, fontID, reg.fontData)
+
+	p.fonts[fontID] = &fontsvcFont{
+		face:       reg.face,
+		fontData:   reg.fontData,
+		cache:      nil, // no shared cache for registered (in-process) fonts
+		tier2:      make(map[uint32]*tier2Glyph),
+		metrics:    metrics,
+		family:     req.Family,
+		variant:    req.Variant,
+		size:       req.Size,
+		registered: true,
+		scale:      scale,
+	}
+
+	return metrics, nil
+}
+
+// allocFontID finds a free FontID slot in the local fonts array.
+// Used for buffer-registered fonts that don't have a server-assigned ID.
+func (p *FontSvcGlyphProvider) allocFontID() int32 {
+	for i := int32(0); i < MaxFonts; i++ {
+		if p.fonts[i] == nil {
+			return i
+		}
+	}
+	return -1
+}
+
 // DumpGlyphStats prints glyph lookup statistics.
 func DumpGlyphStats() {
 	sys.UartWriteString("[provider] glyph stats: tier1=" + strconv.FormatInt(glyphTier1Hits.Load(), 10) +
@@ -143,12 +248,29 @@ func (p *FontSvcGlyphProvider) Face(fontID int32) *goFont.Face {
 // GlyphByGID looks up a glyph by GID using a tiered strategy:
 // tier-1 (binary search in shared V2 cache), tier-2 (local overflow map),
 // then fontsvc IPC for on-demand rasterization.
+//
+// Registered (CSS @font-face) fonts skip the IPC path entirely: tier-2
+// overflow + in-process [textshape.RenderGlyph], mirroring
+// DirectGlyphProvider's tier-2 path.
 func (p *FontSvcGlyphProvider) GlyphByGID(fontID int32, gid uint32) (*textshape.GlyphInfo, []byte, error) {
 	if fontID < 0 || fontID >= MaxFonts || p.fonts[fontID] == nil {
 		return nil, nil, fmt.Errorf("invalid fontID %d", fontID)
 	}
 
 	ff := p.fonts[fontID]
+
+	if ff.registered {
+		// In-process path: tier-2 overflow only, then RenderGlyph.
+		if t2, ok := ff.tier2[gid]; ok {
+			return &t2.info, t2.alpha, nil
+		}
+		info, alpha := textshape.RenderGlyph(ff.face, goFont.GID(gid), ff.scale)
+		if info == nil {
+			return nil, nil, nil
+		}
+		ff.tier2[gid] = &tier2Glyph{info: *info, alpha: alpha}
+		return info, alpha, nil
+	}
 
 	// Tier 1: binary search in shared V2 cache.
 	if len(ff.cache) > 0 {

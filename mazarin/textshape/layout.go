@@ -31,6 +31,12 @@ type TextLayout interface {
 	// CachedFontMetrics returns the FontMetrics for a previously
 	// opened font. Returns zero-value if fontID has not been opened.
 	CachedFontMetrics(fontID int32) FontMetrics
+
+	// RegisterBuffer registers a parsed font buffer with the underlying
+	// [GlyphProvider] under (family, variant). Used for CSS @font-face
+	// fonts, which are fetched/decompressed by the caller and shaped
+	// in-process. See [GlyphProvider.RegisterBuffer] for details.
+	RegisterBuffer(family string, variant int32, data []byte) error
 }
 
 // openedFont tracks a font that has been opened via HarfBuzzTextLayout.
@@ -197,6 +203,13 @@ func (tl *HarfBuzzTextLayout) CachedFontMetrics(fontID int32) FontMetrics {
 // and LayoutText use internally.
 func (tl *HarfBuzzTextLayout) ShapeText(params ShapingParams) (ShapedRun, error) {
 	return tl.shapeWithCache(params)
+}
+
+// RegisterBuffer forwards a font buffer registration to the underlying
+// GlyphProvider. After this call, OpenFont(family, variant, size) uses
+// the registered buffer instead of resolving via filesystem or fontsvc IPC.
+func (tl *HarfBuzzTextLayout) RegisterBuffer(family string, variant int32, data []byte) error {
+	return tl.provider.RegisterBuffer(family, variant, data)
 }
 
 // MeasureText shapes the text and returns the total advance width

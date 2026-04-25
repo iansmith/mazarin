@@ -44,6 +44,12 @@ type DrawContext interface {
 	// "AtkinsonHyperlegible"), not a filesystem path.
 	OpenFont(family string, variant, size int32) (FontMetrics, error)
 
+	// RegisterBuffer registers a parsed font buffer with the underlying
+	// [GlyphProvider] under (family, variant). Used for CSS @font-face
+	// fonts, which are fetched/decompressed by the caller and shaped
+	// in-process. See [GlyphProvider.RegisterBuffer] for details.
+	RegisterBuffer(family string, variant int32, data []byte) error
+
 	// DrawText shapes, rasterizes, and composites text at (x, y) baseline.
 	DrawText(text string, fontID int32, x, y float64)
 

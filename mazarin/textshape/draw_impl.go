@@ -948,6 +948,12 @@ func (dc *DrawContextImpl) OpenFont(family string, variant, size int32) (FontMet
 	return m, nil
 }
 
+// RegisterBuffer forwards a font buffer registration to the underlying
+// TextLayout / GlyphProvider. Used for CSS @font-face fonts.
+func (dc *DrawContextImpl) RegisterBuffer(family string, variant int32, data []byte) error {
+	return dc.tl.RegisterBuffer(family, variant, data)
+}
+
 // DrawText shapes, rasterizes, and composites text at (x, y) baseline.
 func (dc *DrawContextImpl) DrawText(text string, fontID int32, x, y float64) {
 	tx, ty := dc.transformPoint(x, y)
