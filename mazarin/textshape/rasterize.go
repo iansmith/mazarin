@@ -150,7 +150,7 @@ type regKey struct {
 type DirectGlyphProvider struct {
 	fontDir    string
 	fontIndex  *FontIndex
-	fonts      [maxFonts]*directFont
+	fonts      [MaxFonts]*directFont
 	regMu      sync.Mutex
 	registered map[regKey]*registeredFace
 }
@@ -298,7 +298,7 @@ func (p *DirectGlyphProvider) resolveFamily(family string, variant int32) string
 
 // Face returns the go-text Face for the given fontID.
 func (p *DirectGlyphProvider) Face(fontID int32) *goFont.Face {
-	if fontID < 0 || fontID >= maxFonts || p.fonts[fontID] == nil {
+	if fontID < 0 || fontID >= MaxFonts || p.fonts[fontID] == nil {
 		return nil
 	}
 	return p.fonts[fontID].face
@@ -308,7 +308,7 @@ func (p *DirectGlyphProvider) Face(fontID int32) *goFont.Face {
 // tier-1 (binary search in pre-rendered cache), tier-2 (overflow map),
 // then on-demand rasterization for cache misses.
 func (p *DirectGlyphProvider) GlyphByGID(fontID int32, gid uint32) (*GlyphInfo, []byte, error) {
-	if fontID < 0 || fontID >= maxFonts || p.fonts[fontID] == nil {
+	if fontID < 0 || fontID >= MaxFonts || p.fonts[fontID] == nil {
 		return nil, nil, fmt.Errorf("invalid fontID %d", fontID)
 	}
 
@@ -339,7 +339,7 @@ func (p *DirectGlyphProvider) GlyphByGID(fontID int32, gid uint32) (*GlyphInfo, 
 // --- internal helpers ---
 
 func (p *DirectGlyphProvider) findCachedFont(family string, variant, size int32) int32 {
-	for i := int32(0); i < maxFonts; i++ {
+	for i := int32(0); i < MaxFonts; i++ {
 		if p.fonts[i] != nil && p.fonts[i].family == family &&
 			p.fonts[i].variant == variant && p.fonts[i].size == size {
 			return i
@@ -349,7 +349,7 @@ func (p *DirectGlyphProvider) findCachedFont(family string, variant, size int32)
 }
 
 func (p *DirectGlyphProvider) findExistingFont(family string, variant int32) *directFont {
-	for i := int32(0); i < maxFonts; i++ {
+	for i := int32(0); i < MaxFonts; i++ {
 		if p.fonts[i] != nil && p.fonts[i].family == family &&
 			p.fonts[i].variant == variant && p.fonts[i].face != nil {
 			return p.fonts[i]
@@ -359,7 +359,7 @@ func (p *DirectGlyphProvider) findExistingFont(family string, variant int32) *di
 }
 
 func (p *DirectGlyphProvider) allocFontID() int32 {
-	for i := int32(0); i < maxFonts; i++ {
+	for i := int32(0); i < MaxFonts; i++ {
 		if p.fonts[i] == nil {
 			return i
 		}
@@ -411,7 +411,7 @@ func (p *DirectGlyphProvider) OpenTemporaryFont(req OpenFontRequest, data []byte
 // permanent/temp distinction on top via a 0x1000 base bit, but that's
 // invisible at this layer.
 func (p *DirectGlyphProvider) CloseTemporaryFont(fontID int32) error {
-	if fontID < 0 || fontID >= maxFonts {
+	if fontID < 0 || fontID >= MaxFonts {
 		return nil
 	}
 	df := p.fonts[fontID]

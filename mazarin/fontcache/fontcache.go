@@ -170,6 +170,107 @@ func (fc *FontCache) RequestGlyphByGID(fontID int32, gid uint32) *wm.GlyphReply 
 	return &reply
 }
 
+// SendOpenTemporaryFont sends an OpenTemporaryFont request to fontsvc
+// and blocks until the reply arrives. fontDataVA is the fontsvc-side VA
+// of caller-shared bytes (currently unused in louis14's flow because
+// @font-face bytes go via SendRegisterFontBuffer first; pass 0 for
+// the registered or filesystem path).
+func (fc *FontCache) SendOpenTemporaryFont(family string, variant, size int32, fontDataVA, fontDataLen uint64, numPages uint32) (*wm.OpenTemporaryFontReply, error) {
+	var otf wm.OpenTemporaryFont
+	otf.Variant = variant
+	otf.Size = size
+	otf.FontDataVA = fontDataVA
+	otf.FontDataLen = fontDataLen
+	otf.NumPages = numPages
+	copy(otf.Path[:], family)
+
+	msg := wm.EncodeOpenTemporaryFont(&otf)
+	if err := uring.Send(fc.rachelSID, &msg); err != nil {
+		sys.UartWriteString("[fontcache] SendOpenTemporaryFont FAILED: " + err.Error() + "\n")
+		return nil, err
+	}
+
+	raw := <-fc.ReplyCh
+	reply, ok := raw.(wm.OpenTemporaryFontReply)
+	if !ok {
+		sys.UartWriteString("[fontcache] SendOpenTemporaryFont: unexpected msg type\n")
+		return nil, nil
+	}
+	return &reply, nil
+}
+
+// SendCloseTemporaryFont sends a CloseTemporaryFont request and blocks
+// until the reply arrives. fontID is the server-side fontID (with
+// the wm.TempFontIDBase 0x1000 bit set for true temp slots; permanent-
+// range IDs are accepted by fontsvc as a no-op).
+func (fc *FontCache) SendCloseTemporaryFont(fontID int32) (*wm.CloseTemporaryFontReply, error) {
+	var ctf wm.CloseTemporaryFont
+	ctf.FontID = fontID
+
+	msg := wm.EncodeCloseTemporaryFont(&ctf)
+	if err := uring.Send(fc.rachelSID, &msg); err != nil {
+		sys.UartWriteString("[fontcache] SendCloseTemporaryFont FAILED: " + err.Error() + "\n")
+		return nil, err
+	}
+
+	raw := <-fc.ReplyCh
+	reply, ok := raw.(wm.CloseTemporaryFontReply)
+	if !ok {
+		sys.UartWriteString("[fontcache] SendCloseTemporaryFont: unexpected msg type\n")
+		return nil, nil
+	}
+	return &reply, nil
+}
+
+// SendRegisterFontBuffer hands off a (family, variant) → bytes mapping
+// to fontsvc. The caller has already SharePagesWithTarget'd the byte
+// pages into fontsvc's address space at fontDataVA. Fontsvc holds the
+// mapping until UnregisterFontBuffer (or shepherd death cleanup).
+func (fc *FontCache) SendRegisterFontBuffer(family string, variant int32, fontDataVA, fontDataLen uint64, numPages uint32) (*wm.RegisterFontBufferReply, error) {
+	var rfb wm.RegisterFontBuffer
+	rfb.Variant = variant
+	rfb.FontDataVA = fontDataVA
+	rfb.FontDataLen = fontDataLen
+	rfb.NumPages = numPages
+	copy(rfb.Path[:], family)
+
+	msg := wm.EncodeRegisterFontBuffer(&rfb)
+	if err := uring.Send(fc.rachelSID, &msg); err != nil {
+		sys.UartWriteString("[fontcache] SendRegisterFontBuffer FAILED: " + err.Error() + "\n")
+		return nil, err
+	}
+
+	raw := <-fc.ReplyCh
+	reply, ok := raw.(wm.RegisterFontBufferReply)
+	if !ok {
+		sys.UartWriteString("[fontcache] SendRegisterFontBuffer: unexpected msg type\n")
+		return nil, nil
+	}
+	return &reply, nil
+}
+
+// SendUnregisterFontBuffer drops a previously-registered (family, variant)
+// mapping. After successful reply the caller may FreePages on its side.
+func (fc *FontCache) SendUnregisterFontBuffer(family string, variant int32) (*wm.UnregisterFontBufferReply, error) {
+	var ufb wm.UnregisterFontBuffer
+	ufb.Variant = variant
+	copy(ufb.Path[:], family)
+
+	msg := wm.EncodeUnregisterFontBuffer(&ufb)
+	if err := uring.Send(fc.rachelSID, &msg); err != nil {
+		sys.UartWriteString("[fontcache] SendUnregisterFontBuffer FAILED: " + err.Error() + "\n")
+		return nil, err
+	}
+
+	raw := <-fc.ReplyCh
+	reply, ok := raw.(wm.UnregisterFontBufferReply)
+	if !ok {
+		sys.UartWriteString("[fontcache] SendUnregisterFontBuffer: unexpected msg type\n")
+		return nil, nil
+	}
+	return &reply, nil
+}
+
 // requestGlyphByCodepoint sends a tier-2 glyph request by codepoint
 // (used by the legacy sharedFace path). fontsvc converts codepoint→GID internally.
 func (fc *FontCache) requestGlyphByCodepoint(fontID int32, cp rune) *wm.GlyphReply {

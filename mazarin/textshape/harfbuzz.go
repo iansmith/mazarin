@@ -12,16 +12,20 @@ import (
 // HarfBuzzShaper performs text shaping using go-text/typesetting's
 // HarfBuzz implementation.
 type HarfBuzzShaper struct {
-	fonts [maxFonts]*harfbuzz.Font
+	fonts [MaxFonts]*harfbuzz.Font
 }
 
-// maxFonts caps how many distinct (family, variant, size) combinations a
+// MaxFonts caps how many distinct (family, variant, size) combinations a
 // provider/shaper/layout can hold open at once. Embedded mazzy contexts
 // touch a handful of fonts, but host visualtest accumulates ~120+ unique
 // combos across thousands of WPT cases sharing one shared provider, so
 // the cap is sized generously. Memory cost: ~8 bytes per slot × number of
 // per-slot pointer arrays in the package — negligible at this size.
-const maxFonts = 256
+//
+// Exported so fontcache.FontSvcGlyphProvider can size its own slot table
+// to match (single-source-of-truth: the client's allocation ceiling
+// equals its upstream array index ceiling).
+const MaxFonts = 256
 
 // NewHarfBuzzShaper creates a new HarfBuzz-based shaper.
 func NewHarfBuzzShaper() *HarfBuzzShaper {
@@ -32,7 +36,7 @@ func NewHarfBuzzShaper() *HarfBuzzShaper {
 // fontID and point size. The font scale is set to size*64 so that
 // shaping output is in fixed.Int26_6 units.
 func (s *HarfBuzzShaper) RegisterFont(fontID int32, face *goFont.Face, size int32) {
-	if fontID < 0 || fontID >= maxFonts {
+	if fontID < 0 || fontID >= MaxFonts {
 		return
 	}
 	hbFont := harfbuzz.NewFont(face)
@@ -44,7 +48,7 @@ func (s *HarfBuzzShaper) RegisterFont(fontID int32, face *goFont.Face, size int3
 
 // Shape performs text shaping using HarfBuzz.
 func (s *HarfBuzzShaper) Shape(params ShapingParams) (ShapedRun, error) {
-	if params.FontID < 0 || params.FontID >= maxFonts || s.fonts[params.FontID] == nil {
+	if params.FontID < 0 || params.FontID >= MaxFonts || s.fonts[params.FontID] == nil {
 		return ShapedRun{}, fmt.Errorf("font %d not registered with shaper", params.FontID)
 	}
 

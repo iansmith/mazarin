@@ -812,6 +812,13 @@ var mouseFocusSID = -1
 // trackedApps maps SID → trackedApp for all shepherds rachel is managing.
 var trackedApps = make(map[int]*trackedApp)
 
+// fontsvcCleanup is fontsvc's death-cleanup callback. Captured at
+// FontSvcInit injection time; invoked from handleShepherdDeath to
+// release every temp slot owned by the dead SID and any font buffers
+// that SID had registered. Nil-safe — if fontsvc didn't register
+// (older build, init failure), the call is skipped.
+var fontsvcCleanup func(deadSID int)
+
 // zOrder is the window stack, front-to-back. zOrder[0] is the topmost window.
 var zOrder []int
 
@@ -884,6 +891,14 @@ func handleShepherdDeath(deadSID int) {
 
 	// 6. Remove from tracked apps.
 	delete(trackedApps, deadSID)
+
+	// 6b. Release any fontsvc temp-pool slots and registered font
+	// buffers the dead shepherd had open. fontsvc registers this
+	// callback in its MazarinShepherd; nil-safe in case injection
+	// didn't complete or fontsvc didn't load.
+	if fontsvcCleanup != nil {
+		fontsvcCleanup(deadSID)
+	}
 
 	// 7. Repaint: clear to desktop BG, composite all living windows, flush.
 	timedBlitAllWindows()
@@ -1702,6 +1717,8 @@ func MazarinMain() {
 		glyphCb := initData.HandleRequestGlyph
 		openTempCb := initData.HandleOpenTemporaryFont
 		closeTempCb := initData.HandleCloseTemporaryFont
+		regBufferCb := initData.HandleRegisterFontBuffer
+		unregBufferCb := initData.HandleUnregisterFontBuffer
 		disp.OnFunc(ipc.ProtoFontRequest, wm.DecodeFontRequest, func(raw any) {
 			// Type switch in rachel's runtime context (correct type metadata).
 			frm := raw.(wm.FontRequestMsg)
@@ -1719,9 +1736,20 @@ func MazarinMain() {
 				if closeTempCb != nil {
 					closeTempCb(sid, msg.FontID)
 				}
+			case wm.RegisterFontBuffer:
+				if regBufferCb != nil {
+					regBufferCb(sid, msg)
+				}
+			case wm.UnregisterFontBuffer:
+				if unregBufferCb != nil {
+					unregBufferCb(sid, msg)
+				}
 			}
 		})
 		fmt.Printf("[rachel] font requests wired to fontsvc callbacks\n")
+	}
+	if initData.CleanupShepherdFonts != nil {
+		fontsvcCleanup = initData.CleanupShepherdFonts
 	}
 	// Subscribe to global death notifications from the kernel.
 	// This ensures rachel hears about ALL shepherd deaths, not just uring peers.

@@ -33,6 +33,14 @@ type FontSvcInjector interface {
 	RegisterRequestGlyphHandler(handler func(senderSID int, fontID, gid, codepoint int32))
 	RegisterOpenTemporaryFontHandler(handler func(senderSID int, msg wm.OpenTemporaryFont))
 	RegisterCloseTemporaryFontHandler(handler func(senderSID int, fontID int32))
+	RegisterRegisterFontBufferHandler(handler func(senderSID int, msg wm.RegisterFontBuffer))
+	RegisterUnregisterFontBufferHandler(handler func(senderSID int, msg wm.UnregisterFontBuffer))
+	// RegisterCleanupHandler is called by fontsvc to register a callback
+	// rachel invokes when a shepherd dies. The callback releases every
+	// temp slot owned by the dead SID and unregisters any font buffers
+	// the dead shepherd had registered. Called from rachel's
+	// handleShepherdDeath, in rachel's event-loop goroutine.
+	RegisterCleanupHandler(handler func(deadSID int))
 	RegisterInternalOpenFont(handler func(family string, variant, size int32) (InternalOpenFontResult, bool))
 	RegisterInternalGlyphByGID(handler func(fontID int32, gid uint32) (InternalGlyphResult, bool))
 }
@@ -56,12 +64,15 @@ type InternalGlyphResult struct {
 // FontSvcInit implements FontSvcInjector. The host (rachel) creates this
 // and passes it to fontsvc.maz's MazarinShepherd.
 type FontSvcInit struct {
-	HandleOpenFont          func(senderSID int, variant, size int32, path [100]byte)
-	HandleRequestGlyph      func(senderSID int, fontID, gid, codepoint int32)
-	HandleOpenTemporaryFont func(senderSID int, msg wm.OpenTemporaryFont)
-	HandleCloseTemporaryFont func(senderSID int, fontID int32)
-	InternalOpenFont        func(family string, variant, size int32) (InternalOpenFontResult, bool)
-	InternalGlyphByGID      func(fontID int32, gid uint32) (InternalGlyphResult, bool)
+	HandleOpenFont             func(senderSID int, variant, size int32, path [100]byte)
+	HandleRequestGlyph         func(senderSID int, fontID, gid, codepoint int32)
+	HandleOpenTemporaryFont    func(senderSID int, msg wm.OpenTemporaryFont)
+	HandleCloseTemporaryFont   func(senderSID int, fontID int32)
+	HandleRegisterFontBuffer   func(senderSID int, msg wm.RegisterFontBuffer)
+	HandleUnregisterFontBuffer func(senderSID int, msg wm.UnregisterFontBuffer)
+	CleanupShepherdFonts       func(deadSID int)
+	InternalOpenFont           func(family string, variant, size int32) (InternalOpenFontResult, bool)
+	InternalGlyphByGID         func(fontID int32, gid uint32) (InternalGlyphResult, bool)
 }
 
 // RegisterOpenFontHandler implements FontSvcInjector.
@@ -82,6 +93,21 @@ func (f *FontSvcInit) RegisterOpenTemporaryFontHandler(handler func(senderSID in
 // RegisterCloseTemporaryFontHandler implements FontSvcInjector.
 func (f *FontSvcInit) RegisterCloseTemporaryFontHandler(handler func(senderSID int, fontID int32)) {
 	f.HandleCloseTemporaryFont = handler
+}
+
+// RegisterRegisterFontBufferHandler implements FontSvcInjector.
+func (f *FontSvcInit) RegisterRegisterFontBufferHandler(handler func(senderSID int, msg wm.RegisterFontBuffer)) {
+	f.HandleRegisterFontBuffer = handler
+}
+
+// RegisterUnregisterFontBufferHandler implements FontSvcInjector.
+func (f *FontSvcInit) RegisterUnregisterFontBufferHandler(handler func(senderSID int, msg wm.UnregisterFontBuffer)) {
+	f.HandleUnregisterFontBuffer = handler
+}
+
+// RegisterCleanupHandler implements FontSvcInjector.
+func (f *FontSvcInit) RegisterCleanupHandler(handler func(deadSID int)) {
+	f.CleanupShepherdFonts = handler
 }
 
 // RegisterInternalOpenFont implements FontSvcInjector.

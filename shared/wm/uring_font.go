@@ -10,14 +10,18 @@ import (
 
 // Font MsgType values stored at Payload[0:4].
 const (
-	MsgTypeOpenFont               uint32 = 100
-	MsgTypeOpenFontReply          uint32 = 101
-	MsgTypeRequestGlyph           uint32 = 102
-	MsgTypeGlyphReply             uint32 = 103
-	MsgTypeOpenTemporaryFont      uint32 = 104
-	MsgTypeOpenTemporaryFontReply uint32 = 105
-	MsgTypeCloseTemporaryFont     uint32 = 106
-	MsgTypeCloseTemporaryFontReply uint32 = 107
+	MsgTypeOpenFont                  uint32 = 100
+	MsgTypeOpenFontReply             uint32 = 101
+	MsgTypeRequestGlyph              uint32 = 102
+	MsgTypeGlyphReply                uint32 = 103
+	MsgTypeOpenTemporaryFont         uint32 = 104
+	MsgTypeOpenTemporaryFontReply    uint32 = 105
+	MsgTypeCloseTemporaryFont        uint32 = 106
+	MsgTypeCloseTemporaryFontReply   uint32 = 107
+	MsgTypeRegisterFontBuffer        uint32 = 108
+	MsgTypeRegisterFontBufferReply   uint32 = 109
+	MsgTypeUnregisterFontBuffer      uint32 = 110
+	MsgTypeUnregisterFontBufferReply uint32 = 111
 )
 
 // TempFontIDBase is OR'd into temporary fontIDs returned across the IPC
@@ -132,6 +136,60 @@ type CloseTemporaryFontReply struct {
 	ErrCode int32
 }
 
+// RegisterFontBuffer hands a CSS @font-face byte buffer to fontsvc
+// once at register-time. The caller has already SharePagesWithTarget'd
+// the buffer's pages into fontsvc's address space; FontDataVA is the
+// fontsvc-side VA of the first page. Fontsvc holds the mapping in its
+// registeredBytes table keyed by (Path, Variant) and consults it on
+// every OpenTemporaryFont for that family — Face is parsed from those
+// pages (per requested size) and the tier-1 cache is built once per
+// (family, variant, size). Bytes survive across many open/close
+// cycles; the caller releases them via UnregisterFontBuffer (or by
+// dying — fontsvc's per-shepherd cleanup picks up orphans).
+//
+// Layout (108 bytes — fits in Payload[4:112]):
+//
+//	[ 0:80] Path       — family name, null-terminated
+//	[80:84] Variant    — 0=Reg, 1=Bold, 2=Italic, ...
+//	[84:92] FontDataVA — fontsvc-side VA of shared font bytes
+//	[92:100] FontDataLen — size in bytes
+//	[100:104] NumPages — backing page count (for unmap on cleanup)
+type RegisterFontBuffer struct {
+	Path        [80]byte
+	Variant     int32
+	FontDataVA  uint64
+	FontDataLen uint64
+	NumPages    uint32
+}
+
+// RegisterFontBufferReply confirms registration. ErrCode is 0 on
+// success, negative errno on failure (-EINVAL for empty/oversize
+// Path, -ENOMEM for fontsvc-side bookkeeping exhaustion, -EEXIST
+// when (Path, Variant) was already registered — caller should
+// Unregister first if they want to replace).
+type RegisterFontBufferReply struct {
+	ErrCode int32
+}
+
+// UnregisterFontBuffer releases a previously-registered (Path,
+// Variant) byte buffer in fontsvc. Any temp slots currently holding
+// a Face parsed from these bytes remain valid until their own
+// CloseTemporaryFont (the bytes are pinned by the slot until then);
+// fontsvc unmaps the pages once both this Unregister and all live
+// temp slots referencing them are closed. After successful
+// UnregisterFontBuffer reply, the caller is free to FreePages on
+// its side.
+type UnregisterFontBuffer struct {
+	Path    [80]byte
+	Variant int32
+}
+
+// UnregisterFontBufferReply confirms unregistration. ErrCode is 0 on
+// success, -ENOENT if the (Path, Variant) wasn't registered.
+type UnregisterFontBufferReply struct {
+	ErrCode int32
+}
+
 // --- Encode functions ---
 
 func EncodeOpenFont(of *OpenFont) ipc.UringIPCMsg {
@@ -198,6 +256,38 @@ func EncodeCloseTemporaryFontReply(ctfr *CloseTemporaryFontReply) ipc.UringIPCMs
 	return msg
 }
 
+func EncodeRegisterFontBuffer(rfb *RegisterFontBuffer) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFontRequest
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeRegisterFontBuffer
+	*(*RegisterFontBuffer)(unsafe.Pointer(&msg.Payload[4])) = *rfb
+	return msg
+}
+
+func EncodeRegisterFontBufferReply(rfbr *RegisterFontBufferReply) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFontResponse
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeRegisterFontBufferReply
+	*(*RegisterFontBufferReply)(unsafe.Pointer(&msg.Payload[4])) = *rfbr
+	return msg
+}
+
+func EncodeUnregisterFontBuffer(ufb *UnregisterFontBuffer) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFontRequest
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeUnregisterFontBuffer
+	*(*UnregisterFontBuffer)(unsafe.Pointer(&msg.Payload[4])) = *ufb
+	return msg
+}
+
+func EncodeUnregisterFontBufferReply(ufbr *UnregisterFontBufferReply) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoFontResponse
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = MsgTypeUnregisterFontBufferReply
+	*(*UnregisterFontBufferReply)(unsafe.Pointer(&msg.Payload[4])) = *ufbr
+	return msg
+}
+
 // --- Decode functions ---
 
 // FontRequestMsg wraps a decoded font request with the sender's SID,
@@ -235,6 +325,16 @@ func DecodeFontRequest(msg *ipc.UringIPCMsg) any {
 			SenderSID: senderSID,
 			Msg:       *(*CloseTemporaryFont)(unsafe.Pointer(&msg.Payload[4])),
 		}
+	case MsgTypeRegisterFontBuffer:
+		return FontRequestMsg{
+			SenderSID: senderSID,
+			Msg:       *(*RegisterFontBuffer)(unsafe.Pointer(&msg.Payload[4])),
+		}
+	case MsgTypeUnregisterFontBuffer:
+		return FontRequestMsg{
+			SenderSID: senderSID,
+			Msg:       *(*UnregisterFontBuffer)(unsafe.Pointer(&msg.Payload[4])),
+		}
 	default:
 		panic("wm.DecodeFontRequest: unknown message type")
 	}
@@ -264,6 +364,10 @@ func DecodeFontResponseFromPayload(payload []byte) any {
 		return *(*OpenTemporaryFontReply)(unsafe.Pointer(&payload[4]))
 	case MsgTypeCloseTemporaryFontReply:
 		return *(*CloseTemporaryFontReply)(unsafe.Pointer(&payload[4]))
+	case MsgTypeRegisterFontBufferReply:
+		return *(*RegisterFontBufferReply)(unsafe.Pointer(&payload[4]))
+	case MsgTypeUnregisterFontBufferReply:
+		return *(*UnregisterFontBufferReply)(unsafe.Pointer(&payload[4]))
 	default:
 		return nil
 	}

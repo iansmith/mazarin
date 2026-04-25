@@ -66,7 +66,7 @@ type openedFont struct {
 type HarfBuzzTextLayout struct {
 	shaper   *HarfBuzzShaper
 	provider GlyphProvider
-	fonts    [maxFonts]*openedFont
+	fonts    [MaxFonts]*openedFont
 	cache    *shapeCache
 }
 
@@ -107,7 +107,7 @@ func (tl *HarfBuzzTextLayout) OpenFont(req OpenFontRequest) (FontMetrics, error)
 // OR'd in; with the current FontSvcGlyphProvider fallback path that never
 // happens (returns permanent-range fontIDs only). The shaper registration
 // path here is conservative: it only registers in-range IDs, so when the
-// real temp-pool IPC lands we'll either widen maxFonts or move to a sparse
+// real temp-pool IPC lands we'll either widen MaxFonts or move to a sparse
 // map keyed by fontID. Both options preserve this method's semantics.
 func (tl *HarfBuzzTextLayout) OpenTemporaryFont(req OpenFontRequest) (FontMetrics, error) {
 	metrics, err := tl.provider.OpenTemporaryFont(req, nil)
@@ -127,11 +127,11 @@ func (tl *HarfBuzzTextLayout) CloseTemporaryFont(fontID int32) error {
 
 // registerOpenedFont stages a freshly-returned font with the HarfBuzz
 // shaper if it hasn't already been seen at this fontID. Bounded by
-// maxFonts; out-of-range IDs (temp-pool with 0x1000 bit, once the real
+// MaxFonts; out-of-range IDs (temp-pool with 0x1000 bit, once the real
 // IPC lands) skip registration here and would route through whatever
 // expanded scheme replaces the fixed-size tl.fonts table.
 func (tl *HarfBuzzTextLayout) registerOpenedFont(metrics FontMetrics, size int32) {
-	if metrics.FontID < 0 || metrics.FontID >= maxFonts {
+	if metrics.FontID < 0 || metrics.FontID >= MaxFonts {
 		return
 	}
 	if tl.fonts[metrics.FontID] != nil {
@@ -237,7 +237,7 @@ func (tl *HarfBuzzTextLayout) LayoutText(params ShapingParams) (*TextRun, error)
 // CachedFontMetrics returns the FontMetrics for a previously opened font.
 // Returns zero-value FontMetrics if fontID has not been opened.
 func (tl *HarfBuzzTextLayout) CachedFontMetrics(fontID int32) FontMetrics {
-	if fontID < 0 || fontID >= maxFonts || tl.fonts[fontID] == nil {
+	if fontID < 0 || fontID >= MaxFonts || tl.fonts[fontID] == nil {
 		return FontMetrics{}
 	}
 	return tl.fonts[fontID].metrics

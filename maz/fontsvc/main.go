@@ -60,6 +60,9 @@ func MazarinShepherd(injected interface{}) error {
 	inj.RegisterRequestGlyphHandler(handleRequestGlyphCallback)
 	inj.RegisterOpenTemporaryFontHandler(handleOpenTemporaryFontCallback)
 	inj.RegisterCloseTemporaryFontHandler(handleCloseTemporaryFontCallback)
+	inj.RegisterRegisterFontBufferHandler(handleRegisterFontBufferCallback)
+	inj.RegisterUnregisterFontBufferHandler(handleUnregisterFontBufferCallback)
+	inj.RegisterCleanupHandler(CleanupShepherdFonts)
 
 	// Register in-process font callbacks so rachel can use fonts directly
 	// without uring IPC or SharePages (can't share pages with yourself).
@@ -105,6 +108,61 @@ var tempFontOwner [MaxTempFonts]int16
 
 // fontIdx resolves family names to filesystem paths. Loaded lazily.
 var fontIdx *textshape.FontIndex
+
+// MaxRegisteredFonts caps the number of distinct (family, variant)
+// caller-supplied byte buffers fontsvc can hold registered at once.
+// Each entry records a SharePagesWithTarget'd region the client copied
+// the @font-face bytes into; OpenTemporaryFont for a registered family
+// parses Face from these pages and builds tier-1 cache per size. Bytes
+// stay mapped until UnregisterFontBuffer (or shepherd death cleanup).
+const MaxRegisteredFonts = 64
+
+// registeredFontBytes holds one (family, variant) → byte mapping
+// pushed by a shepherd via wm.RegisterFontBuffer. The bytes live in
+// fontsvc's address space at fontDataVA; they are unmapped on
+// successful UnregisterFontBuffer or when ownerSID dies.
+//
+// The caller (louis14) is expected to register-at-page-load and
+// unregister-at-page-unload (or never, relying on death cleanup).
+// Unregister-with-live-temp-slots is undefined behavior — fontsvc
+// drops its bookkeeping on Unregister; any Face parsed from these
+// bytes by an open temp slot will then have a dangling pointer.
+// In practice louis14 never calls Unregister, so this isn't a
+// problem yet; if a refcounted-pinning model is needed later it
+// goes here.
+type registeredFontBytes struct {
+	inUse       bool
+	family      string
+	variant     int32
+	fontDataVA  uintptr
+	fontDataLen int64
+	numPages    uint32
+	ownerSID    int16
+}
+
+var registeredBytes [MaxRegisteredFonts]registeredFontBytes
+
+// findRegisteredBytes returns the registeredBytes index for (family, variant), or -1.
+func findRegisteredBytes(family string, variant int32) int32 {
+	for i := int32(0); i < MaxRegisteredFonts; i++ {
+		if registeredBytes[i].inUse &&
+			registeredBytes[i].family == family &&
+			registeredBytes[i].variant == variant {
+			return i
+		}
+	}
+	return -1
+}
+
+// allocRegisteredBytesSlot finds a free registeredBytes slot, or -1.
+func allocRegisteredBytesSlot() int32 {
+	for i := int32(0); i < MaxRegisteredFonts; i++ {
+		if !registeredBytes[i].inUse {
+			return i
+		}
+	}
+	return -1
+}
 
 // Per-shepherd state for font IPC.
 type shepherdConn struct {
@@ -257,6 +315,17 @@ func handleOpenTemporaryFontCallback(senderSID int, msg wm.OpenTemporaryFont) {
 func handleCloseTemporaryFontCallback(senderSID int, fontID int32) {
 	ctf := wm.CloseTemporaryFont{FontID: fontID}
 	handleCloseTemporaryFont(senderSID, &ctf)
+}
+
+// handleRegisterFontBufferCallback adapts rachel's typed-struct
+// dispatch to fontsvc's pointer-taking handler.
+func handleRegisterFontBufferCallback(senderSID int, msg wm.RegisterFontBuffer) {
+	handleRegisterFontBuffer(senderSID, &msg)
+}
+
+// handleUnregisterFontBufferCallback adapts the unregister side.
+func handleUnregisterFontBufferCallback(senderSID int, msg wm.UnregisterFontBuffer) {
+	handleUnregisterFontBuffer(senderSID, &msg)
 }
 
 // ensureFontIndex loads the font index lazily.
@@ -689,19 +758,18 @@ func handleOpenTemporaryFont(senderSID int, msg *wm.OpenTemporaryFont) {
 		return
 	}
 
-	// Fresh temp open. We need the bytes; either from caller-shared
-	// pages or from filesystem. For the IPC stub this run just supports
-	// the filesystem path (load via existing loadOrCacheFont, but place
-	// the result in the temp pool). The shared-bytes path requires
-	// kernel-side mapping primitives that are wired up in the next pass;
-	// returning -ENOSYS for that case so renderers see a clean error
-	// instead of a half-loaded slot.
-	if msg.FontDataVA != 0 {
-		rawPuts("[fontsvc] OpenTemporaryFont with shared bytes not yet wired — returning ENOSYS\n")
-		sendOpenTempFontError(senderSID)
-		return
-	}
-
+	// Fresh temp open. Two sources of bytes:
+	//   1. registeredBytes — the caller previously sent
+	//      wm.RegisterFontBuffer with @font-face data; bytes are
+	//      already mapped at a known fontsvc-side VA. This is the
+	//      common case for HTML rendering.
+	//   2. filesystem — the family resolves through the font index
+	//      to a /fonts/ path; load via sys.LoadFile.
+	//
+	// msg.FontDataVA is reserved for an inline shared-bytes path
+	// (caller passing bytes per-open) — currently unused. Most
+	// callers set FontDataVA=0 and rely on registration or
+	// filesystem resolution.
 	idx := allocTempFontID()
 	if idx < 0 {
 		rawPuts("[fontsvc] OpenTemporaryFont: temp pool full\n")
@@ -709,19 +777,35 @@ func handleOpenTemporaryFont(senderSID int, msg *wm.OpenTemporaryFont) {
 		return
 	}
 
-	// Filesystem path: parse Face the same way loadOrCacheFont does, but
-	// write into tempFonts[idx] instead of fonts[]. Reuse the existing
-	// font index lookup. This reuses code paths so Latin fonts go through
-	// the same buildGlyphCache as permanent.
-	path, ok := resolveFamilyPath(family, msg.Variant, msg.Size)
-	if !ok {
+	var face *goFont.Face
+	var fontData []byte
+	if regIdx := findRegisteredBytes(family, msg.Variant); regIdx >= 0 {
+		// Registered-bytes path — parse Face from the pre-mapped pages.
+		reg := &registeredBytes[regIdx]
+		fontData = unsafe.Slice((*byte)(unsafe.Pointer(reg.fontDataVA)), int(reg.fontDataLen))
+		var parseErr bool
+		face, parseErr = parseFaceFromBytes(fontData)
+		if parseErr {
+			sendOpenTempFontError(senderSID)
+			return
+		}
+	} else if msg.FontDataVA != 0 {
+		rawPuts("[fontsvc] OpenTemporaryFont with inline shared bytes not yet wired — returning ENOSYS\n")
 		sendOpenTempFontError(senderSID)
 		return
-	}
-	face, fontData, parseErr := loadAndParseFont(path)
-	if parseErr {
-		sendOpenTempFontError(senderSID)
-		return
+	} else {
+		// Filesystem path: resolve family → /fonts/ path, load + parse.
+		path, ok := resolveFamilyPath(family, msg.Variant, msg.Size)
+		if !ok {
+			sendOpenTempFontError(senderSID)
+			return
+		}
+		var parseErr bool
+		face, fontData, parseErr = loadAndParseFont(path)
+		if parseErr {
+			sendOpenTempFontError(senderSID)
+			return
+		}
 	}
 
 	scale, cache, ok := buildTempCache(face, fontData, msg.Size, idx)
@@ -751,6 +835,20 @@ func handleOpenTemporaryFont(senderSID int, msg *wm.OpenTemporaryFont) {
 		return
 	}
 	shareCacheAndReplyTemp(conn, connIdx, senderSID, idx, true)
+}
+
+// parseFaceFromBytes parses a TTF/OTF byte buffer into a goFont.Face.
+// Returns parseErr=true on failure (already logged). Used by the
+// registered-bytes path in handleOpenTemporaryFont — extracted so it
+// can be shared with future shared-bytes paths without duplicating
+// the bytes.NewReader / ParseTTF dance.
+func parseFaceFromBytes(data []byte) (*goFont.Face, bool) {
+	face, err := goFont.ParseTTF(bytes.NewReader(data))
+	if err != nil {
+		rawPuts("[fontsvc] ParseTTF from registered bytes failed: " + err.Error() + "\n")
+		return nil, true
+	}
+	return face, false
 }
 
 // handleCloseTemporaryFont releases a temp slot, frees its cache pages,
@@ -787,6 +885,87 @@ func handleCloseTemporaryFont(senderSID int, msg *wm.CloseTemporaryFont) {
 	sendCloseTempFontReply(senderSID, fontID, 0)
 }
 
+// handleRegisterFontBuffer accepts a (family, variant) → caller-shared
+// byte buffer mapping. The caller has SharePagesWithTarget'd the
+// pages into fontsvc's address space at FontDataVA; we just record
+// the mapping in registeredBytes for later OpenTemporaryFont
+// resolution. Bytes parse on first OpenTemporaryFont and stay mapped
+// across many open/close cycles.
+func handleRegisterFontBuffer(senderSID int, msg *wm.RegisterFontBuffer) {
+	family := cstring(msg.Path[:])
+	if family == "" {
+		sendRegFontBufferReply(senderSID, -22) // EINVAL
+		return
+	}
+	if msg.FontDataVA == 0 || msg.FontDataLen == 0 {
+		sendRegFontBufferReply(senderSID, -22) // EINVAL
+		return
+	}
+	if findRegisteredBytes(family, msg.Variant) >= 0 {
+		sendRegFontBufferReply(senderSID, -17) // EEXIST
+		return
+	}
+	slot := allocRegisteredBytesSlot()
+	if slot < 0 {
+		rawPuts("[fontsvc] RegisterFontBuffer: registry full\n")
+		sendRegFontBufferReply(senderSID, -12) // ENOMEM
+		return
+	}
+	registeredBytes[slot] = registeredFontBytes{
+		inUse:       true,
+		family:      family,
+		variant:     msg.Variant,
+		fontDataVA:  uintptr(msg.FontDataVA),
+		fontDataLen: int64(msg.FontDataLen),
+		numPages:    msg.NumPages,
+		ownerSID:    int16(senderSID),
+	}
+	sendRegFontBufferReply(senderSID, 0)
+}
+
+// handleUnregisterFontBuffer drops a previously-registered (family,
+// variant) entry. The caller is responsible for FreePages on its
+// side after receiving the reply; fontsvc just clears its
+// bookkeeping. Live temp slots holding a Face parsed from these
+// bytes will have a dangling pointer afterward — louis14's pattern
+// is register-at-page-load / unregister-never (or only after all
+// renders complete), so this constraint isn't currently exercised.
+// If a refcounted-pinning model is needed later it goes here.
+func handleUnregisterFontBuffer(senderSID int, msg *wm.UnregisterFontBuffer) {
+	family := cstring(msg.Path[:])
+	slot := findRegisteredBytes(family, msg.Variant)
+	if slot < 0 {
+		sendUnregFontBufferReply(senderSID, -2) // ENOENT
+		return
+	}
+	registeredBytes[slot] = registeredFontBytes{}
+	sendUnregFontBufferReply(senderSID, 0)
+}
+
+// sendRegFontBufferReply replies to a RegisterFontBuffer request.
+func sendRegFontBufferReply(senderSID int, errCode int32) {
+	encoded := wm.EncodeRegisterFontBufferReply(&wm.RegisterFontBufferReply{
+		ErrCode: errCode,
+	})
+	if err := uring.Send(senderSID, &encoded); err != nil {
+		rawPuts("[fontsvc] uring.Send RegisterFontBufferReply failed: ")
+		rawPuts(err.Error())
+		rawPuts("\n")
+	}
+}
+
+// sendUnregFontBufferReply replies to an UnregisterFontBuffer request.
+func sendUnregFontBufferReply(senderSID int, errCode int32) {
+	encoded := wm.EncodeUnregisterFontBufferReply(&wm.UnregisterFontBufferReply{
+		ErrCode: errCode,
+	})
+	if err := uring.Send(senderSID, &encoded); err != nil {
+		rawPuts("[fontsvc] uring.Send UnregisterFontBufferReply failed: ")
+		rawPuts(err.Error())
+		rawPuts("\n")
+	}
+}
+
 // CleanupShepherdFonts releases every temp slot owned by deadSID. Called
 // by the host (rachel) when a shepherd dies. Mirrors linux's
 // orphanHandles cleanup pattern from diversion #6: handles that survive
@@ -799,6 +978,11 @@ func CleanupShepherdFonts(deadSID int) {
 	for i := int32(0); i < MaxTempFonts; i++ {
 		if tempFonts[i].inUse && tempFontOwner[i] == int16(deadSID) {
 			releaseTempSlot(i)
+		}
+	}
+	for i := int32(0); i < MaxRegisteredFonts; i++ {
+		if registeredBytes[i].inUse && registeredBytes[i].ownerSID == int16(deadSID) {
+			registeredBytes[i] = registeredFontBytes{}
 		}
 	}
 }

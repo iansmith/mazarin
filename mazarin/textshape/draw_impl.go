@@ -71,7 +71,7 @@ type DrawContextImpl struct {
 
 	// text
 	tl      *HarfBuzzTextLayout
-	metrics [maxFonts]*FontMetrics
+	metrics [MaxFonts]*FontMetrics
 }
 
 // NewDrawContext creates a DrawContextImpl rendering onto a new width×height
