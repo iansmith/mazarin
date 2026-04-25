@@ -42,9 +42,16 @@ type LinuxIO interface {
 	// to avoid cross-.maz type assertion failures.
 	FontReplyChannel() chan []byte
 
+	// NotifyChannel returns the channel used to wake the UI event loop
+	// when the shepherd has pushed a new console line to WriteChannel.
+	// Without this, linuxapp's runLoop would block in select forever
+	// because writeCh is consumed inside the drain function (not the
+	// select itself).
+	NotifyChannel() <-chan struct{}
+
 	// SetChannels is called by the .maz during MazarinShepherd to fill
-	// the four channels. The shepherd reads them back via the getter methods.
-	SetChannels(readCh chan []byte, writeCh chan LineLine, wmCh chan []byte, fontReplyCh chan []byte)
+	// the channels. The shepherd reads them back via the getter methods.
+	SetChannels(readCh chan []byte, writeCh chan LineLine, wmCh chan []byte, fontReplyCh chan []byte, notifyCh chan struct{})
 
 	// --- Config (filled by shepherd) ---
 
@@ -63,19 +70,22 @@ type LinuxIOInit struct {
 	WriteCh     chan LineLine
 	WMCh        chan []byte
 	FontReplyCh chan []byte
+	NotifyCh    chan struct{} // poked by shepherd after each WriteCh send
 
 	// Filled by shepherd before injection.
 	RachelSIDVal int
 }
 
-func (l *LinuxIOInit) ReadChannel() chan []byte     { return l.ReadCh }
-func (l *LinuxIOInit) WriteChannel() chan LineLine   { return l.WriteCh }
-func (l *LinuxIOInit) WMChannel() chan []byte        { return l.WMCh }
-func (l *LinuxIOInit) FontReplyChannel() chan []byte { return l.FontReplyCh }
-func (l *LinuxIOInit) SetChannels(readCh chan []byte, writeCh chan LineLine, wmCh chan []byte, fontReplyCh chan []byte) {
+func (l *LinuxIOInit) ReadChannel() chan []byte         { return l.ReadCh }
+func (l *LinuxIOInit) WriteChannel() chan LineLine      { return l.WriteCh }
+func (l *LinuxIOInit) WMChannel() chan []byte           { return l.WMCh }
+func (l *LinuxIOInit) FontReplyChannel() chan []byte    { return l.FontReplyCh }
+func (l *LinuxIOInit) NotifyChannel() <-chan struct{}   { return l.NotifyCh }
+func (l *LinuxIOInit) SetChannels(readCh chan []byte, writeCh chan LineLine, wmCh chan []byte, fontReplyCh chan []byte, notifyCh chan struct{}) {
 	l.ReadCh = readCh
 	l.WriteCh = writeCh
 	l.WMCh = wmCh
 	l.FontReplyCh = fontReplyCh
+	l.NotifyCh = notifyCh
 }
 func (l *LinuxIOInit) GetRachelSID() int { return l.RachelSIDVal }

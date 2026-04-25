@@ -564,7 +564,7 @@ func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
 		return
 	}
 
-	dataLen, entryCount, err := h.fs.ReadDir(e.handle, int(e.offset))
+	dataLen, _, err := h.fs.ReadDir(e.handle, int(e.offset))
 	if err != nil {
 		req.Reply(int64(errToErrno(err)))
 		return
@@ -591,10 +591,6 @@ func (h *syscallHandler) sysGetdents64(req sys.SyscallRequest) {
 		copy(buf[:n], src[:n])
 	}
 	e.offset += int64(delivered.count)
-	if delivered.count != entryCount {
-		fmt.Printf("[linux] getdents64: fs marshalled %d entries (%d B), user buf %d B held %d entries (%d B)\n",
-			entryCount, dataLen, len(buf), delivered.count, n)
-	}
 	req.Reply(int64(n))
 }
 
@@ -868,26 +864,14 @@ func (h *syscallHandler) flushWriteBuf(pid int16, fd int, e *fdEntry) error {
 // a forced flush. Bounds memory usage and limits data-loss window.
 const writeBufMaxBytes = 1 << 20 // 1 MB
 
-// idleHintCount counts ProtoIdleFlushHint messages received.
-// idleFlushCount counts buffers actually flushed by idle hints.
-var idleHintCount, idleFlushCount uint64
-
 // flushOneBuffer scans all shepherd FD tables and flushes the first non-empty
 // write buffer it finds. Called from the idle-flush hint handler; processes
 // at most one buffer per call so the delegate handler stays responsive.
 func (h *syscallHandler) flushOneBuffer() {
-	idleHintCount++
-	if idleHintCount <= 3 || idleHintCount%1000 == 0 {
-		fmt.Printf("[linux] idle hint #%d (flushes so far: %d)\n", idleHintCount, idleFlushCount)
-	}
 	for pid, shep := range h.shepherds {
 		for fd, e := range shep.FDT.entries {
 			if e != nil && e.writeBuf != nil && len(e.writeBuf) > 0 {
-				n := len(e.writeBuf)
 				h.flushWriteBuf(pid, fd, e) // ignore error; best-effort idle flush
-				idleFlushCount++
-				fmt.Printf("[linux] idle flush #%d: pid=%d fd=%d bytes=%d\n",
-					idleFlushCount, pid, fd, n)
 				return
 			}
 		}

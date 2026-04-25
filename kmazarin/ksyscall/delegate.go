@@ -52,6 +52,14 @@ type DelegateCallInfo struct {
 	InUse           bool
 	WritableMapping bool // MmapPageFill: map page RW instead of RO
 
+	// CallerDead is set by CleanupDelegateForDeadShepherd when the caller
+	// shepherd dies while its delegate request is still queued in the
+	// handler's uring ring. We can't unmap the handler's data page at
+	// cleanup time — the handler may still dereference it when it pops the
+	// msg. Instead we leave page + InUse intact and tell Reply that the
+	// caller is gone, so Reply still reclaims the page but skips the wake.
+	CallerDead bool
+
 	// MmapPageFlush round state — used by the reply path to continue
 	// sending rounds if the response page was full (count == 511).
 	FlushResponsePA uintptr // PA of response page (kernel owns)
@@ -64,6 +72,18 @@ type DelegateCallInfo struct {
 
 // delegateWriteCount counts Write/Pwrite64 delegate calls for sampling.
 var delegateWriteCount uint64
+
+// stdioWriteRingIdx — kernel-side override for pipe-buffered Write
+// delegation. When set, fd<=2 Writes are sent on this ring index of
+// the registered Write handler instead of the handler's default ring
+// (set via RegisterSyscallHandler). The override exists so stdio
+// backpressure can't starve the blocking-delegate ring (or vice versa)
+// when both share the same handler. -1 = unset (no override; pipe
+// Writes use the default ring of the Write handler).
+//
+// Set via SyscallRegisterStdioWriteRing. Read on every Write delegate.
+// int32 (not uint8) for atomic alignment; values ≤ MaxRingsPerShepherd.
+var stdioWriteRingIdx int32 = -1
 
 // syscallDelegates maps SysID → handler shepherd PID.
 var syscallDelegates [sysid.NumIDs]delegateHandler
@@ -397,7 +417,30 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		prefaultOutputBuffer(callerBufVA, uintptr(callerBufLen))
 	}
 
-	if int(callerTID) < MaxDelegateThreads {
+	// Pipe-buffered Write delegation: on Linux, write(fd=1/2) to a stdout pipe
+	// returns near-instantly once the bytes land in the pipe buffer — the
+	// reader consumes asynchronously. Mazzy's synchronous delegate-and-block
+	// pattern would turn the same call into a cross-process IPC round-trip
+	// that can close deadlock cycles (fs fmt.Printf inside a LoadFile handler
+	// → linux Write delegate → linux waiting on the handler that's waiting
+	// for fs). For stdio Write we therefore:
+	//   - Skip delegateCallInfos InUse tracking (no Reply expected; the
+	//     handler will free the data page via SysReleaseDelegatePage).
+	//   - Skip blockForDelegatedSyscall; return the byte count immediately.
+	// All other delegated syscalls (incl. write to fd>2) keep the original
+	// block-until-reply semantics, because the handler must report the
+	// actual number of bytes written by the underlying file system and the
+	// kernel must reclaim the data page on Reply rather than relying on the
+	// handler to do so.
+	//
+	// IMPORTANT: pipe-buffering is gated on fd<=2 so it only applies to the
+	// linux shepherd's stdout/stderr lane (which calls SysReleaseDelegatePage).
+	// If we pipe-buffered fd>2 Writes too, the linux file lane's req.Reply()
+	// would arrive at the kernel as a stale SyscallReply targeting whatever
+	// delegate the caller TID is currently blocked on — unmapping that
+	// (unrelated) syscall's data page and corrupting its return value.
+	pipeBuffered := id == sysid.Write && arg0 <= 2
+	if !pipeBuffered && int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
 		info.DataPagePA = dataPagePA
 		info.DataPageVA = handlerDataVA
@@ -421,16 +464,32 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		DataLen:   dataLen,
 	}
 	msg := ipc.EncodeFSDelegateReq(&reqPayload)
+	// Pipe-buffered Writes (fd<=2) get routed to the stdio override ring
+	// when one is registered. Same handler shepherd, different ring —
+	// the kernel-half of the "stdio on its own ring" backpressure split.
 	handlerRingIdx := syscallDelegates[id].ringIdx
+	if pipeBuffered {
+		if r := atomic.LoadInt32(&stdioWriteRingIdx); r >= 0 {
+			handlerRingIdx = uint8(r)
+		}
+	}
 	result, _ := uringSendKernel(-1, handlerSID, handlerRingIdx, uintptr(unsafe.Pointer(&msg)))
 	if result < 0 {
 		// Ring full or target gone — reclaim and fail.
-		if int(callerTID) < MaxDelegateThreads {
+		if !pipeBuffered && int(callerTID) < MaxDelegateThreads {
 			delegateCallInfos[callerTID].InUse = false
 		}
 		reclaimDataPage(dataPagePA, handlerDataVA, handlerSID, handlerShepherd)
-		klog.Errf("[DLG] uring send failed\n")
+		klog.Errf("[DLG] uring send failed sysid=%d handler=%d ring=%d\n",
+			uint32(id), int32(handlerSID), uint32(handlerRingIdx))
 		return -11 // EAGAIN
+	}
+
+	if pipeBuffered {
+		// Linux-pipe semantics: bytes are in the handler's ring buffer
+		// (uring queue); return bytes-written count to caller without
+		// blocking. Handler consumes asynchronously.
+		return int64(dataLen)
 	}
 
 	// Block the caller until the handler replies via SyscallReply.
@@ -474,7 +533,10 @@ func allocAndCopyCallerData(handlerSID int16, handlerShepherd *proc.Shepherd, ca
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
-	kmem.MapPageInProcess(handlerSID, uintptr(va), pa, 0) // RW
+	if !kmem.MapPageInProcess(handlerSID, uintptr(va), pa, 0) { // RW
+		kmem.ReleasePageByPA(pa)
+		return 0, 0, 0
+	}
 	handlerShepherd.Spans.Add(va, 4096)
 
 	return pa, va, count
@@ -554,11 +616,16 @@ func allocAndCopyCallerString(handlerSID int16, handlerShepherd *proc.Shepherd, 
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
-	kmem.MapPageInProcess(handlerSID, uintptr(va), pa, 0) // RW
+	if !kmem.MapPageInProcess(handlerSID, uintptr(va), pa, 0) { // RW
+		kmem.ReleasePageByPA(pa)
+		return 0, 0, 0
+	}
 	handlerShepherd.Spans.Add(va, 4096)
 
 	return pa, va, strLen
 }
+
+var allocStrDbg int
 
 // zeroPage zeroes a 4096-byte page at the given kernel VA.
 func zeroPage(va uintptr) {
@@ -579,6 +646,47 @@ func reclaimDataPage(pa uintptr, handlerVA uint64, handlerSID int16, handlerShep
 	}
 	kmem.ReleasePageByPA(pa)
 }
+
+// SyscallReleaseDelegatePage unmaps and frees a data page that was mapped into
+// the calling handler's address space for a pipe-buffered Write delegate (the
+// caller did not block waiting for Reply, so the delegate-call-info tracking
+// that reclaimDataPage normally drives doesn't apply). The handler calls this
+// after it has consumed the bytes from the page.
+//
+// arg0 = handler VA (must be page-aligned, from SyscallRequest.DataVA())
+// arg1 = number of pages (typically 1; Write max payload is 4096 bytes)
+//
+// Returns: 0 on success, negative errno on error.
+//
+//go:noinline
+func SyscallReleaseDelegatePage(arg0, arg1, _, _, _, _ uint64) int64 {
+	va := uintptr(arg0)
+	numPages := int(arg1)
+	if va == 0 || numPages <= 0 {
+		return -22 // EINVAL
+	}
+	if va&0xFFF != 0 {
+		return -22 // EINVAL — not page-aligned
+	}
+
+	handler := proc.CurrentShepherd()
+	if handler == nil {
+		return -1 // EPERM
+	}
+
+	for i := 0; i < numPages; i++ {
+		pageVA := va + uintptr(i)*4096
+		pa := kmem.WalkUserPageTableWithL0(pageVA, handler.PageTableL0PA)
+		if pa == 0 {
+			continue // already released or never mapped
+		}
+		kmem.UnmapUserPageWithL0(pageVA, handler.PageTableL0PA)
+		handler.Spans.Remove(uint64(pageVA), 4096)
+		kmem.ReleasePageByPA(pa)
+	}
+	return 0
+}
+
 
 // SyscallRegisterSyscallHandler registers the calling shepherd as the handler
 // for a specific SysID. Can be called multiple times for different SysIDs.
@@ -610,6 +718,26 @@ func SyscallRegisterSyscallHandler(arg0, arg1, _, _, _, _ uint64) int64 {
 	}
 	h.ringIdx = ringIdx
 
+	return 0
+}
+
+// SyscallRegisterStdioWriteRing sets the kernel-side ring index that
+// pipe-buffered Writes (Write fd<=2) are sent to. The handler shepherd
+// is whichever shepherd registered for sysid.Write — this syscall only
+// changes which ring index on that shepherd receives stdio-class
+// traffic. Splitting stdio onto its own ring keeps stdio backpressure
+// (chatty fmt.Printf) from starving the blocking-delegate ring (or
+// vice versa) when both share the same handler.
+//
+// arg0 = ring index (0..MaxRingsPerShepherd-1)
+// Returns: 0 on success, negative errno on error.
+//
+//go:noinline
+func SyscallRegisterStdioWriteRing(arg0, _, _, _, _, _ uint64) int64 {
+	if arg0 >= uint64(ipc.MaxRingsPerShepherd) {
+		return -22 // EINVAL
+	}
+	atomic.StoreInt32(&stdioWriteRingIdx, int32(arg0))
 	return 0
 }
 
@@ -745,7 +873,16 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 				}
 			}
 
+			callerDead := info.CallerDead
 			info.InUse = false
+			info.CallerDead = false
+
+			// If the caller died while this delegate was in flight (see
+			// CleanupDelegateForDeadShepherd Part 1), there is no thread to
+			// wake — the data-page cleanup above is the only cleanup needed.
+			if callerDead {
+				return 0
+			}
 		}
 	}
 
@@ -866,18 +1003,19 @@ func readThreadRAX(pid int16, tid int32) uint64
 func CleanupDelegateForDeadShepherd(pid int16) int {
 	orphanCount := 0
 
-	// Part 1: Dying shepherd was a CALLER — reclaim in-flight data pages.
+	// Part 1: Dying shepherd was a CALLER — defer data-page reclaim to the
+	// handler's Reply path. We cannot reclaim here because the handler's
+	// uring msg for this delegate may still be queued; if we unmap the
+	// page now, the handler will pop the msg later and fault on the
+	// dangling r.dataVA. Marking CallerDead=true keeps InUse intact so
+	// SyscallReply still walks the cleanup code (reclaim the data page,
+	// clear InUse) but skips wakeDelegateCallerThread (caller is gone).
 	for i := 0; i < MaxDelegateThreads; i++ {
 		info := &delegateCallInfos[i]
 		if !info.InUse || info.CallerSID != pid {
 			continue
 		}
-		// Reclaim the data page (owned by handler, mapped in handler's space)
-		if info.DataPagePA != 0 {
-			handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
-			reclaimDataPage(info.DataPagePA, info.DataPageVA, info.HandlerSID, handlerShepherd)
-		}
-		info.InUse = false
+		info.CallerDead = true
 	}
 
 	// Part 2: Dying shepherd was a HANDLER — unregister all SysIDs.

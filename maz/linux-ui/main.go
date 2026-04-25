@@ -48,11 +48,16 @@ func MazarinShepherd(injected interface{}) error {
 	inj, err = linuxapp.HandleInjection[linuxio.LinuxIO](injected, func(io linuxio.LinuxIO) linuxapp.SetupResult {
 		wmRawCh := make(chan []byte, 8)
 		fontRawCh := make(chan []byte, 8)
+		// notifyCh: 1-deep, non-blocking poke from shepherd's line
+		// accumulator wakes runLoop's select so drain() can run and
+		// the console redraws as new stdout/stderr lines arrive.
+		notifyCh := make(chan struct{}, 1)
 		io.SetChannels(
 			make(chan []byte, 64),
 			make(chan linuxio.LineLine, 64),
 			wmRawCh,
 			fontRawCh,
+			notifyCh,
 		)
 		return linuxapp.SetupResult{
 			RachelSID: io.GetRachelSID(),
@@ -171,7 +176,9 @@ func buildUI(a *linuxapp.App[linuxio.LinuxIO]) linuxapp.BuildResult {
 	keyAgent.SetFocus(input)
 	input.Focused = true
 
-	// Return drain function that processes console output.
+	// Return drain function that processes console output, plus the
+	// notify channel the shepherd pokes after each writeCh send so
+	// runLoop's select wakes up.
 	writeCh := a.Injected.WriteChannel()
 	return linuxapp.BuildResult{
 		Drain: func() bool {
@@ -188,6 +195,7 @@ func buildUI(a *linuxapp.App[linuxio.LinuxIO]) linuxapp.BuildResult {
 				}
 			}
 		},
+		NotifyCh: a.Injected.NotifyChannel(),
 	}
 }
 

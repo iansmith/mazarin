@@ -2,6 +2,512 @@
 
 ---
 
+## linux ring 1 single-reader bottleneck — split-ring fix (2026-04-25, FIXED)
+
+### Symptom
+At maildb startup the mmap coherence test hits "Resource Temporarily
+Unavailable" (EAGAIN) on `syscall.Open` / `mkdir` / `stat current.mbox`
+within the first few seconds, before fti has indexed anything. The
+whole data path stalls: mail UI throbber freezes, clicks don't
+register, fti idle.
+
+### Root cause
+linux's ring 1 (the kernel→linux delegate ring) is a single 64-slot
+buffer drained by **one** reader goroutine. The dispatcher callback
+on that reader does either:
+```go
+if req.SysID == sysid.Write && byte(req.Arg0()) <= 2 {
+    stdoutCh <- req       // BLOCKING, cap 32
+} else {
+    delegateCh <- req     // BLOCKING, cap 8
+}
+```
+Both sends are blocking. If `delegateCh` fills up because the
+file-lane goroutine is busy waiting for an fs round-trip, **the
+single reader blocks on `delegateCh <- req`** — and now also stops
+draining pipe-buffered Writes that ride the same ring. Ring 1 fills
+to 64, kernel-side `uringSendKernel` returns -EAGAIN, every shepherd's
+syscall fails. Meanwhile the linux-ui notify fix (2026-04-24) made the
+stdio path actually do work per fmt.Printf, which is what tipped the
+balance from "barely keeping up" to "bottlenecked".
+
+### Diagnostic data (probes added then removed)
+```
+[DLG:EAGAIN] #1..#24  head=176 tail=240 fill=64 sent=233   (frozen)
+[DLG:EAGAIN] #25       head=177 tail=241 fill=64 sent=234   (advanced 1)
+[DLG:EAGAIN] #26..#30  head=179 tail=243 fill=64 sent=237   (advanced 2)
+```
+Ring head moves at maybe 1-3 messages per 100ms — file lane is
+genuinely starved, not deadlocked.
+
+### Fix (option 2: split traffic classes onto separate rings)
+- New kernel global `stdioWriteRingIdx` set via new syscall
+  `SysRegisterStdioWriteRing` (0x1042). When set, `DelegateSyscall`
+  routes pipe-buffered Writes (Write fd<=2) to that ring index instead
+  of the Write handler's default ring.
+- linux now creates ring 1 + ring 2 via `uring.Setup(1)` /
+  `uring.Setup(2)`. Ring 1 carries blocking delegates (incl. fd>2
+  Write); ring 2 carries pipe-buffered stdio Writes only.
+- Each ring has its own dispatcher with its own reader goroutine. The
+  ring 1 reader feeds `delegateCh`; the ring 2 reader feeds
+  `stdoutCh`. Backpressure on either ring is independent of the other.
+- linux's `MazarinMain` calls `sys.RegisterStdioWriteRing(2)` after
+  registering its delegate handlers.
+
+### Validation
+60s ARM64 HVF run after fix: 0 EAGAINs, 0 "[DLG] uring send failed",
+0 "Resource Temporarily Unavailable", all mmaptest cases PASS, mbox
+import working, fti indexing. The bleve scorch panic that surfaces
+later (mmap-of-directory) is a separate bug the verifier identified —
+tracked in findings under "FTI bleve scorch merger panic — directory
+mmap (2026-04-25)".
+
+---
+
+## linux-ui window disappearing after ~1-2s (2026-04-24, FIXED)
+
+### Symptom
+Linux-ui window appears at startup with whatever output happened to
+land during initial-layout settling (~28 blits over 1-2s), then
+appears frozen while maildb/fti continue spamming console output that
+never makes it to the screen. Linux shepherd itself remains alive
+indexing emails normally.
+
+### Root cause
+`linuxapp.runLoop` blocks in a `select` over `wmCh`, `eagerCh`, and
+`notifyCh`. The drain function reads from `writeCh` *inside* the
+select case, but `writeCh` is **not** one of the select channels —
+it's drained when one of the three above fires. linux-ui passed
+`BuildResult{Drain: ...}` with no `NotifyCh`, so `runLoop` swapped
+in a never-firing dummy channel. Once startup constraints settle:
+- `eagerCh` stops firing (no more dirty constraints)
+- `wmCh` stops firing (no user input, no resize)
+- `notifyCh` is the dummy chan — never fires
+
+The select blocks forever. `writeCh` fills, the linux shepherd's
+`lineAccumulator` falls back to the non-blocking-default branch and
+drops further lines silently.
+
+### Fix
+Pattern that mail-ui (`maildbio`) was already using:
+
+1. `linuxio.LinuxIO` interface gains `NotifyChannel() <-chan struct{}`.
+   `LinuxIOInit` gains `NotifyCh chan struct{}` and updated
+   `SetChannels` signature.
+2. linux-ui's `MazarinShepherd` creates `make(chan struct{}, 1)`,
+   passes it to `SetChannels`, and returns it via
+   `BuildResult.NotifyCh` so `runLoop`'s select wakes on it.
+3. linux shepherd's `lineAccumulator` does a non-blocking poke
+   (`select { case notifyCh <- struct{}{}: default: }`) after each
+   successful `writeCh` send.
+
+### Validation
+After fix, ARM64 HVF run shows `[rachel:geom] blit#500 sid=N
+title="Linux Console"` — i.e. linux-ui has blitted >= 500 times
+during the run, vs. the pre-fix ceiling of ~28. Console updates
+visibly during fti/maildb activity.
+
+---
+
+## Pipe-buffered Write fd-gating bug (2026-04-24, FIXED)
+
+### Symptom
+After implementing pipe-buffered Write delegation, fti would run for many
+seconds, then `Fstatat` for `/tmp/fti-N/bleve/store` would EFAULT (the
+DataVA mapped into the linux shepherd was found unmapped by the
+`SysVerifyMapping` defensive check), and shortly afterwards Go's
+`MkdirAll` slow path would panic with
+`mkdir /tmp/fti-N/bleve/store: not a directory`.
+
+### Root cause
+`DelegateSyscall` in `kmazarin/ksyscall/delegate.go` pipe-buffered ALL
+`Write` delegates regardless of fd: skipped `delegateCallInfos[TID]`
+`InUse` tracking and returned the byte count without blocking. But the
+linux shepherd's stdout lane (which calls `SysReleaseDelegatePage`)
+ONLY runs for `fd<=2`. For `fd>2` (regular files), the request is
+routed to the file lane and `sysWrite` calls `req.Reply(written)` —
+which is a `SyscallReply` syscall.
+
+The kernel's `SyscallReply` looks up `delegateCallInfos[callerTID]`. If
+the caller TID is currently blocked on a *different* delegate (e.g.
+`Fstatat`), `info.InUse` is `true` for that other syscall — so the
+spurious Reply unmaps the *other* syscall's data page, frees its PA,
+and wakes the caller with the wrong return value.
+
+### Trace
+- `t=0`: caller TID 30 issues `write(fd=3, ...)` → kernel pipe-buffers,
+  returns immediately, doesn't set `InUse`.
+- `t=1`: caller TID 30 issues `fstatat(...)` → kernel allocs page P_F at
+  VA 0x50000116a000 in linux shepherd, sets `InUse=true`, blocks caller.
+- `t=2`: linux file lane processes the buffered fd=3 Write, calls
+  `req.Reply(written)` → kernel `SyscallReply` reads `delegateCallInfos[30]`
+  which now references the Fstatat → `reclaimDataPage` unmaps
+  `0x50000116a000`.
+- `t=3`: linux file lane processes Fstatat, calls `VerifyMapping(...)`,
+  finds it unmapped → returns `EFAULT`. Go `MkdirAll` falls through to
+  `Mkdir`, which fails with `ENOTDIR` because the parent's
+  `bleve/store` resolution races against half-completed earlier mkdirs.
+
+### Fix
+`pipeBuffered := id == sysid.Write && arg0 <= 2` in `DelegateSyscall`.
+Only stdio writes are pipe-buffered; fd>2 writes keep the original
+synchronous block-and-Reply semantics so the file lane's `req.Reply`
+correctly targets its own delegate slot.
+
+### Validation
+60s ARM64 HVF run after fix: 0 EFAULTs, 0 panics, no
+`mkdir ... not a directory` errors. fti indexed 51+ documents to
+completion. Three windows rendered (linuxapp x2, mail). The
+`SysVerifyMapping` defensive check in `linux/syscalls.go::handle()`
+is left in place as defence-in-depth.
+
+---
+
+## Windows-not-shown: goroutine scheduling bug (2026-04-24, OPEN)
+
+### Symptom
+
+On both ARM64 HVF and x86_64, boot proceeds through
+`[rachel:wm] event loop started` and `[linux] Ready=true`, but no
+`[rachel:wm] AppStart` ever arrives. Background framebuffer color
+visible, no window chrome. Seen freshly after RISC-V removal; likely
+present earlier too.
+
+### Visible chain of stalls (with workarounds layered on)
+
+1. `linux-ui.MazarinMain` goroutine never starts.
+   - Launched via `go mazhost.RunMaz(uiMain)` in `maz/linux/main.go`.
+   - Linux's calling goroutine then runs several raw syscalls
+     (`sys.UartWriteString`, `sys.RegisterSyscallHandlersWithRing`,
+     etc.) and one `fsclient.Connect` before hitting the stdin
+     drainer. None of those yields cause the `go`-enqueued goroutine
+     to run.
+   - **Workaround in tree:** `runtime.Gosched()` immediately after
+     the `go`. Makes MazarinMain run.
+   - **Rachel does the analogous `go mazhost.RunMaz(fontSvcMain)`
+     and its plugin MazarinMain *does* run** — needs characterizing.
+
+2. `mazhost.LaunchMaz("helloworld")` (CPU-bound `mazdl.OpenBytes`)
+   starves linux-ui once it yields inside Bootstrap.
+   - **Workaround in tree:** `go mazhost.LaunchMaz(...)` (run in its
+     own goroutine). Linux main then reaches stdin drainer and yields.
+
+3. linux-ui Bootstrap → `NewConsole` → `fc.OpenFaceByName` → OpenFont
+   IPC to rachel → `fontsvc.handleOpenFont` → `ensureFontIndex` →
+   `fontcache.LoadFontIndex` → `sys.LoadFile("/fonts/fonts.csv")`.
+   This call happens inside rachel's uring-reader goroutine, under
+   the dispatcher callback, blocking it.
+   - fs serves the CSV (`[fs] /fonts/fonts.csv: 9083 bytes, 0ms`),
+     then `fmt.Printf` in fs's `readFileIntoPages` delegates Write
+     to linux — and fs stalls there.
+   - **Workaround in tree:** fontsvc preloads `fonts.csv` in its
+     `MazarinMain` (before linux is Ready, so Write doesn't delegate).
+
+4. linux-ui's first `fc.OpenFaceByName` (after the CSV preload)
+   triggers `sys.LoadFile("/fonts/AtkinsonHyperlegibleMono-Regular.otf")`.
+   fs reads the file, calls `fmt.Printf`, Write delegation to linux
+   ring 1 — same stall as #3, not yet worked around.
+
+### Kernel-level probe results (reverted at end of session)
+
+For the Write-delegation stall at step 4:
+- `DelegateSyscall` runs, copies the user buffer into a handler-mapped
+  page, calls `uringSendKernel(-1, handlerSID=linux, ringIdx=1, msg)`.
+  `sendResult=0` — message landed in linux's ring 1.
+- `UringSendKernel`'s wake path fires: `slot.BlockedTID=N, woke tid=N`.
+  The ring 1 reader thread is moved from `ThreadBlockedUringRecv`
+  to `ThreadReady`, flagged `PriorityWoken=true`, requeued on the
+  priority ready queue, context rewound to re-execute SVC.
+- Caller (fs) then runs `blockForDelegatedSyscall`, which calls
+  `findNextThreadForBlockSchedLockHeld` → priority-pass finds the
+  just-woken reader thread → returns its ctx. Caller does
+  `SetSyscallSwitchTarget(ctx)` and returns 0.
+- **Expected:** Mazzy kernel switches to the woken thread, SVC
+  returns from `SyscallUringRecv` with the message, Go's
+  `exitsyscall` resumes the reader goroutine, `r.handler(&msg)`
+  runs the ring 1 dispatcher callback.
+- **Observed:** `[uring:reader] ring=1 #N proto=...` never prints.
+  The reader goroutine doesn't resume.
+
+### Interpretation (revised after user challenge)
+
+The runnable-goroutines-without-M dump I captured was a PANIC
+snapshot (my instrumentation caused a stack split), not a normal
+stall snapshot. It is NOT evidence of a wakep bug. Go's wakep works
+— otherwise no `go f()` anywhere would ever get scheduled on Mazzy,
+and we run millions of syscalls successfully.
+
+The real issue is not a scheduler bug, it is a **Linux-emulation
+semantic gap**:
+
+On Linux, `write(fd=1)` to a stdout pipe buffer returns **near-
+instantly** (it's a buffered, non-blocking operation in the common
+case where buffer has space). The writer drops bytes into the pipe;
+the reader consumes asynchronously on its own schedule.
+
+On Mazzy, `SyscallWrite` → `syscallWriteDelegate` → `DelegateSyscall`
+→ `blockForDelegatedSyscall`. fs's thread is held in
+`ThreadBlockedDelegate` until linux's stdout lane handler runs
+`SyscallReply`. Writer and reader are **synchronously coupled
+across the delegate boundary** — a full IPC round-trip instead of
+a pipe-buffer drop.
+
+This synchronous coupling is not itself a bug — it matters only
+when we form a cycle. The cycle we hit at linux-ui's first font
+request:
+
+1. Rachel's uring reader goroutine calls `sys.LoadFile` inside the
+   `handleOpenFont` callback. Rachel can't process any other IPC
+   until fs replies.
+2. fs's `handleLoadFile` → `readFileIntoPages` calls `fmt.Printf`.
+   After linux has registered as Write handler AND called SetReady,
+   this Printf goes through Write delegation, blocking fs.
+3. linux-ui's `Bootstrap` is stuck in `NewConsole`-triggered
+   `fc.OpenFaceByName`, waiting on `fc.ReplyCh` for rachel's
+   OpenFont reply.
+4. linux's main goroutine has already reached stdin drainer, so
+   linux's stdout lane goroutine can run — but with fs deadlocked
+   in this chain, nothing else is producing work for it.
+
+Result: fs waits for linux's Write-delegate reply → linux waits for
+nothing in particular (its stdout lane IS runnable) — but the
+cascade means linux-ui never completes Bootstrap and never issues
+an AnnounceToWM. Windows don't appear.
+
+### Why this deadlock didn't exist before (guessing, needs git-blame)
+
+The same cycle used to be broken in at least one of these places:
+- fontsvc probably preloaded `fonts.csv` at startup (no LoadFile
+  inside the OpenFont handler).
+- fs probably didn't `fmt.Printf` inside `readFileIntoPages`.
+- linux-ui loaded later in boot, after fs's diagnostic chatter was
+  done.
+- The ordering of "linux registers Write handler" vs "rachel's
+  fontsvc first OpenFont callback" used to put the delegation
+  outside the cycle.
+
+Recent changes around font handling (louis14 / fontsvc rework,
+callback-based fontsvc injection, two-lane delegate handler) could
+each have changed one of these and opened the window.
+
+### Why each workaround worked (correct mechanism)
+
+- **`runtime.Gosched()` after `go mazhost.RunMaz(uiMain)`** lets
+  linux-ui's MazarinMain start running *before* linux's main enters
+  the stdin drainer — shifting when linux-ui issues the OpenFont
+  IPC relative to fs's Write-delegation activation.
+- **`go mazhost.LaunchMaz("helloworld")`** — keeps linux main
+  from tying up the CPU in CPU-bound OpenBytes while linux-ui is
+  trying to finish its font handshake.
+- **fontsvc preloading `fonts.csv`** — moves one IPC leg out of
+  the `handleOpenFont` callback, eliminating one edge of the
+  dependency cycle.
+- **500 ms busy loop (diagnostic only)** — forces enough async-
+  preemption events that the timing windows of the cycle never
+  line up to hold.
+
+None of these are the right fix. The right fix is closing the
+emulation gap.
+
+### Fix direction
+
+Make Write delegation behave like a Linux pipe:
+- `DelegateSyscall` for `Write`/`Writev` should copy bytes into a
+  shared buffer (ring) owned by the handler shepherd and return
+  to the caller immediately — no `blockForDelegatedSyscall`.
+- The handler's drain goroutine consumes from the ring on its own
+  schedule.
+- Backpressure only when the ring is truly full (matching pipe-
+  buffer-full blocking on Linux).
+
+With that, fs's `fmt.Printf` during `readFileIntoPages` stops
+being a deadlock primitive: it writes a few bytes and returns.
+The circular wait dissolves.
+
+Revert the three workarounds (Gosched, async LaunchMaz, fontsvc
+preload) once the fix lands.
+
+**Confirmed hypothesis #1 (ruled out): Async preemption works.** A
+500ms busy loop inserted immediately after `go mazhost.RunMaz(uiMain)`
+(instead of `runtime.Gosched()`) lets linux-ui's MazarinMain fire,
+make all the way through Bootstrap, and successfully send `AppStart`
+to rachel. So sysmon is running and can force preemption when there
+is CPU-bound user code to preempt. The symptom isn't "preemption
+broken," it's "no preemption opportunity" when the running goroutine
+only uses raw syscalls.
+
+**Hypothesis #2 (retracted): runnable-goroutines-without-M dump**
+was captured during a panic (my probe caused a stack split). The
+snapshot shows normal mid-scheduling state, not a wakep failure.
+Go's wakep/futex_wake path works on Mazzy (otherwise `go f()`
+would never schedule anywhere). Retracted.
+
+See "Interpretation (revised after user challenge)" below for the
+actual diagnosis.
+
+### Workarounds currently in the tree (to remove once real fix lands)
+
+- `maz/linux/main.go`: `runtime.Gosched()` after `go mazhost.RunMaz(uiMain)`.
+- `maz/linux/main.go`: `go mazhost.LaunchMaz("helloworld")` (was synchronous).
+- `maz/fontsvc/main.go`: `MazarinMain` preloads `fonts.csv` via
+  `ensureFontIndex()` (defensible on its own merits, but the
+  motivation here was to hide the Write-delegate stall for CSV load).
+
+---
+
+## x86_64 Boot OOM — `total=ffffffff20000` Decoded (2026-04-24)
+
+When kmazarin prints `[kmem] Buddy OOM order=0 total=ffffffff20000` (or
+any `total=` value with high bits set) immediately after diplomat's
+"Jumping to kmazarin..." line, the bug is **not** in the buddy
+allocator. It is in diplomat's UEFI page allocation strategy combined
+with a silent underflow in the buddy's 4 GB cap.
+
+### The number's fingerprint
+
+`totalPages = 0xFFFFFFFF20000` in `kmazarin/kmem/buddy.go`. Since
+`buddyAlloc.totalPages = uint64(end-start) / PageSize`, that means
+`end-start = 0xFFFFFFFF20000000` (uint64). That is `−0xE0000000` in
+signed arithmetic — i.e. `start > end` by `0xE0000000` (3.5 GB).
+
+### Why end < start
+
+`buddy.go:95-100` clamps `end` to `linearMapMaxPA = 0x100000000` (4 GB)
+because the kernel linear map (`KernelVAOffset = 0xFFFFFFFF00000000`)
+wraps for PA ≥ 4 GB. The clamp does NOT touch `start`. If diplomat
+hands the buddy a `start` above 4 GB (e.g. `0x1E0000000`), end gets
+clamped down, start does not, and `end - start` underflows in uint64.
+Every order-0 allocation then returns 0 → instant page fault.
+
+### Why diplomat handed up a high `start`
+
+`diplomat/main/pagetable_amd64.go::allocatePhysPages` was using
+`AllocateAnyPages`, which lets UEFI pick whatever's free — frequently
+above 4 GB on QEMU TCG x86_64 with `-m ≥ 4G`. ARM64 has had the right
+fix for ages (`AllocateMaxAddress` with seed `linearMapMaxPA - 1`,
+mirroring the 4 GB cap); x86_64 just never got the cross-port. There's
+even a memory note about it ("QEMU ARM64 virt Memory: UEFI
+`AllocateAnyPages` can return >4GB"). Latent until UEFI's allocator
+behavior shifted enough to expose it.
+
+### Second-order trap
+
+Even with `AllocateMaxAddress` in place, requesting 2.5 GB
+*contiguous* below 4 GB often fails on QEMU TCG x86_64 — UEFI
+fragments low RAM during its own boot. The original code's failure
+path zeroed `vm.UnifiedPoolStart`/`End`, which made kmazarin fall back
+to FramePool (16 MB), which then OOMed on VirtIO GPU framebuffer
+(32 MB) and InitConstraintPages (16 MB), failing fs launch with
+error -7. Fix: retry-down ladder
+`[2.5G, 1.5G, 1G, 512M, 256M]`, take the first that fits.
+
+### Diagnostic shortcut for next time
+
+If you see ANY suspiciously huge `total=` in `[kmem] Buddy OOM` at
+boot, check three things in order:
+1. What did diplomat allocate as the unified pool? (`grep "Unified
+   pool:" /tmp/diplomat-serial.log`)
+2. Is the start address > `0x100000000`?
+3. If yes, check the `AllocatePages` flag in
+   `diplomat/main/pagetable_<arch>.go::allocatePhysPages`. It must be
+   `AllocateMaxAddress`, with the seed `physAddrResult = linearMapMaxPA - 1`.
+
+See also `memory/x86_64_boot_oom_fix.md`.
+
+---
+
+## RISC-V Footprint Survey (2026-04-24)
+
+Survey done before the RISC-V removal phases (task_plan.md "RISC-V
+Removal — Phases R1–R6"). Recorded here so future-me can verify the
+removal hit everything and understand the scope at a glance.
+
+### Source files (~98 named `*riscv64*`)
+
+- **diplomat/main/** (23): boot, DTB parsing, UART, exception handling,
+  paging, firmware params. Key files: `boot_riscv64.go`,
+  `bootstrap_riscv64.s`, `diplomat_entry_riscv64.s`,
+  `exc_vectors_riscv64.s`, `pagetable_riscv64.go`, `uart_riscv64.go`.
+- **kmazarin/** (61 across subdirs):
+  - kmazarin/ (27): core init, exception handling, IRQ via PLIC, SMP,
+    signal frame/VDSO, UART top-half, context save, preempt.
+  - ksyscall/ (11): ELF arch detect, mmap addr translation, hwprobe,
+    syscall entry/exit, kernel async wait.
+  - kmem/ (5): paging, memory barriers, spinlocks, VDSO sigreturn.
+  - kirq/ (3): IRQ dispatch, panic, preempt handlers.
+  - device/virtio/ (4): VirtIO block MMIO, IRQ handlers, GPU IRQ, input.
+  - ktimer/ (2): platform timer.
+  - other (9): PLIC driver, serial UART, PCI ECAM, spinlock, MMIO.
+- **kmazarin/arch/riscv64/** — standalone dir: `plic/plic.go`,
+  `plic_riscv64.s`. Delete the directory.
+- **Remaining 11**: `shared/constants/addresses_riscv64.go`,
+  `shared/fs/fat32/debug_riscv64.s`, `runtime-patches/` (3: trampoline,
+  rt0, sys_linux), `maz/linux/stat`, `maz/fs/stat`, `mazarin/`
+  (maz_name, asm_linux, memcopy).
+
+### Build tags (68 files reference riscv64)
+
+- 45 pure `//go:build riscv64` — safe to delete with the file (Phase R2).
+- 23 combined-tag files (Phase R3 surgical edits):
+  - `arm64 || amd64 || riscv64` — 6 files (kmazarin/ds/*).
+  - `arm64 || riscv64` — clone.go, soft_irq.go.
+  - `linux && (amd64 || arm64 || loong64 || riscv64)` — mmap.go,
+    cgo_mmap.go.
+  - `amd64 || arm64 || loong64 || mips64 || mips64le || ppc64 ||
+    ppc64le || riscv64 || s390x || wasm` — tagptr_64bit.go.
+  - `!riscv64` — maz_name_other.go (negation; collapses on removal).
+
+### Taskfile targets (11 named tasks)
+
+Root Taskfile.yml: `run-riscv64`, `run-riscv64-background`,
+`run-riscv64-direct`, `run-riscv64-direct-background`, `stop-riscv64`,
+`stop-riscv64-direct`, `disk-riscv64`, `boot-riscv64`,
+`stage-embedded-fs-riscv64`, `stage-kernel-config-riscv64`,
+`userspace-build-riscv64`, `shepherd-overlay-riscv64`,
+`merged-shepherd-overlay-riscv64`.
+
+Sub-Taskfiles: `diplomat:riscv64`, `kmazarin:riscv64`.
+
+QEMU monitor port: 4447 (vs 4445 x86_64, 4446 arm64).
+OpenSBI bin path referenced for `run-riscv64-direct`:
+`opensbi-riscv64-generic-fw_dynamic.bin` (homebrew QEMU share dir).
+
+### Configs (3 TOML)
+
+`config/kernel.riscv64.toml`, `config/rachel.riscv64.toml`,
+`config/startup.riscv64.toml`.
+
+### Tooling
+
+- `cmd/mkesp/main.go` — arch dispatch case.
+- `cmd/gen-ast-stubs/main.go` — `_riscv64` in suffix list.
+- `cmd/fix-go-elf/inject.go` — RISC-V JAL trampoline comment block.
+- `shared/sysid/sysid.go` — `RiscvHWProbe` enum (#258).
+- `cmd/elf2pe/main.go`, `cmd/gen-overlay/main.go` — generic, no edit
+  (per survey).
+
+### Docs and memory
+
+- CLAUDE.md: 7 references (env vars, run examples, monitor ports,
+  current status section).
+- design/: 0 references (clean).
+- Memory files: riscv_crash_investigation.md (dedicated), plus partial
+  references in MEMORY.md, response_test_failures.md,
+  zero_guard_false_positive.md, dma_clump_continuation.md,
+  phase5_linux_plugin_done.md, go126_randomized_heap_base.md.
+- Separate worktree memory project at
+  `-Users-iansmith-mazzy-riscv/memory/` — not touched by this removal
+  (different worktree). Note for cleanup: the worktree itself may want
+  archiving once removal lands.
+
+### Mazlink / mazdl status
+
+No RISC-V code in `mazlink-patches/` or `mazarin/mazdl/`. RISC-V is
+strictly diplomat→kmazarin bootflow + legacy `.maz`+maz-reloc userspace.
+Confirms "riscv64 stays on legacy .maz+maz-reloc path" decision.
+
+---
+
 ## Fs ↔ Linux Delegate Handler Deadlock (2026-04-24)
 
 ### The cycle
@@ -876,6 +1382,191 @@ atomically updates the row's `requestId`, fires a new request, and returns the o
 removal from the `rowByReqId` lookup table.
 
 ---
+
+### FTI bleve scorch merger panic — directory mmap (2026-04-25, OPEN)
+
+After the linux ring 1 split-ring fix unblocked the indexing pipeline,
+the scorch merger panic still surfaces. Captured in flight by the
+ext2 dirent verifier:
+
+```
+[fs:read EISDIR] handle=220 path="/tmp/fti-1/bleve" inum=12 ftype=2
+                 isDir=true openSize=4096 offset=0 count=4096
+[mmap-fill] sid=1 fd=6 offset=0 READ ERR: errno -21
+[fti] PANIC in handleIndexDocument id=...: runtime error: invalid
+  memory address or nil pointer dereference — marking index corrupted
+[fti] SCORCH ASYNC ERROR: source: merger, async panic error: panic:
+  ... path: /tmp/fti-1/bleve/store
+```
+
+**Real root cause: bleve mmap'd the index DIRECTORY (`/tmp/fti-1/bleve`),
+not a `.zap` segment file.** fti's user-space fd=6 was opened against
+the directory itself; scorch then called `mmap(fd=6, ...)` and the
+kernel happily accepted it (no fd-type validation). The first page
+fault triggered `sysMmapPageFill`, which delegated to fs.maz; fs.maz's
+`ipcRead` opened the inode, found `IsDir() == true`, and returned
+`ext2.ErrNotFile` (mapped to errno -21 = EISDIR). The kernel-side
+`SyscallReply` for `MmapPageFill` then **mapped the zero-filled page
+into the caller's address space anyway** and woke the faulting code,
+which read zeros where it expected a segment header → nil deref.
+
+**Why it previously looked like dirent corruption**: the earlier "no
+such file or directory" symptom is a *different* aspect of the same
+panic chain — once one scorch operation panics, the index is marked
+corrupted; subsequent merge/persist attempts try to open files scorch
+*thought* it had created in earlier iterations, fail with ENOENT, and
+log the visible "no such file or directory" line.
+
+**On real Linux**, `mmap()` of a directory fd returns `ENODEV`
+("Operation not supported"). Bleve handles that error cleanly without
+corrupting state. Mazzy's `SyscallMmap`
+(`kmazarin/ksyscall/mmap.go::SyscallMmap`) doesn't validate fd type at
+mmap-time; the failure is deferred to page-fault time where the
+recovery path is wrong (zeroed page mapped instead of SIGBUS or error
+propagation).
+
+**Verifier wired up to catch this**: `shared/fs/ext2/writer.go` has a
+`DirVerifyHook` (used during this investigation) plus a one-shot
+`[fs:read EISDIR]` print in `maz/fs/fsipc.go::ipcRead` that fires when
+ext2 returns ErrNotFile from a Read, dumping path/inum/ftype/isDir.
+Both stay in tree as defense-in-depth diagnostic.
+
+### Bleve source code review — 2026-04-25
+
+User asked: does bleve actually expect to mmap a directory? Read the
+relevant sources:
+
+- **`zapx/v15/segment.go::ZapPlugin.Open`** — `os.Open(path)` then
+  `mmap.Map(f, mmap.RDONLY, 0)`. Path is always a `.zap` segment file
+  (e.g. `<dir>/00000001.zap`), never a directory.
+- **`bleve/v2/index/scorch/persister.go`** — `s.segPlugin.Open(path)`
+  at lines 807 / 1019 with `path = s.path + "/" + filename` where
+  filename is `zapFileName(epoch)` ⇒ always a `.zap`.
+- **`bleve/v2/index/scorch/scorch.go`** — opens `bolt.Open(s.path +
+  "/root.bolt")`. Bolt then mmaps the bolt file's fd, not the dir.
+- **bbolt `bolt_unix.go`** — `unix.Mmap(int(db.file.Fd()), 0, sz,
+  PROT_READ, MAP_SHARED|MmapFlags)`. `db.file` is the bolt regular
+  file, set up with `os.OpenFile(path, ...)`.
+- bleve does also call `os.ReadDir(s.path)` in `diskFileStats` and
+  similar — opens the dir, reads dirents via `Readdirnames`, **closes**
+  the fd. No mmap.
+
+So **bleve never mmaps a directory on Linux**. On Linux, `mmap()` of a
+directory fd would return `ENODEV` upfront and bleve would handle it
+cleanly. **The bug is on our side.**
+
+### Refined diagnosis (2026-04-25)
+
+Re-running with `[fs:read EISDIR]`, `[fs:open-dir]`, `[fs:mkdir-ok]`
+diagnostic prints surfaced **two distinct symptoms**, both of which
+trace back to ext2 metadata not matching the path bleve actually used:
+
+1. **EISDIR on mmap-fill**: `[fs:read EISDIR] handle=N
+   path="/tmp/fti-X/bleve" inum=12 isDir=true`. Handle was opened
+   against the directory itself; later page fault calls fs.Read which
+   returns EISDIR because the inode is a dir. We thought bleve was
+   mmap'ing the dir — actually no; what's happening is that handle =
+   the dir was opened by Go's `os.ReadDir` for `diskFileStats`, the fd
+   was closed, but somewhere the mmap path on a *different* file ended
+   up using a stale handle that still points at the dir inum.
+
+2. **EISDIR on write**: `merging err: write
+   /tmp/fti-X/bleve/store/000000000044.zap: is a directory`. fs.maz's
+   `ipcWrite` opened inum=N at openat-time when N was a regular file,
+   but by write-time the on-disk inode at N has been rewritten with
+   `Mode = TypeDir`. That can only happen if `Mkdir`'s
+   `allocInode` returned an inum that was concurrently held by an
+   open file — i.e. **inode-reuse race**.
+
+3. **ENOENT on reopen**: `error opening new segment at
+   .../00000000001d.zap: no such file or directory`. Persister wrote
+   the file, closed it, and a later reopen sees no entry by that
+   name. Same root: the dirent or inode allocation got tangled.
+
+The dirent verifier (left in tree) **never fires** — block-level
+invariants are intact, so it's not dirent-block corruption. The bug
+is at the inode-allocation / lifecycle level: `freeInode` + `allocInode`
+are not coordinated with file-handle lifetime. fs.maz handles each
+IPC sequentially so it's not classic concurrency, but Remove + Mkdir
+of unrelated paths within a single fs.maz pass can still recycle an
+inum that another (earlier-issued) open is still relying on.
+
+### Fix plan — inode lifecycle (approved 2026-04-25)
+
+**Approach (a): reference-count inodes by open handles** — Linux
+"unlink-while-open" semantics. `freeInode` becomes "mark for delete";
+actual reclamation happens when the last open handle closes. The
+dirent is removed eagerly so path lookups return ENOENT, but the
+on-disk inode + data blocks + bitmap bit stay alive until refcount
+hits zero. `allocInode` naturally skips pinned inums because their
+bitmap bit is still set.
+
+**Implementation steps:**
+
+1. **`shared/fs/ext2/`**: add `inodeRefs map[uint32]int` and
+   `pendingFreeSet map[uint32]bool` to `FileSystem`. New methods
+   `PinInode`, `UnpinInode`, `isInodePinned`. `UnpinInode` performs
+   the deferred reclaim (`freeInodeBlocks` + zero inode +
+   `freeInode`) when refcount hits 0 and inum is in
+   `pendingFreeSet`.
+
+2. **`shared/fs/ext2/writer.go`**: modify `Remove`, `WriteFile`
+   overwrite branch, `Rename` target-overwrite branch — always
+   remove dirent first; if `isInodePinned`, mark `pendingFreeSet`
+   and return; else free immediately as today.
+
+3. **`maz/fs/fsipc.go`**: `ipcOpen` calls `fsys.PinInode(inum)`
+   after `conn.allocHandle` succeeds. `ipcClose` (signature widened
+   to take `mt *mountTable`) calls `fsys.UnpinInode(h.inum)` before
+   `conn.freeHandle`.
+
+4. **Build + 120s ARM64 HVF run**. Expected: 0 EISDIR-on-write,
+   0 EISDIR-on-mmap-fill, 0 ENOENT-on-zap-reopen, fti indexes 200+
+   docs without `bleve index corrupted`, mail click renders body.
+
+**Risk surface:**
+- Pin/Unpin imbalance — every Pin must have exactly one Unpin.
+  fsHandle is the natural pairing (Pin in ipcOpen, Unpin in
+  ipcClose). Audit `conn.freeHandle` callsites to verify there's
+  no path that destroys a handle without unpinning.
+- Map growth on read-only mount — gated by `fs.writable` check.
+
+**Decisions deferred to follow-ups (intentional):**
+
+The decisions below are intentionally NOT part of this fix. They are
+all tracked separately so we don't rewrite this scope mid-flight:
+
+- **Shepherd-death cleanup of fs handles** — fs.maz's `OnDeath`
+  callback (in `maz/fs/main.go::main`) currently just logs the
+  death; it does NOT walk the dead shepherd's `conn.handles[]`
+  array, close each open handle, or call `UnpinInode`. With (a) in
+  place, a shepherd dying with handles still open will leak refs:
+  the inodes stay pinned forever, dirents-of-removed-files-with-
+  open-handles never reclaim, fs.maz `conn.handles[]` slots leak
+  too. Bounded growth (only matters across many shepherd deaths in
+  one boot) but real. **Tracked as task #9.** Fix is small once
+  inode-lifecycle is correct: the OnDeath callback iterates
+  `conn.handles[]`, calls `UnpinInode` for each, removes the
+  conn from `s.conns`.
+
+- **Memory-fault-then-kill design** — the kernel's
+  `SyscallReply`/`MmapPageFill` path currently maps a zeroed page
+  and resumes execution when fs returns an error from a fault.
+  Linux semantics here is `SIGBUS` to the offender. With inode
+  lifecycle correct, this path becomes mostly unreachable, but if
+  it's ever reached the current behavior silently corrupts state.
+  **Tracked as task #10.** Needs design — how the kernel signals
+  the faulting thread, who terminates the offender, what the
+  shepherd's `OnDeath` chain does in response.
+
+- **Hardlink semantics** — ext2's `Remove` doesn't decrement
+  `LinksCount`; it assumes 1. Real Linux frees the inode only
+  when both `LinksCount == 0` AND no open handles. Our usage
+  doesn't make hardlinks today. **Tracked as task #11.** Comment
+  the assumption in `Remove` for now.
+
+Tracked as task #8 (re-scoped from "reject mmap on dir fds" to
+"inode-lifecycle correctness via Pin/Unpin").
 
 ### FTI bleve persister panic — write/mmap coherence (CONFIRMED FIXED 2026-04-22)
 

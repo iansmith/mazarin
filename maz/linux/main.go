@@ -193,23 +193,34 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 		}
 	}()
 	// Stdout lane — handles fd≤2 Writes only; never blocks on fsclient.
+	//
+	// Write delegation is pipe-buffered (kernel returned the byte count to
+	// the caller at delegate time; the caller did not block waiting for us).
+	// We consume the bytes, forward them into the line accumulator, and
+	// release the shared data page via ReleaseDelegatePage. There is no
+	// Reply() call — the caller is not blocked.
 	go func() {
 		for v := range stdoutCh {
 			sid := v.CallerPID
 			fd := byte(v.Arg0())
+			pageVA := v.DataVA()
 			sidIncRef(sid)
 			data := v.Data()
 			if data == nil {
-				v.Reply(0)
 				sidDecRef(sid)
+				if pageVA != 0 {
+					sys.ReleaseDelegatePage(pageVA, 1)
+				}
 				continue
 			}
 			dataCopy := make([]byte, len(data))
 			copy(dataCopy, data)
 			// Kernel already pushed bytes to PL011 TX ring before
 			// delegating — no need to echo to UART here.
-			v.Reply(int64(len(data)))
 			sidDecRef(sid)
+			if pageVA != 0 {
+				sys.ReleaseDelegatePage(pageVA, 1)
+			}
 			select {
 			case dataCh <- delegateMsg{fd: fd, data: dataCopy}:
 			default:
@@ -272,17 +283,24 @@ func addCRBeforeLF(data []byte) []byte {
 	return out
 }
 
-// startUringDispatchers sets up two uring Dispatchers to avoid a single-reader
-// deadlock. Ring 0 handles shepherd IPC (fs responses, WM, fonts, death).
-// Ring 1 handles kernel delegate requests.
+// startUringDispatchers sets up three uring Dispatchers, one per ring,
+// each with its own reader goroutine. Splitting traffic by class avoids
+// a single-reader bottleneck where slow file-lane operations would
+// backpressure pipe-buffered stdio (and vice versa).
 //
-// Ring 1's reader routes delegate requests to one of two lanes. Write(fd ≤ 2)
-// goes to stdoutCh — a separate goroutine that never blocks on fsclient. All
-// other requests go to delegateCh (file lane). This prevents the fs↔linux
-// deadlock where fs.maz's fmt.Printf (→ Write fd=1 back through linux) would
-// queue behind a file-lane goroutine that was itself blocked inside
-// fsclient.call waiting for fs to respond. See findings.md "Fs ↔ Linux
-// Delegate Handler Deadlock" for the full cycle.
+//   - Ring 0: shepherd IPC (fs responses, WM, fonts, death notifications,
+//     idle-flush hints). Reader feeds the relevant typed channels.
+//   - Ring 1: blocking delegated syscalls (Read, Openat, Close, Mkdirat,
+//     Fstat, MmapPageFill, Pwrite64, fd>2 Write, …). Reader feeds
+//     delegateCh; the file-lane goroutine drains it via fsclient.
+//   - Ring 2: pipe-buffered Writes only (Write fd<=2). Reader feeds
+//     stdoutCh; the stdout-lane goroutine consumes the data and
+//     releases the shared page via SysReleaseDelegatePage.
+//
+// The kernel routes Write fd<=2 to ring 2 because the linux shepherd
+// calls SysRegisterStdioWriteRing(2). All other syscalls — including
+// Write fd>2 — flow through ring 1 per their normal RegisterSyscall-
+// Handler ringIdx (1).
 func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdoutCh chan sys.SyscallRequest, wmCh chan any, fontReplyCh chan any) {
 	// Ring 0: shepherd IPC
 	ipcDispatcher := uring.NewDispatcher() // ring 0 (default)
@@ -305,21 +323,32 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 	})
 	ipcDispatcher.Start()
 
-	// Ring 1: kernel delegate requests — route fd≤2 Writes to stdoutCh, rest
-	// to delegateCh. Runs in ring 1's reader goroutine, so keep it minimal.
+	// Ring 1: blocking delegated syscalls. Includes fd>2 Write (the
+	// kernel routes fd<=2 Writes to ring 2 separately).
 	delegateDispatcher := uring.NewDispatcherWithRing(1)
 	delegateDispatcher.OnFunc(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, func(v any) {
 		req, ok := v.(sys.SyscallRequest)
 		if !ok {
 			return
 		}
-		if req.SysID == sysid.Write && byte(req.Arg0()) <= 2 {
-			stdoutCh <- req
-			return
-		}
 		delegateCh <- req
 	})
 	delegateDispatcher.Start()
+
+	// Ring 2: pipe-buffered stdio Writes only (Write fd<=2 via the
+	// SysRegisterStdioWriteRing override). The reader does the minimum
+	// amount of work — hand the request to the stdout-lane goroutine
+	// over stdoutCh and return — so stdio can't be backpressured by a
+	// busy file lane on ring 1.
+	stdioDispatcher := uring.NewDispatcherWithRing(2)
+	stdioDispatcher.OnFunc(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, func(v any) {
+		req, ok := v.(sys.SyscallRequest)
+		if !ok {
+			return
+		}
+		stdoutCh <- req
+	})
+	stdioDispatcher.Start()
 }
 
 // decodeRawPayload copies the raw UringIPCMsg payload without interpreting it.
@@ -344,13 +373,14 @@ func forceLinuxIOItab(v interface{}) {
 	_ = io.WriteChannel()
 	_ = io.WMChannel()
 	_ = io.FontReplyChannel()
-	io.SetChannels(nil, nil, nil, nil) //nolint:staticcheck
+	_ = io.NotifyChannel()
+	io.SetChannels(nil, nil, nil, nil, nil) //nolint:staticcheck
 	_ = io.GetRachelSID()
 }
 
 // lineAccumulator reads serial bytes and delegate messages, accumulates
 // characters, and flushes complete lines (on \n) to the WriteCh.
-func lineAccumulator(serialCh <-chan serial.SerialByte, delegateCh <-chan delegateMsg, writeCh chan<- linuxio.LineLine) {
+func lineAccumulator(serialCh <-chan serial.SerialByte, delegateCh <-chan delegateMsg, writeCh chan<- linuxio.LineLine, notifyCh chan<- struct{}) {
 	var stdoutBuf, stderrBuf []byte
 
 	flush := func(fd byte) {
@@ -365,6 +395,13 @@ func lineAccumulator(serialCh <-chan serial.SerialByte, delegateCh <-chan delega
 		copy(line, *buf)
 		select {
 		case writeCh <- linuxio.LineLine{Fd: fd, Data: line}:
+			// Wake the runLoop's select non-blocking; if a poke is
+			// already pending, the next drain() will pick up this
+			// line along with the previous one.
+			select {
+			case notifyCh <- struct{}{}:
+			default:
+			}
 		default:
 			// WriteCh full — drop oldest line if channel is backed up.
 		}
@@ -427,9 +464,15 @@ func MazarinMain() {
 	sys.UartWriteString("[linux] LinuxIO config prepared\n")
 
 	// 4. Set up uring dispatchers BEFORE loading .maz.
-	// Create ring 1 for delegate requests (ring 0 is auto-created).
+	// Ring 0 is auto-created; ring 1 carries blocking delegated syscalls;
+	// ring 2 carries pipe-buffered stdio Writes (Write fd<=2). The two
+	// extra rings exist so stdio backpressure can't starve the blocking-
+	// delegate path (or vice versa).
 	if err := uring.Setup(1); err != nil {
 		panic("[linux] uring.Setup(1) failed: " + err.Error())
+	}
+	if err := uring.Setup(2); err != nil {
+		panic("[linux] uring.Setup(2) failed: " + err.Error())
 	}
 	// WM and font response messages go to temp channels that will be
 	// forwarded to the .maz's channels after injection.
@@ -467,8 +510,9 @@ func MazarinMain() {
 	readCh := ioInit.ReadCh
 	wmCh := ioInit.WMCh
 	fontReplyCh := ioInit.FontReplyCh
+	notifyCh := ioInit.NotifyCh
 
-	if writeCh == nil || readCh == nil || wmCh == nil || fontReplyCh == nil {
+	if writeCh == nil || readCh == nil || wmCh == nil || fontReplyCh == nil || notifyCh == nil {
 		panic("[linux] FATAL: linux-ui did not create channels")
 	}
 
@@ -514,6 +558,13 @@ func MazarinMain() {
 		sys.UartWriteString(fmt.Sprintf("[linux] RegisterSyscallHandlers failed: %v\n", delegateErr))
 	}
 
+	// Route pipe-buffered stdio Writes (Write fd<=2) to ring 2 instead
+	// of the default ring (ring 1). The kernel checks this on every
+	// Write delegate; fd>2 Writes still flow through ring 1.
+	if err := sys.RegisterStdioWriteRing(2); err != nil {
+		sys.UartWriteString(fmt.Sprintf("[linux] RegisterStdioWriteRing(2) failed: %v\n", err))
+	}
+
 	var delegateDataCh <-chan delegateMsg
 	if delegateErr == nil {
 		delegateDataCh = startUringDelegateHandler(delegateCh, stdoutCh, handler, suppressSerialCopy)
@@ -534,7 +585,7 @@ func MazarinMain() {
 	mazhost.LaunchMaz("helloworld")
 
 	// 10. Line accumulator goroutine — serial + delegates -> WriteCh.
-	go lineAccumulator(serialCh, delegateDataCh, writeCh)
+	go lineAccumulator(serialCh, delegateDataCh, writeCh, notifyCh)
 
 	// 11. ReadChannel watcher — moves input lines from channel to queue.
 	lineQueue := queue.New[[]byte]()

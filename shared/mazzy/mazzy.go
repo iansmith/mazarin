@@ -71,4 +71,6 @@ const (
 	SysAttrDelete             = MazzySyscallBase + 62 // 0x103E - Delete attribute (EBUSY if has dependents)
 	SysDeathAck               = MazzySyscallBase + 63 // 0x103F - ACK shepherd death (linux shepherd → kernel)
 	SysGetOwnExports          = MazzySyscallBase + 64 // 0x1040 - Serialize caller's ELF symbol table into user buffer (mazdl.RegisterHost)
+	SysReleaseDelegatePage    = MazzySyscallBase + 65 // 0x1041 - Release data page from pipe-buffered Write delegate (handler → kernel)
+	SysRegisterStdioWriteRing = MazzySyscallBase + 66 // 0x1042 - Set ring index for pipe-buffered Write delegation (Write fd<=2)
 )

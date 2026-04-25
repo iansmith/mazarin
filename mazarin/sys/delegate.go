@@ -100,6 +100,38 @@ func (r *SyscallRequest) Reply(returnVal int64) {
 		0, 0, 0)
 }
 
+// ReleaseDelegatePage unmaps and frees a data page that was mapped into this
+// shepherd's address space by a pipe-buffered Write delegate. Called by the
+// Write handler after the bytes have been consumed — replaces r.Reply() for
+// Write (where the caller does not block waiting for a reply; the kernel
+// returned the byte count immediately at delegate time).
+//
+// va must be the page-aligned handler VA from r.DataVA().
+func ReleaseDelegatePage(va uintptr, numPages int) {
+	if va == 0 || numPages <= 0 {
+		return
+	}
+	RawSyscall(mazzy.SysReleaseDelegatePage, va, uintptr(numPages), 0, 0, 0, 0)
+}
+
+// RegisterStdioWriteRing routes pipe-buffered Writes (Write fd<=2) to a
+// dedicated ring on the Write handler. Without this, both pipe-buffered
+// Writes and blocking delegates share the handler's default ring, and
+// any backpressure on the blocking-delegate side stalls stdio (and vice
+// versa). The handler must already have a separate `uring.Setup(ringIdx)`
+// + dispatcher reading from this ring before calling.
+func RegisterStdioWriteRing(ringIdx int) error {
+	r1, _, errno := RawSyscall(mazzy.SysRegisterStdioWriteRing,
+		uintptr(ringIdx), 0, 0, 0, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	if int64(r1) < 0 {
+		return errFromR1(r1)
+	}
+	return nil
+}
+
 // LoadFileReply sends the return value and file result back to the blocked caller.
 // For LoadFile: the kernel writes (targetVA, numPages, bytesRead) to the caller's
 // LoadFileResult struct before waking the caller.

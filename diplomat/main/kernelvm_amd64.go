@@ -159,11 +159,31 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 	printHex(vm.HeapPagePoolEnd)
 	printString("\r\n")
 
-	// Step 4: Compute unified pool (remaining RAM for kmazarin's allocator)
-	unifiedPoolPages := uint64(655360) // 655360 pages (2560MB / 2.5GB)
-	unifiedPhys, err := allocatePhysPages(unifiedPoolPages)
-	if err != nil {
-		printString("Unified pool alloc FAILED\r\n")
+	// Step 4: Compute unified pool (remaining RAM for kmazarin's allocator).
+	// On QEMU TCG x86_64 the linear-map cap (4GB, see linearMapMaxPA) plus
+	// UEFI's load placement can leave less than 2.5 GB of *contiguous* low RAM
+	// free. Try the ideal size first, then halve down until UEFI can satisfy
+	// the request. The pool is the kernel's whole runtime heap, so smaller is
+	// fine — just smaller.
+	poolSizes := [...]uint64{
+		655360, // 2.5 GB
+		393216, // 1.5 GB
+		262144, // 1.0 GB
+		131072, // 512 MB
+		65536,  // 256 MB
+	}
+	var unifiedPoolPages uint64
+	var unifiedPhys uint64
+	var allocErr error
+	for _, n := range poolSizes {
+		unifiedPhys, allocErr = allocatePhysPages(n)
+		if allocErr == nil {
+			unifiedPoolPages = n
+			break
+		}
+	}
+	if allocErr != nil {
+		printString("Unified pool alloc FAILED (even at 256MB)\r\n")
 		vm.UnifiedPoolStart = 0
 		vm.UnifiedPoolEnd = 0
 	} else {
@@ -173,7 +193,9 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 		printHex(vm.UnifiedPoolStart)
 		printString("-")
 		printHex(vm.UnifiedPoolEnd)
-		printString("\r\n")
+		printString(" (")
+		printHex(unifiedPoolPages)
+		printString(" pages)\r\n")
 	}
 
 	// Step 5: Get current UEFI PML4 from CR3

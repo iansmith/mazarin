@@ -287,14 +287,21 @@ func enableWriteProtect()
 // physAddrResult is a global to avoid heap allocation for the UEFI out-parameter.
 var physAddrResult uint64
 
-// allocatePhysPages allocates physical pages from UEFI boot services
+// allocatePhysPages allocates physical pages from UEFI boot services.
+//
+// Uses AllocateMaxAddress to constrain UEFI to PAs below linearMapMaxPA (4GB),
+// the cap of the linear map (KernelVAOffset = 0xFFFFFFFF00000000 wraps for
+// PA >= 4GB). With AllocateAnyPages, UEFI on machines with >4GB RAM tends to
+// hand back pages above 4GB; the buddy allocator then sees end clamped to
+// 4GB while start stays high, end-start underflows, and every order-0
+// allocation returns OOM at kernel entry.
 //
 //go:nosplit
 func allocatePhysPages(numPages uint64) (uint64, error) {
 	debugPortOut('P')
-	physAddrResult = 0
+	physAddrResult = linearMapMaxPA - 1
 	debugPortOut('Q')
-	status := plat.AllocatePages(AllocateAnyPages, EfiLoaderData, numPages, &physAddrResult)
+	status := plat.AllocatePages(AllocateMaxAddress, EfiLoaderData, numPages, &physAddrResult)
 	debugPortOut('S')
 	if status != EFI_SUCCESS {
 		return 0, &errAllocatePagesFailed

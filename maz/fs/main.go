@@ -81,6 +81,15 @@ func main() {
 	ext2.ReadIntoTimingHook = nil
 	ext2.ReadBlocksTimingHook = nil
 
+	// Diagnostic: log dirent-block invariant violations after each
+	// addDirEntry/removeDirEntry. The wrapper only invokes this hook
+	// when verifyDirInvariants returns non-nil; successful operations
+	// are silent.
+	ext2.DirVerifyHook = func(parentInum uint32, op string, err error) {
+		fmt.Printf("[ext2:dir-verify FAIL] parent=%d op=%s err=%v\n",
+			parentInum, op, err)
+	}
+
 	// Experiment 3: Enable per-syscall tracing for this SID around large readBlocks.
 	// Magic marker 0xDB6 sets kernel DbgTraceSID via DebugPrint syscall.
 	var fsSID atomic.Int32
@@ -266,7 +275,6 @@ func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 		req.Reply(-5) // EIO
 		return
 	}
-
 	req.LoadFileReply(0, uint64(targetVA), uint64(numPages), uint64(bytesRead))
 }
 

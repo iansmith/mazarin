@@ -19,23 +19,7 @@ type fsHandle struct {
 	size  uint32
 	ftype uint8 // ext2.FTFile or ext2.FTDir
 	isDir bool
-	path  string // original open path — used by tmpTrace to gate diagnostics
-}
-
-// tmpTrace prints a single-line diagnostic when the path lives under /tmp.
-// Used to capture the fs operation sequence preceding bleve's SCORCH ENOENT
-// errors (Bug B in findings.md).
-//
-// Safe to call from inside an IPC handler: linux's delegate dispatcher peels
-// fd≤2 Writes onto a stdout lane that doesn't block on fsclient, so fs can
-// log during a handler without deadlocking against linux waiting for our
-// response. See findings.md "Fs ↔ Linux Delegate Handler Deadlock".
-func tmpTrace(format string, args ...any) {
-	fmt.Printf("[fs:tmp] "+format+"\n", args...)
-}
-
-func isTmpPath(p string) bool {
-	return len(p) >= 4 && p[:4] == "/tmp" && (len(p) == 4 || p[4] == '/')
+	path  string // recorded for diagnostic prints when read returns EISDIR
 }
 
 // fsIPCConn tracks one connected shepherd's IPC state.
@@ -132,7 +116,7 @@ func (s *fsIPCServer) processRequest(raw fsIPCRequest, mt *mountTable) {
 	case ipc.FSOpOpen:
 		s.ipcOpen(conn, req, &resp, mt)
 	case ipc.FSOpClose:
-		s.ipcClose(conn, req, &resp)
+		s.ipcClose(conn, req, &resp, mt)
 	case ipc.FSOpRead:
 		s.ipcRead(conn, req, &resp, mt)
 	case ipc.FSOpWrite:
@@ -224,11 +208,6 @@ func (s *fsIPCServer) ipcOpen(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *i
 		if err == ext2.ErrNotFound && (flags&oCREAT) != 0 {
 			f, createErr := fsys.Create(relPath, mode|ext2.PermOwnerRW)
 			if createErr != nil {
-				if isTmpPath(path) {
-					tmpTrace("OPEN+CREAT FAIL path=%s rel=%s create=%v", path, relPath, createErr)
-				}
-				fmt.Printf("[fs:open] O_CREAT failed: path=%s rel=%s resolve=%v create=%v\n",
-					path, relPath, err, createErr)
 				resp.Err = ext2ToErrno(createErr)
 				return
 			}
@@ -239,15 +218,10 @@ func (s *fsIPCServer) ipcOpen(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *i
 				resp.Err = -24 // EMFILE
 				return
 			}
-			if isTmpPath(path) {
-				tmpTrace("OPEN+CREAT ok path=%s inum=%d handle=%d", path, h.inum, handle)
-			}
+			fsys.PinInode(h.inum)
 			resp.Result0 = uint64(handle)
 			resp.Result1 = uint64(h.ftype)<<32 | uint64(h.size)
 			return
-		}
-		if isTmpPath(path) {
-			tmpTrace("OPEN FAIL path=%s rel=%s flags=0x%x err=%v", path, relPath, flags, err)
 		}
 		resp.Err = ext2ToErrno(err)
 		return
@@ -266,14 +240,17 @@ func (s *fsIPCServer) ipcOpen(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *i
 		resp.Err = -24
 		return
 	}
-	if isTmpPath(path) {
-		tmpTrace("OPEN ok path=%s inum=%d size=%d handle=%d isDir=%v", path, h.inum, h.size, handle, h.isDir)
-	}
+	fsys.PinInode(h.inum)
 	resp.Result0 = uint64(handle)
 	resp.Result1 = uint64(h.ftype)<<32 | uint64(h.size)
 }
 
-func (s *fsIPCServer) ipcClose(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload) {
+func (s *fsIPCServer) ipcClose(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {
+	if h := conn.getHandle(req.Handle); h != nil {
+		if err := mt.getFS(h.kind).UnpinInode(h.inum); err != nil {
+			fmt.Printf("[fs:ipc] UnpinInode(%d) failed: %v\n", h.inum, err)
+		}
+	}
 	conn.freeHandle(req.Handle)
 }
 
@@ -300,6 +277,13 @@ func (s *fsIPCServer) ipcRead(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *i
 	_ = f.Seek(uint64(offset))
 	n, err := f.Read(area[:count])
 	if err != nil && err != ext2.ErrEndOfFile {
+		// Diagnostic: scorch merger has been mmap'ing handles whose
+		// inum points at a directory — log path/inum/ftype/isDir to
+		// identify the bad open.
+		if err == ext2.ErrNotFile {
+			fmt.Printf("[fs:read EISDIR] handle=%d path=%q inum=%d ftype=%d isDir=%v openSize=%d offset=%d count=%d\n",
+				req.Handle, h.path, h.inum, h.ftype, h.isDir, h.size, offset, count)
+		}
 		resp.Err = ext2ToErrno(err)
 		return
 	}
@@ -329,19 +313,10 @@ func (s *fsIPCServer) ipcWrite(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *
 	_ = f.Seek(uint64(offset))
 	n, err := f.Write(area[:count])
 	if err != nil {
-		if isTmpPath(h.path) {
-			tmpTrace("WRITE FAIL handle=%d path=%s off=%d count=%d err=%v",
-				req.Handle, h.path, offset, count, err)
-		}
 		resp.Err = ext2ToErrno(err)
 		return
 	}
 	h.size = f.Size()
-	// Note: successful WRITE is intentionally NOT traced — bleve does
-	// tens of thousands of writes per import and tmpTrace goes to UART
-	// (slow polled output). Tracing every write blocks fs.maz on UART
-	// drain and freezes the whole system. WRITE FAIL is still traced
-	// because failures are rare and diagnostically valuable.
 	resp.Result0 = uint64(n)
 }
 
@@ -399,13 +374,6 @@ func (s *fsIPCServer) ipcRemove(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp 
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 	err := fsys.Remove(relPath)
-	if isTmpPath(path) {
-		if err != nil {
-			tmpTrace("REMOVE FAIL path=%s err=%v", path, err)
-		} else {
-			tmpTrace("REMOVE ok path=%s", path)
-		}
-	}
 	resp.Err = ext2ToErrno(err)
 }
 
@@ -446,13 +414,6 @@ func (s *fsIPCServer) ipcRename(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp 
 	}
 	fsys := mt.getFS(oldKind)
 	err := fsys.Rename(oldRel, newRel)
-	if isTmpPath(oldPath) || isTmpPath(newPath) {
-		if err != nil {
-			tmpTrace("RENAME FAIL old=%s new=%s err=%v", oldPath, newPath, err)
-		} else {
-			tmpTrace("RENAME ok old=%s new=%s", oldPath, newPath)
-		}
-	}
 	resp.Err = ext2ToErrno(err)
 }
 

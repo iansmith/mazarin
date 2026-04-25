@@ -2,7 +2,17 @@ package ext2
 
 import (
 	"encoding/binary"
+	"fmt"
 )
+
+// DirVerifyHook, if non-nil, is invoked after addDirEntry/removeDirEntry
+// detects a corrupt parent directory. fs.maz wires up a Printf-based hook
+// during diagnostic runs to identify in-flight dirent corruption.
+//
+// Receives the parent inode number, the operation that just completed
+// (e.g. "add:foo.zap" / "remove:foo.zap"), and the first invariant
+// violation found in the parent's dir blocks.
+var DirVerifyHook func(parentInum uint32, op string, err error)
 
 // ErrReadOnly is returned when a write operation is attempted on a read-only mount.
 var ErrReadOnly = &Ext2Error{"filesystem mounted read-only"}
@@ -237,6 +247,16 @@ func (fs *FileSystem) freeInodeBlocks(inode *Inode) error {
 
 // addDirEntry adds a directory entry to the directory owned by parentInum.
 func (fs *FileSystem) addDirEntry(parentInum uint32, name string, childInum uint32, fileType uint8) error {
+	err := fs.addDirEntryImpl(parentInum, name, childInum, fileType)
+	if DirVerifyHook != nil {
+		if vErr := fs.verifyDirInvariants(parentInum); vErr != nil {
+			DirVerifyHook(parentInum, "add:"+name, vErr)
+		}
+	}
+	return err
+}
+
+func (fs *FileSystem) addDirEntryImpl(parentInum uint32, name string, childInum uint32, fileType uint8) error {
 	parent, err := fs.ReadInode(parentInum)
 	if err != nil {
 		return err
@@ -308,6 +328,16 @@ func (fs *FileSystem) addDirEntry(parentInum uint32, name string, childInum uint
 // removeDirEntry removes a directory entry by name from the directory.
 // It merges the removed entry's space into the previous entry's RecLen.
 func (fs *FileSystem) removeDirEntry(parentInum uint32, name string) error {
+	err := fs.removeDirEntryImpl(parentInum, name)
+	if DirVerifyHook != nil {
+		if vErr := fs.verifyDirInvariants(parentInum); vErr != nil {
+			DirVerifyHook(parentInum, "remove:"+name, vErr)
+		}
+	}
+	return err
+}
+
+func (fs *FileSystem) removeDirEntryImpl(parentInum uint32, name string) error {
 	parent, err := fs.ReadInode(parentInum)
 	if err != nil {
 		return err
@@ -416,7 +446,9 @@ func (fs *FileSystem) WriteFile(path string, data []byte, mode uint16) error {
 		return err
 	}
 
-	// Check if file exists — if so, remove and recreate
+	// Check if file exists — if so, remove and recreate. Dirent first so
+	// path lookups see ENOENT immediately; defer the bitmap/inode/blocks
+	// free if any open handle still pins the inum (Linux unlink-while-open).
 	if de, err := fs.LookupDir(parentInum, name); err == nil {
 		inode, err := fs.ReadInode(de.Inode)
 		if err != nil {
@@ -425,18 +457,26 @@ func (fs *FileSystem) WriteFile(path string, data []byte, mode uint16) error {
 		if inode.IsDir() {
 			return ErrNotFile
 		}
-		if err := fs.freeInodeBlocks(inode); err != nil {
-			return err
-		}
-		var zeroInode Inode
-		if err := fs.WriteInode(de.Inode, &zeroInode); err != nil {
-			return err
-		}
-		if err := fs.freeInode(de.Inode); err != nil {
-			return err
-		}
 		if err := fs.removeDirEntry(parentInum, name); err != nil {
 			return err
+		}
+		fs.pinMu.Lock()
+		pinned := fs.isInodePinnedLocked(de.Inode)
+		if pinned {
+			fs.markPendingFreeLocked(de.Inode)
+		}
+		fs.pinMu.Unlock()
+		if !pinned {
+			if err := fs.freeInodeBlocks(inode); err != nil {
+				return err
+			}
+			var zeroInode Inode
+			if err := fs.WriteInode(de.Inode, &zeroInode); err != nil {
+				return err
+			}
+			if err := fs.freeInode(de.Inode); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -607,6 +647,24 @@ func (fs *FileSystem) Remove(path string) error {
 		fs.groups[g].UsedDirsCount--
 	}
 
+	// Remove the directory entry first so subsequent path lookups return
+	// ENOENT immediately (Linux unlink semantics). Then either reclaim
+	// inode/blocks/bitmap now, or defer the reclaim if an open handle
+	// still pins the inum.
+	if err := fs.removeDirEntry(parentInum, name); err != nil {
+		return err
+	}
+
+	fs.pinMu.Lock()
+	pinned := fs.isInodePinnedLocked(de.Inode)
+	if pinned {
+		fs.markPendingFreeLocked(de.Inode)
+	}
+	fs.pinMu.Unlock()
+	if pinned {
+		return nil
+	}
+
 	// Free data blocks
 	if err := fs.freeInodeBlocks(inode); err != nil {
 		return err
@@ -619,12 +677,7 @@ func (fs *FileSystem) Remove(path string) error {
 	}
 
 	// Free inode in bitmap
-	if err := fs.freeInode(de.Inode); err != nil {
-		return err
-	}
-
-	// Remove directory entry
-	return fs.removeDirEntry(parentInum, name)
+	return fs.freeInode(de.Inode)
 }
 
 // Rename moves/renames a file or directory from oldPath to newPath.
@@ -648,7 +701,8 @@ func (fs *FileSystem) Rename(oldPath, newPath string) error {
 		return err
 	}
 
-	// If target exists, remove it first
+	// If target exists, remove it first. Dirent goes first; defer
+	// bitmap/blocks reclaim if the inum is pinned by an open handle.
 	if existDe, err := fs.LookupDir(newParent, newName); err == nil {
 		existInode, err := fs.ReadInode(existDe.Inode)
 		if err != nil {
@@ -658,14 +712,22 @@ func (fs *FileSystem) Rename(oldPath, newPath string) error {
 			// Can't overwrite a directory
 			return ErrExists
 		}
-		if err := fs.freeInodeBlocks(existInode); err != nil {
-			return err
-		}
-		if err := fs.freeInode(existDe.Inode); err != nil {
-			return err
-		}
 		if err := fs.removeDirEntry(newParent, newName); err != nil {
 			return err
+		}
+		fs.pinMu.Lock()
+		pinned := fs.isInodePinnedLocked(existDe.Inode)
+		if pinned {
+			fs.markPendingFreeLocked(existDe.Inode)
+		}
+		fs.pinMu.Unlock()
+		if !pinned {
+			if err := fs.freeInodeBlocks(existInode); err != nil {
+				return err
+			}
+			if err := fs.freeInode(existDe.Inode); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -852,3 +914,102 @@ func (fs *FileSystem) ResolveInode(path string) (uint32, error) {
 	return de.Inode, nil
 }
 
+// verifyDirInvariants walks every dir block belonging to parentInum and
+// checks the on-disk dirent layout against ext2 invariants:
+//
+//   - every entry's RecLen >= DirEntryRealSize(NameLen)
+//   - every entry's RecLen fits within the remaining block bytes
+//   - the sum of RecLens in a block equals exactly fs.blockSize
+//     (the last entry's RecLen extends to fill the block)
+//   - among entries with Inode != 0, names are unique
+//   - each Inode != 0 references an in-range inode whose on-disk type
+//     matches the entry's FileType field
+//
+// Returns the first invariant violation found, with enough context to
+// identify the bad block / offset. Designed for diagnostic use only —
+// gated behind DirVerifyHook so it's a no-op when the hook is unset.
+func (fs *FileSystem) verifyDirInvariants(parentInum uint32) error {
+	parent, err := fs.ReadInode(parentInum)
+	if err != nil {
+		return fmt.Errorf("ReadInode parent=%d: %w", parentInum, err)
+	}
+	if !parent.IsDir() {
+		return nil
+	}
+
+	blocksUsed := parent.Size / fs.blockSize
+	buf := make([]byte, fs.blockSize)
+	seen := make(map[string]struct{})
+
+	for i := uint32(0); i < blocksUsed; i++ {
+		blockNum, err := fs.inodeBlockNum(parent, i)
+		if err != nil {
+			return fmt.Errorf("inodeBlockNum block=%d: %w", i, err)
+		}
+		if blockNum == 0 {
+			continue // sparse — not expected in a dir, but skip if so
+		}
+		if err := fs.readBlock(blockNum, buf); err != nil {
+			return fmt.Errorf("readBlock block=%d phys=%d: %w", i, blockNum, err)
+		}
+
+		offset := uint16(0)
+		for offset < uint16(fs.blockSize) {
+			if int(offset)+DirEntryHeaderSize > int(fs.blockSize) {
+				return fmt.Errorf("block=%d offset=%d: header would overrun block", i, offset)
+			}
+			de, _, derr := UnmarshalDirEntry(buf[offset:])
+			if derr != nil {
+				return fmt.Errorf("block=%d offset=%d: unmarshal: %w", i, offset, derr)
+			}
+			if de.RecLen == 0 {
+				return fmt.Errorf("block=%d offset=%d: zero RecLen", i, offset)
+			}
+			minSize := DirEntryRealSize(int(de.NameLen))
+			if de.RecLen < minSize {
+				return fmt.Errorf("block=%d offset=%d: RecLen=%d < min=%d (NameLen=%d)",
+					i, offset, de.RecLen, minSize, de.NameLen)
+			}
+			if int(offset)+int(de.RecLen) > int(fs.blockSize) {
+				return fmt.Errorf("block=%d offset=%d: RecLen=%d overruns block end",
+					i, offset, de.RecLen)
+			}
+			if de.Inode != 0 {
+				if _, dup := seen[de.Name]; dup {
+					return fmt.Errorf("block=%d offset=%d: duplicate name %q in dir %d",
+						i, offset, de.Name, parentInum)
+				}
+				seen[de.Name] = struct{}{}
+				if de.Inode > fs.sb.InodesCount {
+					return fmt.Errorf("block=%d offset=%d: name=%q inode=%d > total=%d",
+						i, offset, de.Name, de.Inode, fs.sb.InodesCount)
+				}
+				if de.FileType != 0 {
+					childInode, ierr := fs.ReadInode(de.Inode)
+					if ierr != nil {
+						return fmt.Errorf("block=%d offset=%d: name=%q ReadInode(%d): %w",
+							i, offset, de.Name, de.Inode, ierr)
+					}
+					actual := uint8(FTFile)
+					switch {
+					case childInode.IsDir():
+						actual = FTDir
+					case childInode.Mode == 0:
+						return fmt.Errorf("block=%d offset=%d: name=%q inode=%d has Mode=0 (freed?)",
+							i, offset, de.Name, de.Inode)
+					}
+					if de.FileType != actual {
+						return fmt.Errorf("block=%d offset=%d: name=%q FileType=%d but inode=%d Mode=0x%x says actual=%d",
+							i, offset, de.Name, de.FileType, de.Inode, childInode.Mode, actual)
+					}
+				}
+			}
+			offset += de.RecLen
+		}
+		if offset != uint16(fs.blockSize) {
+			return fmt.Errorf("block=%d: RecLen sum=%d != blockSize=%d",
+				i, offset, fs.blockSize)
+		}
+	}
+	return nil
+}

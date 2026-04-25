@@ -2,6 +2,7 @@ package ext2
 
 import (
 	"encoding/binary"
+	"sync"
 	"time"
 
 	"mazzy/shared/blockdev"
@@ -23,6 +24,14 @@ type FileSystem struct {
 	writable     bool
 	blockBitmaps [][]byte // one bitmap per group
 	inodeBitmaps [][]byte // one bitmap per group
+
+	// Open-handle reference counts for Linux unlink-while-open semantics.
+	// When freeInode is requested while an inum is pinned, the dirent is
+	// removed but bitmap + on-disk inode + data blocks are kept alive
+	// until the last UnpinInode drops refs to zero.
+	pinMu          sync.Mutex
+	inodeRefs      map[uint32]int  // inum → open count
+	pendingFreeSet map[uint32]bool // inum → free-when-refs-hit-zero
 }
 
 // Mount mounts an ext2 filesystem from a block device (read-only).
@@ -45,6 +54,8 @@ func MountRW(device blockdev.BlockDevice) (*FileSystem, error) {
 		return nil, err
 	}
 	fs.writable = true
+	fs.inodeRefs = make(map[uint32]int)
+	fs.pendingFreeSet = make(map[uint32]bool)
 	return fs, nil
 }
 

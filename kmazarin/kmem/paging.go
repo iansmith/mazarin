@@ -2217,6 +2217,7 @@ func UnmapUserPage(va uintptr) uintptr {
 	// Get PA before clearing
 	pa := pteExtractPA(l3Entry)
 
+
 	// Clear the L3 entry (unmap the page)
 	*l3EntryPtr = 0
 
@@ -2311,6 +2312,7 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 
 	// Get PA before clearing
 	pa := pteExtractPA(l3Entry)
+
 
 	// Clear the L3 entry (unmap the page)
 	*l3EntryPtr = 0

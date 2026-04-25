@@ -302,6 +302,7 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 	winX, winY := screenOrigin(ta) // top-left of full buffer on screen
 
 	blitDbgCount++
+
 	// Log first 3 blits per SID for debugging.
 	if blitDbgCount <= 3 {
 		nonZero := 0

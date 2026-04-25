@@ -1,16 +1,338 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: mail-dumb easy part (resumed 2026-04-24)
+## TOP OF STACK: fs.maz concurrency design (2026-04-24)
 
-Back on mail-dumb easy part after a diversion to fix the fs↔linux delegate
-deadlock (see progress.md "Session 2026-04-24" and findings.md
+Diversion #1 (RISC-V removal) is **DONE** — all six phases R1–R6
+completed and verified, plus a fix for a latent x86_64 boot OOM
+uncovered during R6 verification. See progress.md "Session: 2026-04-24
+(later)" for the full execution log, R1–R6 detail, and x86_64 OOM
+write-up. Removal plan preserved further down ("RISC-V Removal —
+Phases R1–R6") for the historical record.
+
+Now on diversion #2 (preempted to diversion #3):
+- **#2 fs.maz concurrency design** — paper only, no implementation.
+  Placeholder section below ("fs.maz Concurrency — Design Sketch").
+- **#3 Windows-not-shown investigation (ACTIVE)** — started 2026-04-24.
+  Surface-level fixes applied but all three are workarounds for what
+  looks like a single underlying scheduling bug. See progress.md
+  "Session: 2026-04-24 (even later)" for the full diagnostic trail.
+
+Mail-dumb easy part resumes after both diversions complete.
+
+### Diversion #3: Windows-not-shown (PIPE-BUFFERED WRITE LANDED; follow-up bug #4)
+
+- **Pipe-buffered Write delegation landed.** `DelegateSyscall`
+  for `sysid.Write` now skips `blockForDelegatedSyscall` and
+  returns byte count immediately; handler releases the shared
+  data page via new `SysReleaseDelegatePage`. Matches Linux pipe
+  semantics.
+- **Windows appear** on ARM64 HVF (user confirmed linux-ui
+  visible for 1-2 seconds).
+- **All three earlier workarounds reverted** (Gosched, async
+  LaunchMaz, fontsvc preload).
+
+### Diversion #4: Fstatat DataVA fault — FIXED
+
+Originally treated as a caller-death race; partial fix added a
+`CallerDead` flag + a defensive `SysVerifyMapping` syscall.
+
+**Real root cause** (2026-04-24): the kernel pipe-buffered ALL
+`Write` delegates regardless of fd. fd>2 Writes are routed to
+linux's *file lane* which calls `req.Reply(...)`. That spurious
+`SyscallReply` lands on whatever delegate the caller-TID is
+*currently* blocked on (often a later `Fstatat`), unmapping the
+other syscall's data page and waking the caller with the wrong
+return value. Manifested as bleve mkdir ENOTDIR panic.
+
+Fix: `pipeBuffered := id == sysid.Write && arg0 <= 2`.
+The defensive `SysVerifyMapping` was removed (dead weight once
+the spurious-Reply root cause was fixed). `CallerDead` flag was
+kept — it handles a separate genuine caller-death-during-IPC
+race independently.
+
+### Diversion #5: linux-ui window disappearing — FIXED
+
+linux-ui window appeared for 1-2s then vanished. Linux shepherd
+itself was alive; only the .maz-side runLoop was frozen.
+
+Root cause: `linuxapp.runLoop` blocks in `select(wmCh, eagerCh,
+notifyCh)`. linux-ui returned no `NotifyCh` from `BuildResult` →
+framework swapped in a never-firing dummy chan. After startup
+constraints settled, the only sources of wakeups went silent and
+the loop slept forever even though `writeCh` was full of
+fti/maildb console output.
+
+Fix: matched the pattern mail-ui uses (`maildbio.NotifyChannel`).
+`linuxio.LinuxIO` gains `NotifyChannel()`, linux-ui creates the
+channel in `MazarinShepherd`, linux shepherd's lineAccumulator
+non-blocking-pokes after each `writeCh` send. Verified post-fix
+by `blit#500 sid=N title="Linux Console"` in 90s HVF run.
+
+### Diversion #6: Bleve scorch EISDIR mmap-fill (ACTIVE — task #7)
+
+With linux-ui notify fix in place, recurring fti panic surfaces
+clearly. Trace just before panic:
+
+```
+[mmap-fill] sid=N fd=M offset=0 READ ERR: errno -21
+[fti] SCORCH ASYNC ERROR: source: merger, async panic
+[fti] PANIC in handleIndexDocument — marking index corrupted
+```
+
+Errno -21 = EISDIR. Scorch merger mmap'd what should be a `.zap`
+segment file but kernel served a directory. After the panic
+`h.corrupted=true` sticks and all subsequent `Index()` calls
+fail. User-visible symptom is mail throbber freeze + click
+unresponsive (mail's body fetch path waits on a fti that can
+never reply cleanly).
+
+The 2026-04-22 persister-panic fix was for write-side incoherence;
+this is a different recurrence on the read-side mmap-fill path.
+
+Investigation plan:
+1. Read `sysMmapPageFill` in `maz/linux/syscalls.go` to see what
+   path it takes to `fs.Read`/`fs.ReadFilePages`.
+2. Identify which fd is being faulted (which scorch code path
+   opened the file; check whether the fd actually points to a
+   regular file or to a directory).
+3. Add a one-shot trace in fs-side ipcRead/ipcOpen to log the
+   inode + ftype when EISDIR is about to be returned.
+4. Find the resolution gap — likely a path-component handling
+   issue in fsclient or fs IPC.
+
+**Symptom:** `[rachel:wm] event loop started` fires on both arches,
+no `AppStart` ever arrives. Background framebuffer color visible,
+no window chrome.
+
+**Current state (workarounds in the tree, real bug still open):**
+- `maz/linux/main.go`: `runtime.Gosched()` after
+  `go mazhost.RunMaz(uiMain)`; `mazhost.LaunchMaz("helloworld")`
+  now runs in its own goroutine.
+- `maz/fontsvc/main.go`: `MazarinMain` calls `ensureFontIndex()` so
+  `fonts.csv` is loaded upfront.
+
+With those, linux-ui reaches Bootstrap and issues its first
+`fc.OpenFaceByName` → `sys.LoadFile("/fonts/AtkinsonHyperlegibleMono-
+Regular.otf")`. fs reads the file, calls `fmt.Printf(...)` which
+delegates Write to linux. System stalls there.
+
+**Root cause, narrowed but not nailed:** goroutines become
+un-runnable after what should be a wake.
+- fs's `syscall.Write` → `uringSendKernel` to linux ring 1 succeeds.
+- Linux ring 1 reader thread woken (`[DLG:wake] woke tid=X`).
+- Reader goroutine never runs its handler after the wake.
+
+**Root cause (revised after user challenge):** Linux emulation gap
+in `write(fd=1)` delegation. Linux returns fast (pipe buffer),
+Mazzy blocks caller until handler replies (`blockForDelegatedSyscall`
+→ `ThreadBlockedDelegate` → `SyscallReply`). This sync coupling
+closes a cycle at linux-ui's first font IPC:
+  rachel's uring-reader blocked in sys.LoadFile callback →
+  fs blocked in fmt.Printf Write delegate →
+  linux-ui blocked waiting for rachel's OpenFont reply.
+
+The earlier "runnable-G-without-M" diagnosis was wrong — that came
+from a panic snapshot, not normal stall. Go's wakep works fine.
+Retracted.
+
+**Next steps for this diversion:**
+1. Change Write (and Writev) delegation to be buffer-based and
+   non-blocking, matching a Linux pipe write. Concretely:
+   - `DelegateSyscall` for `sysid.Write`/`sysid.Pwrite64`/`sysid.Writev`
+     should copy caller bytes into a kernel-managed ring owned by
+     the handler shepherd and return to the caller immediately
+     (with bytes-written count).
+   - Handler's drain goroutine consumes from the ring at its own
+     pace (replace today's per-write uring send).
+   - Backpressure only when the ring is truly full — and even then,
+     block pipe-style (entersyscallblock-friendly), not via the
+     delegate-blocking path.
+   - Preserve today's "kernel echo bytes to PL011 TX ring first"
+     behavior so serial monitoring still works.
+2. Once fix in place:
+   - Remove `runtime.Gosched()` after `go mazhost.RunMaz(uiMain)` in
+     `maz/linux/main.go`.
+   - Restore `mazhost.LaunchMaz("helloworld")` to synchronous.
+   - Revert fontsvc's `MazarinMain` `ensureFontIndex()` preload (or
+     keep as pure cleanup, it's defensible on its own merit).
+   - Confirm windows appear on ARM64 HVF and x86_64 in a 60s run
+     with none of the workarounds.
+3. Consider whether same async-buffered pattern applies to Read
+   (probably not — Read needs to block when no data). Document
+   which delegate syscalls need which semantics.
+
+Prior status preserved further down.
+
+---
+
+## RISC-V Removal — Phases R1–R6 (2026-04-24)
+
+**Why:** riscv64 has been a third-tier target. The mazlink/mazdl plugin
+loader work (which is replacing the legacy .maz path) explicitly carved
+riscv64 out — "riscv64 stays on legacy .maz+maz-reloc path" (Decisions Made
+table). Continuing to maintain that legacy path on a third arch is dead
+weight. Cutting it shrinks the surface area before we design fs.maz
+concurrency and resume mail.
+
+**Survey result (see findings.md "RISC-V Footprint Survey 2026-04-24"):**
+~98 `*riscv64*` files, 23 files with combined build tags needing surgical
+edits, 3 TOML configs, 1 dedicated directory (`kmazarin/arch/riscv64/`),
+11 Taskfile targets across root + 2 sub-Taskfiles, scattered tooling
+constants (mkesp, gen-ast-stubs, fix-go-elf, sysid). CLAUDE.md has 7
+references. No mazlink/mazdl entanglement.
+
+### Phase R1: Build & run plumbing
+Goal: nothing on the build/run path can target RISC-V anymore. Failures
+here surface immediately as "task not found" rather than silent breakage.
+
+- `Taskfile.yml` (root): delete `run-riscv64`, `run-riscv64-background`,
+  `run-riscv64-direct`, `run-riscv64-direct-background`, `stop-riscv64`,
+  `stop-riscv64-direct`, `disk-riscv64`, `boot-riscv64`,
+  `stage-embedded-fs-riscv64`, `stage-kernel-config-riscv64`,
+  `userspace-build-riscv64`, `shepherd-overlay-riscv64`,
+  `merged-shepherd-overlay-riscv64`. Remove RISC-V variables (`OPENSBI`,
+  `QEMU_RISCV64` defaulting, port 4447 helpers).
+- `diplomat/Taskfile.yml`: delete `riscv64` task and any RISC-V-only deps.
+- `kmazarin/Taskfile.yml`: delete `riscv64` task and any RISC-V-only deps.
+- `config/`: delete `kernel.riscv64.toml`, `rachel.riscv64.toml`,
+  `startup.riscv64.toml`.
+
+### Phase R2: Pure-RISC-V source files
+Goal: delete every file that exists only for RISC-V.
+
+- All `*_riscv64.go` and `*_riscv64.s` (and any `*_riscv.go|.s`) — ~98 files
+  spread across `diplomat/main/`, `kmazarin/`, `kmazarin/ksyscall/`,
+  `kmazarin/kmem/`, `kmazarin/kirq/`, `kmazarin/ktimer/`,
+  `kmazarin/device/virtio/`, `shared/constants/`, `shared/fs/fat32/`,
+  `runtime-patches/`, `maz/linux/`, `maz/fs/`, `mazarin/`.
+- Whole directory: `kmazarin/arch/riscv64/` (PLIC driver lives only here).
+- Any `*_riscv64.toml` test fixtures (none expected; verify).
+
+Mechanically safe — these are gated by a pure `//go:build riscv64` tag, so
+deleting them cannot affect arm64/amd64 compilation.
+
+### Phase R3: Combined-tag surgical edits
+Goal: 23 files where `riscv64` appears alongside other arches. Remove the
+RISC-V token without changing behavior on remaining arches. Examples:
+
+- `arm64 || amd64 || riscv64` → `arm64 || amd64` (kmazarin/ds/* etc.)
+- `arm64 || riscv64` → `arm64` (clone.go, soft_irq.go) — also rename file
+  to `_arm64.go` if name was generic.
+- `linux && (amd64 || arm64 || loong64 || riscv64)` →
+  `linux && (amd64 || arm64 || loong64)` (mmap.go, cgo_mmap.go).
+- `tagptr_64bit.go` (`amd64 || arm64 || ... || riscv64 || ...`) — drop
+  `riscv64` from the OR list, keep the rest intact.
+- `!riscv64` negation files (e.g. `maz_name_other.go`) — the negation no
+  longer needs to mention riscv64. Often the negation file collapses into
+  the corresponding `_riscv64.go` removal: if removing the riscv64 file
+  makes the `_other.go` apply universally on the remaining arches, delete
+  the build tag entirely and rename `_other.go` to the natural name.
+
+Each edit is mechanical but needs a human eye for the rename / collapse
+case.
+
+### Phase R4: Tooling and shared constants
+Goal: remove RISC-V dispatch / arch tables / sysid entries from
+cross-arch tooling.
+
+- `cmd/mkesp/main.go`: drop the riscv64 case from the arch dispatch.
+- `cmd/gen-ast-stubs/main.go`: drop `_riscv64` from the suffix list.
+- `cmd/fix-go-elf/inject.go`: drop the JAL-trampoline RISC-V comment
+  block and any RISC-V branch (verify whether there's actual code or
+  only a comment).
+- `cmd/elf2pe/main.go` and `cmd/gen-overlay/main.go`: verify no RISC-V
+  branches; if generic, no edit. (Survey said generic.)
+- `shared/sysid/sysid.go`: drop `RiscvHWProbe` (#258).
+- `shared/constants/addresses_riscv64.go`: file-level delete (Phase R2).
+- Any `safe-serial-read` or other tools with hardcoded RISC-V log paths
+  (verify).
+
+### Phase R5: Docs and memory
+Goal: no stale RISC-V instructions remain.
+
+- `CLAUDE.md`: remove RISC-V from the quick-reference env-vars block
+  (drop `QEMU_RISCV64`), the run-target examples, the QEMU monitor
+  ports section (drop 4447), the "Current Status" RISC-V section, and
+  the RISC-V binary-utility notes if any. Total 7 references per survey.
+- `design/`: survey says no mentions; spot-verify and delete any stragglers.
+- `MEMORY.md` + topic files: re-tag or remove the riscv-specific memory
+  files (riscv_crash_investigation.md, response_test_failures.md
+  riscv portion, zero_guard_false_positive.md, dma_clump_continuation.md
+  riscv portion, phase5_linux_plugin_done.md riscv portion,
+  go126_randomized_heap_base.md riscv portion). Memory edits happen at
+  the end so the removal log itself is recorded first.
+
+### Phase R6: Verification
+Goal: prove nothing on the remaining two arches regressed.
+
+- `$GO tool task` (default arm64 build) clean.
+- `$GO tool task run-x86_64 TIMEOUT=10` clean — kernel boots, no
+  arch-dispatch surprises.
+- `$GO tool task run-arm64-hvf TIMEOUT=10` clean — kernel boots.
+- `git grep -i 'riscv\|riscv64\|opensbi\|plic\|fw_dynamic'` should return
+  only intentional residue (e.g. third-party Go runtime files we don't
+  own). Document any survivors.
+- One smoke-build of `mazlink-smoke-amd64` and `mazlink-smoke` (arm64) to
+  confirm no shared-table edits broke the plugin path.
+
+### Phase order rationale
+R1 → R2 → R3 → R4 → R5 → R6 is the safe order:
+- R1 stops anyone from building riscv64 (surfaces broken state immediately).
+- R2 removes pure-arch files (cannot break other arches).
+- R3 edits combined tags (now `git grep riscv64` catches every survivor).
+- R4 removes tooling support (only safe after sources are gone, otherwise
+  partial-removal regressions).
+- R5 docs (last so we describe the actual state, not the intent).
+- R6 verifies.
+
+### Open questions before coding
+- Is there any external consumer (CI, scripts in another repo, oncall
+  docs) that expects `run-riscv64` to exist? Quick check before R1.
+- The `runtime-patches/` riscv64 files — are any of them actually
+  upstream Go runtime files we shouldn't touch directly? Confirm before
+  Phase R2 (the survey grouped them under "files specific to RISC-V" but
+  they live in the runtime overlay tree).
+
+---
+
+## fs.maz Concurrency — Design Sketch (placeholder, 2026-04-24)
+
+Design only, no implementation. To be filled in after RISC-V removal lands.
+Reference points already in tree:
+
+- `findings.md` "Fs ↔ Linux Delegate Handler Deadlock" — explains why
+  fs.maz today is single-goroutine (per-connection shared data area, no
+  ReqID match on responses, ext2 not thread-safe).
+- The same findings entry sketches what concurrency would require:
+  thread-safe ext2 + per-caller data slots + ReqID-routed responses.
+
+Open design questions to answer in this phase:
+1. Per-request data slot allocation in `fsclient.Client` — pool size,
+   ownership, leak handling.
+2. ReqID matching on the response side — how does `RespCh` become a
+   per-ReqID demux without a goroutine per outstanding request?
+3. ext2 thread-safety scope — full mutex vs. per-inode lock vs. RW lock
+   on directory entries.
+4. Backpressure — when does the caller block? On data-slot exhaustion?
+   On in-flight count?
+5. Interaction with the existing two-lane delegate handler — does the
+   stdout lane still exist as a special case, or does generalized
+   concurrency subsume it?
+
+---
+
+## Prior status (mail-dumb easy part next, after the two diversions)
+
+Originally on mail-dumb easy part after a diversion to fix the fs↔linux
+delegate deadlock (see progress.md "Session 2026-04-24" and findings.md
 "Fs ↔ Linux Delegate Handler Deadlock"). The deadlock fix — two-lane
 delegate handler (stdout vs. file lane) in the linux shepherd — is
 complete, built clean on ARM64 / x86_64, stable in a 60s HVF boot, and
 `fmt.Printf` from fs handlers is now visible on the linux console.
 
-Next: mail-dumb easy part — body display, PageUp/PageDown, mark-read,
-delete, and polish. Status from before the diversion follows.
+Next (after R1–R6 + fs concurrency design): mail-dumb easy part — body
+display, PageUp/PageDown, mark-read, delete, and polish. Status from
+before the diversion follows.
 
 ---
 
