@@ -15,7 +15,13 @@ type HarfBuzzShaper struct {
 	fonts [maxFonts]*harfbuzz.Font
 }
 
-const maxFonts = 32
+// maxFonts caps how many distinct (family, variant, size) combinations a
+// provider/shaper/layout can hold open at once. Embedded mazzy contexts
+// touch a handful of fonts, but host visualtest accumulates ~120+ unique
+// combos across thousands of WPT cases sharing one shared provider, so
+// the cap is sized generously. Memory cost: ~8 bytes per slot × number of
+// per-slot pointer arrays in the package — negligible at this size.
+const maxFonts = 256
 
 // NewHarfBuzzShaper creates a new HarfBuzz-based shaper.
 func NewHarfBuzzShaper() *HarfBuzzShaper {
