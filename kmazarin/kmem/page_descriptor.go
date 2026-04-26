@@ -14,6 +14,7 @@
 package kmem
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
@@ -32,10 +33,11 @@ type PageDescriptor struct {
 
 // PageDescriptor flag bits
 const (
-	PD_PINNED  = 1 << 0 // Do not evict (kernel pages, MMIO, page tables)
-	PD_DIRTY   = 1 << 1 // Software dirty tracking (mirrors HW dirty)
-	PD_SWAPPED = 1 << 2 // Page is swapped out
-	PD_SHARED  = 1 << 3 // Page mapped in multiple address spaces
+	PD_PINNED      = 1 << 0 // Do not evict (kernel pages, MMIO, page tables)
+	PD_DIRTY       = 1 << 1 // Software dirty tracking (mirrors HW dirty)
+	PD_SWAPPED     = 1 << 2 // Page is swapped out
+	PD_SHARED      = 1 << 3 // Page mapped in multiple address spaces
+	PD_FILE_BACKED = 1 << 4 // File-backed mmap: dual-mapped in caller + handler; CleanupShepherdPages Phase 1 skips release so the handler can flush before freeing
 )
 
 // PageShift is log2(PageSize) for PFN calculation.
@@ -250,5 +252,72 @@ func LogPagesByOwnerUART() {
 		SerialHex16(counts[i] * 4)
 		serial.RawUARTPuts(" KB)\r\n")
 	}
+}
+
+// LogPageAudit prints a full audit of physical page descriptor state via klog.
+// Shows per-type counts, which types have pinned pages, dirty-page count, shared
+// pages (RefCount > 1), and per-owner totals. O(pdCapacity) — diagnostics only.
+func LogPageAudit() {
+	if atomic.LoadUint32(&pdInitialized) == 0 {
+		klog.Logf("[kmem] audit: page descriptors not initialized\n")
+		return
+	}
+
+	var countByType [PageTypeCount]uint64
+	var pinnedByType [PageTypeCount]uint64
+	var dirtyCount uint64
+	var sharedCount uint64
+	var totalInUse uint64
+
+	cap := pdCapacity
+	for i := uintptr(0); i < uintptr(cap); i++ {
+		desc := pdAt(i)
+		if desc.Type == 0 {
+			continue
+		}
+		totalInUse++
+		t := desc.Type
+		if t < PageTypeCount {
+			countByType[t]++
+			if desc.Flags&PD_PINNED != 0 {
+				pinnedByType[t]++
+			}
+		}
+		if desc.Flags&PD_DIRTY != 0 {
+			dirtyCount++
+		}
+		if desc.RefCount > 1 {
+			sharedCount++
+		}
+	}
+
+	klog.Logf("[kmem] === page audit === in-use: %d\n", totalInUse)
+	for i := PageType(0); i < PageTypeCount; i++ {
+		if countByType[i] == 0 {
+			continue
+		}
+		if pinnedByType[i] > 0 {
+			klog.Logf("[kmem]   %s: %d pages (%d KiB) [pinned=%d]\n",
+				pageTypeNames[i], countByType[i], countByType[i]*4, pinnedByType[i])
+		} else {
+			klog.Logf("[kmem]   %s: %d pages (%d KiB)\n",
+				pageTypeNames[i], countByType[i], countByType[i]*4)
+		}
+	}
+	if dirtyCount > 0 {
+		klog.Logf("[kmem]   dirty: %d pages\n", dirtyCount)
+	}
+	if sharedCount > 0 {
+		klog.Logf("[kmem]   shared (RefCount>1): %d pages\n", sharedCount)
+	}
+
+	counts := PagesByOwner()
+	for i := 0; i < MaxOwners; i++ {
+		if counts[i] == 0 {
+			continue
+		}
+		klog.Logf("[kmem]   SID=%d: %d pages (%d KiB)\n", i, counts[i], counts[i]*4)
+	}
+	klog.Logf("[kmem] === end page audit ===\n")
 }
 

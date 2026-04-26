@@ -7,7 +7,6 @@ import (
 	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/ktimer"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/hid"
 	"mazzy/shared/iouring"
@@ -68,10 +67,12 @@ var topHalfMouse topHalfDev
 var topHalfTablet topHalfDev
 
 // softIRQRingSize must be a power of 2 for mask-based indexing.
+// 4096 gives the UART ring enough headroom for multi-line klog output
+// (e.g. LogPageAudit) without dropping bytes between goroutine yields.
 // 256 entries: small enough that the ring empties between processing cycles,
 // forcing the consumer to block periodically (releasing the Go runtime P).
 // A larger ring causes the consumer to monopolize the P during heavy input.
-const softIRQRingSize = 256
+const softIRQRingSize = 4096
 
 // softIRQRing is an SPSC ring buffer for delivering HID events from
 // the nosplit top-half (producer) to the syscall drain path (consumer).
@@ -169,7 +170,6 @@ type blockAsyncSlot struct {
 	dataLen         uint32  // Data buffer size (for cache invalidate)
 	clumpAddr       uintptr // VA of *proc.DMAClump, stored as uintptr (no write barrier)
 	userData        uint64  // Opaque tag from io_uring SQEntry.UserData, written to CQEntry
-	submitTick      uint64  // ktimer counter value at Notify() time (for IRQ latency)
 }
 
 var blockAsyncSlots [256]blockAsyncSlot // indexed by IOTag (descriptor head index)
@@ -201,33 +201,6 @@ func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, da
 			userData:        userData,
 		}
 	}
-}
-
-// lastIOLatencyTicks stores the most recent submit→IRQ elapsed ticks for logging.
-// Written atomically by the IRQ top-half; read by the SVC goroutine on the next submit.
-var lastIOLatencyTicks uint64
-
-// SetBlockSubmitTick records the ktimer counter value at Notify() time for tag.
-// Called from SyscallBlockSubmit immediately after dev.Eng.Notify().
-//
-//go:nosplit
-func SetBlockSubmitTick(tag uint16, tick uint64) {
-	if tag < 256 {
-		blockAsyncSlots[tag].submitTick = tick
-	}
-}
-
-// GetLastIOLatencyUs returns the submit→IRQ latency of the most recently completed
-// block I/O in microseconds. Returns 0 if no completion has been recorded yet.
-//
-//go:nosplit
-func GetLastIOLatencyUs() uint64 {
-	ticks := atomic.LoadUint64(&lastIOLatencyTicks)
-	freq := uint64(ktimer.Frequency())
-	if freq == 0 {
-		return 0
-	}
-	return ticks * 1_000_000 / freq
 }
 
 // EnableBlockAsyncMode switches the top-half to async completion delivery.
@@ -436,12 +409,6 @@ func NonTimerIRQTopHalf() {
 				drained++
 				tag := uint16(info.Tag)
 				meta := &blockAsyncSlots[tag]
-
-				// Record submit→IRQ latency for the SVC goroutine to log.
-				if meta.submitTick != 0 {
-					elapsed := ktimer.ReadCounter() - meta.submitTick
-					atomic.StoreUint64(&lastIOLatencyTicks, elapsed)
-				}
 
 				// Read status from sidecar (Device-nGnRnE, no cache mgmt needed)
 				status := uint16(0)
@@ -768,6 +735,7 @@ var (
 	deadlineEventChan     = make(chan struct{}, 1)
 	pageTrackingEventChan = make(chan struct{}, 1)
 	epochStatusChan       = make(chan struct{}, 1) // Epoch status request from timer top-half
+	pageAuditChan         = make(chan struct{}, 1) // Page audit request from timer top-half (~30s)
 )
 
 // ============================================================================
@@ -879,6 +847,18 @@ func epochStatusBottomHalf() {
 }
 
 // ============================================================================
+// Page Audit Bottom Half
+// ============================================================================
+
+// pageAuditBottomHalf calls kmem.LogPageAudit in safe Go context.
+// Bridged from processDeadlinesPostLock via pageAuditChan every ~30s.
+func pageAuditBottomHalf() {
+	for range pageAuditChan {
+		kmem.LogPageAudit()
+	}
+}
+
+// ============================================================================
 // Startup
 // ============================================================================
 
@@ -890,4 +870,5 @@ func StartBottomHalfProcessors() {
 	go deadlineBottomHalf()
 	go pageTrackingBottomHalf()
 	go epochStatusBottomHalf()
+	go pageAuditBottomHalf()
 }

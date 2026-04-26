@@ -20,13 +20,6 @@ func isZapPath(p string) bool {
 	return strings.HasSuffix(p, ".zap")
 }
 
-// fstatatSeq counts entries into sysFstatat. Diagnostic for the
-// linux-shepherd dispatch-loop freeze: when a thread is stuck in
-// ThreadBlockedDelegate on Fstatat, we want to know which seq is
-// in-flight so we can identify whether linux is stalled in
-// fs.Stat() or somewhere else.
-var fstatatSeq atomic.Int64
-
 // O_CLOEXEC = 0o2000000 on Linux ARM64. We don't implement exec, so
 // the close-on-exec semantic is silently a no-op. cloexecWarned ensures
 // we surface this once at boot for any caller that actually sets the
@@ -516,12 +509,9 @@ func (h *syscallHandler) sysFstat(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysFstatat(req sys.SyscallRequest) {
-	// noise: per-call ENTER/-> / <- traces disabled. Re-enable behind a
-	// guard if/when investigating fs.Stat blocking again. The kernel-side
-	// `delegate stuck:` diagnostic in printEpochStatus is sufficient to
-	// identify hung Fstatat threads without per-call UART pressure.
+	path := req.PathString()
 	fdt := h.getShepherd(req.CallerPID).FDT
-	absPath, e := fdt.resolveAt(int32(req.Args[0]), req.PathString())
+	absPath, e := fdt.resolveAt(int32(req.Args[0]), path)
 	if e != 0 {
 		req.Reply(e)
 		return
@@ -656,7 +646,16 @@ func (h *syscallHandler) sysFtruncate(req sys.SyscallRequest) {
 		return
 	}
 	// Invalidate cached pages beyond the new size.
-	h.cache.RemoveRange(req.CallerPID, e.inum, newSize, 1<<62)
+	// KNOWN LEAK: the returned entries' handler-side PTEs and physical pages
+	// are NOT torn down here — the kernel doesn't know to release them. They
+	// persist until the next munmap of this fd or shepherd death (whichever
+	// comes first). Proper fix needs a kernel-side "drop these VAs" IPC; for
+	// now we log so we can see how often this leaks in practice.
+	leaked := h.cache.RemoveRange(req.CallerPID, e.inum, newSize, 1<<62)
+	if len(leaked) > 0 {
+		fmt.Printf("[ftruncate:LEAK] sid=%d fd=%d inum=%d newSize=%d leaked=%d cache entries (handler PTEs orphaned until munmap/death)\n",
+			req.CallerPID, fd, e.inum, newSize, len(leaked))
+	}
 	e.size = uint32(newSize)
 	req.Reply(EOK)
 }
@@ -1252,6 +1251,13 @@ func (h *syscallHandler) sysMmapPageFlush(req sys.SyscallRequest) {
 	callerSID := int16(req.Args[1])
 	fd := int(req.Args[0])
 	allFDs := fd == 0xFFFFFFFF
+	// Args[2]/Args[3] = file-offset range to constrain the flush+remove.
+	// Length == 0 means "all pages for the inode" (death cleanup or
+	// legacy callers). For partial munmap the kernel passes the unmapped
+	// VA range translated to file offsets so pages outside it stay live.
+	startOffset := int64(req.Args[2])
+	rangeLen := int64(req.Args[3])
+	rangeBound := rangeLen > 0
 
 	responseBuf := req.DataBuf()
 	if responseBuf == nil || len(responseBuf) < 4096 {
@@ -1277,6 +1283,8 @@ func (h *syscallHandler) sysMmapPageFlush(req sys.SyscallRequest) {
 	// Flush all pages to ext2. We flush everything (not just pages marked
 	// dirty via syscalls) because user writes through the mmap VA don't
 	// generate syscalls, so we have no way to track which pages changed.
+	// Range-bounded flush is an optimization; flushing the whole inode is
+	// always safe (just extra IO).
 	flushByHandle := func(handle uint32, offset int64, data []byte) (int, error) {
 		return h.writePageByHandle(callerSID, handle, offset, data)
 	}
@@ -1287,9 +1295,14 @@ func (h *syscallHandler) sysMmapPageFlush(req sys.SyscallRequest) {
 	}
 
 	// Remove up to 511 entries and write their VAs to the response page.
+	// Range-bounded removal is critical: a partial munmap must NOT drop
+	// cache entries for pages still mapped in the caller's address space.
 	var removed []pageCacheEntry
 	if allFDs || !inumKnown {
 		removed = h.cache.RemoveAllBatch(callerSID, maxFlushVAsPerRound)
+	} else if rangeBound {
+		removed = h.cache.RemoveRangeOffsetBatch(callerSID, inum, startOffset, rangeLen, maxFlushVAsPerRound)
+		h.closeOrphanHandleIfDrained(callerSID, inum)
 	} else {
 		removed = h.cache.RemoveRangeBatch(callerSID, inum, maxFlushVAsPerRound)
 		// If this round drained the last pages for the inum, close the

@@ -95,6 +95,11 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 		if isUserspace && addr >= userMmapStart && addr+alignedLength <= userMmapEnd {
 			// Check if this MAP_FIXED overlaps any file mapping
 			checkMapFixedFileOverlap(addr, alignedLength)
+			// Real Linux MAP_FIXED semantics: atomically replace any existing mapping.
+			// Unmap existing PTEs so demand-faulting the range yields fresh zeroed pages.
+			// Without this, stale physical pages (e.g. from a previous GC arena) can
+			// corrupt new allocations at the same VA.
+			unmapFixedRange(addr, alignedLength)
 			// Remove any existing spans that overlap, then add new span
 			removeSpan(addr, alignedLength)
 			if !addSpan(addr, alignedLength) {
@@ -201,6 +206,35 @@ func scanForStalePTEs(va, length, fd uint64) {
 	if staleCount > 0 {
 		klog.Errf("[mmap:STALE] total=%x in fd=%x range %x-%x\n", staleCount, fd, va, va+length)
 	}
+}
+
+// unmapFixedRange releases any physical pages mapped in [addr, addr+length) for
+// the current shepherd. Called before re-registering the span under MAP_FIXED so
+// that the range demand-faults fresh zeroed pages instead of reusing stale frames.
+// The SVC handler runs on a kernel worker goroutine, so we use the shepherd's
+// stored L0PA rather than the hardware TTBR0 register.
+//
+//go:noinline
+func unmapFixedRange(addr, length uint64) {
+	shepherd := proc.CurrentShepherd()
+	if shepherd == nil {
+		return
+	}
+	l0PA := shepherd.PageTableL0PA
+	if l0PA == 0 {
+		return
+	}
+	pageSize := uint64(4096)
+	alignedAddr := addr & ^(pageSize - 1)
+	alignedEnd := (addr + length + pageSize - 1) & ^(pageSize - 1)
+	savedDAIF := saveAndDisableIRQs()
+	for va := alignedAddr; va < alignedEnd; va += pageSize {
+		pa := kmem.UnmapUserPageWithL0(uintptr(va), l0PA)
+		if pa != 0 {
+			kmem.ReleasePageByPA(pa)
+		}
+	}
+	restoreIRQs(savedDAIF)
 }
 
 // checkMapFixedFileOverlap checks if a MAP_FIXED call would overlap with any

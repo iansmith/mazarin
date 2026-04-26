@@ -1204,6 +1204,14 @@ func processDeadlinesPostLock(cnt uint64) {
 		default:
 		}
 	}
+
+	// Page audit every ~30 seconds (~330 Hz timer → 9900 ticks).
+	if cnt%9900 == 0 && cnt > 0 {
+		select {
+		case pageAuditChan <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // printEpochStatus formats a human-readable kernel status report and sends
@@ -1242,7 +1250,7 @@ func printEpochStatus() {
 	}
 
 	// Thread state summary + collect per-stuck-delegate diagnostics.
-	var nReady, nFutex, nSleep, nSoftIRQ, nRunning, nMailbox, nDelegate int
+	var nReady, nFutex, nSleep, nSoftIRQ, nRunning, nMailbox, nDelegate, nIOUring int
 	delegateInfo := ""
 	nowTick := kirq.ReadCounterValue()
 	for i := 0; i < threadArraySize; i++ {
@@ -1263,6 +1271,8 @@ func printEpochStatus() {
 			nSoftIRQ++
 		case ThreadBlockedUringRecv:
 			nMailbox++
+		case ThreadBlockedIOUring:
+			nIOUring++
 		case ThreadBlockedDelegate:
 			nDelegate++
 			var blockedMs uint64
@@ -1336,20 +1346,33 @@ func printEpochStatus() {
 
 	futexPIDMismatch := atomic.LoadUint64(&DbgFutexPIDMismatch)
 
+	// VirtIO block I/O + io_uring wake diagnostics.
+	blkIRQs := atomic.LoadUint32(&dbgBlockIRQCount)
+	blkDrained := atomic.LoadUint32(&dbgBlockTotalDrained)
+	blkCQEW := atomic.LoadUint32(&dbgBlockCQEWritten)
+	blkCQEM := atomic.LoadUint32(&dbgBlockCQEMissed)
+	blkEmpty := atomic.LoadUint32(&dbgBlockEmptyIRQ)
+	wakeOK := atomic.LoadUint32(&dbgWakeURWoke)
+	wakeLow := atomic.LoadUint32(&dbgWakeURNotEnough)
+	wakeNW := atomic.LoadUint32(&dbgWakeURNoWaiter)
+	tmoBlkNE := atomic.LoadUint32(&dbgTimeoutBlkNE)
+
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
-			"  threads: running=%d ready=%d futex=%d sleep=%d softirq=%d uring=%d delegate=%d\n"+
+			"  threads: running=%d ready=%d futex=%d sleep=%d softirq=%d uring=%d blk_io=%d delegate=%d\n"+
 			"  yield: calls=%d switched=%d futex: wait=%d wake=%d pid_mismatch=%d\n"+
 			"  memory: kernel_heap=%d_pages(%dMB) page_faults=%d\n"+
+			"  blk: irqs=%d drained=%d emptyIRQ=%d cqe=%d missed=%d wakeOK=%d wakeLow=%d wakeNW=%d tmoBlkNE=%d\n"+
 			"  svc/shepherd:%s\n"+
 			"  svc/sysid:%s\n"+
 			"  svc/delegated:%s\n"+
 			"  gc cycles:%s\n"+
 			"  delegate stuck:%s\n",
 		uptimeSec, totalSVC, actualHz, tcs,
-		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nDelegate,
+		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nIOUring, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
 		khPages, khMB, pageFaults,
+		blkIRQs, blkDrained, blkEmpty, blkCQEW, blkCQEM, wakeOK, wakeLow, wakeNW, tmoBlkNE,
 		svcDelta,
 		sysIDDelta,
 		sysIDDelegDelta,

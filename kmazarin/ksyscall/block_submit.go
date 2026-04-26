@@ -16,7 +16,6 @@ import (
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/klog"
-	"mazzy/kmazarin/ktimer"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/constants"
 	"sync/atomic"
@@ -48,11 +47,6 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	numSectors := arg2
 	bufVA := uintptr(arg3)
 	targetSID := uint16(arg4)
-
-	// Log previous submit→IRQ latency on every new submit so we see per-write
-	// device latency in the serial log (written by IRQ top-half, read here in SVC ctx).
-	prevIRQUs := getLastIOLatencyUs()
-	t0 := ktimer.ReadCounter()
 
 	// Validate request type
 	if requestType != block.VIRTIO_BLK_T_IN && requestType != block.VIRTIO_BLK_T_OUT {
@@ -149,23 +143,6 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	// Notify device
 	asm.Dsb()
 	dev.Eng.Notify()
-
-	// Record Notify() tick so IRQ handler can compute submit→IRQ latency.
-	notifyTick := ktimer.ReadCounter()
-	setBlockSubmitTick(tag, notifyTick)
-
-	// Log timing: SVC setup cost and previous write's IRQ latency.
-	freq := uint64(ktimer.Frequency())
-	if freq > 0 {
-		setupUs := (notifyTick - t0) * 1_000_000 / freq
-		if prevIRQUs > 0 {
-			klog.Logf("[blk:submit] type=%d lba=%d tag=%d setup=%dµs prevIRQ=%dms\n",
-				requestType, startLBA, tag, setupUs, prevIRQUs/1000)
-		} else {
-			klog.Logf("[blk:submit] type=%d lba=%d tag=%d setup=%dµs\n",
-				requestType, startLBA, tag, setupUs)
-		}
-	}
 
 	return int64(tag)
 }

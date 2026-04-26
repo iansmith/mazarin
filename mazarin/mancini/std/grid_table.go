@@ -272,10 +272,36 @@ func (gf *GridFrame) VisibleRowCountAttr() *attr.Attribute[int64] {
 	return gf.grid.VisibleRowCountAttr
 }
 
+// checkAndDamageIfFontChanged reads the grid's fontSizeAttr and calls DamageAll
+// if it differs from the last-seen value. Called from GridFrame.Draw before the
+// damage gate so that a font-size change (which originates from a ChooserAttr
+// write outside the grid's damage area) still reaches all slot labels on the
+// next redraw pass.
+func (gt *GridTable) checkAndDamageIfFontChanged() {
+	if gt.fontSizeAttr == nil {
+		return
+	}
+	fs := gt.fontSizeAttr.Get()
+	if fs <= 0 {
+		fs = 14
+	}
+	if fs != gt.lastFontSize {
+		gt.DamageAll()
+	}
+}
+
 // Draw renders the frame. Grid subtree is drawn first in the content area
 // (y+Overhang to y+h-Overhang). Bezel strips are cleared to Surface color.
 // Dividers are drawn last so they appear on top of everything.
 func (gf *GridFrame) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle) {
+	// Damage grid labels if font size changed. The chooser's ValueAttr write
+	// dirties all slot fontSizeAttrs but does NOT damage the grid area itself
+	// (the chooser FullDamage only covers the SC panel). Without this probe
+	// the GridFrame Damaged check below exits early and rebuildFace never fires.
+	// DamageAll here persists into the next redraw, which then covers the grid.
+	if gf.grid != nil {
+		gf.grid.checkAndDamageIfFontChanged()
+	}
 	if !gf.Damaged(damage) {
 		return
 	}
@@ -1083,6 +1109,13 @@ func (gt *GridTable) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 			gt.clampScroll()
 			gt.ScrollOffsetAttr.Set(gt.scrollOffset)
 			gt.buildSlotPool(newVC)
+			// Zero excess slot geometry so stale positions don't appear in
+			// pick testing (phantom rows at old smaller-font Y coordinates).
+			for i := newVC; i < int64(len(gt.slotWidgets)); i++ {
+				if gt.slotWidgets[i] != nil {
+					gt.slotWidgets[i].GetLayout().Height.Set(0)
+				}
+			}
 			// Publish so mail-app's eagerCh-driven cache.Rebalance sees
 			// non-zero VisibleRowCountAttr (it short-circuits at 0) and
 			// fetches headers + prefetch around the visible window. Also

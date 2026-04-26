@@ -16,7 +16,6 @@ package ksyscall
 import (
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/ktimer"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/constants"
 	"mazzy/shared/ipc"
@@ -66,12 +65,13 @@ type DelegateCallInfo struct {
 	FlushResponseVA uint64  // VA of response page in handler's address space
 	FlushFD         uint64  // fd for the file being flushed
 	FlushCallerSID  int16   // SID of the shepherd whose pages are being flushed
-
-	SubmitTick uint64 // ktimer counter when the uring send was issued (for RTT logging)
+	// FlushOffset/FlushLength constrain the flush to a file-offset range so
+	// partial munmap doesn't drop pages outside the unmapped region. Length=0
+	// means "all" (death cleanup).
+	FlushOffset uint64
+	FlushLength uint64
 }
 
-// delegateWriteCount counts Write/Pwrite64 delegate calls for sampling.
-var delegateWriteCount uint64
 
 // stdioWriteRingIdx — kernel-side override for pipe-buffered Write
 // delegation. When set, fd<=2 Writes are sent on this ring index of
@@ -451,7 +451,6 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		info.CallerL0PA = callerShepherd.PageTableL0PA
 		info.SysID = id
 		info.InUse = true
-		info.SubmitTick = ktimer.ReadCounter()
 	}
 
 	// Send the request to the handler's uring ring.
@@ -839,6 +838,14 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 
 					if !mapOK {
 						klog.Errf("[mmap-verify] MAP FAIL PA=%x cVA=%x\n", uint64(info.DataPagePA), uint64(info.CallerBufVA))
+					} else {
+						// Mark as file-backed so CleanupShepherdPages Phase 1
+						// skips this page. The handler (linux shepherd) still
+						// holds a live PTE; handleFlushReply releases the page
+						// after the handler has finished reading/writing.
+						if desc := kmem.GetPageDescriptor(info.DataPagePA); desc != nil {
+							desc.Flags |= kmem.PD_FILE_BACKED
+						}
 					}
 
 					// Handler-side pageCache tracks the dual mapping.
@@ -897,20 +904,6 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 			if info.DataPagePA != 0 {
 				handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
 				reclaimDataPage(info.DataPagePA, info.DataPageVA, info.HandlerSID, handlerShepherd)
-			}
-
-			// Log Write/Pwrite64 round-trip latency (first 3 unconditionally, then every 64th).
-			if info.SysID == sysid.Write || info.SysID == sysid.Pwrite64 {
-				n := atomic.AddUint64(&delegateWriteCount, 1)
-				if n <= 3 || n&63 == 1 {
-					freq := uint64(ktimer.Frequency())
-					rttUs := uint64(0)
-					if freq > 0 && info.SubmitTick != 0 {
-						rttUs = (ktimer.ReadCounter() - info.SubmitTick) * 1_000_000 / freq
-					}
-					klog.Criticalf("[DLG:W]", "[DLG:W] #%d sysid=%d rtt=%dµs tick=%d len=%d ret=%d\n",
-						n, info.SysID, rttUs, info.SubmitTick, info.CallerBufLen, returnVal)
-				}
 			}
 
 			callerDead := info.CallerDead

@@ -209,7 +209,7 @@ func main() {
 	fsDisp.On(uringipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, fsDelegateCh)
 	fsDisp.On(uringipc.ProtoFSIPCReq, DecodeReq, fsIPCCh)
 	fsDisp.OnDeath(func(deadSID int16) {
-		sys.UartWriteString(fmt.Sprintf("[fs] shepherd %d died\n", deadSID))
+		fmt.Printf("[fs] shepherd %d died\n", deadSID)
 	})
 	fsDisp.Start()
 	fmt.Println("[fs] registered as LoadFile + ReadFilePages delegate (uring)")
@@ -378,10 +378,10 @@ func launchShepherd(fsys *ext2.FileSystem, name, path string, memlimitMB int) {
 		launchPluginShepherd(fsys, name, path, memlimitMB)
 		return
 	}
-	sys.UartWriteString("[fs] reading " + path + "...\n")
+	fmt.Printf("[fs] reading %s...\n", path)
 	va, numPages, bytesRead, err := readFileIntoPages(fsys, path, false)
 	if err != nil {
-		sys.UartWriteString("[fs] failed to read " + path + "\n")
+		fmt.Printf("[fs] failed to read %s\n", path)
 		return
 	}
 	var extraArgs []string
@@ -392,7 +392,7 @@ func launchShepherd(fsys *ext2.FileSystem, name, path string, memlimitMB int) {
 	// Free temporary pages (RunShepherd copies them to the new shepherd).
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
 	if rpErr != nil {
-		sys.UartWriteString("[fs] RunShepherd FAILED for " + name + "\n")
+		fmt.Printf("[fs] RunShepherd FAILED for %s\n", name)
 		return
 	}
 }
@@ -404,10 +404,10 @@ func launchShepherd(fsys *ext2.FileSystem, name, path string, memlimitMB int) {
 // launch, since fs IS this process).
 // memlimitMB > 0 overrides the system-wide GOMEMLIMIT for this shepherd.
 func launchPluginShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB int) {
-	sys.UartWriteString("[fs] reading /shepherd.elf (for " + name + " → " + pluginPath + ")...\n")
+	fmt.Printf("[fs] reading /shepherd.elf (for %s → %s)...\n", name, pluginPath)
 	va, numPages, bytesRead, err := readFileIntoPages(fsys, "/shepherd.elf", false)
 	if err != nil {
-		sys.UartWriteString("[fs] failed to read /shepherd.elf\n")
+		fmt.Printf("[fs] failed to read /shepherd.elf\n")
 		return
 	}
 	args := []string{pluginPath}
@@ -417,7 +417,7 @@ func launchPluginShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlim
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead, args...)
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
 	if rpErr != nil {
-		sys.UartWriteString("[fs] RunShepherd FAILED for plugin shepherd " + name + "\n")
+		fmt.Printf("[fs] RunShepherd FAILED for plugin shepherd %s\n", name)
 		return
 	}
 }
@@ -441,24 +441,24 @@ func bootSequence(fsys *ext2.FileSystem) {
 	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
 	// Linux depends on both fs (IPC) and rachel (fonts/WM).
 	launchShepherd(fsys, "linux", "/linux.maz", 0)
-	sys.UartWriteString("[fs] waiting for linux ready...\n")
+	fmt.Printf("[fs] waiting for linux ready...\n")
 	if err := sys.WaitForShepherdReady("linux", 30); err != nil {
 		sys.UartWriteString("[fs] FATAL: linux not ready: " + err.Error() + "\n")
 		return
 	}
-	sys.UartWriteString("[fs] linux is ready!\n")
+	fmt.Printf("[fs] linux is ready!\n")
 	// 3. Read startup config and launch remaining application shepherds.
-	sys.UartWriteString("[fs] reading startup.toml...\n")
+	fmt.Printf("[fs] reading startup.toml...\n")
 	cfg := readStartupConfig(fsys)
 	if cfg != nil {
 		for _, s := range cfg.Shepherds {
-			sys.UartWriteString("[fs] launching " + s.Name + " from " + s.Path + "\n")
+			fmt.Printf("[fs] launching %s from %s\n", s.Name, s.Path)
 			launchShepherd(fsys, s.Name, s.Path, s.MemLimitMB)
 		}
 	} else {
-		sys.UartWriteString("[fs] no startup.toml\n")
+		fmt.Printf("[fs] no startup.toml\n")
 	}
-	sys.UartWriteString("[fs] boot sequence complete\n")
+	fmt.Printf("[fs] boot sequence complete\n")
 }
 
 // asyncBlockDev implements blockdev.BlockDevice backed by io_uring.
@@ -514,15 +514,29 @@ func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 	atomic.StoreUint32(&d.ioRing.SQTail, sqTail+1)
 
 	// Submit 1 SQE and wait for 1 CQE (P held throughout).
-	_, err := sys.IOUringEnter(d.ringID, 1, 1, 0)
+	cqH0 := atomic.LoadUint32(&d.ioRing.CQHead)
+	cqT0 := atomic.LoadUint32(&d.ioRing.CQTail)
+	nret, err := sys.IOUringEnter(d.ringID, 1, 1, 0)
 	if err != nil {
+		sys.UartWriteString(fmt.Sprintf("[dma:single] lba=%d IOUringEnter err=%v cqH=%d cqT=%d\n",
+			lba, err, cqH0, cqT0))
 		return err
+	}
+	cqHead := atomic.LoadUint32(&d.ioRing.CQHead)
+	cqTail := atomic.LoadUint32(&d.ioRing.CQTail)
+	if nret == 0 || cqTail == cqHead {
+		sys.UartWriteString(fmt.Sprintf("[dma:single] lba=%d IOUringEnter returned nret=%d cqH=%d cqT=%d (no CQE — WFI timeout)\n",
+			lba, nret, cqHead, cqTail))
+		// WFI timeout: no completion arrived. Do NOT drain a stale CQE.
+		// Return EIO so the caller sees a real failure instead of corrupt data.
+		return syscall.EIO
 	}
 
 	// Drain 1 CQE.
-	cqHead := atomic.LoadUint32(&d.ioRing.CQHead)
+	cqHead = atomic.LoadUint32(&d.ioRing.CQHead)
 	cqe := &d.ioRing.CQEntries[cqHead&iouring.CQMask]
 	if cqe.Res < 0 {
+		sys.UartWriteString(fmt.Sprintf("[dma:single] lba=%d CQE Res=%d\n", lba, cqe.Res))
 		return syscall.EIO
 	}
 	atomic.StoreUint32(&d.ioRing.CQHead, cqHead+1)
@@ -575,8 +589,12 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 
 		if submitted > 0 {
 			// Submit SQEs and wait for all completions (P held throughout).
+			cqH0b := atomic.LoadUint32(&d.ioRing.CQHead)
+			cqT0b := atomic.LoadUint32(&d.ioRing.CQTail)
 			nret, serr := sys.IOUringEnter(d.ringID, submitted, submitted, 0)
 			if serr != nil {
+				sys.UartWriteString(fmt.Sprintf("[dma:batch] blockIdx=%d submitted=%d IOUringEnter err=%v cqH=%d cqT=%d\n",
+					blockIdx, submitted, serr, cqH0b, cqT0b))
 				return serr
 			}
 

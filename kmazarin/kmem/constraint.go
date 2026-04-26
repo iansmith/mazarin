@@ -166,6 +166,14 @@ func InitConstraintPages() bool {
 	constraintState.pa = pa
 	atomic.StoreUint32(&constraintState.initialized, 1)
 
+	// Pin the base page of the constraint block so that per-shepherd cleanup
+	// (both the Spans-based Phase 1 path and the freeLeaves=true Phase 2 path)
+	// cannot release it. Constraint pages are a system-lifetime shared resource
+	// and must survive all shepherd deaths.
+	if desc := GetPageDescriptor(pa); desc != nil {
+		desc.Flags |= PD_PINNED
+	}
+
 	logConstraintPagesInit(pa)
 
 	return true

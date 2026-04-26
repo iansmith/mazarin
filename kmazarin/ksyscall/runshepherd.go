@@ -233,7 +233,10 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 			}
 			p.Spans.Add(loadedProc.StackBase, 64*1024)
 			p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
-			p.Spans.Add(UserConstraintPagesVA, UserConstraintPagesSize)
+			// UserConstraintPagesVA is intentionally NOT added to Spans.
+			// Constraint pages are a system-lifetime shared resource mapped
+			// read-only into every shepherd. CleanupShepherdPages must not
+			// release them; they are protected by PD_PINNED on the base page.
 
 			break
 		}

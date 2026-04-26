@@ -21,6 +21,7 @@
 package kmem
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/proc"
 	"unsafe"
 )
@@ -53,12 +54,19 @@ func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGrou
 
 	// Phase 1: Walk Spans (our VMA list) to find all mapped VA regions and
 	// free their leaf pages. Fast path: skips sparse (unmapped) ranges.
+	// PD_FILE_BACKED pages are skipped: they are dual-mapped with a handler
+	// shepherd that still has a live PTE. handleFlushReply releases them once
+	// the handler finishes flushing. Releasing here would cause the handler
+	// to write through a stale PTE into a reused page.
 	spans.ForEach(func(start, length uint64) {
 		end := start + length
 		for va := uintptr(start); va < uintptr(end); va += PageSize {
 			pa := WalkUserPageTableWithL0(va, l0PA)
 			if pa == 0 {
 				continue // Not mapped yet (demand paging)
+			}
+			if desc := GetPageDescriptor(pa); desc != nil && (desc.Flags&PD_FILE_BACKED) != 0 {
+				continue // Handler still holds a live PTE; defer to handleFlushReply
 			}
 			releasePageByPA(pa)
 		}
@@ -89,6 +97,19 @@ func releasePageByPA(pa uintptr) bool {
 	}
 	if desc.RefCount <= 0 {
 		return false // Already freed or untracked
+	}
+	if desc.Flags&PD_PINNED != 0 {
+		return false // Pinned system pages (e.g. constraint shared block) are never freed
+	}
+
+	// Safety guard: file-backed pages are dual-mapped. The handler's PTE must be
+	// removed first (done by handleFlushReply, which clears PD_FILE_BACKED before
+	// calling ReleasePageByPA). Any other caller releasing a FILE_BACKED page has
+	// a stale handler PTE → corruption. Block the free and log the site.
+	if desc.Flags&PD_FILE_BACKED != 0 {
+		klog.Errf("[kmem] BLOCKED: premature release of FILE_BACKED page pa=%x owner=%d\n",
+			uint64(pa), int(desc.Owner))
+		return false
 	}
 
 	desc.RefCount--
@@ -183,6 +204,9 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool) int {
 							l3e := *(*uint64)(unsafe.Pointer(l3VA + uintptr(l)*8))
 							if pteIsValid(l3e) {
 								leafPA := pteExtractPA(l3e)
+								if desc := GetPageDescriptor(leafPA); desc != nil && (desc.Flags&PD_FILE_BACKED) != 0 {
+									continue // Handler still holds PTE; defer to handleFlushReply
+								}
 								releasePageByPA(leafPA)
 							}
 						}

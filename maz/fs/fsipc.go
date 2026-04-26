@@ -18,70 +18,6 @@ func isZapPath(p string) bool {
 	return strings.HasSuffix(p, ".zap")
 }
 
-// fsRPCSeq counts requests entering processRequest. Diagnostic for
-// the linux-shepherd dispatch-loop freeze: paired ENTER/REPLY traces
-// let us tell whether fs.maz is processing requests during the freeze.
-// If linux fired fs.Stat with seq=N but fs.maz never logs a matching
-// ENTER, the uring path itself wedged. If fs.maz logs ENTER for op=Stat
-// path=P but no REPLY, fs.maz is wedged inside ext2.
-var fsRPCSeq int64
-
-// fsRPCShouldTrace gates the [fs:rpc ENTER]/[fs:rpc REPLY] diagnostic
-// traces to path-bearing ops only. Read/Write/Close/Sync/Fstat are
-// handle-based and fire so frequently (one Read per 4KiB chunk) that
-// tracing them saturates the UART, suppressing kernel [status] output.
-// The freeze hypothesis we're chasing wedges on path resolution
-// (Fstatat / Open / Readlinkat) — handle ops are noise in that context.
-func fsRPCShouldTrace(op uint16) bool {
-	switch op {
-	case ipc.FSOpOpen, ipc.FSOpStat, ipc.FSOpMkdir, ipc.FSOpRemove,
-		ipc.FSOpRename, ipc.FSOpReadDir, ipc.FSOpAccess, ipc.FSOpResolve,
-		ipc.FSOpSetMode, ipc.FSOpSetTimes, ipc.FSOpTruncate:
-		return true
-	}
-	return false
-}
-
-// fsOpName returns a short human label for an FSOp code.
-func fsOpName(op uint16) string {
-	switch op {
-	case ipc.FSOpConnect:
-		return "Connect"
-	case ipc.FSOpOpen:
-		return "Open"
-	case ipc.FSOpClose:
-		return "Close"
-	case ipc.FSOpRead:
-		return "Read"
-	case ipc.FSOpWrite:
-		return "Write"
-	case ipc.FSOpStat:
-		return "Stat"
-	case ipc.FSOpFstat:
-		return "Fstat"
-	case ipc.FSOpMkdir:
-		return "Mkdir"
-	case ipc.FSOpRemove:
-		return "Remove"
-	case ipc.FSOpRename:
-		return "Rename"
-	case ipc.FSOpReadDir:
-		return "ReadDir"
-	case ipc.FSOpAccess:
-		return "Access"
-	case ipc.FSOpResolve:
-		return "Resolve"
-	case ipc.FSOpSetMode:
-		return "SetMode"
-	case ipc.FSOpSetTimes:
-		return "SetTimes"
-	case ipc.FSOpSync:
-		return "Sync"
-	case ipc.FSOpTruncate:
-		return "Truncate"
-	}
-	return "?"
-}
 
 const maxFSHandles = 256
 
@@ -181,11 +117,6 @@ func (s *fsIPCServer) processRequest(raw fsIPCRequest, mt *mountTable) {
 		fmt.Printf("[fs:ipc] request from unconnected SID=%d, dropping\n", sid)
 		return
 	}
-
-	// noise: fs:rpc ENTER/REPLY traces disabled — the volume was starving
-	// rachel's input loop and suppressing kernel [status] output. Re-enable
-	// (use fsRPCShouldTrace to gate) only when actively diagnosing fs.maz
-	// dispatch behavior.
 
 	var resp ipc.FSIPCRespPayload
 	resp.ReqID = req.ReqID

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sync/atomic"
 	"unsafe"
 )
@@ -55,6 +56,14 @@ func newPageCache() *pageCache {
 
 // Add records a cached page. Overwrites any existing entry for the same
 // (sid, inum, offset) triple. New pages start clean (not dirty).
+//
+// An overwrite indicates the kernel demand-faulted the same (sid, inum, offset)
+// twice — possible if the caller's PTE was cleared between faults (e.g. via
+// MAP_FIXED unmap on an overlapping range). The previous (VA, Handle) tuple
+// is dropped from the cache, orphaning its handler-side PTE: the kernel never
+// learns to unmap it, and the underlying physical page can be released through
+// other paths and reused while the linux PTE still points at it. Suspected
+// corruption source — log so we can correlate with the GC crash.
 func (pc *pageCache) Add(sid int16, inum uint32, offset int64, va uintptr, handle uint32) {
 	inodes, ok := pc.data[sid]
 	if !ok {
@@ -65,6 +74,10 @@ func (pc *pageCache) Add(sid int16, inum uint32, offset int64, va uintptr, handl
 	if !ok {
 		pages = make(map[int64]cachedPage)
 		inodes[inum] = pages
+	}
+	if old, present := pages[offset]; present && old.VA != va {
+		fmt.Printf("[pageCache:OVERWRITE] sid=%d inum=%d off=%d oldVA=%x newVA=%x oldHandle=%d newHandle=%d (handler PTE for oldVA orphaned)\n",
+			sid, inum, offset, uint64(old.VA), uint64(va), old.Handle, handle)
 	}
 	pages[offset] = cachedPage{VA: va, Handle: handle, Dirty: false}
 }
@@ -136,6 +149,40 @@ func (pc *pageCache) RemoveRangeBatch(sid int16, inum uint32, maxEntries int) []
 
 	var result []pageCacheEntry
 	for off, cp := range pages {
+		if len(result) >= maxEntries {
+			break
+		}
+		result = append(result, pageCacheEntry{Offset: off, VA: cp.VA, Handle: cp.Handle, Dirty: cp.Dirty})
+		delete(pages, off)
+	}
+	if len(pages) == 0 {
+		delete(inodes, inum)
+		if len(inodes) == 0 {
+			delete(pc.data, sid)
+		}
+	}
+	return result
+}
+
+// RemoveRangeOffsetBatch removes up to maxEntries cached pages for (sid, inum)
+// whose offsets fall in [startOffset, startOffset+length) and returns them.
+// Used for partial-munmap cleanup rounds.
+func (pc *pageCache) RemoveRangeOffsetBatch(sid int16, inum uint32, startOffset, length int64, maxEntries int) []pageCacheEntry {
+	inodes, ok := pc.data[sid]
+	if !ok {
+		return nil
+	}
+	pages, ok := inodes[inum]
+	if !ok {
+		return nil
+	}
+
+	endOffset := startOffset + length
+	var result []pageCacheEntry
+	for off, cp := range pages {
+		if off < startOffset || off >= endOffset {
+			continue
+		}
 		if len(result) >= maxEntries {
 			break
 		}

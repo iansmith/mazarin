@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/klog"
 	"mazzy/shared/hid"
 	"reflect"
+	"runtime"
 	"sync/atomic"
 	_ "unsafe" // for go:linkname
 )
@@ -159,24 +160,43 @@ func EnableSoftIRQConsole() {
 	// Wire klog output through the soft IRQ ring so the linux shepherd
 	// receives kernel log messages in its console window.
 	klog.SetOutputFuncs(
-		func(s string) { pushStringToRing(c, 1, s) }, // stdout
-		func(s string) { pushStringToRing(c, 2, s) }, // stderr
+		func(s string) { pushStringFull(c, 1, s) }, // stdout
+		func(s string) { pushStringFull(c, 2, s) }, // stderr
 	)
 	klog.SetLinuxReady()
 }
 
-// pushStringToRing pushes every byte of s into the UART soft IRQ ring
-// with the given fd (1=stdout, 2=stderr), converting \n to \r\n, then
-// wakes the linux shepherd.
-func pushStringToRing(c *SoftIRQConsole, fd byte, s string) {
-	for i := 0; i < len(s); i++ {
-		b := s[i]
+// pushStringToRing pushes bytes from s into the UART soft IRQ ring with the
+// given fd (1=stdout, 2=stderr), converting \n to \r\n. Returns the number
+// of bytes from s that were consumed. If the ring fills mid-string the caller
+// should wake the shepherd, yield, and retry with s[n:].
+func pushStringToRing(c *SoftIRQConsole, fd byte, s string) int {
+	n := 0
+	for n < len(s) {
+		b := s[n]
 		if b == '\n' {
-			ev := hid.HIDEvent{Type: 0, Code: uint16(fd), Value: uint32('\r')}
-			ringPush(&topHalfUartRing, ev)
+			if !ringPush(&topHalfUartRing, hid.HIDEvent{Type: 0, Code: uint16(fd), Value: uint32('\r')}) {
+				return n
+			}
 		}
-		ev := hid.HIDEvent{Type: 0, Code: uint16(fd), Value: uint32(b)}
-		ringPush(&topHalfUartRing, ev)
+		if !ringPush(&topHalfUartRing, hid.HIDEvent{Type: 0, Code: uint16(fd), Value: uint32(b)}) {
+			return n
+		}
+		n++
+	}
+	return n
+}
+
+// pushStringFull pushes all of s to the ring, yielding to the scheduler and
+// retrying whenever the ring is full. Guarantees all bytes reach the ring.
+func pushStringFull(c *SoftIRQConsole, fd byte, s string) {
+	for len(s) > 0 {
+		n := pushStringToRing(c, fd, s)
+		s = s[n:]
+		if len(s) > 0 {
+			c.wake()
+			runtime.Gosched()
+		}
 	}
 	c.wake()
 }

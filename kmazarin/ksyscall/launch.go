@@ -225,7 +225,7 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 			}
 			p.Spans.Add(loadedProc.StackBase, 64*1024)
 			p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
-			p.Spans.Add(UserConstraintPagesVA, UserConstraintPagesSize)
+			// UserConstraintPagesVA intentionally not in Spans — see runshepherd.go.
 
 			break
 		}

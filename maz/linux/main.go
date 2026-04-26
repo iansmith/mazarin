@@ -119,7 +119,7 @@ func sidDecRef(sid int16) {
 			globalHandler.cleanupShepherd(sid)
 		}
 		sys.DeathAck(sid)
-		sys.UartWriteString(fmt.Sprintf("[linux] DeathAck sent for SID %d\n", sid))
+		fmt.Printf("[linux] DeathAck sent for SID %d\n", sid)
 	}
 }
 
@@ -152,17 +152,17 @@ func handleDeathNotification(deadSID int16) {
 	sidStatesMu.Unlock()
 
 	if len(staleReads) > 0 {
-		sys.UartWriteString(fmt.Sprintf("[linux] drained %d stale stdin reads for SID %d\n", len(staleReads), deadSID))
+		fmt.Printf("[linux] drained %d stale stdin reads for SID %d\n", len(staleReads), deadSID)
 	}
 
-	sys.UartWriteString(fmt.Sprintf("[linux] death notification for SID %d, refcount=%d\n", deadSID, refcount))
+	fmt.Printf("[linux] death notification for SID %d, refcount=%d\n", deadSID, refcount)
 	if drained {
 		// All I/O drained — clean up per-shepherd filesystem state (FDs, flocks).
 		if globalHandler != nil {
 			globalHandler.cleanupShepherd(deadSID)
 		}
 		sys.DeathAck(deadSID)
-		sys.UartWriteString(fmt.Sprintf("[linux] DeathAck sent immediately for SID %d\n", deadSID))
+		fmt.Printf("[linux] DeathAck sent immediately for SID %d\n", deadSID)
 	}
 }
 
@@ -308,7 +308,7 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 	ipcDispatcher.On(ipc.ProtoFontResponse, decodeRawPayload, fontReplyCh)
 	ipcDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
 	ipcDispatcher.OnDeath(func(deadSID int16) {
-		sys.UartWriteString(fmt.Sprintf("[linux] shepherd %d died\n", deadSID))
+		fmt.Printf("[linux] shepherd %d died\n", deadSID)
 		// Route through delegateCh so death handling runs on the file lane.
 		delegateCh <- deathNotification{deadSID: deadSID}
 	})
@@ -438,7 +438,7 @@ func lineAccumulator(serialCh <-chan serial.SerialByte, delegateCh <-chan delega
 var MazEntryPoint func() = MazarinMain
 
 func MazarinMain() {
-	sys.UartWriteString("[linux] MazarinMain() entered\n")
+	fmt.Printf("[linux] MazarinMain() entered\n")
 
 	// 1. Wait for fs (needed by syscallHandler for file operations).
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
@@ -460,8 +460,6 @@ func MazarinMain() {
 
 	// Force itab so cross-.maz type assertion works.
 	forceLinuxIOItab(ioInit)
-
-	sys.UartWriteString("[linux] LinuxIO config prepared\n")
 
 	// 4. Set up uring dispatchers BEFORE loading .maz.
 	// Ring 0 is auto-created; ring 1 carries blocking delegated syscalls;
@@ -486,11 +484,9 @@ func MazarinMain() {
 	if err := fsClient.Connect(); err != nil {
 		panic(fmt.Sprintf("[linux] FATAL: fsclient.Connect: %v", err))
 	}
-	sys.UartWriteString("[linux] fs IPC connected via uring\n")
-
 	// 5. Load linux-ui.maz and inject LinuxIO.
 	uiPath := sys.LoadMazByName("/linux-ui")
-	sys.UartWriteString(fmt.Sprintf("[linux] loading linux-ui from %s...\n", uiPath))
+	fmt.Printf("[linux] loading linux-ui from %s...\n", uiPath)
 	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(uiPath, nil)
 	if uiErr != nil {
 		panic(fmt.Sprintf("[linux] LoadMazBootstrap(linux-ui) failed: %v", uiErr))
@@ -501,7 +497,7 @@ func MazarinMain() {
 		fv := &funcval{fn: uiInitAddr}
 		shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
 		if err := shepherdInit(ioInit); err != nil {
-			sys.UartWriteString("[linux] linux-ui MazarinShepherd failed: " + err.Error() + "\n")
+			fmt.Printf("[linux] linux-ui MazarinShepherd failed: %v\n", err)
 		}
 	}
 
@@ -537,7 +533,7 @@ func MazarinMain() {
 
 	// Launch linux-ui.maz goroutine.
 	go mazhost.RunMaz(uiMain)
-	sys.UartWriteString("[linux] linux-ui.maz launched\n")
+	fmt.Printf("[linux] linux-ui.maz launched\n")
 
 	// 6. Register syscall delegates.
 	suppressSerialCopy = os.Getenv("SUPPRESS_SERIAL_STDIO_COPY") == "1"
@@ -579,7 +575,6 @@ func MazarinMain() {
 
 	// 8. Signal readiness.
 	sys.SetReady(true)
-	sys.UartWriteString("[linux] Ready=true\n")
 	sys.StartMemStatsLogger("linux", 0) // default 30s
 
 	// 9. Launch helloworld.maz.
@@ -598,7 +593,6 @@ func MazarinMain() {
 
 	// 12. Main goroutine becomes the stdin drainer.
 	// Pairs input lines with outstanding read(0) requests.
-	sys.UartWriteString("[linux] entering stdin drainer loop\n")
 	for {
 		select {
 		case <-lineQueue.Wake():

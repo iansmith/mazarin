@@ -27,8 +27,12 @@ const maxFlushVAsPerRound = 511
 // shepherd. The reply path (handleFlushReply) processes the response and
 // sends additional rounds if needed.
 //
-// fd=0xFFFFFFFF means flush all fds (death cleanup).
-func flushAndCleanupPages(fd uint64, callerSID int16) {
+// fd=0xFFFFFFFF means flush all fds (death cleanup); in that case
+// startOffset/length are ignored. For a normal munmap, startOffset+length
+// constrain the flush to the file-offset range corresponding to the unmapped
+// VA range, so partial munmap doesn't drop pages outside it. length=0 also
+// means "all" (used internally for death cleanup).
+func flushAndCleanupPages(fd uint64, callerSID int16, startOffset, length uint64) {
 	handlerSID := int16(atomic.LoadInt32(&syscallDelegates[sysid.Write].pid))
 	if handlerSID < 0 {
 		klog.Errf("[mmap-flush] no Write delegate handler\n")
@@ -80,6 +84,8 @@ func flushAndCleanupPages(fd uint64, callerSID int16) {
 	info.FlushResponseVA = responseHandlerVA
 	info.FlushFD = fd
 	info.FlushCallerSID = callerSID
+	info.FlushOffset = startOffset
+	info.FlushLength = length
 
 	sendFlushRound(info, handlerSID, callerSID, callerTID)
 }
@@ -91,7 +97,7 @@ func sendFlushRound(info *DelegateCallInfo, handlerSID int16, callerSID int16, c
 		SysID:     uint16(sysid.MmapPageFlush),
 		CallerSID: callerSID,
 		CallerTID: callerTID,
-		Args:      [6]uint64{info.FlushFD, uint64(callerSID), 0, 0, 0, 0},
+		Args:      [6]uint64{info.FlushFD, uint64(callerSID), info.FlushOffset, info.FlushLength, 0, 0},
 		DataVA:    info.FlushResponseVA,
 		DataLen:   4096,
 	}
@@ -148,6 +154,11 @@ func handleFlushReply(callerTID int16, info *DelegateCallInfo) bool {
 			pa := kmem.UnmapUserPageWithL0(hva, handlerShepherd.PageTableL0PA)
 			handlerShepherd.Spans.Remove(uint64(hva), 4096)
 			if pa != 0 {
+				// Handler PTE is now gone — safe to release. Clear FILE_BACKED so the
+				// guard in releasePageByPA doesn't block this legitimate free.
+				if desc := kmem.GetPageDescriptor(pa); desc != nil {
+					desc.Flags &^= kmem.PD_FILE_BACKED
+				}
 				kmem.ReleasePageByPA(pa)
 			}
 		}
@@ -163,7 +174,7 @@ func handleFlushReply(callerTID int16, info *DelegateCallInfo) bool {
 			SysID:     uint16(sysid.MmapPageFlush),
 			CallerSID: info.FlushCallerSID,
 			CallerTID: callerTID,
-			Args:      [6]uint64{info.FlushFD, uint64(info.FlushCallerSID), 0, 0, 0, 0},
+			Args:      [6]uint64{info.FlushFD, uint64(info.FlushCallerSID), info.FlushOffset, info.FlushLength, 0, 0},
 			DataVA:    info.FlushResponseVA,
 			DataLen:   4096,
 		}
@@ -222,8 +233,9 @@ func WriteBackSharedMmapOnDeath(pid int16) {
 		}
 
 		if hasFileMappings {
-			// Flush all fds + clean up all handler-side mappings in rounds
-			flushAndCleanupPages(0xFFFFFFFF, pid)
+			// Flush all fds + clean up all handler-side mappings in rounds.
+			// length=0 + fd=0xFFFFFFFF → drain everything for this sid.
+			flushAndCleanupPages(0xFFFFFFFF, pid, 0, 0)
 		}
 		return
 	}

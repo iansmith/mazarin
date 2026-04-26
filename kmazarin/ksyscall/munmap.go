@@ -2,6 +2,7 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"sync/atomic"
@@ -50,12 +51,23 @@ func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
 	// page data through its VA, so we must NOT free the physical pages
 	// here. They are released by handleFlushReply after the handler has
 	// finished reading and the handler PTEs are unmapped.
+	//
+	// Pass the file-offset range so a partial munmap doesn't drop pages
+	// outside [alignedAddr, alignedEnd). Without the range, the handler
+	// would flush every cached page for fm.FD's inode, the kernel would
+	// release them all, and the un-unmapped portion of mail's mapping
+	// would be left with live PTEs to recycled physical pages.
 	fileBacked := false
 	if p != nil {
 		fm := p.FindFileMappingByVA(alignedAddr)
 		if fm != nil {
 			fileBacked = true
-			flushAndCleanupPages(uint64(fm.FD), int16(p.PID))
+			startOff := fm.FileOffset + (alignedAddr - fm.StartVA)
+			if alignedLength != fm.Length {
+				klog.Errf("[munmap:PARTIAL] sid=%d fd=%d fmVA=%x fmLen=%x unmapVA=%x unmapLen=%x\n",
+					p.PID, fm.FD, fm.StartVA, fm.Length, alignedAddr, alignedLength)
+			}
+			flushAndCleanupPages(uint64(fm.FD), int16(p.PID), startOff, alignedLength)
 		}
 	}
 

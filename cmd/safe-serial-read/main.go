@@ -31,7 +31,7 @@ func main() {
 	flag.Parse()
 
 	filepath := "/tmp/cardinal-serial.log"
-	maxBytes := 100000
+	maxBytes := 4000000
 
 	args := flag.Args()
 	if len(args) > 0 {
