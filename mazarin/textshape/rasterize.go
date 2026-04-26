@@ -129,6 +129,13 @@ type directFont struct {
 	fontData []byte                 // mmap'd font file (backing face)
 	cache    []byte                 // tier-1 glyph cache (V2 format)
 	tier2    map[uint32]*tier2Glyph // overflow/ligature glyphs
+	// isTemporary is set when this slot was allocated by OpenTemporaryFont
+	// (and not subsequently upgraded by an OpenFont caller). Only temporary
+	// slots are released by CloseTemporaryFont — permanent slots survive
+	// across temporary-close passes so that long-lived callers of OpenFont
+	// (e.g. louis14's pkg/text.fontIDCache) don't end up holding fontIDs
+	// to nilled slots after a render scope closes.
+	isTemporary bool
 }
 
 // registeredFace holds a font face that was registered by buffer
@@ -169,10 +176,14 @@ func NewDirectGlyphProvider(fontDir string) *DirectGlyphProvider {
 
 // OpenFont loads a font at the requested size and returns font-level
 // metrics. If the same font/variant/size was already opened, the cached
-// result is returned.
+// result is returned. A cache hit also UPGRADES any temporary slot to
+// permanent — OpenFont semantically promises a stable fontID, so a slot
+// that the caller has reached via OpenFont must outlive any subsequent
+// CloseTemporaryFont pass that would otherwise nil it.
 func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error) {
 	// Check cache hit.
 	if id := p.findCachedFont(req.Family, req.Variant, req.Size); id >= 0 {
+		p.fonts[id].isTemporary = false
 		return p.metricsFor(id), nil
 	}
 
@@ -387,6 +398,10 @@ func (p *DirectGlyphProvider) allocFontID() int32 {
 // real louis14 standalone use case demands it).
 func (p *DirectGlyphProvider) OpenTemporaryFont(req OpenFontRequest, data []byte) (FontMetrics, error) {
 	// Permanent-first: reuse existing slot if the same key is loaded.
+	// The slot's permanent/temporary status is preserved — if it was
+	// already permanent, it stays permanent; if it was temporary, it
+	// stays temporary (this OpenTemporaryFont caller doesn't change
+	// that since they don't promise a long-lived fontID).
 	if id := p.findCachedFont(req.Family, req.Variant, req.Size); id >= 0 {
 		return p.metricsFor(id), nil
 	}
@@ -397,7 +412,18 @@ func (p *DirectGlyphProvider) OpenTemporaryFont(req OpenFontRequest, data []byte
 			return FontMetrics{}, err
 		}
 	}
-	return p.OpenFont(req)
+	m, err := p.OpenFont(req)
+	if err != nil {
+		return m, err
+	}
+	// Mark the slot OpenFont just allocated as temporary, so the eventual
+	// CloseTemporaryFont(m.FontID) actually releases it. (OpenFont's cache
+	// hit branch upgrades to permanent; that branch isn't reached here
+	// because we already checked findCachedFont above.)
+	if m.FontID >= 0 && m.FontID < MaxFonts && p.fonts[m.FontID] != nil {
+		p.fonts[m.FontID].isTemporary = true
+	}
+	return m, nil
 }
 
 // CloseTemporaryFont releases the slot allocated for a temporary font.
@@ -410,6 +436,14 @@ func (p *DirectGlyphProvider) OpenTemporaryFont(req OpenFontRequest, data []byte
 // (FontSvcGlyphProvider, InternalGlyphProvider) layer additional
 // permanent/temp distinction on top via a 0x1000 base bit, but that's
 // invisible at this layer.
+//
+// Munmap is conditional on this slot being the LAST reference to its
+// mmap'd region. OpenFont's findExistingFont path shares fontData by
+// slice reference between slots opened for the same (family, variant)
+// at different sizes — Munmap'ing here unconditionally would dangle
+// any sibling slot that still points into the same region. Compared
+// by base-address (&slice[0]) which is stable for slice copies of the
+// same underlying mmap.
 func (p *DirectGlyphProvider) CloseTemporaryFont(fontID int32) error {
 	if fontID < 0 || fontID >= MaxFonts {
 		return nil
@@ -418,12 +452,35 @@ func (p *DirectGlyphProvider) CloseTemporaryFont(fontID int32) error {
 	if df == nil {
 		return nil
 	}
-	// Unmap the font data if it was mmap'd from disk and isn't the
-	// same buffer as a registered face (registered buffers are
-	// caller-owned). ResetOpenedFonts has the analogous logic; we
-	// duplicate it here for the per-font path.
+	// Permanent slots survive CloseTemporaryFont — long-lived callers
+	// (e.g. louis14's pkg/text.fontIDCache) hold fontIDs to them and a
+	// nil-out here would cause silent shaping failures on the next use.
+	// Slots reach permanent state by being allocated via OpenFont, or by
+	// being upgraded from temporary when OpenFont's cache-hit branch
+	// matches them.
+	if !df.isTemporary {
+		return nil
+	}
+	// Unmap only if (a) we mmap'd it ourselves (registered buffers are
+	// caller-owned) and (b) no other slot still references the same
+	// mmap region. The latter check covers the cross-size sharing path
+	// in OpenFont's findExistingFont branch.
 	if df.fontData != nil && p.findRegistered(df.family, df.variant) == nil {
-		_ = syscall.Munmap(df.fontData)
+		shared := false
+		base := &df.fontData[0]
+		for i := int32(0); i < MaxFonts; i++ {
+			if i == fontID {
+				continue
+			}
+			other := p.fonts[i]
+			if other != nil && len(other.fontData) > 0 && &other.fontData[0] == base {
+				shared = true
+				break
+			}
+		}
+		if !shared {
+			_ = syscall.Munmap(df.fontData)
+		}
 	}
 	p.fonts[fontID] = nil
 	return nil
