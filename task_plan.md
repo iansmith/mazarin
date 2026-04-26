@@ -1,6 +1,58 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: real temp-pool IPC, redesigned around RegisterBuffer
+## TOP OF STACK: stability bisect — temp-pool IPC may have regressed boot reliability
+
+After landing the real temp-pool IPC (`b9fd57f`), the publishScrollAttrs
+fix (`e3b7159`), and the event-loop body-fetch fix (`7af236c`), five
+180s ARM64 HVF runs produced five distinct failure modes:
+
+1. fti hung at 14s (Fstatat stuck on linux delegate)
+2. fti completed; bodies didn't render (event-loop bug — fixed)
+3. fti hung at 4s (Fstatat stuck again)
+4. fti completed late; scrollbar drag didn't kick cache (publishScrollAttrs
+   bug — fixed but couldn't validate yet)
+5. Two boot panics: `language: tag is not well-formed` in maildb's plugin
+   init (`golang.org/x/text/internal/language/compact.init.0`) and
+   `attr.Init: invalid shared page header` in mail-ui's bootstrap
+
+None of the panics or hangs touch the code I changed (event loop / grid /
+fontcache / textshape) — they're in the .maz plugin loader path and
+the kernel↔shepherd attr-shared-page handshake. But the failure rate
+went up after `b9fd57f`. The `pushBytesToFontsvc` path
+(`AllocPagesSlice` + `SharePagesWithTarget` per `RegisterBuffer` call)
+is the load-bearing new behavior that touches kernel page state during
+shepherd activity, even though no `@font-face` was loaded in any of
+these runs (no clicks → no body render → no `RegisterBuffer` from
+louis14). The provider's `slots [textshape.MaxFonts]*fontsvcFont`
+bump from 32 → 256 also expanded each shepherd's per-instance memory
+footprint by ~1.5KB of pointer slots, which shouldn't matter but is
+new.
+
+### Recommended next step
+
+**Bisect.** Revert `b9fd57f` on a side branch (`feature/mail-dumb-bisect`
+or similar) leaving `cc230e5` (GridFrame scrollbar) + `37b4abe`
+(DrawContext temp-font surface with safe fallback) as the baseline.
+Run 3–5 180s sessions:
+
+- If stable → `b9fd57f` introduced the regression. Re-apply
+  selectively: separate the slot-table redesign from the IPC client
+  rewrite, validate each independently. Most likely culprit is the
+  client-side `pushBytesToFontsvc` path even though it's not exercised
+  in these runs (e.g. an init-time cost or a kernel side-effect of
+  the new MsgTypes being decoded but not handled by some shepherd).
+- If still unstable → the gremlins are pre-existing intermittent
+  issues (memory: `mazlink_funcval_dead_reloc_bug.md` family). My
+  changes are exonerated; we keep the temp-pool work and chase the
+  underlying loader/attr-page issue separately.
+
+**Do NOT** continue layering features on top until this is resolved.
+The body-fetch fix (`7af236c`) is logically independent and would
+survive a bisect since it's only in `mazarin/apps/mail/main.go`.
+
+---
+
+## Resumed when stability question is settled: real temp-pool IPC, redesigned around RegisterBuffer
 
 louis14 is now calling `OpenTemporaryFont` / `CloseTemporaryFont`
 through the DrawContext (commit `f41f5c4d` on `fix/flexbox-fast`),

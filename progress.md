@@ -1,5 +1,134 @@
 # Progress Log
 
+## Session: 2026-04-26 — temp-pool real IPC landed, two follow-up fixes, stability concerns
+
+Continuing from yesterday's louis14 integration. Today landed the
+real temp-pool IPC client work, found and fixed two correctness bugs
+the user surfaced via interactive testing, and identified a stability
+regression that warrants a bisect before further forward progress.
+
+### Code shipped
+
+- **`b9fd57f` font: real temp-pool IPC + harfbuzz-safe table-based
+  fontID translation.** End-to-end IPC for the fontsvc temp pool plus
+  the harfbuzz-array overflow fix. Highlights:
+  - Wire types: `wm.RegisterFontBuffer` / `Reply`,
+    `wm.UnregisterFontBuffer` / `Reply` (MsgTypes 108–111).
+  - Fontsvc: `registeredBytes [64]` table; `handleRegisterFontBuffer`
+    stores the (family, variant) → mapped pages mapping;
+    `handleOpenTemporaryFont` consults it before filesystem path;
+    `parseFaceFromBytes` extracted; `CleanupShepherdFonts` extended.
+  - `FontSvcInjector` gained two new request handlers +
+    `RegisterCleanupHandler` for rachel→fontsvc death notification.
+  - Rachel's dispatch routes the new types; rachel's
+    `handleShepherdDeath` invokes the captured cleanup callback.
+  - **Client `FontSvcGlyphProvider` redesign:** replaced
+    `fonts [MaxFonts=32]` with `slots [textshape.MaxFonts=256]`. Each
+    slot stores `serverFontID int32` (whatever fontsvc returned —
+    opaque to the client) and `kind slotKind` (set explicitly when
+    populated, never derived from arithmetic). Client-side fontIDs
+    are slot indices, always small ints < 256; server-side fontIDs
+    are looked up on every IPC send. The wire's `0x1000` temp tag
+    stays purely server-side; client and server pool sizes can
+    change independently without breaking translation.
+  - `RegisterBuffer` pushes bytes via `AllocPagesSlice` + memcpy +
+    `SharePagesWithTarget(rachelSID)` + `SendRegisterFontBuffer`.
+    Failure → falls back to in-process `openRegistered` path.
+  - `OpenTemporaryFont` real IPC; `CloseTemporaryFont` real IPC for
+    `kindTemporary` slots, no-op for `kindPermanent`.
+  - `textshape.maxFonts` → `MaxFonts` (exported) so fontcache
+    sources its slot table size from the same constant.
+  - FontCache helpers: `SendOpenTemporaryFont`,
+    `SendCloseTemporaryFont`, `SendRegisterFontBuffer`,
+    `SendUnregisterFontBuffer`.
+
+- **`e3b7159` fix(grid): publish scroll attrs on visibleCount
+  transition.** `GridTable.Draw` was updating its cached
+  `visibleCount` field on the 0→N initial-draw transition without
+  calling `publishScrollAttrs`, so `VisibleRowCountAttr` stayed at 0
+  and `cache.Rebalance` short-circuited (it gates on `visCount == 0`).
+  Result: no headers were fetched, no body fetch ever triggered,
+  scrollbar drags couldn't kick the prefetch. 6-line fix —
+  `gt.publishScrollAttrs()` after `gt.buildSlotPool(newVC)`.
+
+- **`7af236c` fix(mail): run cache.Rebalance + body fetch after every
+  iteration.** The drainDirty loop at the top of mail-app's main
+  event loop was discarding `eagerCh` notifications that fired
+  synchronously from the wmCh handler — a click's
+  `setSelected → publishScrollAttrs` queues a dirty notification on
+  the OnEager channel mid-handler, then the next iteration's drain
+  drops it before the eagerCh case can run. Past runs that did fetch
+  bodies got lucky on async timing. Fix: move the
+  `cache.Rebalance` + `requestBody` checks out of the eagerCh case
+  and run them after every iteration regardless of which select
+  case fired. Both calls are idempotent.
+
+### 180s smoke runs (5 attempts)
+
+| # | Commit  | Result |
+|---|---------|--------|
+| 1 | b9fd57f | fti hung at 14s, Fstatat (sysid=44) stuck on linux delegate. |
+| 2 | b9fd57f | fti completed in 17s; user clicked but bodies didn't render. (Bug found → e3b7159 + 7af236c.) |
+| 3 | e3b7159 | fti hung at 4s, same Fstatat stuck. Couldn't reach click path. |
+| 4 | e3b7159 | fti completed late; user reported "very long pause", scrollbar didn't kick cache. (Symptom that drove 7af236c.) |
+| 5 | 7af236c | Two boot panics: `language: tag is not well-formed` in maildb plugin init, `attr.Init: invalid shared page header` in mail-ui. mail-ui never started. |
+
+Five distinct failure modes is a lot. The two correctness fixes
+(`e3b7159` + `7af236c`) are sound — the bugs they target reproduce
+deterministically by inspection and the fixes are minimal. But they
+haven't been validated end-to-end yet because every run since has
+hit a different gremlin.
+
+### Stability concern
+
+The fti-Fstatat hang and the boot panics don't touch the code
+I've been changing. They're in the .maz plugin loader and the
+kernel↔shepherd attr-shared-page handshake — well below the
+event-loop / grid / fontcache layer. But the rate went up after
+`b9fd57f`.
+
+`pushBytesToFontsvc` (the new `RegisterBuffer` path) does
+`AllocPagesSlice` + `SharePagesWithTarget`. None of the failing runs
+loaded `@font-face` (no clicks reached HTML rendering), so this code
+isn't being exercised. Yet the system is more fragile.
+
+The slot table grew from `[32]` to `[256]` per shepherd — ~1.5KB
+extra pointer slots. Negligible memory; mention only because it's
+the other observable change.
+
+### Next step (recorded in task_plan.md TOP OF STACK)
+
+**Bisect.** Revert `b9fd57f` on a side branch keeping `cc230e5`
+(GridFrame scrollbar) + `37b4abe` (DrawContext temp-font surface
+with safe fallback) as the baseline. Run 3–5 180s sessions.
+
+- Stable → `b9fd57f` introduced the regression. Re-apply more
+  carefully (split slot-table redesign from IPC client rewrite).
+- Still unstable → gremlins are pre-existing
+  (`mazlink_funcval_dead_reloc_bug.md` family); my changes are
+  exonerated; chase the loader / attr-page issue separately.
+
+The body-fetch fix (`7af236c`) is independent of the temp-pool
+work — only touches `mazarin/apps/mail/main.go` — and would survive
+a bisect.
+
+### Files modified today (mazzy)
+
+`shared/wm/uring_font.go`, `mazarin/textshape/{harfbuzz,layout,draw_impl,draw_context,rasterize}.go`,
+`mazarin/fontcache/{provider,protocol,fontcache,internal_provider}.go`,
+`maz/fontsvc/main.go`, `maz/rachel/main.go`,
+`mazarin/mancini/std/grid_table.go`, `mazarin/apps/mail/main.go`,
+`task_plan.md`, `progress.md`.
+
+### louis14 state (untouched today)
+
+The user has WIP in `pkg/render/render.go` (Phase 13g.2 snap-debug
+diagnostic) and `pkg/visualtest/debug_phase13g_test.go` — not part
+of this work. Yesterday's louis14 commit (`f41f5c4d` —
+`OpenTemporaryFont` / `CloseTemporaryFont` switch) is unchanged.
+
+---
+
 ## Session: 2026-04-25 (very late) — louis14 temp-font integration
 
 louis14 reached a stable state (Phase 13e′/13f LayoutUnit migration
