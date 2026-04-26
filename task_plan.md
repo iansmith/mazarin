@@ -1,6 +1,115 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: stability bisect — temp-pool IPC may have regressed boot reliability
+## TOP OF STACK: GC crash — `sweep increased allocation count` in mail shepherd bgsweep
+
+**Status (2026-04-26 evening):** Actively investigating. MAP_FIXED fix
+applied; crash persists. Sonnet's TTBR0 hypothesis (which was Sonnet's
+"likely root cause" at session end) was reviewed by Opus and largely
+ruled out. Refined hypothesis ranking below; full reasoning in the
+evening entry of `progress.md` and the rewritten
+`continuation_bisect.md`.
+
+### Crash signature
+
+```
+runtime: nelems=36 nalloc=15375 previous allocCount=1 nfreed=50162
+fatal error: sweep increased allocation count
+```
+A GC span with `allocCount=1` has ~15375 mark bits set — gcmark bitmap
+arena either pre-populated with garbage or marked through corrupted
+heap pointers. Crash at `mgcsweep.go:685`, immediately after
+`[mail] cache ready` (before any body fetches).
+
+### What's already fixed (KEEP)
+
+1. **MAP_FIXED unmap** — `kmazarin/ksyscall/mmap.go` `unmapFixedRange()`
+   helper. Real Linux semantics. Builds clean. Crash persists, so this
+   isn't the only source, but the fix is correct.
+2. **Constraint-block PD_PINNED** — `kmazarin/kmem/constraint.go`.
+   Symptomatic of a wider issue (see hypothesis #2 below).
+
+### Hypotheses, ranked after Opus review
+
+**#1 (zero-on-alloc gaps):** RULED OUT. Every demand-fault and IPC-page
+allocation path zeroes via scratchVA + `CleanPageCache`. The only
+non-zeroing paths are DMA (hardware fills) and code-page load (ELF
+overwrites). Neither touches the GC arena.
+
+**#2 (refcount/dual-mapping):** STRONGEST LEAD. `MapPageInProcess`
+(`paging.go:2336`) installs a PTE without bumping RefCount. The
+**MmapPageFill reply path** (`delegate.go:833`) creates a dual mapping
+(file-backed page in caller + handler) without `desc.RefCount++` and
+without `PD_SHARED`. Caller-side `SyscallMadvise` lacks a fileBacked
+check (`stubs.go:281-294`) and unconditionally calls
+`ReleasePageByPA` → RefCount 1→0 on a still-mapped-elsewhere page →
+buddy reuses it → handler writes through stale PTE → corruption
+in next owner. The constraint-block PD_PINNED fix is a band-aid for
+the same family of bug.
+
+**#3 (cache aliasing scratch↔userVA):** RULED OUT. ARM64 D-cache is
+PIPT-equivalent; `DC CIVAC` works by VA→PA translation; cleaning at
+scratchVA covers all aliases. ZERO_VERIFY at scratchVA never fires.
+
+**#4 (bump-allocator overlap):** UNLIKELY. Monotonic per-shepherd
+BumpPointer at 0x200T, separate IPCBumpPointer at 0x500T;
+`scanForStalePTEs` debug check at `mmap.go:191` would log
+`[mmap:STALE]` and hasn't.
+
+### TTBR0 / `SyscallMunmap` (Sonnet's afternoon lead) — disregard
+
+Sonnet claimed `SyscallMunmap` reads TTBR0 incorrectly because "SVC
+runs on a kernel worker goroutine." Tracing
+`exceptions_arm64.s:233-360`: SVC swaps `x28` to kmazarin's g0 (so Go
+thinks it's on g0) but **never changes TTBR0**. `SyscallDispatch`
+runs nosplit on the same CPU thread; TTBR0 is still the calling
+shepherd's L0PA. `HandleUserPageFault` reads TTBR0 every fault and
+ZERO_VERIFY_FAIL never fires — proves TTBR0 is correct on
+synchronous syscalls.
+
+The misleading comment at `stubs.go:279` is what set Sonnet on the
+wrong path. `SetSyscallSwitchTarget` matters for queue-then-resume
+paths (uring/futex/file-delegate); it does not affect inline
+mmap/munmap/madvise/mprotect.
+
+The TTBR0 patch Sonnet proposed is harmless but won't fix the GC
+crash. Don't burn a session on it.
+
+### Next steps (full plan in continuation_bisect.md)
+
+1. **Probe first** — add user-VA ZERO_VERIFY in `HandleUserPageFault`
+   (read back first 8 bytes via the user VA after TLB invalidate). If
+   non-zero, direct evidence of stale PTE writes confirming
+   hypothesis #2.
+
+2. **If confirmed, fix dual-mapping refcount:**
+   - `delegate.go:833` (MmapPageFill reply): `desc.RefCount++ +
+     PD_SHARED` before `MapPageInProcess`.
+   - `stubs.go` (`SyscallMadvise` userspace path): add fileBacked
+     check mirroring `SyscallMunmap`.
+
+3. **Verify** — 60s, 120s, 180s runs. If crash gone: update tracking
+   files, resume the morning bisect (PAUSED section below).
+
+4. **If probe doesn't fire** — corruption is happening AFTER the
+   page-fault completes (i.e., during normal Go operation), which is
+   a different problem. The PA from any other failure points us at
+   page-descriptor history.
+
+### Secondary concern
+
+`[localRect] NEGATIVE: lw=354 lh=-2691673` in the same log — rachel's
+layout engine sees corrupted floats. Likely collateral from the heap
+corruption, not a separate cause. Investigate after the GC crash is
+resolved.
+
+### Branch: `feature/mail-dumb`
+
+---
+
+## PAUSED: stability bisect — temp-pool IPC may have regressed boot reliability
+
+**(This was TOP OF STACK this morning; superseded by the GC crash above. Resume after
+GC crash is fixed.)**
 
 After landing the real temp-pool IPC (`b9fd57f`), the publishScrollAttrs
 fix (`e3b7159`), and the event-loop body-fetch fix (`7af236c`), five
@@ -28,7 +137,7 @@ bump from 32 → 256 also expanded each shepherd's per-instance memory
 footprint by ~1.5KB of pointer slots, which shouldn't matter but is
 new.
 
-### Recommended next step
+### Bisect plan (resume when GC crash fixed)
 
 **Bisect.** Revert `b9fd57f` on a side branch (`feature/mail-dumb-bisect`
 or similar) leaving `cc230e5` (GridFrame scrollbar) + `37b4abe`
@@ -2032,3 +2141,48 @@ name starts with a policy-matched package prefix.
     invalidates a sibling entry's reclen.
 - [ ] **P4: Propose fixes** — Bug A fix landed. Bug B fix design pending more
   trace data on the create-then-fail sequence.
+
+---
+
+## CURRENT WORK: Diversion #8 — Fstatat/sysid=44 intermittent hang
+
+### Status: Step 1 instrumentation complete; hunting for first hang run
+
+### Background
+Pre-existing intermittent hang (~1-in-5 × 180s ARM64 HVF runs). Confirmed
+pre-existing by bisect: appears on both sides of the b9fd57f boundary.
+
+Symptom: kernel epoch dump shows `delegate stuck: tid=N/sid=N/sysid=44/for=Ns`
+with multiple threads piling up (escalating wait times: ~25s → 37s → 57s).
+
+### Instrumentation added (2026-04-26)
+Three files patched — no functional change, pure diagnostics:
+1. `maz/linux/syscalls.go::sysFstatat` — entry/exit per call with seq
+2. `mazarin/fsclient/client.go::callLocked` — "stat id=N sent; RespCh len=N" after
+   uring.Send succeeds but before `<-c.RespCh` (gated on FSOpStat)
+3. `maz/linux/main.go` — startup cap log + 5s chan-monitor goroutine for wmCh/fontReplyCh
+
+### Runs so far (3 × 180s ARM64 HVF)
+- Run 1: STABLE. wmCh=0/8 fontReplyCh=0/8 throughout (34 samples).
+- Run 2: STABLE. No non-empty delegate-stuck.
+- Run 3: Short log (QEMU slow start? log only 7.8K).
+
+### What to do when a hang fires
+Look for:
+1. `[fstatat] seq=N enter` without matching `done` → stuck in Stat/callLocked
+2. `[fsclient] stat id=N sent` present → stuck at `<-c.RespCh`
+3. `chan-monitor: wmCh N/8 ...` near capacity → dispatcher deadlock confirmed
+4. Both channels 0 → secondary hypothesis (fs.maz not responding)
+
+### Hypotheses (ranked)
+- **Primary**: ipcDispatcher (ring 0) blocks on `tempWMCh <- typed` or
+  `tempFontReplyCh <- typed` when wmCh/fontReplyCh fill up. This prevents ring 0
+  from routing ProtoFSIPCResp to `fsClient.RespCh`. callLocked blocks forever.
+  Channel capacities: tempWMCh=8, wmCh=8, tempFontReplyCh=8, fontReplyCh=8.
+  All sends are blocking (confirmed in `mazarin/uring/reader.go:198`).
+- **Secondary**: fs.maz is not processing the FSOpStat request (stuck goroutine
+  in fs.maz). Would show as "stat id=N sent" present but wmCh/fontReplyCh near 0.
+
+### Fix (pending confirmation; architectural — needs user discussion)
+If primary confirmed: separate FSIPCResp onto its own dedicated ring so WM/font
+backpressure can never block the fs-response path.
