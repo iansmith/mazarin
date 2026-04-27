@@ -987,11 +987,40 @@ func CleanupShepherdFonts(deadSID int) {
 	}
 }
 
-// releaseTempSlot frees the cache and font-data pages and clears the
-// slot. Caller has already validated the index.
+// releaseTempSlot frees the cache pages and clears the slot. Caller has
+// already validated the index.
+//
+// Cache pages: allocated by buildTempCache via mem.AllocPagesSlice as a
+// fixed maxCachePages (= MaxCacheSize/4096) block; BuildGlyphCacheInto
+// returns a sub-slice via [:n], which preserves the original cap. We
+// free cap()/4096 pages from the slice base. mem.FreePages decrements
+// each page's RefCount; if the caller still has the cache mapped (i.e.
+// it hasn't yet called CloseTemporaryFont on its side), the page stays
+// alive at RefCount=1 until the caller's munmap drops it to 0.
+//
+// fontData: ownership is path-dependent and not currently tracked
+// per-slot:
+//   - registeredBytes path (handleOpenTemporaryFont line ~782): the
+//     pages were SharePages'd to fontsvc by the caller via
+//     RegisterFontBuffer; fontsvc holds a reshared mapping, not
+//     ownership. Freeing here would underflow the kernel RefCount.
+//   - filesystem path (handleOpenTemporaryFont line ~798): fontsvc
+//     loaded the bytes via sys.LoadFile and owns them.
+//
+// We don't free fontData here because we don't track which path was
+// used. Registered-bytes is the dominant case for HTML rendering, so
+// the residual leak is small (~100-400KB per filesystem-only temp
+// font, of which there are few). TODO: track per-slot ownership and
+// free filesystem-loaded fontData here.
 func releaseTempSlot(idx int32) {
-	// TODO: when the shared-bytes path lands, unmap the caller's font-data
-	// pages from fontsvc's address space here before clearing fontData.
+	slot := &tempFonts[idx]
+	if len(slot.cache) > 0 {
+		base := unsafe.Pointer(&slot.cache[0])
+		numPages := (cap(slot.cache) + 4095) / 4096
+		if err := mem.FreePages(base, numPages); err != nil {
+			rawPuts("[fontsvc] releaseTempSlot: FreePages cache failed: " + err.Error() + "\n")
+		}
+	}
 	tempFonts[idx] = fontSlot{}
 	tempFontOwner[idx] = -1
 }

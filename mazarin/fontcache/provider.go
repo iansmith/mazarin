@@ -419,11 +419,18 @@ func (p *FontSvcGlyphProvider) openTempViaIPC(req textshape.OpenFontRequest) (te
 
 // CloseTemporaryFont releases a fontID returned by OpenTemporaryFont.
 // For kindTemporary slots: looks up the server-side fontID, sends
-// wm.CloseTemporaryFont, drops the local slot. For kindPermanent
-// slots (returned by the permanent-first dedupe path): no-op so
-// callers can defer-close every fontID indiscriminately. Unknown /
-// out-of-range / already-closed fontIDs return nil per the interface
-// contract.
+// wm.CloseTemporaryFont, munmaps the shared cache and fontData VAs,
+// then drops the local slot. For kindPermanent slots (returned by
+// the permanent-first dedupe path): no-op so callers can defer-close
+// every fontID indiscriminately. Unknown / out-of-range /
+// already-closed fontIDs return nil per the interface contract.
+//
+// The munmap on cache/fontData is required for the kernel to reclaim
+// the underlying physical pages: SharePages on the fontsvc side
+// incremented RefCount per page; without the caller-side munmap the
+// pages stay alive at RefCount>=1 even after fontsvc's own
+// releaseTempSlot frees its mapping. Skipping it leaks ~4MB cache +
+// ~100-400KB fontData per Open/Close cycle.
 func (p *FontSvcGlyphProvider) CloseTemporaryFont(fontID int32) error {
 	if fontID < 0 || int(fontID) >= len(p.slots) {
 		return nil
@@ -436,6 +443,27 @@ func (p *FontSvcGlyphProvider) CloseTemporaryFont(fontID int32) error {
 	// errcode is best-effort — even if fontsvc didn't have the slot,
 	// we still drop our local entry.
 	_, _ = p.fc.SendCloseTemporaryFont(slot.serverFontID)
+
+	// Unmap the shared cache and fontData VAs from this shepherd's
+	// address space. The slices were created in populateSlot via
+	// unsafe.Slice over the IPC-area VAs returned by SharePages, so
+	// the slice base pointer is the mapping base and len equals the
+	// size in bytes.
+	if len(slot.cache) > 0 {
+		addr := uintptr(unsafe.Pointer(&slot.cache[0]))
+		bytes := (len(slot.cache) + 4095) &^ 4095
+		if err := mem.Munmap(addr, bytes); err != nil {
+			sys.UartWriteString("[provider] CloseTemporaryFont: munmap cache failed: " + err.Error() + "\n")
+		}
+	}
+	if len(slot.fontData) > 0 {
+		addr := uintptr(unsafe.Pointer(&slot.fontData[0]))
+		bytes := (len(slot.fontData) + 4095) &^ 4095
+		if err := mem.Munmap(addr, bytes); err != nil {
+			sys.UartWriteString("[provider] CloseTemporaryFont: munmap fontData failed: " + err.Error() + "\n")
+		}
+	}
+
 	p.slots[fontID] = nil
 	return nil
 }
