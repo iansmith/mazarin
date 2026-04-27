@@ -1,5 +1,63 @@
 # Progress Log
 
+## Session: 2026-04-27 (late afternoon, Opus) — Option B run, H-T2 ruled out, Option A next
+
+### What ran
+
+1. **Baseline reproducibility check (no instrumentation)**: 3 × 90s ARM64 HVF, no clicks. 0 crashes. Boot-without-clicks does not reliably reproduce the mspan crash at 90s — the historical ~1-in-5 rate is at 180s.
+2. **Option B implementation** (`612ed58`): new file `kmazarin/kmem/stale_pte_check.go` adds a diagnostic that walks every live shepherd's userspace page table on every `BuddyAllocTyped` of a user-side page type, looking for a leaf PTE still mapping the just-allocated PA. Telemetry counter (`stalePTEScans`/`stalePTEHits`) surfaced on the periodic `[status]` log line as `stale-pte: enabled scans hits`. Halt-on-first-hit via `klog.Criticalf("S!P!", ...)` mirroring `buddyDoubleFreeHalt`.
+   - **nosplit discipline (caught at build time):** `BuddyAllocTyped` is `//go:nosplit` (called from exception-handler chains via `allocPTPage`). The walker must stay nosplit too, which means no `SerialPuts`/`SerialHex16`/`klog` calls from inside the walk (those nested chains bust the budget). Resolution: walker records first hit into package-level globals (`stalePTEHitSID`/`stalePTEHitVA`/`stalePTEHitLeafPA`) and returns; non-nosplit `stalePTEHalt` then formats via `klog.Criticalf` and freezes.
+   - **Cost-of-scan triage (caught at first run):** unfiltered, the walker is so expensive that 180s of wall time only reaches fti launch (boot normally finishes in ~10s). Resolution: filter at the call site to user-side page types only (`PageUserText`/`PageUserROData`/`PageUserData`/`PageUserHeap`/`PageUserStack`/`PageFontCache`/`PageIPCBuffer`/`PageSharedIPC`). Kernel-type allocs vastly dominate boot churn and are not the suspected manifestation surface (the bug is mspan corruption in mail-app's heap = `PageUserHeap`).
+3. **Option B diagnostic run (verifier on, 5 × 180s)**: B1 154s/183K-scans/0-hits/clean, B2 hung at rachel-boot, B3 114s/203K-scans/0-hits/**reproduced mspan crash** (`nelems=128 nalloc=31291`), B4 168s/181K-scans/0-hits/clean, B5 hung at rachel-boot.
+4. **Baseline run (verifier off, 5 × 180s)**: 1 mspan crash (`nelems=341 nalloc=26649`), 1 early-boot hang at `[fs] reading /shepherd.elf`, 3 clean. Crash rate matches the historical 1/5.
+
+### Findings
+
+- **H-T2 (stale PTE in another shepherd's PT memory) ruled out.** Across ~370K user-side allocs scanned by the verifier — including in B3 which reproduced the crash — zero stale PTEs were detected. If a PTE had been left behind at munmap, the verifier would have caught it the moment that PA was reissued.
+- **H-T1 (stale TLB) survives as the primary suspect.** The verifier walks PT memory, not TLB caches, so silence here is consistent with H-T1 — a PTE that has been cleared but whose translation still lives in the CPU's TLB cache will not show up in any PT walk.
+- **Two side-issues parked:**
+  - Rachel-boot hang in B2/B5 — exposed only with the verifier enabled. Could be verifier-induced (use-after-free of an L0 PA mid-teardown when the walker reads `proc.ShepherdListInUse[i]`/`PageTableL0PA` without locking) or pre-existing race exposed by latency. Did NOT reproduce in the verifier-off baseline runs.
+  - Early-boot hang at `[fs] reading /shepherd.elf` (baseline run 1) — pre-existing, not introduced by Option B.
+
+### Late-session: Option A applied, then reverted as a no-op
+
+Added `TlbiVMALLE1 + DsbISH + IsbSY` at the end of `SyscallMunmap` (after the per-page unmap+release loop), mirroring `SyscallFreePages`. 5 × 180s ARM64 HVF: A1 163s clean, A2 boot-hang, A3 mspan crash (`nelems=100 nalloc=22790`), A4 161s clean, A5 mspan crash (`nelems=36 nalloc=44307`). 2/5 crashes vs baseline 1/5 — within noise, and the change is functionally a no-op since `UnmapUserPage`/`UnmapUserPageWithL0` already do per-page `tlbiVAE1IS` (inner-shareable broadcast — propagates to all CPUs in the IS domain). A trailing local `TlbiVMALLE1` after a broadcast doesn't add coverage.
+
+**H-T1 (stale TLB) is weakened, not conclusively ruled out.** The cleanest H-T1 test would need ASID swap on munmap or a same-VA-access probe immediately post-`tlbiVAE1IS` to verify it actually invalidated. That's bigger work. For now, pivot to H-T3.
+
+### Late-session: H-T3 Stage 1 sentinel-byte canary — H-T3a ruled out
+
+New file `kmazarin/kmem/free_canary.go`. At `BuddyFreeTyped` (after `buddyInsertFree`) and at `buddyAddRange` (init-time bootstrap pool population), paint the freed block with `0xDEADBEEFDEADBEEF`, skipping the first 8 bytes used by the buddy free-list next-pointer. At `BuddyAllocTyped` (after `buddyRemoveFree`, before split), verify the pattern is intact byte-for-byte. Mismatch → capture pa/offset/expected/found into globals, halt via `klog.Criticalf("K!W!", ...)`. Telemetry on `[status]` line: `free-canary: enabled fills verifies hits`. Same nosplit discipline as Option B verifier.
+
+**Bootstrap fix caught in smoke test:** the very first `BuddyAllocTyped` after `InitBuddyAllocator` was popping a bootstrap-populated pool page that had never been canary-filled, triggering a halt very early — before klog/serial were ready, so the halt path itself faulted (HSHEFAIL FAR=0x20). Fixed by also calling `fillFreeCanary` inside `buddyAddRange` so all pool pages start canary'd.
+
+5 × 180s ARM64 HVF: C1 boot-hang, C2 short clean (~20s+, 346K verifies), C3 boot mspan crash (`nelems=1008 nalloc=23628` at mail-app initial cache rebalance, no clicks, fired before first periodic [status] print), C4 163s click-driven clean (162K fills / 362K verifies), C5 boot-hang. **0 canary hits across ~1.5M+ verify operations including the C3 crash run.**
+
+**H-T3a ruled out.** The corrupting write is NOT happening between `BuddyFreeTyped` and the next `BuddyAllocTyped` of the same PA. The most likely surviving mechanism is **H-T3b: kernel writes AFTER the freed PA has been reissued and legitimately used** — the canary is overwritten by the new owner's first store, then a kernel path with a stale handle writes through. The canary cannot see this case.
+
+The most plausible channel for H-T3b is the **linux page-cache writeback path** (`sysWrite` / `flushWriteBuf` / `updateCachedPages` / `flushAndCleanupPages` / `handleFlushReply`). Earlier session `12e5f0d` added a partial-munmap range guard there; a different variant may still exist.
+
+### Next session
+
+**Stage 2 read-only audit** of the linux page-cache mutation paths. Files to read:
+- `maz/linux/page_cache.go`
+- `maz/linux/syscalls.go` (sysWrite, sysFtruncate, sysMmapPageFlush)
+- `maz/linux/main.go` (flushWriteBuf / updateCachedPages)
+- `kmazarin/ksyscall/munmap.go` + `kmazarin/ksyscall/mmap_writeback.go`
+- `kmazarin/ksyscall/cleanup.go`
+
+Goal: produce a written audit (in `findings.md` or `task_plan.md`) of every cache-mutation path with yes/no on whether it can leave a stale entry pointing to a freed PA. Concrete fix proposals only after audit is reviewed by user.
+
+### Stopping point
+
+Five commits on the bug-B-family chain in this session: `3942ae8`, `8a64a92`, `4460c14`, `ca7f5f6`, `612ed58`, plus the upcoming free-canary commit. Option A reverted. Tracking docs current.
+
+**Diagnostic toggles in tree:**
+- `stalePTECheckEnabled` (`kmazarin/kmem/stale_pte_check.go`) — default false. Telemetry: `stale-pte: enabled scans hits` on [status] line.
+- `freeCanaryEnabled` (`kmazarin/kmem/free_canary.go`) — default false. Telemetry: `free-canary: enabled fills verifies hits` on [status] line.
+
+---
+
 ## Session: 2026-04-27 (afternoon, Opus) — font leak fix + bug B family localized to kernel
 
 ### Findings

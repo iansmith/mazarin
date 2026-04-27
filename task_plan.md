@@ -1,66 +1,66 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: bug B family — stale-PTE / TLB / non-RefCount path into mail-app heap (2026-04-27)
+## TOP OF STACK: bug B family — page-cache writeback path re-audit (2026-04-27)
 
 **Branch:** `feature/mail-dumb`
-**Last commits:** `3942ae8` (A+B font leak fix) → `8a64a92` (caller-first close + checkpoints) → `4460c14` (docs retarget) → `ca7f5f6` (kernel double-free / underflow / loop-progress guards)
+**Last commits:** `3942ae8` (A+B font leak fix) → `8a64a92` (caller-first close + checkpoints) → `4460c14` (docs retarget) → `ca7f5f6` (kernel double-free / underflow / loop-progress guards) → `612ed58` (Option B stale-PTE verifier — ruled out H-T2) → (next: free-canary commit)
 
-### What we know
+### Where we are (2026-04-27 PM)
 
-The font close cycle exposes an intermittent kernel bug. Symptom shifts run-to-run but always corrupts an mspan struct field in mail-app's heap (`nelems` overwritten by a small int, `nalloc` and `nfreed` go nonsensical). Manifestations seen:
+The font close cycle exposes an intermittent kernel bug that always corrupts an mspan struct field in mail-app's heap. Five diagnostic rounds have ruled out:
 
-- `fatal error: sweep increased allocation count` (cluster `nalloc≈37K-45K, small nelems`).
-- `fatal error: freeIndex is not valid` (different mspan field, same family).
-- `mem.Munmap` of shared cache pages silently hangs (IPC-then-munmap order — *fixed* in `8a64a92` by reversing).
-- `mem.FreePages` of fontsvc's 1024-page cache block silently hangs.
-- `uring.Send` of close reply silently hangs.
+- **Buddy double-free / RefCount underflow / unmapLoop hang** (`ca7f5f6` guards silent).
+- **H-T2 stale PTE in another shepherd's PT memory** (`612ed58` Option B verifier silent across 5 × 180s, 184K–203K scans/run, 0 hits).
+- **H-T1 (specifically: missing trailing TLB flush at `SyscallMunmap`)** — Option A reverted as a no-op (per-page `tlbiVAE1IS` already broadcasts in IS domain; trailing local `TlbiVMALLE1` is redundant). Stronger H-T1 tests not yet attempted.
+- **H-T3a kernel write between `BuddyFreeTyped` and the next `BuddyAllocTyped` of the same PA** — sentinel-byte canary 5 × 180s, ~1.5M+ verifies aggregate, 0 hits, including in C3 which reproduced the mspan crash (`nelems=1008 nalloc=23628` at boot during mail-app initial cache rebalance, no clicks). The corrupting write is **not** happening in the free→reuse window.
 
-The `ca7f5f6` diagnostic run confirmed: **none of the buddy double-free / RefCount underflow / loop hangs fired**. Crash hit at boot during mail-app cache rebalance with zero font activity, zero shared-page release in flight. So the corruption mechanism is **not** a buddy double-free, **not** a `releasePageByPA` race, **not** a hang in the unmap loop. Something else writes to mail-app's mspan struct.
+### Active hypotheses (post free-canary)
 
-### Refined hypotheses
+**H-T3b — Kernel path with a stale handle writes AFTER the freed PA has been reissued and legitimately used.** The PA gets freed → canary'd → allocated to mail-app → mail-app's first write overwrites the canary with normal data → THEN a kernel path with a stale PA-derived pointer writes through. The canary is gone by the time of the corrupting write, so this case is invisible to the existing probe. The most plausible channel for this: **the linux page-cache writeback path** (`maz/linux/page_cache.go`, `sysWrite`, `flushWriteBuf`, `updateCachedPages`, `flushAndCleanupPages`, `handleFlushReply`). Earlier session (`12e5f0d`) added a partial-munmap range guard there to fix one variant of this bug — a different variant may still exist.
 
-**H-T1 (PRIMARY) — Stale TLB after `SyscallMunmap`.** `SyscallMunmap` (`kmazarin/ksyscall/munmap.go`) removes PTEs in the loop but **does not** call `kmem.TlbiVMALLE1()` / `DsbISH()` / `IsbSY()` at the end (compare `SyscallFreePages` which does). After munmap returns, the calling shepherd can still reach the page via cached TLB entries until a context switch happens that flushes — and on ARM64 with ASIDs, even context switches don't flush other-ASID entries. If that PA is later returned to buddy and reallocated to mail-app's heap (UserHeap pages), the prior shepherd's stale TLB entry can write through and corrupt whatever mail-app put there.
+**H-T1' (residual)** — TLB cache holding a translation past `tlbiVAE1IS` (HW erratum or barrier ordering). Hard to test; revisit only if the page-cache audit comes back empty.
 
-**H-T2 — Stale PTE in another shepherd's page table.** Variation of H-T1: not a TLB issue but a PTE that wasn't actually removed. `unmapUserPages` calls `UnmapUserPageWithL0`; if that has any silent failure path (returns 0 = "not mapped" instead of actually clearing the PTE for a corner-case state), the PTE persists. Once the PA is reallocated, the stale-PTE shepherd writes through.
+**H-T2** — RULED OUT.
 
-**H-T3 — Direct write into a freed page from a non-PTE path.** Kernel scratch mapping (`MapPAToKernelScratch`) used during page zeroing, IPC-page setup, or DMA could write to a PA that's been freed and reallocated. `releasePageByPA` returns the page to buddy *immediately*; if any kernel path holds the kernel-scratch VA past the free, the next allocation gets stomped. DMA writes from VirtIO devices targeting a now-recycled page have the same shape.
+### Plan: Stage 2 (READ-ONLY) — re-audit the page-cache writeback path
 
-**H-T4 — Shepherd-launch buffer cleanup leaves stale state.** `ca7f5f6` log showed sid=21 freeing 1599-page user buffers (ELF load scratch) right before the crash. These are NOT shared pages, but the freed PAs go straight to buddy and could be reissued to mail-app's heap. If the shepherd-launch path has a stale PTE / TLB / scratch-mapping issue, this would surface as mail-app heap corruption near boot.
+**This stage is investigation, not a code change.** Read the relevant files, map the dual-mapping flow (kernel → linux handler → kernel-side flush reply), and look for any path where:
+1. A cached page entry holds a `(sid, inum, offset, va, pa)` tuple,
+2. That underlying PA can be released to buddy via a release path (e.g. munmap, ftruncate, shepherd death) without removing the cache entry, **and**
+3. A subsequent `sysWrite` / `flushWriteBuf` / `updateCachedPages` lookup matches the stale entry and writes through the now-recycled PA.
 
-### Files to touch (option-by-option)
+Files to read (no edits unless we surface a concrete bug for review):
 
-#### Option A — TLB invalidate at end of `SyscallMunmap` (H-T1 fix-test)
+| File | Why |
+|------|-----|
+| `maz/linux/page_cache.go` | The cache structure + add/lookup/remove/range APIs. Where ownership semantics live. |
+| `maz/linux/syscalls.go` | `sysWrite`, `sysFtruncate`, `sysMmapPageFlush` — every path that mutates the cache. |
+| `maz/linux/main.go` | `flushWriteBuf`, `updateCachedPages` (if present) — the writers that consult the cache and write through PA. |
+| `kmazarin/ksyscall/munmap.go` + `kmazarin/ksyscall/mmap_writeback.go` | Kernel side of the flush IPC: `flushAndCleanupPages` populates `DelegateCallInfo`, `handleFlushReply` releases pages. |
+| `kmazarin/ksyscall/cleanup.go` (and shepherd-death paths) | Death-time cleanup: does it tell linux to drop its cached entries? Look for any window where shepherd dies but linux retains entries. |
 
-A small kernel behavior change to test the stale-TLB theory directly. Mirrors `SyscallFreePages`'s existing TLB-invalidate sequence. If the mspan corruption stops or shifts after this, H-T1 is confirmed.
+Specific things to look for:
+- A code path that calls `cache.Add` with an entry whose VA may already be in the cache from a previous use (`[pageCache:OVERWRITE]` instrumented but silent — confirm coverage).
+- `sysFtruncate` was flagged as discarding `RemoveRange` results without telling the kernel to drop the handler-side mappings (Bug A in `findings.md`). Re-examine whether the `[ftruncate:LEAK]` warning is firing in any reproducer log.
+- An `sysWrite` that consults the cache by `(fd, offset)` and writes to the cached PA without re-validating that PA still belongs to the original mapping — race window between cache lookup and PA write.
+- A `flushAndCleanupPages` that returns before the handler completes, with the kernel proceeding to free the PA while linux still has entries.
+- Any path where linux writes to the cached PA AFTER receiving a `MmapPageFlush` (i.e., after the kernel has released).
 
-| File | Change |
-|------|--------|
-| `kmazarin/ksyscall/munmap.go` | At end of `SyscallMunmap` (after the unmap+release loop, before `return 0`): call `kmem.TlbiVMALLE1()`, `kmem.DsbISH()`, `kmem.IsbSY()`. |
-
-This is architectural (kernel behavior change). User OK required before applying. Low blast radius (TLB flush is correct semantics for munmap), reversible.
-
-#### Option B — Stale-PTE detection at allocation time (H-T1/T2/T4 diagnostic)
-
-A diagnostic-only check that proves whether anyone holds a stale PTE for a freshly-allocated PA. When `BuddyAllocTyped` returns a PA, sweep all shepherds' page tables looking for that PA. Any hit before the new owner's PT setup is a stale-PTE bug. Expensive (O(N shepherds × 4-level PT walk per alloc), maybe O(seconds) at heavy alloc rates) — keep behind a build tag or runtime flag so it's off by default.
-
-| File | Change |
-|------|--------|
-| `kmazarin/kmem/buddy.go` | After `BuddyAllocTyped` produces a PA, optionally call `verifyNoStalePTEs(pa, order)`. Off by default; enable via boot-arg or env (e.g., `MAZ_KCHECK_STALE_PTE=1`). |
-| `kmazarin/kmem/page_descriptor.go` | New helper `verifyNoStalePTEs(pa uintptr, order int)`: walk every live `proc.Shepherd`'s `PageTableL0PA`, scan for PTEs whose PA range overlaps `[pa, pa + 4096<<order)`. Log `[stale-PTE] pa=X holder=N va=Y order=O` per hit, then `klog.Critical` halt if any found. |
-| `kmazarin/proc/proc.go` (or wherever shepherd list lives) | Expose an iterator over live shepherds for the helper to walk. |
-
-Diagnostic only, no behavior change. User OK preferred but lower risk than A.
-
-#### Common to both: capture of the corrupting write
-
-If A and B both run and the crash still fires without either firing first, the corruption isn't TLB or stale-PTE — it's H-T3 (kernel-direct write or DMA). Next-tier diagnostic at that point would be `MapPAToKernelScratch` instrumentation: log every scratch mapping, log every `Bzero4K`, and for the specific PAs that get freed, set a sentinel byte pattern at free time and check it at next-alloc time. That's bigger work — only pursue if A and B both come back negative.
+Deliverable from Stage 2: a written audit (in this file or `findings.md`) listing each cache-mutation path with a yes/no + justification on whether it can leave a stale entry pointing to a freed PA. Concrete fix proposals only after the audit is reviewed.
 
 ### Run plan
 
-1. Boot-without-clicks repro: confirm 3 × 90s runs — does the boot-time mspan corruption reproduce reliably without user input? If so, eliminates timing dependence on clicks and gives a fast iteration cycle.
-2. Apply **Option B** first (diagnostic only). Run 3 × 90s. If any `[stale-PTE]` log fires → H-T1/T2/T4 confirmed, fix path obvious.
-3. If B is silent: apply **Option A** (TLB flush). Run 5 × 90s. Compare to baseline rate. If crash rate drops noticeably → H-T1 confirmed and A is the fix.
-4. If A also doesn't help: pivot to H-T3 instrumentation (kernel-scratch mapping + sentinel-byte canary).
+1. ✅ Baseline: 5 × 180s → 1 mspan crash, 1 boot hang, 3 clean.
+2. ✅ Option B verifier (`612ed58`): 5 × 180s → 1 mspan crash, 2 boot hangs, 2 clean. **H-T2 RULED OUT** (0 hits).
+3. ✅ Option A TLB flush at SyscallMunmap end: 5 × 180s → 2 mspan crashes, 1 boot hang, 2 clean. Crash rate unchanged. **Reverted** (no-op vs per-page `tlbiVAE1IS`).
+4. ✅ H-T3 Stage 1 sentinel-byte canary: 5 × 180s → 1 mspan crash (C3, no clicks), 2 boot hangs, 2 clean (one click-driven). Canary 0 hits across ~1.5M+ verifies. **H-T3a (free→reuse window) RULED OUT.**
+5. **NEXT — Stage 2 page-cache audit (read-only).** Read the listed files, produce a written audit of cache-mutation paths, present concrete fix candidates for review.
+6. Stage 3 (only after audit): apply the most likely fix or add targeted instrumentation around the suspect path; 5 × 180s.
+
+### Reminders — diagnostic toggles in tree
+
+- **Option B stale-PTE verifier** at `612ed58`. Default `stalePTECheckEnabled = false` in `kmazarin/kmem/stale_pte_check.go`. Telemetry on `[status]` line: `stale-pte: enabled scans hits`. Flip the var to true to re-enable for any future PT-memory diagnostic.
+- **Free-canary** (next commit). Default `freeCanaryEnabled = false` in `kmazarin/kmem/free_canary.go`. Telemetry on `[status]` line: `free-canary: enabled fills verifies hits`. Flip the var to true to re-enable for any future free→reuse-window diagnostic.
 
 ### Active instrumentation (already in tree)
 

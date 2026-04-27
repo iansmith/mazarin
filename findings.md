@@ -79,29 +79,31 @@ needed to discriminate fix-correct vs not-yet-triggered.
 
 ---
 
-## Bug B family — write-through-stale-mapping into mail-app heap (UPDATED 2026-04-27 PM, post `ca7f5f6`)
+## Bug B family — write-through-stale-mapping into mail-app heap (UPDATED 2026-04-27 PM, post free-canary)
 
-**Status:** All earlier hypotheses superseded. After three rounds of progressively-tighter instrumentation:
+**Status:** Five diagnostic rounds in. H-T2 ruled out. H-T1 weakened (Option A no-op). **H-T3a (kernel write between free and reuse) ruled out by sentinel-byte canary** — 0 hits across ~1.5M+ verifies including a confirmed crash repro. The surviving mechanism is **H-T3b: kernel write AFTER the freed PA has been reissued and legitimately used** (canary already overwritten by the new owner before the corrupting write hits). Most likely channel: the linux page-cache writeback path.
 
 | Round | Commit | What it ruled out |
 |-------|--------|-------------------|
 | Userspace checkpoints | `8a64a92` | Localized hangs to kernel `unmapUserPages` / `releasePageByPA` / `BuddyFreeTyped` chain. Caller-first close order fixed the `mem.Munmap` hang. |
 | Kernel diagnostic guards | `ca7f5f6` | Buddy double-free guard (`buddyContainsPA`) silent. `kmem:UNDERFLOW` (RefCount race in `releasePageByPA`) silent. `[unmapLoop]` progress confirms loops complete. |
+| Option B stale-PTE verifier | `612ed58` | At every BuddyAllocTyped of a user-side page type, walks every live shepherd's userspace page table for a leaf PTE still mapping the just-allocated PA. 5 × 180s ARM64 HVF, verifier on: 184K–203K scans/run, **0 stale-PTE hits** across all runs, including B3 which reproduced the mspan crash (`nelems=128 nalloc=31291`). H-T2 (stale PTE in PT memory) ruled out. |
+| Option A trailing TLB flush in SyscallMunmap | (reverted) | Added `TlbiVMALLE1 + DsbISH + IsbSY` triplet at end of `SyscallMunmap`, mirroring `SyscallFreePages`. 5 × 180s: 2 mspan crashes (A3 `nelems=100 nalloc=22790`, A5 `nelems=36 nalloc=44307`), 1 boot hang, 2 clean. Crash rate unchanged vs baseline 1/5. The added flush is functionally a no-op: `UnmapUserPage`/`UnmapUserPageWithL0` already do per-page `tlbiVAE1IS` (inner-shareable broadcast), and a trailing local `TlbiVMALLE1` after a broadcast is redundant. **H-T1 weakened** — a real H-T1 test would need ASID swap on munmap or a same-VA probe right after `tlbiVAE1IS`. |
+| Free-canary at buddy free/alloc | (next commit, default off) | Paint freed pages with `0xDEADBEEFDEADBEEF` (skip first 8 bytes for buddy next-pointer); verify intact at next allocation. 5 × 180s, ~1.5M+ verifies aggregate, **0 hits**, including in C3 which reproduced `nelems=1008 nalloc=23628` at boot during mail-app initial cache rebalance with no clicks. Confirms the corrupting write does NOT happen between `BuddyFreeTyped` and the next `BuddyAllocTyped` of the same PA. **H-T3a ruled out.** |
 
-The kernel page-free chain is **not** double-freeing or underflowing RefCount. Yet mspan corruption still fires, even at boot during mail-app's first cache rebalance with **zero font activity** in the run. The corruption is happening from a path that doesn't go through the kernel page-management RefCount accounting at all — most likely a write through a stale TLB entry or stale PTE from another shepherd, into a PA that's been freed-and-reissued to mail-app's heap.
+The corrupting write doesn't go through PageDescriptor accounting, doesn't leave a stale PTE in PT memory, isn't fixed by a redundant TLB flush, and doesn't land in the free→reuse window. mspan corruption still fires (1/5 baseline, 2/5 with Option A, 1/5 with canary, 1/3 of completed Option-B runs — same order of magnitude). The bug fits a "post-reuse stale-handle write" shape: a kernel path with a stale PA-derived pointer writes after that PA has been freed, reissued, and the new owner has overwritten the canary with normal data.
 
 ### Crash signatures (all same family)
 
-- `fatal error: sweep increased allocation count`, cluster `nalloc≈37K-45K, small nelems`. Fires at any heavy-allocation moment.
-- `fatal error: freeIndex is not valid`, in mail-app's CSS parser. Different mspan field corrupted, same write pattern (small int written at a struct-field offset).
+- `fatal error: sweep increased allocation count`, cluster `nalloc≈22K-45K, small nelems` (1, 36, 100, 128, 170, 341, 1008 across runs). Fires at any heavy-allocation moment.
+- `fatal error: freeIndex is not valid`, in mail-app's CSS parser. Different mspan field corrupted, same write pattern.
 
-### Refined hypotheses (in `task_plan.md` TOP OF STACK)
+### Active hypotheses (post free-canary)
 
-- **H-T1** stale TLB after `SyscallMunmap` (it doesn't `TlbiVMALLE1` at end, unlike `SyscallFreePages`). PRIMARY suspect. Option A in plan: add the TLB flush; Option B: prove via stale-PTE detection at allocation time.
-- **H-T2** stale PTE in another shepherd's page table.
-- **H-T3** direct kernel-side write into a freed page (scratch mapping, DMA, page-cache writeback).
-
-The `[unmapLoop]` data from the `ca7f5f6` run shows sid=21 doing 16 × 1599-page user-region frees right before the boot-time crash. These are ELF-load scratch buffers, not shared pages, but freed PAs go straight to buddy and could be reissued to mail-app's heap. If shepherd-launch leaves stale TLB/PTE state, that's a plausible boot-time trigger.
+- **H-T3b (PRIMARY) — kernel write AFTER the freed PA has been reissued.** A kernel path with a stale handle survives past the free + reissue, and writes to the now-mail-app-owned page after mail-app has filled it with heap data. The canary is gone by then so the existing probe can't see it. **Most likely channel: linux page-cache writeback** — `maz/linux/page_cache.go`, `sysWrite`, `flushWriteBuf`, `updateCachedPages`, `flushAndCleanupPages`, `handleFlushReply`. Earlier session (`12e5f0d`) added a partial-munmap range guard; a different variant may still exist. **Next: read-only audit** of the page-cache mutation paths (Stage 2 in `task_plan.md`).
+- **H-T1' (residual)** — TLB cache holds a translation past `tlbiVAE1IS` (HW erratum or barrier ordering). Hard to test; revisit only after the page-cache audit is exhausted.
+- **H-T3a (free→reuse window)** — RULED OUT by free-canary.
+- **H-T2** — RULED OUT by Option B verifier.
 
 ### What was wrong with the earlier hypotheses
 

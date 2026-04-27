@@ -150,6 +150,13 @@ func buddyAddRange(start, end uintptr) {
 		}
 
 		buddyInsertFree(pa, order)
+		// Bug-B-family H-T3 Stage 1: paint the bootstrap-populated pool
+		// pages with the canary too, so the very first BuddyAllocTyped
+		// pops a canary-correct block (otherwise verifyFreeCanary fires
+		// on uninitialised content during early Go runtime init, before
+		// klog is ready, and the halt path can't even print). Symmetric
+		// with the post-buddyInsertFree fill in BuddyFreeTyped.
+		fillFreeCanary(pa, order)
 		pa += blockSize
 	}
 }
@@ -269,6 +276,14 @@ func BuddyAllocTyped(order int, pageType PageType, owner int16) uintptr {
 
 	// Remove block from the available order
 	pa := buddyRemoveFree(availOrder)
+
+	// Bug-B-family H-T3 Stage 1 diagnostic: verify the canary pattern that
+	// fillFreeCanary painted at free time is intact. Run BEFORE the split
+	// loop so the verifier sees the entire popped block; after the split,
+	// upper-half buddies get new next-pointers written into their first 8
+	// bytes (which would no longer match the sentinel for those offsets).
+	// Caller holds buddyAlloc.lock so the layout is stable. See free_canary.go.
+	verifyFreeCanary(pa, availOrder)
 
 	// Split down to requested order
 	for availOrder > order {
@@ -466,6 +481,14 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 	}
 
 	buddyInsertFree(pa, order)
+
+	// Bug-B-family H-T3 Stage 1 diagnostic: paint the freed block (skipping
+	// the first 8 bytes used by the buddy free-list next-pointer) with a
+	// sentinel pattern. At the next BuddyAllocTyped that pops this block,
+	// verifyFreeCanary checks the pattern is intact — any mismatch means a
+	// kernel path wrote into the page after we freed it. Off in production
+	// via freeCanaryEnabled. See free_canary.go.
+	fillFreeCanary(pa, order)
 
 	// Track deallocation (total)
 	if buddyAlloc.allocatedPages >= pagesFreed {

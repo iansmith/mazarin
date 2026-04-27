@@ -1358,6 +1358,7 @@ func printEpochStatus() {
 	tmoBlkNE := atomic.LoadUint32(&dbgTimeoutBlkNE)
 
 	stalePTEScans, stalePTEHits := kmem.StalePTEStats()
+	canaryFills, canaryVerifies, canaryHits := kmem.FreeCanaryStats()
 
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
@@ -1370,7 +1371,8 @@ func printEpochStatus() {
 			"  svc/delegated:%s\n"+
 			"  gc cycles:%s\n"+
 			"  delegate stuck:%s\n"+
-			"  stale-pte: enabled=%v scans=%d hits=%d\n",
+			"  stale-pte: enabled=%v scans=%d hits=%d\n"+
+			"  free-canary: enabled=%v fills=%d verifies=%d hits=%d\n",
 		uptimeSec, totalSVC, actualHz, tcs,
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nIOUring, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
@@ -1382,6 +1384,7 @@ func printEpochStatus() {
 		gcInfo,
 		delegateInfo,
 		kmem.StalePTECheckEnabled(), stalePTEScans, stalePTEHits,
+		kmem.FreeCanaryEnabled(), canaryFills, canaryVerifies, canaryHits,
 	)
 }
 
