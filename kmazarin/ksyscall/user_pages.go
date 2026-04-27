@@ -3,6 +3,7 @@ package ksyscall
 import (
 	"unsafe"
 
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 )
@@ -39,12 +40,34 @@ func copyPagesFromUser(startVA uintptr, totalBytes int, l0PA uintptr) []byte {
 // unmapUserPages unmaps numPages contiguous pages starting at startVA from
 // the process owning l0PA, releases each page back to the buddy allocator,
 // and removes the span from the owning shepherd's span list.
+//
+// Bug B family instrumentation: same `[munmap:FREED]` log as SyscallMunmap
+// when an IPC-region (>= 0x500000000000) shared page returns to the buddy.
+// SyscallFreePages calls this for fontsvc's `mem.FreePages` on cache
+// pages, so without this branch the fontsvc-side releases would be invisible
+// to the cross-shepherd correlation.
 func unmapUserPages(startVA uintptr, numPages int, l0PA uintptr, ownerSID int16) {
 	for i := 0; i < numPages; i++ {
 		va := startVA + uintptr(i)*4096
 		pa := kmem.UnmapUserPageWithL0(va, l0PA)
 		if pa != 0 {
-			kmem.ReleasePageByPA(pa &^ 0xFFF)
+			paAligned := pa &^ 0xFFF
+			var preRefCount int16
+			var preOwner int16
+			var wasShared bool
+			ipc := va >= 0x500000000000
+			if ipc {
+				if desc := kmem.GetPageDescriptor(paAligned); desc != nil {
+					preRefCount = desc.RefCount
+					preOwner = desc.Owner
+					wasShared = desc.Flags&kmem.PD_SHARED != 0
+				}
+			}
+			freed := kmem.ReleasePageByPA(paAligned)
+			if ipc && freed && wasShared {
+				klog.Logf("[munmap:FREED] sid=%d va=%x pa=%x preRefCount=%d origOwner=%d\n",
+					ownerSID, uint64(va), uint64(paAligned), preRefCount, preOwner)
+			}
 		}
 	}
 	callerShepherd := proc.FindShepherdBySID(proc.ShepherdId(ownerSID))

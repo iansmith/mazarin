@@ -418,12 +418,26 @@ func (p *FontSvcGlyphProvider) openTempViaIPC(req textshape.OpenFontRequest) (te
 }
 
 // CloseTemporaryFont releases a fontID returned by OpenTemporaryFont.
-// For kindTemporary slots: looks up the server-side fontID, sends
-// wm.CloseTemporaryFont, munmaps the shared cache and fontData VAs,
-// then drops the local slot. For kindPermanent slots (returned by
-// the permanent-first dedupe path): no-op so callers can defer-close
-// every fontID indiscriminately. Unknown / out-of-range /
-// already-closed fontIDs return nil per the interface contract.
+// For kindTemporary slots: munmaps the shared cache and fontData VAs
+// from this shepherd's address space, then sends wm.CloseTemporaryFont
+// so fontsvc can free its own side, then drops the local slot. For
+// kindPermanent slots (returned by the permanent-first dedupe path):
+// no-op so callers can defer-close every fontID indiscriminately.
+// Unknown / out-of-range / already-closed fontIDs return nil per the
+// interface contract.
+//
+// Order rationale (caller-munmap-then-IPC, not IPC-then-munmap): each
+// shared cache page enters with RefCount=2 (one for fontsvc's
+// allocation, one for the SharePages mapping into this shepherd). We
+// want each unmap step to drop a single reference cleanly, with the
+// page only returning to the buddy allocator once both ends are torn
+// down. Doing the IPC first triggers fontsvc's mem.FreePages — which
+// ends up invalidating the page-cache pages backing the shared
+// mapping while this shepherd still holds PTEs to them — and the
+// next mem.Munmap call from this shepherd has hung silently in
+// observed runs. Caller-first order avoids that interleaving:
+// RefCount goes 2→1 here (PTEs gone, page still alive), then 1→0 on
+// fontsvc's side, then back to buddy.
 //
 // The munmap on cache/fontData is required for the kernel to reclaim
 // the underlying physical pages: SharePages on the fontsvc side
@@ -439,32 +453,54 @@ func (p *FontSvcGlyphProvider) CloseTemporaryFont(fontID int32) error {
 	if slot == nil || slot.kind != kindTemporary {
 		return nil
 	}
-	// Send close to fontsvc using the server-side fontID. Reply
-	// errcode is best-effort — even if fontsvc didn't have the slot,
-	// we still drop our local entry.
-	_, _ = p.fc.SendCloseTemporaryFont(slot.serverFontID)
 
-	// Unmap the shared cache and fontData VAs from this shepherd's
-	// address space. The slices were created in populateSlot via
-	// unsafe.Slice over the IPC-area VAs returned by SharePages, so
+	// Bug B family instrumentation: granular checkpoints so we can see
+	// where a hang interrupts. enter → before/after each munmap → before
+	// IPC → after IPC → exit.
+	sys.UartWriteString("[provider:close] enter fontID=" + strconv.Itoa(int(fontID)) +
+		" srvID=" + strconv.Itoa(int(slot.serverFontID)) +
+		" cacheLen=" + strconv.Itoa(len(slot.cache)) +
+		" fontLen=" + strconv.Itoa(len(slot.fontData)) + "\n")
+
+	// Step 1: unmap the shared cache and fontData VAs from this
+	// shepherd's address space. The slices were created in populateSlot
+	// via unsafe.Slice over the IPC-area VAs returned by SharePages, so
 	// the slice base pointer is the mapping base and len equals the
 	// size in bytes.
+	var cacheVA, fontVA uintptr
+	var cacheBytes, fontBytes int
 	if len(slot.cache) > 0 {
-		addr := uintptr(unsafe.Pointer(&slot.cache[0]))
-		bytes := (len(slot.cache) + 4095) &^ 4095
-		if err := mem.Munmap(addr, bytes); err != nil {
+		cacheVA = uintptr(unsafe.Pointer(&slot.cache[0]))
+		cacheBytes = (len(slot.cache) + 4095) &^ 4095
+		sys.UartWriteString("[provider:close] preMunmapCache fontID=" + strconv.Itoa(int(fontID)) +
+			" cacheVA=" + strconv.FormatUint(uint64(cacheVA), 16) +
+			" cacheBytes=" + strconv.Itoa(cacheBytes) + "\n")
+		if err := mem.Munmap(cacheVA, cacheBytes); err != nil {
 			sys.UartWriteString("[provider] CloseTemporaryFont: munmap cache failed: " + err.Error() + "\n")
 		}
+		sys.UartWriteString("[provider:close] postMunmapCache fontID=" + strconv.Itoa(int(fontID)) + "\n")
 	}
 	if len(slot.fontData) > 0 {
-		addr := uintptr(unsafe.Pointer(&slot.fontData[0]))
-		bytes := (len(slot.fontData) + 4095) &^ 4095
-		if err := mem.Munmap(addr, bytes); err != nil {
+		fontVA = uintptr(unsafe.Pointer(&slot.fontData[0]))
+		fontBytes = (len(slot.fontData) + 4095) &^ 4095
+		sys.UartWriteString("[provider:close] preMunmapFont fontID=" + strconv.Itoa(int(fontID)) +
+			" fontVA=" + strconv.FormatUint(uint64(fontVA), 16) +
+			" fontBytes=" + strconv.Itoa(fontBytes) + "\n")
+		if err := mem.Munmap(fontVA, fontBytes); err != nil {
 			sys.UartWriteString("[provider] CloseTemporaryFont: munmap fontData failed: " + err.Error() + "\n")
 		}
+		sys.UartWriteString("[provider:close] postMunmapFont fontID=" + strconv.Itoa(int(fontID)) + "\n")
 	}
 
+	// Step 2: tell fontsvc it can release its own mapping. Reply
+	// errcode is best-effort — even if fontsvc didn't have the slot,
+	// we still drop our local entry.
+	sys.UartWriteString("[provider:close] preIPC fontID=" + strconv.Itoa(int(fontID)) + "\n")
+	_, _ = p.fc.SendCloseTemporaryFont(slot.serverFontID)
+	sys.UartWriteString("[provider:close] postIPC fontID=" + strconv.Itoa(int(fontID)) + "\n")
+
 	p.slots[fontID] = nil
+	sys.UartWriteString("[provider:close] exit fontID=" + strconv.Itoa(int(fontID)) + "\n")
 	return nil
 }
 

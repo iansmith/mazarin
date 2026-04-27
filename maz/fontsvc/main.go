@@ -881,8 +881,17 @@ func handleCloseTemporaryFont(senderSID int, msg *wm.CloseTemporaryFont) {
 		return
 	}
 
+	rawPuts("[fontsvc:close] preRelease idx=")
+	rawPutsInt(int(idx))
+	rawPuts("\n")
 	releaseTempSlot(idx)
+	rawPuts("[fontsvc:close] postRelease idx=")
+	rawPutsInt(int(idx))
+	rawPuts("\n")
 	sendCloseTempFontReply(senderSID, fontID, 0)
+	rawPuts("[fontsvc:close] postReply idx=")
+	rawPutsInt(int(idx))
+	rawPuts("\n")
 }
 
 // handleRegisterFontBuffer accepts a (family, variant) → caller-shared
@@ -1017,6 +1026,18 @@ func releaseTempSlot(idx int32) {
 	if len(slot.cache) > 0 {
 		base := unsafe.Pointer(&slot.cache[0])
 		numPages := (cap(slot.cache) + 4095) / 4096
+		// Bug B family instrumentation: log each release so we can
+		// correlate with kernel `[munmap:FREED]` and provider
+		// `[provider:close]` lines.
+		rawPuts("[fontsvc:release] idx=")
+		rawPutsInt(int(idx))
+		rawPuts(" srvID=")
+		rawPutsInt(int(idx | wm.TempFontIDBase))
+		rawPuts(" cacheVA=")
+		rawPutsHex(uint64(uintptr(base)))
+		rawPuts(" cachePages=")
+		rawPutsInt(numPages)
+		rawPuts("\n")
 		if err := mem.FreePages(base, numPages); err != nil {
 			rawPuts("[fontsvc] releaseTempSlot: FreePages cache failed: " + err.Error() + "\n")
 		}
@@ -1042,11 +1063,21 @@ func sendCloseTempFontReply(senderSID int, fontID, errCode int32) {
 		FontID:  fontID,
 		ErrCode: errCode,
 	})
+	rawPuts("[fontsvc:close] preSend senderSID=")
+	rawPutsInt(senderSID)
+	rawPuts(" fontID=")
+	rawPutsInt(int(fontID))
+	rawPuts("\n")
 	if err := uring.Send(senderSID, &encoded); err != nil {
 		rawPuts("[fontsvc] uring.Send CloseTemporaryFontReply failed: ")
 		rawPuts(err.Error())
 		rawPuts("\n")
 	}
+	rawPuts("[fontsvc:close] postSend senderSID=")
+	rawPutsInt(senderSID)
+	rawPuts(" fontID=")
+	rawPutsInt(int(fontID))
+	rawPuts("\n")
 }
 
 func handleRequestGlyph(senderSID int, msg *wm.RequestGlyph) {
@@ -1186,6 +1217,28 @@ func rawPutsInt(n int) {
 		i--
 		buf[i] = byte('0' + n%10)
 		n /= 10
+	}
+	rawPuts(string(buf[i:]))
+}
+
+// rawPutsHex writes n as lowercase hex (no "0x" prefix). Used for
+// correlating fontsvc-side logs with kernel `[munmap:FREED]` lines.
+func rawPutsHex(n uint64) {
+	if n == 0 {
+		rawPuts("0")
+		return
+	}
+	var buf [16]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		d := byte(n & 0xF)
+		if d < 10 {
+			buf[i] = '0' + d
+		} else {
+			buf[i] = 'a' + d - 10
+		}
+		n >>= 4
 	}
 	rawPuts(string(buf[i:]))
 }

@@ -79,10 +79,36 @@ func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
 	// Unmap caller PTEs and (for non-file-backed pages) free physical pages.
 	removeSpan(alignedAddr, alignedLength)
 
+	// Bug B family instrumentation: log when an IPC-region (>= ipcDataVAStart)
+	// page that was ever shared (PD_SHARED bit set) returns to the buddy
+	// via this path. The PD_SHARED filter is what makes this useful — it
+	// excludes the volumes of sole-owned IPC-region churn from rachel/linux
+	// runtime mmap/munmap that would otherwise drown the signal.
+	// preRefCount=1 + PD_SHARED set means "last mapping of a shared page
+	// freed", which is the suspect case for stale-PTE corruption.
 	for va := alignedAddr; va < alignedEnd; va += pageSize {
 		pa := kmem.UnmapUserPage(uintptr(va))
 		if pa != 0 && !fileBacked {
-			kmem.ReleasePageByPA(pa)
+			var preRefCount int16
+			var preOwner int16
+			var wasShared bool
+			ipc := va >= ipcDataVAStart
+			if ipc {
+				if desc := kmem.GetPageDescriptor(pa); desc != nil {
+					preRefCount = desc.RefCount
+					preOwner = desc.Owner
+					wasShared = desc.Flags&kmem.PD_SHARED != 0
+				}
+			}
+			freed := kmem.ReleasePageByPA(pa)
+			if ipc && freed && wasShared {
+				sidVal := int16(0)
+				if p != nil {
+					sidVal = int16(p.PID)
+				}
+				klog.Logf("[munmap:FREED] sid=%d va=%x pa=%x preRefCount=%d origOwner=%d\n",
+					sidVal, uint64(va), uint64(pa), preRefCount, preOwner)
+			}
 		}
 	}
 
