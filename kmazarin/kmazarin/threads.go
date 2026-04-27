@@ -1357,6 +1357,8 @@ func printEpochStatus() {
 	wakeNW := atomic.LoadUint32(&dbgWakeURNoWaiter)
 	tmoBlkNE := atomic.LoadUint32(&dbgTimeoutBlkNE)
 
+	stalePTEScans, stalePTEHits := kmem.StalePTEStats()
+
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
 			"  threads: running=%d ready=%d futex=%d sleep=%d softirq=%d uring=%d blk_io=%d delegate=%d\n"+
@@ -1367,7 +1369,8 @@ func printEpochStatus() {
 			"  svc/sysid:%s\n"+
 			"  svc/delegated:%s\n"+
 			"  gc cycles:%s\n"+
-			"  delegate stuck:%s\n",
+			"  delegate stuck:%s\n"+
+			"  stale-pte: enabled=%v scans=%d hits=%d\n",
 		uptimeSec, totalSVC, actualHz, tcs,
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nIOUring, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
@@ -1378,6 +1381,7 @@ func printEpochStatus() {
 		sysIDDelegDelta,
 		gcInfo,
 		delegateInfo,
+		kmem.StalePTECheckEnabled(), stalePTEScans, stalePTEHits,
 	)
 }
 

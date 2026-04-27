@@ -309,6 +309,23 @@ func BuddyAllocTyped(order int, pageType PageType, owner int16) uintptr {
 
 	SetPageDescriptor(pa, pageType, owner, uint8(order))
 
+	// Bug-B-family Option B diagnostic: confirm no live PTE in any
+	// shepherd's page table still maps the just-allocated PA. A hit
+	// means the previous holder failed to tear down its mapping when
+	// the page was freed — the suspected stale-PTE/TLB mechanism
+	// behind the mspan corruption. Off in production via
+	// stalePTECheckEnabled. See stale_pte_check.go.
+	//
+	// Restricted to user-side page types: the manifestation we are
+	// chasing is mspan corruption in mail-app's heap, which means the
+	// reissued PA lands as PageUserHeap (or a related user type).
+	// Walking all kernel-type allocs is too slow to complete boot.
+	switch pageType {
+	case PageUserText, PageUserROData, PageUserData, PageUserHeap,
+		PageUserStack, PageFontCache, PageIPCBuffer, PageSharedIPC:
+		verifyNoStalePTEs(pa, order)
+	}
+
 	return pa
 }
 

@@ -99,6 +99,7 @@ The mlog (maildb console routing) work earlier in the session is unrelated and u
 - `[localRect] NEGATIVE: lw=354 lh=-2691673` rachel layout corruption — likely collateral from a prior crash. Reassess after kernel bug resolved.
 - linux-ui console window not appearing in some runs — separate placement/z-order issue.
 - `sysFtruncate` cache-discard leak (Bug A from prior session) — not implicated in current symptoms; defer.
+- **Rachel-boot hang (race) — exposed by Option B verifier (2026-04-27)**: With `stalePTECheckEnabled=true`, runs B2 and B5 (out of 5) hung at the exact same point — last log line `[shepherd] loading /rachel.maz (sid=0)`, immediately after a 1599-page `unmapLoop exit` for the previous shepherd that loaded rachel.maz (sid=3 in B2, sid=20 in B5). Both saved at `/tmp/B{2,5}-filtered-180s.log`. Hypothesis: the verifier's PT walk reads `proc.ShepherdListInUse[i]` and `PageTableL0PA` without locking, racing with shepherd teardown / rachel-launch. Could be verifier-caused (use-after-free of an L0/L1 PA mid-teardown) or just a pre-existing race exposed by the verifier's added latency. Did NOT reproduce in baseline runs without the verifier. **To be investigated** — needed only if Option A's TLB flush also relies on similar concurrent walks, or if we re-enable Option B for further diagnostics.
 
 ---
 
