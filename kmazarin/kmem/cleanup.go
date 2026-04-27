@@ -96,6 +96,15 @@ func releasePageByPA(pa uintptr) bool {
 		return false // Not in pool (diplomat-mapped, MMIO, or out of range)
 	}
 	if desc.RefCount <= 0 {
+		// Bug B family diagnostic: caller asked us to release a page whose
+		// RefCount is already 0 (or negative, meaning a prior decrement
+		// underflowed). Either: (a) something released this page already
+		// without removing the caller's PTE, (b) a race where two threads
+		// both saw RefCount=1 and both decremented past 0. Either is a
+		// real bug we want to catch. Log loudly with type/owner/flags so
+		// we can correlate against the share-and-release flow.
+		klog.Errf("[kmem:UNDERFLOW] pa=%x refCount=%d type=%d owner=%d flags=%x\n",
+			uint64(pa), int(desc.RefCount), int(desc.Type), int(desc.Owner), uint64(desc.Flags))
 		return false // Already freed or untracked
 	}
 	if desc.Flags&PD_PINNED != 0 {

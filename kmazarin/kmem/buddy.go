@@ -170,6 +170,41 @@ func buddyInsertFree(pa uintptr, order int) {
 	*countSlot++
 }
 
+// buddyContainsPA walks the free list for the given order and returns true if
+// pa is already present. Used as a double-free guard from BuddyFreeTyped:
+// inserting a PA that's already on the list would either no-op (if pa happens
+// to be the current head's existing successor) or create a self-cycle (if pa
+// becomes the head whose stored next pointer was the previous head, which
+// then transitively points back at pa). Either way the next walker (an
+// allocator or a future free) can spin forever or corrupt accounting.
+//
+// Caller must hold buddyAlloc.lock. Walk is bounded to maxWalk to ensure we
+// terminate even on a pre-existing cycle (so this helper itself doesn't hang
+// when invoked from a corrupt state).
+//
+//go:nosplit
+func buddyContainsPA(pa uintptr, order int) bool {
+	if order < 0 || order >= MaxOrder {
+		return false
+	}
+	idx := uint(order) % uint(MaxOrder)
+	const maxWalk = 8192
+	cur := buddyAlloc.freeList[idx]
+	for i := 0; i < maxWalk && cur != 0; i++ {
+		if cur == pa {
+			return true
+		}
+		// Validate cur is within the buddy pool range before dereferencing
+		// (mirrors buddyRemoveSpecific's safety check).
+		if cur < buddyAlloc.poolStart || cur >= buddyAlloc.poolEnd {
+			return false
+		}
+		va := cur + buddyAlloc.kernelVAOffset
+		cur = *(*uintptr)(unsafe.Pointer(va))
+	}
+	return false
+}
+
 // buddyRemoveFree removes and returns the head block from the free list.
 // Returns 0 if the list is empty.
 //
@@ -403,6 +438,16 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 		order++
 	}
 
+	// Bug B family diagnostic: detect double-free. If pa is already on the
+	// free list for this order, inserting again would create a self-cycle
+	// in the singly-linked list and the next walker hangs. Halt with a
+	// loud marker and the offending pa so the serial log shows it.
+	if buddyContainsPA(pa, order) {
+		buddyAlloc.lock.Unlock()
+		buddyDoubleFreeHalt(pa, order, pageType)
+		return
+	}
+
 	buddyInsertFree(pa, order)
 
 	// Track deallocation (total)
@@ -489,6 +534,19 @@ func buddyCorruptionHalt(prev, pa uintptr, order int) {
 	klog.Criticalf("B!C!",
 		"[BUDDY] CORRUPT free list! order=%d bad-next=0x%x looking-for=0x%x pool=[0x%x,0x%x)\n",
 		order, prev, pa, buddyAlloc.poolStart, buddyAlloc.poolEnd)
+	for {
+	}
+}
+
+// buddyDoubleFreeHalt is invoked when BuddyFreeTyped detects that pa is
+// already on the free list for this order — a double-free. Halts with a
+// loud marker so the serial log shows the offending pa/order/type.
+//
+//go:noinline
+func buddyDoubleFreeHalt(pa uintptr, order int, pageType PageType) {
+	klog.Criticalf("D!F!",
+		"[BUDDY] DOUBLE FREE! pa=0x%x order=%d type=%d pool=[0x%x,0x%x)\n",
+		pa, order, int(pageType), buddyAlloc.poolStart, buddyAlloc.poolEnd)
 	for {
 	}
 }

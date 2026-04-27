@@ -46,10 +46,24 @@ func copyPagesFromUser(startVA uintptr, totalBytes int, l0PA uintptr) []byte {
 // SyscallFreePages calls this for fontsvc's `mem.FreePages` on cache
 // pages, so without this branch the fontsvc-side releases would be invisible
 // to the cross-shepherd correlation.
+//
+// For large frees (numPages >= 64, e.g. fontsvc's 1024-page cache release)
+// we log entry, every 256-page progress checkpoint, and exit. If the loop
+// hangs in an iteration, the last progress log pinpoints the iteration and
+// the va/pa being processed when it stuck.
 func unmapUserPages(startVA uintptr, numPages int, l0PA uintptr, ownerSID int16) {
+	bigFree := numPages >= 64
+	if bigFree {
+		klog.Logf("[unmapLoop] enter sid=%d startVA=%x numPages=%d\n",
+			ownerSID, uint64(startVA), numPages)
+	}
 	for i := 0; i < numPages; i++ {
 		va := startVA + uintptr(i)*4096
 		pa := kmem.UnmapUserPageWithL0(va, l0PA)
+		if bigFree && i > 0 && i%256 == 0 {
+			klog.Logf("[unmapLoop] progress sid=%d i=%d/%d va=%x pa=%x\n",
+				ownerSID, i, numPages, uint64(va), uint64(pa))
+		}
 		if pa != 0 {
 			paAligned := pa &^ 0xFFF
 			var preRefCount int16
@@ -73,5 +87,9 @@ func unmapUserPages(startVA uintptr, numPages int, l0PA uintptr, ownerSID int16)
 	callerShepherd := proc.FindShepherdBySID(proc.ShepherdId(ownerSID))
 	if callerShepherd != nil {
 		callerShepherd.Spans.Remove(uint64(startVA), uint64(numPages)*4096)
+	}
+	if bigFree {
+		klog.Logf("[unmapLoop] exit sid=%d startVA=%x numPages=%d\n",
+			ownerSID, uint64(startVA), numPages)
 	}
 }
