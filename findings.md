@@ -79,23 +79,46 @@ needed to discriminate fix-correct vs not-yet-triggered.
 
 ---
 
-## Bug B family — kernel page-free chain (UPDATED 2026-04-27 PM)
+## Bug B family — write-through-stale-mapping into mail-app heap (UPDATED 2026-04-27 PM, post `ca7f5f6`)
 
-**Status:** Hypothesis 1 below (`goFont.ParseTTF` → GC walk into shared pages) is **wrong on the mechanism**. Go's `findObject` returns nil for non-arena pointers; the marker sets bits, doesn't write to mspan struct fields. Shared pages live at `0x500000000000+` (IPC bump) or `0x200000000000+` (user mmap), Go arenas at `0xC000000000+` — non-overlapping regions, GC never crosses into shared memory.
+**Status:** All earlier hypotheses superseded. After three rounds of progressively-tighter instrumentation:
 
-**What's actually happening:** an intermittent kernel bug in the page-free chain (`unmapUserPages` → `releasePageByPA` → `BuddyFreeTyped`). Symptoms shift run-to-run but always land in this chain:
+| Round | Commit | What it ruled out |
+|-------|--------|-------------------|
+| Userspace checkpoints | `8a64a92` | Localized hangs to kernel `unmapUserPages` / `releasePageByPA` / `BuddyFreeTyped` chain. Caller-first close order fixed the `mem.Munmap` hang. |
+| Kernel diagnostic guards | `ca7f5f6` | Buddy double-free guard (`buddyContainsPA`) silent. `kmem:UNDERFLOW` (RefCount race in `releasePageByPA`) silent. `[unmapLoop]` progress confirms loops complete. |
 
-- `sweep increased allocation count` mspan corruption (cluster `nalloc≈37K-45K, small nelems`) — fires at any heavy-allocation moment including **boot-time cache rebalance with zero font activity**, ruling out the font path as causal.
-- `freeIndex is not valid` mspan corruption — different field, same family.
-- `mem.FreePages` of fontsvc's 1024-page cache block silently hangs.
-- `mem.Munmap` of shared cache pages from mail-app silently hangs (the IPC-then-munmap order; fixed in `8a64a92` by reversing).
-- `uring.Send` of close reply silently hangs.
+The kernel page-free chain is **not** double-freeing or underflowing RefCount. Yet mspan corruption still fires, even at boot during mail-app's first cache rebalance with **zero font activity** in the run. The corruption is happening from a path that doesn't go through the kernel page-management RefCount accounting at all — most likely a write through a stale TLB entry or stale PTE from another shepherd, into a PA that's been freed-and-reissued to mail-app's heap.
 
-All converge on the same kernel chain. The instrumentation in `8a64a92` (`[munmap:FREED]`, `[fontsvc:release]`, `[fontsvc:close] *`, `[provider:close] *`) localized to that chain but doesn't yet identify the specific bug. Next: kernel-side instrumentation of `BuddyFreeTyped` and `releasePageByPA` per `task_plan.md` H-K1..H-K4.
+### Crash signatures (all same family)
 
-**Earlier `[versai:timing]` confusion:** that prefix is hardcoded in `mancini/std/web_interactor.go` and appears in the log of *any* app running a WebInteractor. The crashing process is **mail-app** (mail.elf with louis14), not versai.
+- `fatal error: sweep increased allocation count`, cluster `nalloc≈37K-45K, small nelems`. Fires at any heavy-allocation moment.
+- `fatal error: freeIndex is not valid`, in mail-app's CSS parser. Different mspan field corrupted, same write pattern (small int written at a struct-field offset).
 
-The four older hypotheses below are preserved as historical record. H-1 is mechanism-wrong (above). H-2 is a real leak that A+B fixed (commit `3942ae8`). H-3 is a real follow-up but not corruption-causal. H-4 is an architectural improvement, deferred.
+### Refined hypotheses (in `task_plan.md` TOP OF STACK)
+
+- **H-T1** stale TLB after `SyscallMunmap` (it doesn't `TlbiVMALLE1` at end, unlike `SyscallFreePages`). PRIMARY suspect. Option A in plan: add the TLB flush; Option B: prove via stale-PTE detection at allocation time.
+- **H-T2** stale PTE in another shepherd's page table.
+- **H-T3** direct kernel-side write into a freed page (scratch mapping, DMA, page-cache writeback).
+
+The `[unmapLoop]` data from the `ca7f5f6` run shows sid=21 doing 16 × 1599-page user-region frees right before the boot-time crash. These are ELF-load scratch buffers, not shared pages, but freed PAs go straight to buddy and could be reissued to mail-app's heap. If shepherd-launch leaves stale TLB/PTE state, that's a plausible boot-time trigger.
+
+### What was wrong with the earlier hypotheses
+
+**Mechanism-wrong (closed):** `goFont.ParseTTF` over shared pages letting GC walk into kernel memory. Go's `findObject` returns nil for non-arena pointers (shared pages: `0x500000000000+`, Go arenas: `0xC000000000+` — non-overlapping). Marker sets bits, doesn't write mspan struct fields. The earlier sections below preserve this as historical record.
+
+**Right diagnosis but already fixed:**
+- H-2 (releaseTempSlot leak): fixed in `3942ae8`.
+- H-3 (CloseTemporaryFont not unmapping caller side): fixed in `3942ae8`.
+- H-4 (architectural: load @font-face from fs): deferred, not corruption-causal.
+
+**Right diagnosis but ruled out by `ca7f5f6` instrumentation:**
+- H-K1 buddy double-free.
+- H-K2 stale free-list state from a prior mishandled free.
+- H-K3 PD_SHARED bit clear path (not a corruption mechanism in our model).
+- H-K4 page descriptor cleared mid-loop.
+
+**Earlier `[versai:timing]` log-prefix confusion:** that prefix is hardcoded in `mancini/std/web_interactor.go` and appears in the log of *any* app running a WebInteractor. The crashing process is **mail-app**.
 
 ---
 

@@ -33,9 +33,39 @@ A+B is a real fix and is committed. The remaining symptoms (mspan corruption cra
 
 **Kernel-side instrumentation of `BuddyFreeTyped` + `releasePageByPA`**, per the new task_plan.md TOP OF STACK. Hypotheses H-K1..H-K4 there. Key suspect: concurrent decrement-and-free race in `releasePageByPA` between `SyscallMunmap` and `SyscallFreePages` on shared pages; if confirmed, fix is a lock around the RefCount manipulation or a double-free guard in `BuddyFreeTyped`.
 
+### Late-session: kernel diagnostic pass (commit `ca7f5f6`)
+
+Added bug-B-family kernel guards on the suspected double-free / RefCount-race path:
+
+- `BuddyFreeTyped`: `buddyContainsPA` walk + `buddyDoubleFreeHalt` halt-with-marker if a PA is already on the free list before insertion.
+- `releasePageByPA`: `[kmem:UNDERFLOW]` log when called on a page with `RefCount<=0`.
+- `unmapUserPages`: `[unmapLoop] enter/progress/exit` for ≥64-page frees, with per-256-iteration `va`/`pa` checkpoints to localize a hang inside the loop.
+
+**Diagnostic run result: all guards silent.** Crash fired at boot during mail-app's initial cache rebalance, `nelems=512 nalloc=41380`, with **zero font activity** in the run. 16 `[unmapLoop]` events fired (sid=21 shepherd-launch buffer cleanups, 1599 pages each, NOT IPC region). No `DOUBLE FREE`, no `kmem:UNDERFLOW`, no `[provider:close]`, no `[fontsvc:release]`.
+
+That eliminates H-K1 (double-free), H-K2 (stale free-list), and the `releasePageByPA` race as the corrupting mechanism. The corruption is happening from a path that doesn't go through the kernel page-management RefCount accounting at all.
+
+### Refined theory for next session
+
+Three new hypotheses replacing H-K1..H-K4:
+
+- **H-T1 (PRIMARY): stale TLB after `SyscallMunmap`.** That path doesn't `TlbiVMALLE1`+`DsbISH`+`IsbSY` after removing PTEs. `SyscallFreePages` does. A shepherd that munmapped a page can still write to it via stale TLB until something else flushes; if the PA is reallocated to mail-app's heap, that stale write corrupts the new owner.
+- **H-T2: stale PTE in another shepherd's page table** — silent failure of `UnmapUserPageWithL0` leaves the entry mapped. Same write-through-stale-mapping outcome.
+- **H-T3: direct kernel-side write into a freed page** — kernel scratch mapping, DMA, page-cache writeback hitting a recycled PA.
+
+**Note on the `[unmapLoop]` data:** the 16 large unmaps that DID fire were all sid=21 ELF-load scratch buffer cleanups (1599-page user-region frees, no PD_SHARED). They go straight to buddy and could be reissued to mail-app's heap. If those frees leave stale TLB or PTE state, that's a candidate trigger for the boot-time crash.
+
 ### Stopping point (this session)
 
-Two commits clean (`3942ae8`, `8a64a92`). louis14 measure.go change owned by louis14-side Claude; per memory rule we do not edit louis14 from mazzy. Tracking files updated with new top-of-stack and findings. Ready to resume with kernel diagnostics next session.
+Four commits clean:
+- `3942ae8` — A+B font leak fix.
+- `8a64a92` — caller-first close order + diagnostic checkpoints.
+- `4460c14` — tracking docs retargeted (freeIndex GC-walk hypothesis retracted, kernel page-free chain named as target).
+- `ca7f5f6` — kernel double-free / underflow / loop-progress guards (silent in run, ruling out H-K1..H-K4).
+
+louis14 `pkg/text/measure.go` change owned by louis14-side Claude; per memory rule we do not edit louis14 from mazzy.
+
+Tracking files updated with focused next-session plan including Option A (TLB flush in `SyscallMunmap`, H-T1 fix-test) and Option B (stale-PTE detection at `BuddyAllocTyped` time, H-T1/T2/T4 diagnostic). See `task_plan.md` TOP OF STACK for run plan and files-to-touch tables.
 
 ---
 
