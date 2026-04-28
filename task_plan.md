@@ -26,10 +26,38 @@
 
 Two real bugs caught and fixed during the sweep: (1) `pageCache.data` direct map access bypassing `pc.mu` in `sysMmapPageFlush`'s diagnostic block (commit `37f1956`); (2) unbounded `go h.handle(req)` was generating ~14k goroutine spawns per 180s run, exposing a runtime crash in `traceback.go:resolveInternal` during copystack of freshly-spawned workers (likely interacting with goroutine leakage when fsclient.call wedged) — replaced with 1024-worker persistent pool (commit `ef449b5`).
 
-**Not yet done (deferred):**
-- **Stage 2 — mail.elf → mail.maz.** Would unify `launchShepherd`'s legacy ET_EXEC body with `launchPluginShepherd`. Bigger lift: mail uses `userspace-overlay` only (not `merged-shepherd-overlay`). Switching it surfaces real behavioral changes — louis14, GridTable, attr usage. Phase-2-with-worker-pool stability now significantly improves the safety margin: the runtime unwinder edge case is gone, goroutine leakage is impossible. Mechanically the same recipe as fti / maildb. Open: louis14 plugin compat (mail directly imports `louis14/pkg/resource`).
-- **fs concurrent-readers refactor.** fs serve loop is single-goroutine ("ext2 not thread-safe"). Slow but not deadlocking — its blocking points are kernel-level, not other-userspace. Acceptable today per user.
-- **Underlying fs-reply wedge.** Reproduced in G-fti-maz-1 (3 readlinkats stuck for 110s) and again in H5 (3 shepherds, sid=20/28/29, wedged for 60s+ on per-shepherd lock with readlinkats queued). fs sometimes doesn't reply to something a worker is waiting on; that worker holds shep.mu indefinitely; subsequent same-shepherd syscalls (including fast ones like readlinkat) queue. Phase 2 + worker pool make this only affect the wedged shepherd(s), not the whole system, so OTHER shepherds continue. Root cause unrouted. ~1-in-5 rate at 180s. Likely related to fs's serial serve loop running long ext2/blockdev reads while a worker awaits a reply — but unproven.
+**Active plan:**
+
+### A. Stage 2 — mail.elf → mail.maz (IN PROGRESS — picking up now)
+
+Migrate mail to the unified shepherd binary model (`launchPluginShepherd` via `/shepherd.elf`). After this, `launchShepherd`'s legacy ET_EXEC body becomes dead code and stage 3 deletes it.
+
+**Recipe (proven for fti, maildb):**
+1. `mazarin/apps/mail/main.go`: add `var MazEntryPoint func() = MazarinMain; func MazarinMain() { main() }` shim.
+2. `mazarin/apps/mail/Taskfile.yml`: switch deps from `mazarin:userspace-overlay` to `merged-shepherd-overlay` + `mazgo-build` + `mazlink-build` + `mazgo-toolexec-build`. Add the dual-build commands (.elf via stock Go + mazhost tag, .maz via mazgo + -buildmode=plugin).
+3. Root `Taskfile.yml`: declare `MAIL_MAZ` + `MAIL_MAZ_AMD64`, add to disk-arm64 + disk-x86_64 sources + mkext2 args.
+4. `config/startup.{arm64,amd64}.toml`: flip `path = "/mail.elf"` → `"/mail.maz"`.
+5. Build + boot test. If it boots and reaches `[mail] main() entered` and steady state, commit.
+
+**Open risks:**
+- mail directly imports `louis14/pkg/resource` — louis14 plugin-mode compat unaudited (other shepherds reach louis14 only indirectly via mancini).
+- mail switches from `userspace-overlay` (today) to `merged-shepherd-overlay`. Strict superset, but mail is the largest app exercising attr / GridTable / WebInteractor under merged-shepherd-overlay for the first time.
+
+**Stage 3 (after stage 2 ships and is stable): delete `launchShepherd` legacy ET_EXEC body** — `launchShepherd` becomes a one-line wrapper for `launchPluginShepherd`; the file-read-then-RunShepherd path goes away. `launchShepherd` already routes `.maz` to `launchPluginShepherd` at the top, so this is mostly removing the legacy branch.
+
+### B. Underlying fs-reply wedge — triage (DEFERRED — pick up after A)
+
+Reproduced in G-fti-maz-1 (3 readlinkats stuck 110s) and H5 (3 shepherds wedged 60s+, sid=20/28/29). Same signature: a worker holds its per-shepherd `shep.mu` waiting for an fs reply that never comes; subsequent same-shepherd syscalls queue. ~1-in-5 rate at 180s. Phase 2 + worker pool prevents system-wide impact (other shepherds continue) but the wedged shepherds hang.
+
+**Hypotheses to investigate:**
+1. **fs's single-goroutine serve loop is the bottleneck.** While fs is mid-read on one large file (e.g., 23 MB LoadFile), it can't process incoming `fsIPCCh` requests. If a linux worker is doing fsclient.call (which goes through fs's `fsIPCCh`), it waits for fs's serve loop to come around. If the serve loop is mid-LoadFile for many seconds, the linux worker waits many seconds. Backed by H5's wedge appearing during the rachel-plugin-load phase when fs is reading rachel.maz / fontsvc.maz / etc.
+2. **Reply was sent but linux's RespCh demuxer dropped it.** fsclient.Client.RespCh has capacity 4. If multiple replies arrive faster than the dispatch reader pumps them, kernel-side ring fills. Our recent uring fix gives 10ms block-with-deadline; after that the sender sees EAGAIN and the request is lost (no retry on fsclient side). Audit fsclient for "uring.Send EAGAIN swallowed" paths.
+3. **Cleanup-on-disconnect race.** If a shepherd dies during fs IPC, fs might tear down state without replying to in-flight requests.
+
+**First steps when picking this up:**
+- Add timeout to `fsclient.callLocked` (e.g. 30s). On timeout, log + return error so the worker unwedges.
+- Add an instrumentation log in fs's serve loop: when does it pick up an `fsIPCCh` message vs an `fsDelegateCh` message? Are LoadFile delegate operations starving IPC requests?
+- Reproduce H5 deterministically (it appeared during heavy concurrent boot LoadFiles — should be reproducible by adding more shepherds to startup.toml or by making the launches more parallel).
 
 **Reminders:**
 - The original DIVERSION (mail.elf-load boot hang) hasn't fired in any phase-2 run. Could be: (a) related to the same delegate-saturation pattern that phase 2 fixes, (b) instrumentation perturbed timing, (c) intermittent and we got lucky. Instrumentation is in place for next time.

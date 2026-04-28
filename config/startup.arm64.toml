@@ -41,5 +41,5 @@ path = "/maildb.maz"
 
 [[shepherd]]
 name = "mail"
-path = "/mail.elf"
+path = "/mail.maz"
 gc_percent = 5
