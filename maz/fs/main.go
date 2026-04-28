@@ -373,9 +373,10 @@ func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {
 // via mazdl.OpenBytes. Otherwise (legacy ET_EXEC shepherds), the ELF
 // bytes are handed to RunShepherd directly.
 // memlimitMB > 0 overrides the system-wide GOMEMLIMIT for this shepherd.
-func launchShepherd(fsys *ext2.FileSystem, name, path string, memlimitMB int) {
+// gcPercent > 0 overrides the system-wide GOGC for this shepherd.
+func launchShepherd(fsys *ext2.FileSystem, name, path string, memlimitMB, gcPercent int) {
 	if strings.HasSuffix(path, ".maz") {
-		launchPluginShepherd(fsys, name, path, memlimitMB)
+		launchPluginShepherd(fsys, name, path, memlimitMB, gcPercent)
 		return
 	}
 	fmt.Printf("[fs] reading %s...\n", path)
@@ -387,6 +388,9 @@ func launchShepherd(fsys *ext2.FileSystem, name, path string, memlimitMB int) {
 	var extraArgs []string
 	if memlimitMB > 0 {
 		extraArgs = append(extraArgs, "__MAZZY_GOMEMLIMIT="+strconv.Itoa(memlimitMB))
+	}
+	if gcPercent > 0 {
+		extraArgs = append(extraArgs, "__MAZZY_GCPERCENT="+strconv.Itoa(gcPercent))
 	}
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead, extraArgs...)
 	// Free temporary pages (RunShepherd copies them to the new shepherd).
@@ -403,7 +407,8 @@ func launchShepherd(fsys *ext2.FileSystem, name, path string, memlimitMB int) {
 // LoadFile delegate — which is already serving by the time shepherds
 // launch, since fs IS this process).
 // memlimitMB > 0 overrides the system-wide GOMEMLIMIT for this shepherd.
-func launchPluginShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB int) {
+// gcPercent > 0 overrides the system-wide GOGC for this shepherd.
+func launchPluginShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB, gcPercent int) {
 	fmt.Printf("[fs] reading /shepherd.elf (for %s → %s)...\n", name, pluginPath)
 	va, numPages, bytesRead, err := readFileIntoPages(fsys, "/shepherd.elf", false)
 	if err != nil {
@@ -413,6 +418,9 @@ func launchPluginShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlim
 	args := []string{pluginPath}
 	if memlimitMB > 0 {
 		args = append(args, "__MAZZY_GOMEMLIMIT="+strconv.Itoa(memlimitMB))
+	}
+	if gcPercent > 0 {
+		args = append(args, "__MAZZY_GCPERCENT="+strconv.Itoa(gcPercent))
 	}
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead, args...)
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
@@ -433,14 +441,14 @@ func launchPluginShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlim
 func bootSequence(fsys *ext2.FileSystem) {
 	// 1. Launch rachel and wait — provides window manager + font service.
 	// Rachel only depends on fs (already ready) for loading fontsvc.maz.
-	launchShepherd(fsys, "rachel", "/rachel.maz", 0)
+	launchShepherd(fsys, "rachel", "/rachel.maz", 0, 0)
 	if err := sys.WaitForShepherdReady("rachel", 30); err != nil {
 		sys.UartWriteString("[fs] FATAL: rachel not ready\n")
 		return
 	}
 	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
 	// Linux depends on both fs (IPC) and rachel (fonts/WM).
-	launchShepherd(fsys, "linux", "/linux.maz", 0)
+	launchShepherd(fsys, "linux", "/linux.maz", 0, 0)
 	fmt.Printf("[fs] waiting for linux ready...\n")
 	if err := sys.WaitForShepherdReady("linux", 30); err != nil {
 		sys.UartWriteString("[fs] FATAL: linux not ready: " + err.Error() + "\n")
@@ -453,7 +461,7 @@ func bootSequence(fsys *ext2.FileSystem) {
 	if cfg != nil {
 		for _, s := range cfg.Shepherds {
 			fmt.Printf("[fs] launching %s from %s\n", s.Name, s.Path)
-			launchShepherd(fsys, s.Name, s.Path, s.MemLimitMB)
+			launchShepherd(fsys, s.Name, s.Path, s.MemLimitMB, s.GCPercent)
 		}
 	} else {
 		fmt.Printf("[fs] no startup.toml\n")
