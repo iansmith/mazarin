@@ -1,5 +1,94 @@
 # Progress Log
 
+## Session: 2026-04-29 (Opus) — Step 7 of `fix/uring-missed-retries` (F16-F20 sweep)
+
+### Branch state
+
+Still on `fix/uring-missed-retries` off `feature/mail-dumb@68a7254`. Steps 1-6 from prior sessions still uncommitted; this session ran the F16-F20 sweep over the unchanged tree.
+
+### Step 7 — F16-F20 results (5 × 180s ARM64 HVF, no clicks)
+
+| Run | Outcome | Uptime | retried | FAILED | fontsvc FAIL | uart-ring dropped | panic |
+|-----|---------|--------|---------|--------|--------------|-------------------|-------|
+| F16 | clean   | 162s   | 0       | 0      | 0            | 0                 | none  |
+| F17 | clean   | 171s   | 0       | 0      | 0            | 0                 | none  |
+| F18 | hang    | —      | 0       | 0      | 0            | (no status)       | none — hung mid-boot at `[fs] reading /mail.elf` |
+| F19 | clean   | 133s   | 0       | 0      | 0            | 0                 | none  |
+| F20 | hang    | —      | 0       | 0      | 0            | (no status)       | none — hung mid-boot just after `start name=mail pages=6644` |
+
+**3/5 reached steady-state, all 3 clean. 2/5 hit the pre-existing intermittent mail.elf-load boot hang** (same site as B2/B5, A2, C1/C5 from earlier bug-B-family sessions; tracked there, NOT introduced by this branch). No regression markers across any run: 0 retried, 0 FAILED, 0 fontsvc OpenFontReply FAILED, 0 uart-ring dropped, 0 kernel panics / data aborts / EXIT_GROUP. Side observation by user during F17 ("stderr messages with 'Send'") could not be reproduced in the saved log — full grep on `Send` / `send` / `EAGAIN` / `failed` / `error` / `resource temporarily` returned nothing past the UEFI prelude. User acknowledged uncertainty and chose to trust the markers.
+
+### Verdict
+
+Per the step-7 decision tree (in `next_session_prompt.md`): **fix verified at the F-cadence.** No retries fired, so we have no positive evidence that the pacing path is exercised under no-click load — the kernel-side block-with-deadline is doing its job and the rings are not back-pressuring under idle traffic. The two boot hangs are not a regression; they are the same pre-existing intermittent we see in baseline runs without this branch.
+
+Combined steps 1-6 status (kernel + userspace pacing + fontsvc revert) is **ready for commit pending diff review.**
+
+### Stopping point
+
+Tracking files updated. No commits this session yet. Awaiting user review of:
+- Kernel step 1-3 diff: `kmazarin/kmazarin/threads.go`, `uring_ipc.go`, `serial_console.go`, `soft_irq_slots.go`, `kmazarin/ksyscall/uring_ipc.go`, `uring_ipc_asm.go`.
+- Userspace step 4-5 diff: `mazarin/uring/syscall.go`, `maz/fontsvc/main.go`.
+
+After review, two-or-three commits as outlined in `next_session_prompt.md` "After step 7" section.
+
+---
+
+## Session: 2026-04-28 late night (Opus) — Steps 4-6 of `fix/uring-missed-retries` (userspace pacing + fontsvc revert + smoke)
+
+### Branch state
+
+Still on `fix/uring-missed-retries` off `feature/mail-dumb@68a7254`. Steps 1-3 from the prior session were already in the working tree. This session added steps 4-6. Everything **uncommitted**, awaiting user diff review.
+
+### Step 4 — `mazarin/uring/syscall.go` rewrite (DONE)
+
+- **`SendWithStats` removed entirely.** It was the F-series fontsvc instrumentation; the kernel-side block-with-deadline now subsumes that need.
+- **`SendWithRing` rewritten as the primitive** with a real off-CPU pacing loop:
+  - Up to `sendMaxAttempts = 3` attempts.
+  - Per-attempt timing via `time.Now()` / `time.Since`. If the syscall returned EAGAIN in less than `sendFastBounceMs = 8 ms`, treat it as a fast bounce (kernel didn't park us — another sender already there, or no thread to switch to) and `time.Sleep(sendPerAttemptMs * time.Millisecond)` (10 ms) before retrying. If it took ≥8 ms, the kernel already held us for ~the full 10 ms deadline → retry immediately.
+  - Total wall-time budget ~30 ms.
+  - **No `runtime.Gosched()` anywhere.** `runtime` import dropped; `fmt` and `time` added.
+  - Single `fmt.Printf` log on retry-success: `[uring.Send] target=N ring=R retried, attempts=M`.
+  - Single `fmt.Printf` log on exhausted failure: `[uring.Send] target=N ring=R FAILED after 3 attempts, err=...`.
+  - **Clean first-try success is silent** (no log).
+- **`Send(target, msg)`** is now a one-line wrapper: `return SendWithRing(target, msg, 0)`.
+- `Recv` / `RecvWithRing` / `Connect` / `ConnectWithRing` / `Setup` / `Release` left untouched (already follow ring-0 wrapper convention).
+
+### Step 5 — `maz/fontsvc/main.go` revert (DONE)
+
+- Restored original `shareCacheAndReply(conn, connIdx, senderSID, fontID)` signature (dropped `variant, size, family` params).
+- `handleOpenFont` reverted to call `shareCacheAndReply(conn, connIdx, senderSID, fontID)`.
+- Restored original `uring.Send` call + simple `[fontsvc] uring.Send OpenFontReply FAILED: ...` log path. Dropped the `OpenFontReply FAILED senderSID=N fontID=M variant=V size=S attempts=A family=F err=...` and `OpenFontReply retried ...` log paths (no longer meaningful — `uring.Send` does the equivalent).
+- `itoaBytes` helper deleted.
+- `rawPutsInt` restored to its original inline form.
+
+### Step 6 — Build clean + 180s smoke (DONE)
+
+- `$GO tool task` clean (kmazarin built, ESP image, ext2 disk image — all expected output).
+- `$GO tool task run-arm64-hvf TIMEOUT=180` clean:
+  - Kernel stable across the full run (no `EE25` / `KERNEL EXIT GROUP` / halt markers).
+  - `uart-ring: dropped=0` on every `[status]` cycle through 161 s uptime.
+  - **Zero `[uring.Send] retried` lines.** Zero `[uring.Send] FAILED` lines. Idle no-click run, so no ring-pressure conditions surfaced.
+  - Zero `[fontsvc]` / fontsvc EAGAIN errors.
+  - No fti bleve panic this run (the smoke run from step-3 did hit it; not chasing — see `findings.md`).
+- `[status]` end-of-run digest: `syscalls=3796415 timer=324Hz ctx_switches=31707`, `va-probe: inIPC=132 outIPC=0`, `uart-ring: dropped=0`. Within prior baseline ranges.
+
+### Step 7 — REMAINING
+
+F16-F20: 5 × 180 s ARM64 HVF, no clicks. Compare to F6-F15 baseline (0 EAGAIN). With pacing, fast-EAGAIN bouncing now consumes real wall time, so any retries that DO happen surface as `[uring.Send] ... retried` log lines. Watch for those + final `... FAILED after 3 attempts`.
+
+### Notes / non-negotiables held
+
+- `runtime.Gosched()` deleted from both kernel-side (`pushStringFull`, prior session) and userspace-side (this session). The fix has zero yields.
+- All sleeps are real off-CPU `time.Sleep` blocks → kernel parks the goroutine on its deadline queue, P is handed off, other goroutines can run.
+- Logging via `fmt.Printf` (async, buffered through linux Write delegate) — NOT `klog.Criticalf` / `serial.PollWrite` / `rawPuts`. Per `memory/sync_uart_irq_masked.md` synchronous UART writes are reserved for "about to die".
+
+### Resumption
+
+See `next_session_prompt.md` (rewritten for step 7).
+
+---
+
 ## Session: 2026-04-28 night (Opus) — Branched `fix/uring-missed-retries`, kernel block-with-deadline impl in flight
 
 ### Branch state

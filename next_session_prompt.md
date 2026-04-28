@@ -1,66 +1,71 @@
-# Continuation prompt — `fix/uring-missed-retries` step 3+ (2026-04-28 night)
+# Continuation prompt — `fix/uring-missed-retries` step 7 (F16-F20 + commit)
 
 ## What this branch is fixing
 
-Synchronous UART writes (`klog.Criticalf`, `serial.PollWrite`, `.maz` `rawPuts`) run inside ARM64 SVC handlers with `DAIF.I` masked (hardware default, kernel doesn't unmask). On `-smp 1` QEMU each ~80-byte sync write IRQ-blocks the whole system for ~7 ms — that starves the linux shepherd's ring drainers and causes `OpenFontReply EAGAIN` to fontsvc. See `memory/sync_uart_irq_masked.md`.
+Sync UART writes (`klog.Criticalf`, `serial.PollWrite`, `.maz` `rawPuts`) run inside ARM64 SVC handlers with `DAIF.I` masked. On `-smp 1` QEMU each ~80-byte sync write IRQ-blocks the system for ~7 ms, starves the linux shepherd ring drainers, and causes the `OpenFontReply EAGAIN` to fontsvc that F2 caught. See `memory/sync_uart_irq_masked.md`.
 
-Architecture for the fix (agreed, not negotiable):
-- Kernel-side block-with-deadline for both rings.
-- First-come-first-served, single blocker per ring/slot. Second sender gets immediate `-EAGAIN`.
-- Userspace pacing: 3-attempt retry with `nanosleep` (NOT `runtime.Gosched`) bounded at ~30 ms total wall time.
+Architecture (agreed, not negotiable):
+- Kernel-side block-with-deadline for both rings (10 ms per attempt, FCFS single blocker).
+- Userspace pacing: 3-attempt retry with `time.Sleep` (NOT `runtime.Gosched`) bounded at ~30 ms total wall time.
 - `Send`/`Recv`/`Connect` are one-line ring-0 wrappers; `*WithRing` is the primitive.
-- **No yields.** Per user policy: "yields cover up bugs that will bite later."
+- **No yields anywhere in this fix.** "Yields cover up bugs that will bite later." Both kernel-side and userspace-side are Gosched-free.
 
 ## Where you left off
 
-Branch `fix/uring-missed-retries`, off `feature/mail-dumb@68a7254`. Steps 1-2 done (uncommitted), tree builds clean.
+Branch `fix/uring-missed-retries`, off `feature/mail-dumb@68a7254`. **Steps 1-6 done, uncommitted.** 180 s ARM64 HVF smoke clean: `uart-ring: dropped=0`, no `[uring.Send] retried/FAILED`, no fontsvc errors, no kernel panic.
 
-**Done:**
-1. New thread states (`ThreadBlockedUringSend` = 19, `ThreadBlockedKernelRingPush` = 20). New per-Thread fields `UringSendBlockedSlotPtr`, `UringSendDeadlineExpired`. New per-slot fields `BlockedSenderTID`, `BlockedSenderPtr`. New globals `kernelRingPushBlockerTID`, `softIRQDroppedBytes`.
-2. `UringSendKernel` parks userspace senders on `ThreadBlockedUringSend` with 10 ms deadline; `WakeSenderAfterDrain` wakes from drain side; `processStaticDeadlinesSchedLockHeld` handles deadline expiry; `CleanupUringIPCForShepherd` wakes parked senders on receiver death. Linkname stub `wakeSenderAfterDrain` added; `SyscallUringRecv` calls it after `advanceUringHead`.
+Per-step state lives in `progress.md` and `task_plan.md`. The user has not yet reviewed the diff, so **don't commit kernel/userspace changes** at the start of the session — wait for review/approval. Tracking-file commits (progress, task_plan, this prompt) may go on top.
 
-**Files touched (uncommitted):**
-- `kmazarin/kmazarin/threads.go`
-- `kmazarin/kmazarin/uring_ipc.go`
-- `kmazarin/kmazarin/serial_console.go`
-- `kmazarin/ksyscall/uring_ipc.go`
-- `kmazarin/ksyscall/uring_ipc_asm.go`
+## Step 7 — F16-F20 (5 × 180 s ARM64 HVF, no clicks)
 
-## Remaining steps (verbatim from `progress.md`)
+**Goal:** confirm the kernel + userspace pacing combination is stable across 5 boots and surface any retry / failure log lines that didn't appear in the single step-6 smoke.
 
-3. **Same pattern for `pushStringFull` + `topHalfUartRing` consumer.** Park thread 0 with `KernelBlockSleep`-style block when `topHalfUartRing` is full. Wake hook in `SyscallWaitSoftIRQ`'s pop path. Drop-and-counter (`softIRQDroppedBytes`) on deadline expiry. Surface counter on `[status]` line.
+### Concrete plan
 
-4. **Userspace rewrite of `mazarin/uring/syscall.go`.** Remove `SendWithStats`. `SendWithRing` becomes the primitive: 3-attempt retry with `nanosleep` pacing on fast-EAGAIN (elapsed < ~10 ms) + single log line on retry-success or final failure. `Send` is `return SendWithRing(target, msg, 0)`. Verify `Recv`/`RecvWithRing` and `Connect`/`ConnectWithRing` already follow the convention (they do, per check this session — leave alone).
+1. Run 5 × 180 s ARM64 HVF, no clicks. Save serial logs at `/tmp/F1{6..20}-180s.log`.
+2. For each run, post-hoc check via `$GO tool safe-serial-read /tmp/F1N-180s.log | grep -E '...'`:
+   - `[uring.Send] ... retried, attempts=N` — pacing kicked in but the send eventually succeeded. Expected to be rare; benign.
+   - `[uring.Send] ... FAILED after 3 attempts, err=...` — exhausted retry budget. Real problem; investigate sender / target.
+   - `[fontsvc] uring.Send OpenFontReply FAILED:` — propagates from above; should match the FAILED line.
+   - `uart-ring: dropped=N` on the `[status]` line — kernel-side pushString backpressure. Must stay 0.
+   - Any kernel `EE25` / `KERNEL EXIT GROUP` / panic / data abort.
+   - Any userspace panic.
+3. Summarize results in a F16-F20 table in `progress.md` like F1-F15 entries.
 
-5. **Revert vestigial fontsvc instrumentation in `maz/fontsvc/main.go`.** Drop `OpenFontReply retried`/`FAILED ... attempts=N` logs (no longer meaningful), drop `itoaBytes` helper, revert `shareCacheAndReply`'s family/variant/size parameters. Just call `uring.Send`.
+### Decision tree
 
-6. **Build clean. Smoke run.**
+- **All 5 clean (0 retries, 0 FAILED, 0 dropped, no panic):** the fix is verified at the F-series cadence. Record results, ask user for go-ahead to commit steps 1-6 (kernel + userspace + tracking).
+- **Some retries fire but 0 FAILED:** pacing is doing its job. Record the senders/targets that retried (often a hint about which path is bursting). Still safe to commit.
+- **Any FAILED line:** the 30 ms budget is too short for that path, OR there's a real ring-drain hang. Investigate before committing — don't paper over with a longer budget.
+- **Any kernel-side `dropped > 0` or panic:** kernel-side regression. Step 3 (`pushStringFull` block-with-deadline) needs another look. Don't commit.
+- **Any fti bleve panic recurrence (see `findings.md`):** independent userspace bug. Note in findings, do NOT chase from this branch.
 
-7. **F16-F20 (5×180s ARM64 HVF, no clicks).** Compare against F6-F15 baseline (0 EAGAIN). With pacing, even fast-EAGAIN bouncing should now consume real time, so any retries that DO happen will show up as ~10-30 ms wall-time entries in the log. Watch for `[uring.Send] ... retried` or `... FAILED after 3 attempts`.
+## After step 7 (assuming clean)
+
+8. **Commit prep.** Two logical commits at minimum:
+   - Kernel: steps 1-3 (`kmazarin/kmazarin/threads.go`, `uring_ipc.go`, `serial_console.go`, `soft_irq_slots.go`, `kmazarin/ksyscall/uring_ipc.go`, `uring_ipc_asm.go`).
+   - Userspace: steps 4-5 (`mazarin/uring/syscall.go`, `maz/fontsvc/main.go`).
+   - Tracking: `findings.md`, `progress.md`, `task_plan.md`, `next_session_prompt.md` — separate commit.
+   - Show the user the diff before each commit; do not push.
 
 ## Project setup (always)
 
 - Required env: `GOTOOLCHAIN=auto GO=/opt/homebrew/bin/go QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64`.
 - Build: `$GO tool task`. Run: `$GO tool task run-arm64-hvf TIMEOUT=N`. Log: `$GO tool safe-serial-read /tmp/diplomat-arm64-serial.log`.
 - Always `run-arm64-hvf`, never `run-arm64`.
-- Never use `go build` directly — Taskfile only.
+- Never `go build` directly — Taskfile only.
 
 ## Reminders / non-negotiables
 
-- **No `runtime.Gosched()` anywhere in this fix.** Use `KernelBlockSleep` (kernel-side, on deadline queue) or `nanosleep` (userspace, on deadline queue). Both are real off-CPU primitives, not yields.
-- The `Gosched()` removed in step 3 is the only one in kernel code; verified via grep at session start.
+- **No `runtime.Gosched()` anywhere in this fix.** Both block paths use staticDeadlineQueue.
 - Per-call sync UART (`klog.Criticalf`, `rawPuts`) is reserved for "about to die" only — not debug logging.
-- Don't commit kernel changes until user reviews the diff. Tracking-file commits (progress, task_plan, this prompt) may go on top.
-
-## Verification of step 2 before extending
-
-Three things to re-check when resuming:
-- The race-free publish in `UringSendKernel` (re-check head/tail under schedulerLock before publishing blocked state). Recursive `UringSendKernel(...)` call when drainer drained between first check and publish. **Reasoned correct, not yet observed at runtime.**
-- `findNextThreadForBlockSchedLockHeld(senderThread)` returning nil → fallback to immediate EAGAIN. Matches futex precedent but worth verifying the path is reached cleanly.
-- `wakeBlockedSenderSchedLockHeld` is called from `WakeSenderAfterDrain`, `processStaticDeadlinesSchedLockHeld` (for `ThreadBlockedUringSend`), and `CleanupUringIPCForShepherd`. Each call site holds `schedulerLock`. Verified.
+- Don't commit kernel/userspace changes until user reviews the diff.
 
 ## Side context (don't re-litigate)
 
-- F1-F15 ran on `feature/mail-dumb`. VA-collision at SharePages layer is strongly disconfirmed (~1850 SharePages, 0 out-of-range). GC mspan crash didn't reproduce in 15 boots. See `memory/sync_uart_irq_masked.md` and progress.md.
-- Bug-B-family chase is paused, not abandoned. The current fix removes a known timing perturbation (sync-UART-induced starvation), so a clean F16-F20 baseline is itself useful data.
-- `clocks_stdio_delegate_stall.md`, `bug_attr_init_crash.md`, `bug_virtio_emptyirq_hang.md` are unrelated and unaffected.
+- Step 2 verification done (race-free publish, fallback paths, lock discipline; caveat: drainer fast-path read of `slot.BlockedSenderTID` is non-atomic, 10 ms deadline is the safety net for missed-wake — acceptable).
+- Step 3 verified by 90 s smoke (kernel stable, `dropped=0`).
+- Step 6 verified by 180 s smoke (kernel stable, `dropped=0`, no retries surfaced — idle run).
+- Bug-B-family chase paused. F1-F15 disconfirmed VA-collision at SharePages layer (~1850 calls, 0 out-of-range). GC mspan didn't reproduce in 15 boots.
+- `findings.md` top section: fti bleve `index out of range [0]` panic surfaced in step-3 smoke. Independent of this branch. Revisit after F16-F20 if it persists.
+- `clocks_stdio_delegate_stall.md`, `bug_attr_init_crash.md`, `bug_virtio_emptyirq_hang.md` unrelated and unaffected.

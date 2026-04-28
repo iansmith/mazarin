@@ -1,5 +1,43 @@
 # Findings
 
+## fti bleve panic — `index out of range [0] with length 0` in `handleIndexDocument` (2026-04-28)
+
+### Surfaced
+
+90-second smoke run of `fix/uring-missed-retries` step-3 changes (block-with-deadline for `topHalfUartRing`). Kernel side stable across the run (`uart-ring: dropped=0` on all 3 [status] cycles, no `EE25` / `KERNEL EXIT GROUP` / halt markers). The fti userspace shepherd panicked early in boot and the maildb shepherd then logged 12 cascading `bleve index corrupted after internal panic` errors as it kept handing documents to the dead-index fti.
+
+### Crash signature (userspace, fti shepherd)
+
+```
+[mail] cache ready, initial rebalance first=-1 last=-1 vis=0
+[fti] PANIC in handleIndexDocument id=: runtime error: index out of range [0] with length 0 — marking index corrupted
+[maildb] fti error: : bleve panic: runtime error: index out of range [0] with
+[fti] index corrupted, dropping document 7PJ0.3VFE.B24DA1ED4D5F316639CY...
+[maildb] fti error: 7PJ0.3VFE.B24DA1ED4D5F316639CY...: bleve index corrupted after internal panic
+... (× 12 documents) ...
+```
+
+Note: `id=` is empty in the panic line, suggesting the document's id field was unset/empty when handed to bleve, and bleve tripped on a zero-length slice indexing somewhere downstream (`[0]` on `length 0`).
+
+### Why this is logged here, not chased now
+
+- It's a **userspace** panic in `maz/fti` (or its bleve dependency), not in the kernel uring/UART path that step-3 is fixing.
+- It does NOT regress the step-3 work: kernel survived, `uart-ring: dropped=0`, [status] kept printing, no kernel-side mspan crash.
+- Plausibly pre-existing — fti has surfaced flaky behavior before in `delegate stuck: tid=.../sid=3/sysid=44/...` lines, and this run had the same: `tid=874/sid=3/sysid=44/for=65779ms`.
+- The fix path branch (`fix/uring-missed-retries`) should not be expanded to chase this. Note it, move on, revisit after F16-F20.
+
+### Saved log
+
+Full serial log of the run (boot → 90s timeout, fti panic + cascading errors visible): `/tmp/fti-bleve-panic-2026-04-28-step3-smoke.log`. Read with `$GO tool safe-serial-read` only — raw `cat` will not be safe per CLAUDE.md.
+
+### Followup if it persists across F16-F20
+
+- Identify the empty-id document — possibly a malformed mbox entry hitting fti before maildb populates `id`.
+- Check whether bleve's panic point is a known issue in the bleve version vendored into mazzy.
+- Decide whether fti should defensively reject empty-id documents instead of relying on bleve to validate.
+
+---
+
 ## GC crash — `sweep increased allocation count` in mail bgsweep
 
 ### Crash signature

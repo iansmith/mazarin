@@ -12,12 +12,58 @@
 - **Userspace pacing**: 3-attempt retry in `mazarin/uring/syscall.go` with `nanosleep` (real deadline-queue block, not yield) when a previous attempt returned faster than the per-attempt deadline. No `runtime.Gosched()` anywhere — one was found in `pushStringFull`, removed; userspace had a 256× Gosched retry, removed.
 - **`Send`/`Recv`/`Connect`** are one-line ring-0 wrappers; `*WithRing` are the primitives.
 
-**Status:** Steps 1-2 done (kernel uring block path + drain wake + deadline expiry + receiver-death cleanup). Builds clean, untested, uncommitted. Steps 3-7 remaining (see `progress.md`).
+**Status:** Steps 1-7 done. Builds clean. F16-F20 sweep: 3 clean reached-steady-state runs (F16 162s, F17 171s, F19 133s) + 2 pre-existing mail.elf-load boot hangs (F18, F20 — same site as B2/B5, A2, C1/C5; not from this branch). Across all 5: 0 retried, 0 FAILED, 0 fontsvc errors, 0 uart-ring dropped, 0 panics. **Fix verified at F-cadence; ready for commit pending diff review.** Uncommitted. See `progress.md` for per-step detail.
+
+- Step 1 (DONE): `ThreadBlockedUringSend` / `ThreadBlockedKernelRingPush` states + `Thread.UringSendBlockedSlotPtr` / `UringSendDeadlineExpired` / `UringIPCSlot.BlockedSenderTID,BlockedSenderPtr` data shape.
+- Step 2 (DONE): kernel uring block path — `UringSendKernel` parks userspace senders with 10 ms deadline, single blocker per slot, race-free publish under `schedulerLock`, deadline-expired short-circuit on rewind, `WakeSenderAfterDrain` from `SyscallUringRecv`, `processStaticDeadlinesSchedLockHeld` deadline branch, `CleanupUringIPCForShepherd` wakes blocked senders on receiver death.
+- Step 3 (DONE): same block-with-deadline pattern for `pushStringFull` + `topHalfUartRing` consumer, dropped the last kernel `runtime.Gosched()`, added `pushBlockerThreadPtr` + `pushBlockerDeadlineExpired`, `[status]` line gained `uart-ring: dropped=N`.
+- Step 4 (DONE, this session): `mazarin/uring/syscall.go` rewrite — `SendWithStats` removed; `SendWithRing` is the primitive with 3-attempt retry, conditional `time.Sleep(10 ms)` pacing (only when prev attempt fast-bounced in <8 ms), single `fmt.Printf` log on retry-success / exhausted failure, silent on first-try success; `Send` is a one-line ring-0 wrapper. Zero `runtime.Gosched()`.
+- Step 5 (DONE, this session): `maz/fontsvc/main.go` reverted — `shareCacheAndReply` back to 4-arg signature, `uring.SendWithStats` → `uring.Send`, `OpenFontReply FAILED/retried` instrumentation gone, `itoaBytes` helper dropped, `rawPutsInt` restored to inline form.
+- Step 6 (DONE prior session): `$GO tool task` clean; `run-arm64-hvf TIMEOUT=180` clean — kernel stable, `uart-ring: dropped=0`, no retry/FAILED log lines surfaced (idle no-click run).
+- Step 7 (DONE 2026-04-29): F16-F20 5×180s ARM64 HVF no-click sweep. F16/F17/F19 clean reached-steady-state; F18/F20 hit pre-existing intermittent mail.elf-load boot hang (not a regression — same site as B2/B5/A2/C1/C5). Across all 5: 0 retried / 0 FAILED / 0 fontsvc / 0 dropped / 0 panic. Fix verified.
 
 **Reminders / non-negotiables:**
-- No `runtime.Gosched()` anywhere in this fix — by user policy: "yields cover up bugs that will bite later."
+- No `runtime.Gosched()` anywhere in this fix — by user policy: "yields cover up bugs that will bite later." Both kernel-side and userspace-side are now Gosched-free.
 - No new architecture additions beyond the agreed scope without further discussion.
 - Don't commit until user reviews the diff.
+
+---
+
+## DIVERSION: intermittent mail.elf-load boot hang (cross-session)
+
+**Symptom:** Boot reaches `[fs] launching mail from /mail.elf` → `[fs] reading /mail.elf...` → optionally `[RS][RunShepherd] start name=mail pages=6644 bytes=27210767` and/or `[RS][RunShepherd] mail: copied 27210767 bytes from user`, then **silence**. No further log output for the full 180s timeout. No panic, no data abort, no `EE25` / `EXIT_GROUP`. No status lines ever print, so we have no telemetry from the hung run.
+
+**Sites observed (independent of branch / instrumentation):**
+- B2, B5 — Option B stale-PTE verifier session (2026-04-27 late afternoon)
+- A2 — Option A trailing-`TlbiVMALLE1`-on-munmap session (same)
+- C1, C5 — H-T3 free-canary session (2026-04-27 evening)
+- F18, F20 — `fix/uring-missed-retries` step-7 sweep (2026-04-29)
+- (Plus a baseline-no-instrumentation hit at "[fs] reading /shepherd.elf" earlier — likely the same family but at the prior shepherd in the launch chain.)
+
+**Cross-cutting observations:**
+- Hits ~1-in-3 to 1-in-5 of 180s ARM64 HVF runs. Independent of branch (seen on `feature/mail-dumb` baseline AND on this branch's tree).
+- Always at the same point in the launch sequence: just after the kernel finishes copying mail.elf bytes and before mail-app's first goroutine runs / first `[mail] main() entered` log.
+- Never produces any kernel-side panic or post-mortem print. The system is not dead — it's stuck somewhere that doesn't loop or fault, just doesn't progress.
+- Has occurred with very different working-tree states (different probes / instrumentation / branch-specific changes), so it's not gated on any one of those.
+
+**What we DO NOT know yet:**
+- Whether it's mail-app userspace stuck during Go-runtime init / dynamic loading, or a kernel-side stall in the post-`copyPagesFromUser` / `loadELF` / first-thread-creation path.
+- Whether `[uring:reader] ring1 got msg #2 proto=9` (which fires just before the hang in F18) is related — it appeared in F18 but NOT in F20 immediately before the hang.
+- Whether disabling some of the launch-time instrumentation makes it more or less frequent (no controlled study yet).
+
+**Why diverted, not paused:** The boot hang is NOT something this branch's work touches (`fix/uring-missed-retries` is about ring-full block-with-deadline, which doesn't run during ELF load), and it's NOT the bug-B-family target either (which is the mspan-corruption / GC-crash family that fires AFTER mail-app reaches steady state). It's a third, independent, pre-existing issue that's been hiding in the background.
+
+**Plausible candidates (not yet investigated):**
+1. **`preGrowStack` interaction with mail.elf** — mail.elf is the largest binary in the launch chain (6644 pages = 27 MB). The preGrowStack workaround (`MEMORY.md` § ".maz Morestack Bug") forces stack to 64 KB; if the goroutine running `mazMain` for mail-app somehow doesn't go through that path on certain timings, the hang would match a stack-growth-into-bad-newstack lockup.
+2. **Demand-paging stall during init** — large user-text region (>27 MB) means many demand faults early; if any single fault path can deadlock against the launcher, we'd see exactly this.
+3. **Linux shepherd dispatcher-not-yet-ready race** — `[uring:reader] ring1 got msg #2` in F18 before the hang suggests linux shepherd is processing IPCs; if the ordering between "linux is up" and "mail-app starts making syscalls" can flip, an early mail-app syscall might wait for a service that's not registered yet.
+
+**Next-action when this is picked up:**
+- Add a `klog.Logf` immediately after the `created userspace thread tid=N` line for each shepherd, then another at first-instruction-of-userspace (`enterShepherdAtAddress` entry). Confirms whether the hang is "kernel never enters userspace" vs "userspace never makes its first syscall."
+- If userspace IS entered: instrument the `.maz` runtime entry (`runtime.rt0_go` overlay or similar) to log when `mazMain` begins. Localizes the hang to before/after Go-runtime init.
+- Force-grow stack at launch path entry (independent of mail.elf's choice) to rule out morestack.
+
+**Status:** Tracked, NOT actively investigated. Resume once `fix/uring-missed-retries` is merged. Do NOT chase this from any other branch's session unless it actively blocks something.
 
 ---
 
