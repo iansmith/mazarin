@@ -101,7 +101,11 @@ func buildUI(a *linuxapp.App[maildbio.MailDBIO]) linuxapp.BuildResult {
 		for {
 			select {
 			case s := <-statusCh:
-				console.AddLine(s, pal.Text())
+				color := pal.Text()
+				if s.IsError {
+					color = console.StderrColor()
+				}
+				console.AddLine(s.Text, color)
 				dirty = true
 			default:
 				return dirty

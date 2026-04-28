@@ -58,7 +58,7 @@ func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh 
 	})
 	d.On(ipc.ProtoFTIResp, fti.DecodeFTIResp, ftiRespCh)
 	d.OnDeath(func(deadSID int16) {
-		fmt.Printf("[maildb] shepherd %d died\n", deadSID)
+		mlogErrorf("[maildb] shepherd %d died", deadSID)
 		if int(deadSID) == ftiSID {
 			tracker.MarkFTIDied()
 		}
@@ -119,7 +119,7 @@ func handleList(cs *collectionStore, ms *MessageStore, respCh chan<- shared.Resp
 				end = limit - 1
 			}
 			if err := cs.loadWindow(coll, uint32(start), uint32(end)); err != nil {
-				fmt.Printf("[maildb] handleList loadWindow error: %v\n", err)
+				mlogErrorf("[maildb] handleList loadWindow error: %v", err)
 				return
 			}
 			for i := start; i <= end; i++ {
@@ -134,7 +134,7 @@ func handleList(cs *collectionStore, ms *MessageStore, respCh chan<- shared.Resp
 				resultCh <- *headers
 			}
 		}
-		fmt.Printf("[maildb] list: sent up to %d messages\n", limit)
+		mlogInfo("[maildb] list: sent up to %d messages", limit)
 	}()
 }
 
@@ -172,7 +172,7 @@ func main() {
 	fsClient := fsclient.New(fsSID)
 
 	// 2. Prepare MailDBIO injection struct.
-	statusCh := make(chan string, 32)
+	statusCh := make(chan maildbio.StatusLine, 256)
 	notifyCh := make(chan struct{}, 1)
 	ioInit := &maildbio.MailDBIOInit{
 		RachelSIDVal: rachelSID,
@@ -180,28 +180,22 @@ func main() {
 		NotifyCh:     notifyCh,
 	}
 	forceMailDBIOItab(ioInit)
+	mlogSetSink(statusCh, notifyCh)
 
-	fmt.Println("[maildb] MailDBIO config prepared")
+	mlogInfo("[maildb] MailDBIO config prepared")
 
 	// 2a. Run mmap coherence test before badger (which also uses mmap).
 	if !testMmapCoherence() {
-		fmt.Println("[maildb] WARNING: mmap coherence test FAILED")
+		mlogErrorf("[maildb] WARNING: mmap coherence test FAILED")
 	}
 
 	// 2b. Import mbox into BadgerDB; indexing is delegated to fti.
-	notifyStatus := func(msg string) {
-		statusCh <- msg
-		select {
-		case notifyCh <- struct{}{}:
-		default:
-		}
-	}
 
 	// FTI response channel — fed by the uring dispatcher.
 	ftiRespCh := make(chan any, 16)
 
 	// FTI tracker: drains fti responses, frees shared pages, notifies UI.
-	ftiTracker := newFTITracker(ftiRespCh, ftiSID, notifyStatus)
+	ftiTracker := newFTITracker(ftiRespCh, ftiSID)
 
 	// Channel to receive db handle from import goroutine.
 	type importResult struct {
@@ -218,7 +212,7 @@ func main() {
 	if err := fsClient.Connect(); err != nil {
 		panic(fmt.Sprintf("[maildb] FATAL: fsclient.Connect: %v", err))
 	}
-	fmt.Println("[maildb] fs IPC connected via uring")
+	mlogInfo("[maildb] fs IPC connected via uring")
 
 	// importCS holds the collectionStore once onFirstCommit fires.
 	// Accessed only from the import goroutine, so no synchronisation needed.
@@ -233,7 +227,7 @@ func main() {
 		importCS = csNew
 		mh.setStores(db, msNew, csNew)
 		sys.SetReady(true)
-		fmt.Println("[maildb] Ready=true (first message in badger, fti+import in background)")
+		mlogInfo("[maildb] Ready=true (first message in badger, fti+import in background)")
 		sys.StartMemStatsLogger("maildb", 0)
 	}
 
@@ -252,20 +246,18 @@ func main() {
 		bdb, err := mailImport(
 			"/data/mail/mbox/current.mbox",
 			ftiTracker,
-			notifyStatus,
 			onFirstCommit,
 			onMessage,
 		)
 		if err != nil {
-			notifyStatus(fmt.Sprintf("mbox import error: %v", err))
-			fmt.Printf("[maildb] mbox import error: %v\n", err)
+			mlogErrorf("[maildb] mbox import error: %v", err)
 		}
 		importDone <- importResult{db: bdb, err: err}
 	}()
 
 	// 4. Load mail-ui.maz and inject MailDBIO.
 	uiPath := sys.LoadMazByName("/mail-ui")
-	fmt.Printf("[maildb] loading mail-ui from %s...\n", uiPath)
+	mlogInfo("[maildb] loading mail-ui from %s...", uiPath)
 	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(uiPath, nil)
 	if uiErr != nil {
 		panic(fmt.Sprintf("[maildb] LoadMazBootstrap(mail-ui) failed: %v", uiErr))
@@ -276,7 +268,7 @@ func main() {
 		fv := &funcval{fn: uiInitAddr}
 		shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
 		if err := shepherdInit(ioInit); err != nil {
-			fmt.Printf("[maildb] mail-ui MazarinShepherd failed: %v\n", err)
+			mlogErrorf("[maildb] mail-ui MazarinShepherd failed: %v", err)
 		}
 	}
 
@@ -309,15 +301,15 @@ func main() {
 
 	// Launch mail-ui.maz goroutine.
 	go mazhost.RunMaz(uiMain)
-	fmt.Println("[maildb] mail-ui.maz launched")
+	mlogInfo("[maildb] mail-ui.maz launched")
 
 	// 5. Wait for badger import to finish.
 	// Ready was already signalled (or will be) by onFirstCommit when the
 	// first message lands in badger. FTI indexing continues in the background.
-	fmt.Println("[maildb] waiting for badger import to finish...")
+	mlogInfo("[maildb] waiting for badger import to finish...")
 	ir := <-importDone
 	if ir.err != nil {
-		fmt.Printf("[maildb] import failed: %v\n", ir.err)
+		mlogErrorf("[maildb] import failed: %v", ir.err)
 	}
 
 	// Retrieve the current stores from the mail handler (set by onFirstCommit).
@@ -343,13 +335,13 @@ func main() {
 		cs = newCollectionStore(ir.db, ms)
 		mh.setStores(ir.db, ms, cs)
 		sys.SetReady(true)
-		fmt.Println("[maildb] Ready=true (import complete, no early-ready)")
+		mlogInfo("[maildb] Ready=true (import complete, no early-ready)")
 	}
 
-	fmt.Printf("[maildb] import complete: ms=%v cs=%v\n", ms != nil, cs != nil)
+	mlogInfo("[maildb] import complete: ms=%v cs=%v", ms != nil, cs != nil)
 
 	// 6. Enter query loop.
-	fmt.Println("[maildb] entering query loop")
+	mlogInfo("[maildb] entering query loop")
 	for query := range queryCh {
 		if db == nil || cs == nil {
 			respCh <- shared.Response{Error: "database not available"}

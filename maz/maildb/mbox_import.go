@@ -56,6 +56,7 @@ type ftiTracker struct {
 	ftiDiedOnce  sync.Once
 	lastErrMsg   string // last error message sent to notify (dedup)
 	lastErrCount int    // consecutive count of lastErrMsg
+	indexedCount int    // total confirmed indexed docs (for throttled UI updates)
 }
 
 // MarkFTIDied signals that the fti shepherd has died. Safe to call multiple times.
@@ -63,7 +64,7 @@ func (t *ftiTracker) MarkFTIDied() {
 	t.ftiDiedOnce.Do(func() { close(t.ftiDied) })
 }
 
-func newFTITracker(ftiRespCh <-chan any, ftiSID int, notify func(string)) *ftiTracker {
+func newFTITracker(ftiRespCh <-chan any, ftiSID int) *ftiTracker {
 	t := &ftiTracker{
 		pending: make(map[string]pendingIndex),
 		queue:   make(chan ftiQueueItem, 256),
@@ -71,7 +72,7 @@ func newFTITracker(ftiRespCh <-chan any, ftiSID int, notify func(string)) *ftiTr
 		ftiSID:  ftiSID,
 		ftiDied: make(chan struct{}),
 	}
-	go t.sendLoop(ftiRespCh, notify)
+	go t.sendLoop(ftiRespCh)
 	return t
 }
 
@@ -93,7 +94,7 @@ func (t *ftiTracker) wait() {
 
 // sendLoop reads items from the queue one at a time, sends each to fti,
 // and waits for the confirmation response before sending the next.
-func (t *ftiTracker) sendLoop(ftiRespCh <-chan any, notify func(string)) {
+func (t *ftiTracker) sendLoop(ftiRespCh <-chan any) {
 	defer close(t.done)
 
 	var totalBytes int64
@@ -104,11 +105,11 @@ func (t *ftiTracker) sendLoop(ftiRespCh <-chan any, notify func(string)) {
 		bodyLen := len(item.body)
 		t0 := time.Now()
 		if err := fireToFTI(item.messageId, item.subject, item.from, item.sender, item.date, item.body, t.ftiSID, t, item.display); err != nil {
-			fmt.Printf("[maildb] fti send failed (non-fatal): %v\n", err)
+			mlogErrorf("[maildb] fti send failed (non-fatal): %v", err)
 			continue
 		}
 		// Wait for fti to confirm this item before sending the next.
-		t.waitForOne(ftiRespCh, notify)
+		t.waitForOne(ftiRespCh)
 		elapsed := time.Since(t0)
 
 		count++
@@ -124,12 +125,13 @@ func (t *ftiTracker) sendLoop(ftiRespCh <-chan any, notify func(string)) {
 		fmt.Printf("[maildb] fti: complete — %d docs, %d bytes in %v (%.2f MB/s avg)\n",
 			count, totalBytes, totalDur.Round(time.Millisecond),
 			float64(totalBytes)/totalDur.Seconds()/(1024*1024))
+		mlogInfo("Indexing done: %d items indexed", count)
 	}
 }
 
 // waitForOne blocks until one fti response arrives (or fti dies), frees its
 // shared pages, and notifies the UI.
-func (t *ftiTracker) waitForOne(ftiRespCh <-chan any, notify func(string)) {
+func (t *ftiTracker) waitForOne(ftiRespCh <-chan any) {
 	var resp any
 	var ok bool
 
@@ -139,7 +141,7 @@ func (t *ftiTracker) waitForOne(ftiRespCh <-chan any, notify func(string)) {
 			return
 		}
 	case <-t.ftiDied:
-		fmt.Println("[maildb] fti died while waiting for index confirmation, skipping")
+		mlogErrorf("[maildb] fti died while waiting for index confirmation, skipping")
 		return
 	}
 
@@ -151,26 +153,29 @@ func (t *ftiTracker) waitForOne(ftiRespCh <-chan any, notify func(string)) {
 		docId = fti.UnpackCompletedId(&r)
 	case fti.IndexError:
 		docId, errMsg = fti.UnpackIndexError(&r)
-		fmt.Printf("[maildb] fti error: %s: %s\n", docId, errMsg)
+		mlogErrorf("[maildb] fti error: %s: %s", docId, errMsg)
 		if errMsg != t.lastErrMsg {
 			t.lastErrMsg = errMsg
 			t.lastErrCount = 1
-			notify(fmt.Sprintf("Index error: %s", errMsg))
+			mlogInfo("Index error: %s", errMsg)
 		} else {
 			t.lastErrCount++
 			if t.lastErrCount%50 == 0 {
-				notify(fmt.Sprintf("Index error (%dx): %s", t.lastErrCount, errMsg))
+				mlogInfo("Index error (%dx): %s", t.lastErrCount, errMsg)
 			}
 		}
 	default:
-		fmt.Printf("[maildb] unexpected fti response: %T\n", resp)
+		mlogErrorf("[maildb] unexpected fti response: %T", resp)
 		return
 	}
 
 	t.mu.Lock()
 	if pi, ok := t.pending[docId]; ok {
 		if errMsg == "" {
-			notify(fmt.Sprintf("Indexed: %s", pi.display))
+			t.indexedCount++
+			if t.indexedCount%50 == 0 {
+				mlogInfo("Indexed %d documents", t.indexedCount)
+			}
 		}
 		mem.FreePages(pi.pagePtr, pi.numPages)
 		delete(t.pending, docId)
@@ -194,7 +199,7 @@ func (t *ftiTracker) waitForOne(ftiRespCh <-chan any, notify func(string)) {
 //
 // Returns the open db immediately after badger flush. FTI indexing continues
 // in the background via the ftiTracker.
-func mailImport(mailPath string, tracker *ftiTracker, notify func(string),
+func mailImport(mailPath string, tracker *ftiTracker,
 	onFirstCommit func(db *badger.DB), onMessage func(msgId string, ts time.Time)) (*badger.DB, error) {
 	info, err := os.Stat(mailPath)
 	if err != nil {
@@ -209,33 +214,32 @@ func mailImport(mailPath string, tracker *ftiTracker, notify func(string),
 	state := &importState{
 		db:            db,
 		tracker:       tracker,
-		notify:        notify,
 		onFirstCommit: onFirstCommit,
 		onMessage:     onMessage,
 	}
 
 	if info.IsDir() {
-		fmt.Printf("[maildb] mailImport: %s is a directory — using emlx walker\n", mailPath)
-		notify("Starting emlx import...")
+		mlogInfo("[maildb] mailImport: %s is a directory — using emlx walker", mailPath)
+		mlogInfo("Starting emlx import...")
 		if err := emlxImport(mailPath, state); err != nil {
 			db.Close()
 			return nil, err
 		}
 	} else {
-		fmt.Printf("[maildb] mailImport: %s is a file — using mbox parser\n", mailPath)
-		notify("Starting mbox import...")
+		mlogInfo("[maildb] mailImport: %s is a file — using mbox parser", mailPath)
+		mlogInfo("Starting mbox import...")
 		if err := mboxImport(mailPath, state); err != nil {
 			db.Close()
 			return nil, err
 		}
 	}
 
-	fmt.Printf("[maildb] mailImport: import complete, %d messages stored\n", state.count)
-	notify(fmt.Sprintf("Import complete: %d messages in database", state.count))
+	mlogInfo("[maildb] mailImport: import complete, %d messages stored", state.count)
+	mlogInfo("Storage done: %d items stored", storedCount)
 
 	// Initialise persistent counters. All newly imported messages are unread.
 	if err := initCounters(db, state.count, state.count); err != nil {
-		fmt.Printf("[maildb] WARNING: initCounters failed: %v\n", err)
+		mlogErrorf("[maildb] WARNING: initCounters failed: %v", err)
 	}
 
 	// Signal that no more fti requests will be enqueued.
@@ -250,11 +254,14 @@ func mailImport(mailPath string, tracker *ftiTracker, notify func(string),
 type importState struct {
 	db            *badger.DB
 	tracker       *ftiTracker
-	notify        func(string)
 	onFirstCommit func(db *badger.DB)
 	onMessage     func(msgId string, ts time.Time)
 	count         int
 }
+
+// storedCount tracks how many messages have been stored to badger, used for
+// throttled UI progress updates (every 50th message).
+var storedCount int
 
 // importBadgerDir is the absolute filesystem path used by openImportBadger.
 // Set once at maildb startup from sys.SetupScratchDir's return value, then
@@ -302,8 +309,8 @@ func storeRawRFC822(raw []byte, state *importState) {
 	var storedMsgId string
 	var storedTs time.Time
 	if storeErr := storeParsedMessage(state.db, headers, body, state.tracker,
-		state.notify, &storedMsgId, &storedTs); storeErr != nil {
-		fmt.Printf("[maildb] store error: %v\n", storeErr)
+		&storedMsgId, &storedTs); storeErr != nil {
+		mlogErrorf("[maildb] store error: %v", storeErr)
 		state.count--
 		return
 	}
@@ -359,13 +366,13 @@ func parseRFC822Message(raw []byte) (map[string]string, string) {
 // lines and handing each message off to storeRawRFC822 via the shared
 // importState.
 func mboxImport(mboxPath string, state *importState) error {
-	fmt.Printf("[maildb] mboxImport: opening %s\n", mboxPath)
+	mlogInfo("[maildb] mboxImport: opening %s", mboxPath)
 	f, err := os.Open(mboxPath)
 	if err != nil {
 		return fmt.Errorf("open mbox %s: %w", mboxPath, err)
 	}
 	defer f.Close()
-	fmt.Println("[maildb] mboxImport: mbox opened, starting parse")
+	mlogInfo("[maildb] mboxImport: mbox opened, starting parse")
 
 	reader := bufio.NewReaderSize(f, 64*1024)
 	var msgBuf bytes.Buffer
@@ -409,13 +416,13 @@ func mboxImport(mboxPath string, state *importState) error {
 //	<exactly that many bytes> ← the RFC822 message
 //	<optional XML plist>      ← Apple Mail metadata, ignored here
 func emlxImport(rootDir string, state *importState) error {
-	fmt.Printf("[maildb] emlxImport: walking %s\n", rootDir)
+	mlogInfo("[maildb] emlxImport: walking %s", rootDir)
 	walked := 0
 	parsed := 0
 
 	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			fmt.Printf("[maildb] emlxImport: walk error at %s: %v\n", path, err)
+			mlogErrorf("[maildb] emlxImport: walk error at %s: %v", path, err)
 			return nil // continue walking siblings
 		}
 		if info.IsDir() {
@@ -428,7 +435,7 @@ func emlxImport(rootDir string, state *importState) error {
 
 		raw, rerr := readEmlxMessage(path)
 		if rerr != nil {
-			fmt.Printf("[maildb] emlxImport: skip %s: %v\n", path, rerr)
+			mlogErrorf("[maildb] emlxImport: skip %s: %v", path, rerr)
 			return nil
 		}
 		storeRawRFC822(raw, state)
@@ -438,7 +445,7 @@ func emlxImport(rootDir string, state *importState) error {
 	if err != nil {
 		return fmt.Errorf("walk %s: %w", rootDir, err)
 	}
-	fmt.Printf("[maildb] emlxImport: walked %d .emlx files, parsed %d\n", walked, parsed)
+	mlogInfo("[maildb] emlxImport: walked %d .emlx files, parsed %d", walked, parsed)
 	return nil
 }
 
@@ -478,7 +485,7 @@ func readEmlxMessage(path string) ([]byte, error) {
 // (one transaction per message) instead of WriteBatch so each commit is
 // immediately visible to subsequent reads (e.g. the date-index scan in addMessage).
 // On success, *outMsgId is set to the stored message ID and *outTs to the timestamp.
-func storeParsedMessage(db *badger.DB, headers map[string]string, body string, tracker *ftiTracker, notify func(string), outMsgId *string, outTs *time.Time) error {
+func storeParsedMessage(db *badger.DB, headers map[string]string, body string, tracker *ftiTracker, outMsgId *string, outTs *time.Time) error {
 	messageId := strings.Trim(headers["message-id"], "<> ")
 	if messageId == "" {
 		return fmt.Errorf("no message-id")
@@ -557,7 +564,10 @@ func storeParsedMessage(db *badger.DB, headers map[string]string, body string, t
 
 	// noise: per-message badger-store trace disabled during scorch ENOENT investigation
 	_ = display
-	notify(fmt.Sprintf("Stored: %s", display))
+	storedCount++
+	if storedCount%50 == 0 {
+		mlogInfo("Stored %d messages", storedCount)
+	}
 
 	// Enqueue for fti indexing (tracker sends one at a time).
 	// Send the decoded text/plain variant — never the raw MIME envelope —

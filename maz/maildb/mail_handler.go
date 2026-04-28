@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"sync"
 	"time"
 	"unsafe"
@@ -46,7 +45,7 @@ func (mh *mailHandler) handleMailReq(v any, senderSID int16) {
 	mh.mu.Unlock()
 
 	if db == nil {
-		fmt.Printf("[maildb] mail request %T dropped: db not ready\n", v)
+		mlogErrorf("[maildb] mail request %T dropped: db not ready", v)
 		return
 	}
 
@@ -68,7 +67,7 @@ func (mh *mailHandler) handleMailReq(v any, senderSID int16) {
 	case mailproto.MarkDeletedReq:
 		mh.handleMarkDeleted(&req, int(senderSID), ms, cs)
 	default:
-		fmt.Printf("[maildb] unknown mail request type: %T\n", v)
+		mlogErrorf("[maildb] unknown mail request type: %T", v)
 	}
 }
 
@@ -89,7 +88,7 @@ func (mh *mailHandler) handleMessageCount(req *mailproto.MessageCountReq, sender
 func (mh *mailHandler) handleCreateCollection(req *mailproto.CreateCollectionReq, senderSID int, cs *collectionStore) {
 	coll, err := cs.createCollection(req.FilterType, req.SortOrder, req.FilterArg, int16(senderSID))
 	if err != nil {
-		fmt.Printf("[maildb] createCollection: %v\n", err)
+		mlogErrorf("[maildb] createCollection: %v", err)
 		resp := mailproto.RespCreateCollection{RequestId: req.RequestId, ErrCode: mailproto.ErrFilterInvalid}
 		msg := mailproto.EncodeRespCreateCollection(&resp)
 		sendMailMsg(senderSID, &msg)
@@ -103,7 +102,7 @@ func (mh *mailHandler) handleCreateCollection(req *mailproto.CreateCollectionReq
 	}
 	msg := mailproto.EncodeRespCreateCollection(&resp)
 	sendMailMsg(senderSID, &msg)
-	fmt.Printf("[maildb] createCollection: collId=%d filter=%d size=%d\n", coll.id, req.FilterType, coll.totalSize)
+	mlogInfo("[maildb] createCollection: collId=%d filter=%d size=%d", coll.id, req.FilterType, coll.totalSize)
 }
 
 // handleKeyHeaders loads a window of KeyHeaderEntry records and transfers the
@@ -118,7 +117,7 @@ func (mh *mailHandler) handleKeyHeaders(req *mailproto.KeyHeadersReq, senderSID 
 	}
 
 	if err := cs.loadWindow(coll, req.From, req.To); err != nil {
-		fmt.Printf("[maildb] loadWindow: %v\n", err)
+		mlogErrorf("[maildb] loadWindow: %v", err)
 		resp := mailproto.RespKeyHeaders{RequestId: req.RequestId, ErrCode: mailproto.ErrBadgerError}
 		msg := mailproto.EncodeRespKeyHeaders(&resp)
 		sendMailMsg(senderSID, &msg)
@@ -144,7 +143,7 @@ func (mh *mailHandler) handleKeyHeaders(req *mailproto.KeyHeadersReq, senderSID 
 	numPages := (numBytes + 4095) / 4096
 	pages, allocErr := mem.AllocPagesSlice(numPages, mem.PageShared)
 	if allocErr != nil {
-		fmt.Printf("[maildb] KeyHeaders AllocPages(%d): %v\n", numPages, allocErr)
+		mlogErrorf("[maildb] KeyHeaders AllocPages(%d): %v", numPages, allocErr)
 		resp := mailproto.RespKeyHeaders{RequestId: req.RequestId, ErrCode: mailproto.ErrBadgerError}
 		msg := mailproto.EncodeRespKeyHeaders(&resp)
 		sendMailMsg(senderSID, &msg)
@@ -180,7 +179,7 @@ func (mh *mailHandler) handleKeyHeaders(req *mailproto.KeyHeadersReq, senderSID 
 	targetVA, transErr := sys.TransferAndUnmap(senderSID, uintptr(pagePtr), numPages)
 	if transErr != nil {
 		_ = mem.FreePages(pagePtr, numPages)
-		fmt.Printf("[maildb] KeyHeaders TransferAndUnmap: %v\n", transErr)
+		mlogErrorf("[maildb] KeyHeaders TransferAndUnmap: %v", transErr)
 		resp := mailproto.RespKeyHeaders{RequestId: req.RequestId, ErrCode: mailproto.ErrBadgerError}
 		msg := mailproto.EncodeRespKeyHeaders(&resp)
 		sendMailMsg(senderSID, &msg)
@@ -229,7 +228,7 @@ func (mh *mailHandler) handleAllHeaders(req *mailproto.AllHeadersReq, senderSID 
 
 	headers, hErr := ms.LoadHeaders(msgId)
 	if hErr != nil {
-		fmt.Printf("[maildb] AllHeaders LoadHeaders(%s): %v\n", msgId, hErr)
+		mlogErrorf("[maildb] AllHeaders LoadHeaders(%s): %v", msgId, hErr)
 		resp := mailproto.RespAllHeaders{RequestId: req.RequestId, ErrCode: mailproto.ErrMessageNotFound}
 		msg := mailproto.EncodeRespAllHeaders(&resp)
 		sendMailMsg(senderSID, &msg)
@@ -286,7 +285,7 @@ func (mh *mailHandler) handleLatestUnread(req *mailproto.LatestUnreadReq, sender
 	var filterArg [64]byte
 	coll, err := cs.createCollection(mailproto.FilterUnread, mailproto.SortDesc, filterArg, int16(senderSID))
 	if err != nil {
-		fmt.Printf("[maildb] LatestUnread createCollection: %v\n", err)
+		mlogErrorf("[maildb] LatestUnread createCollection: %v", err)
 		resp := mailproto.RespLatestUnread{RequestId: req.RequestId, ErrCode: mailproto.ErrBadgerError}
 		msg := mailproto.EncodeRespLatestUnread(&resp)
 		sendMailMsg(senderSID, &msg)
@@ -469,7 +468,7 @@ func (mh *mailHandler) handleMarkRead(req *mailproto.MarkReadReq, senderSID int,
 	}
 
 	if err := ms.MarkRead(msgId); err != nil {
-		fmt.Printf("[maildb] MarkRead(%s): %v\n", msgId, err)
+		mlogErrorf("[maildb] MarkRead(%s): %v", msgId, err)
 		resp := mailproto.RespMarkRead{RequestId: req.RequestId, ErrCode: mailproto.ErrBadgerError}
 		msg := mailproto.EncodeRespMarkRead(&resp)
 		sendMailMsg(senderSID, &msg)
@@ -501,7 +500,7 @@ func (mh *mailHandler) handleMarkDeleted(req *mailproto.MarkDeletedReq, senderSI
 	}
 
 	if err := ms.MarkDeleted(msgId); err != nil {
-		fmt.Printf("[maildb] MarkDeleted(%s): %v\n", msgId, err)
+		mlogErrorf("[maildb] MarkDeleted(%s): %v", msgId, err)
 		resp := mailproto.RespMarkDeleted{RequestId: req.RequestId, ErrCode: mailproto.ErrBadgerError}
 		msg := mailproto.EncodeRespMarkDeleted(&resp)
 		sendMailMsg(senderSID, &msg)
@@ -524,7 +523,7 @@ func (mh *mailHandler) handleMarkDeleted(req *mailproto.MarkDeletedReq, senderSI
 		encoded := mailproto.EncodeCollectionRemove(&notif)
 		for _, sid := range n.sids {
 			if sendErr := uring.Send(int(sid), &encoded); sendErr != nil {
-				fmt.Printf("[maildb] CollectionRemove to SID %d: %v\n", sid, sendErr)
+				mlogErrorf("[maildb] CollectionRemove to SID %d: %v", sid, sendErr)
 			}
 		}
 		if n.collId == req.CollId {
@@ -543,6 +542,6 @@ func (mh *mailHandler) handleMarkDeleted(req *mailproto.MarkDeletedReq, senderSI
 
 func sendMailMsg(targetSID int, msg *ipc.UringIPCMsg) {
 	if err := uring.Send(targetSID, msg); err != nil {
-		fmt.Printf("[maildb] send to SID %d failed: %v\n", targetSID, err)
+		mlogErrorf("[maildb] send to SID %d failed: %v", targetSID, err)
 	}
 }

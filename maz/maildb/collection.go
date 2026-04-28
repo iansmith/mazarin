@@ -358,7 +358,7 @@ func (cs *collectionStore) addMessage(msgId string, ts time.Time) {
 	// double-counting.
 	currentCount, countErr := cs.countDateIndex()
 	if countErr != nil {
-		fmt.Printf("[maildb] addMessage: countDateIndex: %v\n", countErr)
+		mlogErrorf("[maildb] addMessage: countDateIndex: %v", countErr)
 		return
 	}
 

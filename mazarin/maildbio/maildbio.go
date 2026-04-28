@@ -7,6 +7,13 @@ package maildbio
 
 import "mazzy/maz/maildb/shared"
 
+// StatusLine carries one status message from maildb to the UI.
+// IsError=true → render in error color (red).
+type StatusLine struct {
+	Text    string
+	IsError bool
+}
+
 // MailDBIO is the injection interface between the maildb shepherd and mail-ui.
 //
 // Channels are created by the .maz during MazarinShepherd and read back
@@ -23,9 +30,9 @@ type MailDBIO interface {
 	// ResponseChannel returns the channel carrying responses (shepherd -> UI).
 	ResponseChannel() chan shared.Response
 
-	// StatusChannel returns the channel carrying status strings
+	// StatusChannel returns the channel carrying status lines
 	// (shepherd -> UI). The shepherd creates this channel before injection.
-	StatusChannel() <-chan string
+	StatusChannel() <-chan StatusLine
 
 	// WMChannel returns the channel carrying raw WM payload bytes
 	// (shepherd uring dispatcher -> UI).
@@ -62,13 +69,13 @@ type MailDBIOInit struct {
 
 	// Filled by shepherd before injection.
 	RachelSIDVal int
-	StatusCh     chan string
+	StatusCh     chan StatusLine
 	NotifyCh     chan struct{} // poked after each statusCh send to wake UI event loop
 }
 
 func (m *MailDBIOInit) QueryChannel() chan string            { return m.QueryCh }
 func (m *MailDBIOInit) ResponseChannel() chan shared.Response { return m.RespCh }
-func (m *MailDBIOInit) StatusChannel() <-chan string          { return m.StatusCh }
+func (m *MailDBIOInit) StatusChannel() <-chan StatusLine       { return m.StatusCh }
 func (m *MailDBIOInit) WMChannel() chan []byte               { return m.WMCh }
 func (m *MailDBIOInit) FontReplyChannel() chan []byte        { return m.FontReplyCh }
 func (m *MailDBIOInit) SetChannels(queryCh chan string, respCh chan shared.Response, wmCh chan []byte, fontReplyCh chan []byte) {
