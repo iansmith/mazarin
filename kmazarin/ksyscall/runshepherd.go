@@ -146,6 +146,7 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 
 	// Unmap the raw ELF pages from the caller (implicit cleanup).
 	unmapUserPages(req.StartVA, req.NumPages, req.CallerL0PA, int16(req.CallerShepherd.PID))
+	klog.Criticalf("[RS]", "[RunShepherd] %s: unmapped %d caller pages\n", req.Name, req.NumPages)
 
 	// Validate ELF header
 	if len(elfData) < 64 {
@@ -185,6 +186,7 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 		klog.Errf("[RunShepherd] ERROR: MapUserConstraintPagesWithL0 failed name=%s\n", req.Name)
 		return int64(errNoSpace)
 	}
+	klog.Criticalf("[RS]", "[RunShepherd] %s: mapped FB+constraint pages\n", req.Name)
 
 	// Initialize kernel attribute manager (once, on first shepherd launch).
 	InitKernelAttrManager()
@@ -192,6 +194,7 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	// Build symbol table and find highest VA from the raw ELF
 	shepherdSymTable := buildSymbolTable(elfData, &hdr)
 	shepherdHighestVA := findHighestVA(elfData, &hdr)
+	klog.Criticalf("[RS]", "[RunShepherd] %s: pre-loadELF highestVA=0x%x\n", req.Name, shepherdHighestVA)
 
 	// Load ELF into the new shepherd's page table
 	loadedProc, err := loadELF(elfData, "/"+req.Name+".elf", processL0PA, 0, req.Args)

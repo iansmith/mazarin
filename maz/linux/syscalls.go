@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -32,11 +33,17 @@ var cloexecWarned atomic.Bool
 // syscallHandler processes delegated file syscalls for the linux shepherd.
 // Per-shepherd filesystem state (FD tables, flocks, CWD) is tracked in
 // ShepherdFilesystemData, keyed by caller SID.
+//
+// mu protects the cross-shepherd maps (shepherds, orphanHandles). Per-shepherd
+// state is locked separately via ShepherdFilesystemData.mu, which is the lock
+// held for the lifetime of a handler. flocks and cache have their own
+// internal locking.
 type syscallHandler struct {
-	shepherds map[int16]*ShepherdFilesystemData
-	flocks    *flockTable
-	fs        *fsclient.Client
-	cache     *pageCache
+	mu            sync.Mutex
+	shepherds     map[int16]*ShepherdFilesystemData
+	flocks        *flockTable
+	fs            *fsclient.Client
+	cache         *pageCache
 
 	// orphanHandles tracks fs handles whose owning fd has been closed
 	// but whose cached mmap pages still need a writeback path. Linux
@@ -59,6 +66,8 @@ func newSyscallHandler(fs *fsclient.Client) *syscallHandler {
 // markOrphanHandle records that fs handle is being kept alive past sysClose
 // because cache pages for inum still reference it.
 func (h *syscallHandler) markOrphanHandle(sid int16, inum, handle uint32) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	m, ok := h.orphanHandles[sid]
 	if !ok {
 		m = make(map[uint32]uint32)
@@ -70,40 +79,59 @@ func (h *syscallHandler) markOrphanHandle(sid int16, inum, handle uint32) {
 // closeOrphanHandleIfDrained closes the orphan fs handle for (sid, inum) if
 // the cache no longer has pages for it. Called after RemoveBatch rounds.
 func (h *syscallHandler) closeOrphanHandleIfDrained(sid int16, inum uint32) {
+	h.mu.Lock()
 	m, ok := h.orphanHandles[sid]
 	if !ok {
+		h.mu.Unlock()
 		return
 	}
 	handle, ok := m[inum]
 	if !ok {
+		h.mu.Unlock()
 		return
 	}
 	if h.cache.HasPagesFor(sid, inum) {
+		h.mu.Unlock()
 		return
 	}
-	_ = h.fs.Close(handle)
 	delete(m, inum)
 	if len(m) == 0 {
 		delete(h.orphanHandles, sid)
 	}
+	h.mu.Unlock()
+	// Close happens outside the lock — fsclient is self-locking and we
+	// must not hold h.mu across an IPC round-trip.
+	_ = h.fs.Close(handle)
 }
 
 // closeAllOrphanHandlesForSID closes every orphan handle for sid. Used in
 // shepherd death cleanup after the cache is fully drained.
 func (h *syscallHandler) closeAllOrphanHandlesForSID(sid int16) {
+	h.mu.Lock()
 	m, ok := h.orphanHandles[sid]
 	if !ok {
+		h.mu.Unlock()
 		return
 	}
+	handles := make([]uint32, 0, len(m))
 	for _, handle := range m {
-		_ = h.fs.Close(handle)
+		handles = append(handles, handle)
 	}
 	delete(h.orphanHandles, sid)
+	h.mu.Unlock()
+	// Close handles outside the lock.
+	for _, handle := range handles {
+		_ = h.fs.Close(handle)
+	}
 }
 
 // getShepherd returns the per-shepherd filesystem state for the given SID,
-// creating it lazily on first contact.
+// creating it lazily on first contact. The returned pointer is stable for
+// the lifetime of the shepherd; callers acquire .mu on it for the duration
+// of a handler.
 func (h *syscallHandler) getShepherd(sid int16) *ShepherdFilesystemData {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	s := h.shepherds[sid]
 	if s == nil {
 		s = &ShepherdFilesystemData{
@@ -119,18 +147,31 @@ func (h *syscallHandler) getShepherd(sid int16) *ShepherdFilesystemData {
 // cleanupShepherd closes all open FDs, releases all flocks, and removes
 // the per-shepherd state for the given SID. Called on shepherd death.
 func (h *syscallHandler) cleanupShepherd(sid int16) {
+	h.mu.Lock()
 	s := h.shepherds[sid]
 	if s == nil {
+		h.mu.Unlock()
 		return
 	}
-	// Release all advisory locks.
-	h.flocks.releaseAll(s.Locks)
-	// Close all open file handles (skip stdio fds 0-2).
+	delete(h.shepherds, sid)
+	h.mu.Unlock()
+	// Take per-shepherd lock so any in-flight handler for this shepherd
+	// (already holding s.mu) drains before we touch its FDT.
+	s.mu.Lock()
+	// Snapshot fs handles to close outside the lock.
+	handles := make([]uint32, 0, 8)
 	for fd := 3; fd < MaxFDs; fd++ {
 		e := s.FDT.entries[fd]
 		if e != nil && e.handle != 0 {
-			h.fs.Close(e.handle)
+			handles = append(handles, e.handle)
 		}
+	}
+	// Release all advisory locks.
+	h.flocks.releaseAll(s.Locks)
+	s.mu.Unlock()
+	// Close fs handles outside per-shepherd lock — these are IPC calls.
+	for _, handle := range handles {
+		h.fs.Close(handle)
 	}
 	// Close any handles that were kept alive past close() because cached
 	// mmap pages were still live. The kernel-driven death-cleanup path
@@ -139,11 +180,21 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 	// handles independent of the cache.
 	h.closeAllOrphanHandlesForSID(sid)
 	h.cache.RemoveAll(sid)
-	delete(h.shepherds, sid)
 }
 
 // handle dispatches a delegated syscall request to the appropriate handler.
+//
+// Per-shepherd serialization: the caller's ShepherdFilesystemData.mu is held
+// for the lifetime of the dispatch so that one shepherd's syscalls remain
+// ordered with respect to each other (matching the historical single-goroutine
+// behavior). Different shepherds run on different goroutines and don't block
+// on each other. The lock is never held across a fsclient call's response
+// wait — fsclient has its own internal mutex that already serializes the
+// underlying IPC.
 func (h *syscallHandler) handle(req sys.SyscallRequest) {
+	shep := h.getShepherd(req.CallerPID)
+	shep.mu.Lock()
+	defer shep.mu.Unlock()
 	switch req.SysID {
 	// --- Local-only syscalls ---
 	case sysid.Close:

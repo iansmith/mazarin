@@ -298,6 +298,7 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 	if numPages == 0 {
 		numPages = 1
 	}
+	fmt.Printf("[fs] read: post-Open %s size=%d numPages=%d\n", path, fileSize, numPages)
 
 	totalSize := uintptr(numPages) * 4096
 
@@ -323,6 +324,7 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(va)), totalSize)
 
+	fmt.Printf("[fs] read: pre-ReadInto %s size=%d\n", path, fileSize)
 	n, rerr := file.ReadInto(dst[:fileSize])
 
 	// noise: per-LoadFile trace disabled during scorch ENOENT investigation
@@ -385,6 +387,7 @@ func launchShepherd(fsys *ext2.FileSystem, name, path string, memlimitMB, gcPerc
 		fmt.Printf("[fs] failed to read %s\n", path)
 		return
 	}
+	fmt.Printf("[fs] read done %s bytes=%d numPages=%d\n", path, bytesRead, numPages)
 	var extraArgs []string
 	if memlimitMB > 0 {
 		extraArgs = append(extraArgs, "__MAZZY_GOMEMLIMIT="+strconv.Itoa(memlimitMB))
@@ -392,6 +395,7 @@ func launchShepherd(fsys *ext2.FileSystem, name, path string, memlimitMB, gcPerc
 	if gcPercent > 0 {
 		extraArgs = append(extraArgs, "__MAZZY_GCPERCENT="+strconv.Itoa(gcPercent))
 	}
+	fmt.Printf("[fs] calling RunShepherd %s pages=%d bytes=%d\n", name, numPages, bytesRead)
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead, extraArgs...)
 	// Free temporary pages (RunShepherd copies them to the new shepherd).
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
@@ -415,6 +419,7 @@ func launchPluginShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlim
 		fmt.Printf("[fs] failed to read /shepherd.elf\n")
 		return
 	}
+	fmt.Printf("[fs] read done /shepherd.elf bytes=%d numPages=%d (for %s)\n", bytesRead, numPages, name)
 	args := []string{pluginPath}
 	if memlimitMB > 0 {
 		args = append(args, "__MAZZY_GOMEMLIMIT="+strconv.Itoa(memlimitMB))
@@ -422,6 +427,7 @@ func launchPluginShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlim
 	if gcPercent > 0 {
 		args = append(args, "__MAZZY_GCPERCENT="+strconv.Itoa(gcPercent))
 	}
+	fmt.Printf("[fs] calling RunShepherd %s pages=%d bytes=%d\n", name, numPages, bytesRead)
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead, args...)
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
 	if rpErr != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 )
@@ -24,9 +25,10 @@ var pageCacheBarrier uint32
 //   - dirty pages are flushed to ext2 on munmap/msync (NOT close — the
 //     mapping survives close per Linux semantics)
 //
-// All access is from the single delegate handler goroutine, so no locking
-// is needed.
+// All public methods take pageCache.mu — multiple delegate-handler goroutines
+// may now access the cache concurrently.
 type pageCache struct {
+	mu sync.Mutex
 	// data maps sid → inum → pageOffset → page info
 	data map[int16]map[uint32]map[int64]cachedPage
 }
@@ -65,6 +67,8 @@ func newPageCache() *pageCache {
 // other paths and reused while the linux PTE still points at it. Suspected
 // corruption source — log so we can correlate with the GC crash.
 func (pc *pageCache) Add(sid int16, inum uint32, offset int64, va uintptr, handle uint32) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	inodes, ok := pc.data[sid]
 	if !ok {
 		inodes = make(map[uint32]map[int64]cachedPage)
@@ -84,6 +88,8 @@ func (pc *pageCache) Add(sid int16, inum uint32, offset int64, va uintptr, handl
 
 // Lookup returns the handler VA for a cached page, or 0 on cache miss.
 func (pc *pageCache) Lookup(sid int16, inum uint32, offset int64) uintptr {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	if inodes, ok := pc.data[sid]; ok {
 		if pages, ok := inodes[inum]; ok {
 			return pages[offset].VA
@@ -94,6 +100,8 @@ func (pc *pageCache) Lookup(sid int16, inum uint32, offset int64) uintptr {
 
 // LookupRange returns all cached pages overlapping [startOffset, startOffset+length).
 func (pc *pageCache) LookupRange(sid int16, inum uint32, startOffset int64, length int) []pageCacheEntry {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	inodes, ok := pc.data[sid]
 	if !ok {
 		return nil
@@ -118,6 +126,8 @@ func (pc *pageCache) LookupRange(sid int16, inum uint32, startOffset int64, leng
 
 // MarkDirty marks all pages in the given entries as dirty.
 func (pc *pageCache) MarkDirty(sid int16, inum uint32, entries []pageCacheEntry) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	inodes, ok := pc.data[sid]
 	if !ok {
 		return
@@ -138,6 +148,8 @@ func (pc *pageCache) MarkDirty(sid int16, inum uint32, entries []pageCacheEntry)
 // returns them. Used for round-based cleanup — if len(result) == maxEntries,
 // there may be more pages to remove (call again).
 func (pc *pageCache) RemoveRangeBatch(sid int16, inum uint32, maxEntries int) []pageCacheEntry {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	inodes, ok := pc.data[sid]
 	if !ok {
 		return nil
@@ -168,6 +180,8 @@ func (pc *pageCache) RemoveRangeBatch(sid int16, inum uint32, maxEntries int) []
 // whose offsets fall in [startOffset, startOffset+length) and returns them.
 // Used for partial-munmap cleanup rounds.
 func (pc *pageCache) RemoveRangeOffsetBatch(sid int16, inum uint32, startOffset, length int64, maxEntries int) []pageCacheEntry {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	inodes, ok := pc.data[sid]
 	if !ok {
 		return nil
@@ -201,6 +215,8 @@ func (pc *pageCache) RemoveRangeOffsetBatch(sid int16, inum uint32, startOffset,
 // RemoveAllBatch removes up to maxEntries cached pages for a given sid
 // across ALL inodes. Used for death cleanup rounds.
 func (pc *pageCache) RemoveAllBatch(sid int16, maxEntries int) []pageCacheEntry {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	inodes, ok := pc.data[sid]
 	if !ok {
 		return nil
@@ -228,6 +244,8 @@ func (pc *pageCache) RemoveAllBatch(sid int16, maxEntries int) []pageCacheEntry 
 // RemoveRange removes all cached pages in [startOffset, startOffset+length)
 // for a given (sid, inum) and returns them for cleanup.
 func (pc *pageCache) RemoveRange(sid int16, inum uint32, startOffset int64, length int64) []pageCacheEntry {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	inodes, ok := pc.data[sid]
 	if !ok {
 		return nil
@@ -256,6 +274,8 @@ func (pc *pageCache) RemoveRange(sid int16, inum uint32, startOffset int64, leng
 // close (Linux semantics: mmap survives close, so the handle must too,
 // for writeback during the eventual munmap).
 func (pc *pageCache) HasPagesFor(sid int16, inum uint32) bool {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	inodes, ok := pc.data[sid]
 	if !ok {
 		return false
@@ -267,6 +287,8 @@ func (pc *pageCache) HasPagesFor(sid int16, inum uint32) bool {
 // RemoveAll removes all cached pages for a given sid and returns the
 // handler VAs for cleanup.
 func (pc *pageCache) RemoveAll(sid int16) []uintptr {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	inodes, ok := pc.data[sid]
 	if !ok {
 		return nil
@@ -290,22 +312,30 @@ func (pc *pageCache) RemoveAll(sid int16) []uintptr {
 // to know which pages were modified. Without MMU dirty-bit access, the
 // only safe option is to write everything back on munmap.
 func (pc *pageCache) FlushAllPagesForInum(sid int16, inum uint32, write func(handle uint32, offset int64, data []byte) (int, error)) (int64, error) {
-	inodes, ok := pc.data[sid]
-	if !ok {
-		return 0, nil
+	// Snapshot the (handle, offset, va) tuples under the lock so we can
+	// release it before doing fsclient writes — write() blocks on fsclient
+	// IPC and we must not hold pc.mu through that. Cached page VAs are
+	// stable for the lifetime of the mapping, so it's safe to dereference
+	// them outside the lock.
+	pc.mu.Lock()
+	var snap []pageCacheEntry
+	if inodes, ok := pc.data[sid]; ok {
+		if pages, ok := inodes[inum]; ok {
+			snap = make([]pageCacheEntry, 0, len(pages))
+			for off, cp := range pages {
+				snap = append(snap, pageCacheEntry{Offset: off, VA: cp.VA, Handle: cp.Handle, Dirty: cp.Dirty})
+			}
+		}
 	}
-	pages, ok := inodes[inum]
-	if !ok {
-		return 0, nil
-	}
+	pc.mu.Unlock()
 
 	// Load-acquire barrier before reading cached pages.
 	_ = atomic.LoadUint32(&pageCacheBarrier)
 
 	var totalFlushed int64
-	for off, cp := range pages {
-		pageData := unsafe.Slice((*byte)(unsafe.Pointer(cp.VA)), 4096)
-		written, err := write(cp.Handle, off, pageData)
+	for _, e := range snap {
+		pageData := unsafe.Slice((*byte)(unsafe.Pointer(e.VA)), 4096)
+		written, err := write(e.Handle, e.Offset, pageData)
 		if err != nil {
 			return totalFlushed, err
 		}
@@ -317,24 +347,29 @@ func (pc *pageCache) FlushAllPagesForInum(sid int16, inum uint32, write func(han
 // FlushAllPagesForSID writes all cached pages for a given sid back to the
 // filesystem across all inodes. Used during death cleanup.
 func (pc *pageCache) FlushAllPagesForSID(sid int16, write func(handle uint32, offset int64, data []byte) (int, error)) (int64, error) {
-	inodes, ok := pc.data[sid]
-	if !ok {
-		return 0, nil
+	// Snapshot first; see FlushAllPagesForInum for rationale.
+	pc.mu.Lock()
+	var snap []pageCacheEntry
+	if inodes, ok := pc.data[sid]; ok {
+		for _, pages := range inodes {
+			for off, cp := range pages {
+				snap = append(snap, pageCacheEntry{Offset: off, VA: cp.VA, Handle: cp.Handle, Dirty: cp.Dirty})
+			}
+		}
 	}
+	pc.mu.Unlock()
 
 	// Load-acquire barrier before reading cached pages.
 	_ = atomic.LoadUint32(&pageCacheBarrier)
 
 	var totalFlushed int64
-	for _, pages := range inodes {
-		for off, cp := range pages {
-			pageData := unsafe.Slice((*byte)(unsafe.Pointer(cp.VA)), 4096)
-			written, err := write(cp.Handle, off, pageData)
-			if err != nil {
-				return totalFlushed, err
-			}
-			totalFlushed += int64(written)
+	for _, e := range snap {
+		pageData := unsafe.Slice((*byte)(unsafe.Pointer(e.VA)), 4096)
+		written, err := write(e.Handle, e.Offset, pageData)
+		if err != nil {
+			return totalFlushed, err
 		}
+		totalFlushed += int64(written)
 	}
 	return totalFlushed, nil
 }

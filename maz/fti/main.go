@@ -36,6 +36,16 @@ func decodeFTIReqWithSID(msg *ipc.UringIPCMsg) any {
 	return taggedFTIReq{payload: decoded, senderSID: msg.SenderSID}
 }
 
+// MazarinMain is the .maz plugin entry point. Identical semantics to main();
+// the dual spelling lets fti build both as legacy ET_EXEC (uses main) and
+// as a .maz plugin (uses MazarinMain via mazdl).
+//
+// MazEntryPoint keeps the symbol alive in plugin builds — without this
+// reference the linker would drop it.
+var MazEntryPoint func() = MazarinMain
+
+func MazarinMain() { main() }
+
 func main() {
 	fmt.Println("[fti] main() entered")
 

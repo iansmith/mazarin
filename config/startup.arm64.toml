@@ -32,7 +32,7 @@
 
 [[shepherd]]
 name = "fti"
-path = "/fti.elf"
+path = "/fti.maz"
 memlimit_mb = 128
 
 [[shepherd]]

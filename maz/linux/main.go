@@ -171,9 +171,13 @@ func handleDeathNotification(deadSID int16) {
 //
 //   - File lane (delegateCh): file-system syscalls (may block on fsclient),
 //     stdin reads (async via reqQueue), and notifications (death, idleFlush,
-//     stdinDecRef). Single goroutine — preserves existing serialization
-//     required by syscallHandler's per-shepherd maps and by fsclient's shared
-//     data area.
+//     stdinDecRef). The reader goroutine spawns one worker goroutine per
+//     SyscallRequest so a slow handler (e.g., one parked inside fsclient.call
+//     waiting for fs) cannot starve unrelated requests behind it. Per-shepherd
+//     ordering is preserved by ShepherdFilesystemData.mu, which the worker
+//     holds for the dispatch lifetime. Notifications (death, idleFlush,
+//     stdinDecRef) stay on the reader goroutine — they're cheap and
+//     ordering-sensitive relative to the requests they accompany.
 //
 //   - Stdout lane (stdoutCh): only Write(fd ≤ 2). Runs concurrently with the
 //     file lane so fs.maz's fmt.Printf can complete even while the file lane
@@ -227,7 +231,9 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 			}
 		}
 	}()
-	// File lane — everything else.
+	// File lane — reader spawns a worker goroutine per SyscallRequest so a
+	// slow handler can't starve unrelated requests behind it. Per-shepherd
+	// ordering is preserved inside handler.handle by the per-shepherd lock.
 	go func() {
 		for raw := range delegateCh {
 			switch v := raw.(type) {
@@ -241,17 +247,21 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 				handler.flushOneBuffer()
 
 			case sys.SyscallRequest:
-				sid := v.CallerPID
+				req := v // capture by value for the goroutine
+				sid := req.CallerPID
 				// For stdin reads, sidIncRef happens at enqueue time in sysRead,
 				// and sidDecRef happens in fulfillRead. For all other syscalls,
-				// the request completes synchronously here.
-				if v.SysID == sysid.Read && handler.isStdinRead(v) {
+				// the worker takes a refcount for the dispatch lifetime so
+				// concurrent shepherd-death cleanup doesn't tear out state mid-call.
+				if req.SysID == sysid.Read && handler.isStdinRead(req) {
 					// Don't wrap with inc/dec — sysRead handles it.
-					handler.handle(v)
+					go handler.handle(req)
 				} else {
 					sidIncRef(sid)
-					handler.handle(v)
-					sidDecRef(sid)
+					go func() {
+						defer sidDecRef(sid)
+						handler.handle(req)
+					}()
 				}
 			}
 		}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"sync"
+
 	"mazzy/shared/dlist"
 )
 
@@ -23,9 +25,11 @@ type flockEntry struct {
 // (inside ShepherdFilesystemData); this table provides the global view
 // needed for conflict detection.
 //
-// All methods are called from the single delegate-handler goroutine,
-// so no locking is needed.
+// flockTable.mu protects the global list and is also taken before walking
+// any per-shepherd Locks list — concurrent delegate-handler goroutines may
+// now invoke acquire/release/releaseAll for different shepherds in parallel.
 type flockTable struct {
+	mu sync.Mutex
 	// all is every active lock across all shepherds, enabling O(n)
 	// conflict scans without walking every shepherd's list.
 	all *dlist.List[*flockEntry]
@@ -43,6 +47,8 @@ func newFlockTable() *flockTable {
 // If the shepherd already holds a lock on this handle, the lock is upgraded
 // or downgraded in place (flock() semantics: one lock per fd per process).
 func (ft *flockTable) acquire(handle uint32, kind int, nonblock bool, perShepherd *dlist.List[*flockEntry]) int64 {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
 	// Check for existing lock by this shepherd on the same handle.
 	var existing *dlist.Node[*flockEntry]
 	perShepherd.Range(func(n *dlist.Node[*flockEntry]) bool {
@@ -79,6 +85,8 @@ func (ft *flockTable) acquire(handle uint32, kind int, nonblock bool, perShepher
 // release removes the lock this shepherd holds on handle.
 // Returns 0 on success, EBADF if no lock was held.
 func (ft *flockTable) release(handle uint32, perShepherd *dlist.List[*flockEntry]) int64 {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
 	// Find in shepherd's list.
 	var target *flockEntry
 	var shepherdNode *dlist.Node[*flockEntry]
@@ -102,6 +110,8 @@ func (ft *flockTable) release(handle uint32, perShepherd *dlist.List[*flockEntry
 
 // releaseAll removes every lock held by a shepherd (death cleanup).
 func (ft *flockTable) releaseAll(perShepherd *dlist.List[*flockEntry]) {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
 	perShepherd.Range(func(n *dlist.Node[*flockEntry]) bool {
 		ft.removeFromAll(n.Value)
 		perShepherd.Remove(n)
