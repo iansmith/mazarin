@@ -229,12 +229,11 @@ func main() {
 	// Both are processed in the main goroutine to avoid concurrent
 	// filesystem access (ext2 is not thread-safe).
 	//
-	// TEMP-DIAGNOSTIC: per-iteration [fs:serve] log to track whether the
-	// loop is starving fsIPCCh while servicing slow LoadFile delegates,
-	// for the fix/concurrent-boot-wedge investigation. Each pick logs the
-	// channel + the operation it just dequeued; correlate with the
-	// fsclient:TIMEOUT events to see what fs was busy with when the
-	// timeout fired. Remove with the timeout — see task_plan.md.
+	// TEMP-DIAGNOSTIC: log only the slow-op picks (LoadFile / ReadFilePages
+	// — these read from blockdev, can take seconds for multi-MB files) for
+	// the fix/concurrent-boot-wedge investigation. IPC ops are high-frequency
+	// and fast; logging them flooded the UART ring (738 drops in K1). Remove
+	// with the timeout — see task_plan.md.
 	fmt.Println("[fs] entering serve loop")
 	for {
 		select {
@@ -256,9 +255,7 @@ func main() {
 			if !ok {
 				continue
 			}
-			fmt.Printf("[fs:serve] picked=ipc op=%d sender=%d\n", int(req.payload.Op), int(req.senderSID))
 			ipcSrv.processRequest(req, mt)
-			fmt.Printf("[fs:serve] done    =ipc op=%d sender=%d\n", int(req.payload.Op), int(req.senderSID))
 		}
 	}
 }
