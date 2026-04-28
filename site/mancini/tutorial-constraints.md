@@ -833,7 +833,7 @@ You also need to:
 
 ## Step 4: Add to the Boot Sequence (mazarin-specific)
 
-Edit `config/startup.arm64.toml` (and the amd64/riscv64 variants) to
+Edit `config/startup.arm64.toml` (and the amd64 variant) to
 include your new shepherd:
 
 ```toml

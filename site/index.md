@@ -4,21 +4,24 @@ title: mazarin, an introduction
 author: iansmith
 ---
 
-## [News (last updated Apr 3)](news.md). Uring IPC, Async DMA, ext2, Text Shaping, and Compositing!
+## [News (last updated Apr 28)](news.md). Go-linker plugins, Mail client, Full-text search, Go 1.26.2, and File-backed mmap!
 
 ## [Mancini API Reference](mancini/index.md)
 
 ## What It Means
 
-mazarin now has uring-based IPC with dedicated reader threads per
-shepherd, replacing the mailbox system and its scheduling stalls.
-Block I/O is async with DMA clumps and shared-memory completion rings
-(500x faster).  The window manager (rachel) composites z-ordered
-backing stores with bbox-scoped rasterization.  Text is shaped via
-HarfBuzz with glyph caches in shared memory.  The data disk is ext2,
-with a 128MB off-heap ramdisk at /tmp.  The constraint VM gained
-filtered queries, collection builders, and damage-rectangle propagation
-for incremental redraws.
+mazarin now has its own patched Go linker that emits relocatable `.maz`
+plugins without ever falling back to the system linker -- every
+shepherd in `startup.toml` is loaded by a single generic
+`/shepherd.elf` host via a runtime loader called mazdl. There is a
+working email client backed by a maildb shepherd (BadgerDB +
+mbox import) and an fti shepherd (full-text search via bleve). The
+toolchain is on Go 1.26.2. `MAP_SHARED` writable mmap is supported
+with dirty-page write-back to ext2 on munmap and shepherd death --
+which is what makes BadgerDB and bleve usable. Rachel (the window
+manager) gained focused/unfocused title bars, click-drag window moves
+with screen clipping, and alpha-composited drag previews. Sadly, we
+also removed RISC-V support -- see the news page for details.
 
 
 ## [Quick Start: build and run mazarin](quickstart.md)

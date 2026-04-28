@@ -6,6 +6,98 @@ author: iansmith
 
 # News
 
+## Apr 28, 2026
+
+**A patched Go linker for true Go-only plugins.** *(landed Apr 18)* Stock
+Go's `-buildmode=plugin` produces a shared object that falls back to the
+system linker (`/usr/bin/ld`) at load time -- a nonstarter for an OS
+that has no system linker. mazarin now ships a fork of `cmd/link` (and
+a small piece of `cmd/go`) that emits a relocatable, self-contained
+`.maz` plugin which loads at runtime through mazarin's own loader. The
+plugin emits UNDEF dynsym entries against the host's runtime, a PLT and
+GOT for resolution, and `DT_NEEDED=mazarin-host`. A
+`dlopen-host-packages.txt` policy file declares which Go import paths
+live in the host (chiefly `runtime`) so all other code ships inside the
+plugin. This is the foundation that the rest of the plugin work below
+rests on.
+
+**One shepherd binary (mazdl).** *(landed Apr 18-28)* Every shepherd in
+`startup.toml` is now a `.maz` plugin loaded by a single generic
+`/shepherd.elf` host. The kernel-side `SysLoadMaz` and `SysRunMaz`
+syscalls have been retired -- `mazdl` (the runtime loader matched to
+the patched linker above) is the only loader. The work spanned a Phase
+4 funcval rewrite to fix cross-module function-value indirection, a
+`mazlink`/`mazgo` userspace toolchain for building plugins, and a
+chunked `TransferPages` path so the kernel can move large mappings
+between shepherds without hitting the old 4096-page cap. fti, maildb,
+and mail migrated from ET_EXEC to `.maz` over the second half of the
+window; on Apr 28, `launchShepherd`'s legacy ET_EXEC body in the fs
+shepherd was deleted -- the disk no longer ships an `.elf` for any of
+them.
+
+**Mail v2 -- a working email client.** *(landed Apr 20-24)* mazarin has
+a real mail client, written from scratch in mancini. It uses a
+`GridTable` interactor for the message list with virtual scroll over a
+fixed slot pool of `MailRow` interactors -- only as many rows are
+materialized as fit on screen, and they are recycled as the user
+scrolls. Keyboard navigation works (arrow keys, page up/down). Bodies
+render in a `WebInteractor` HTML pane on click. The wire protocol is
+`mailproto`, a HOT collection protocol (filters, sort orders, lazy
+header fetch) backed by `MessageStore` and `collectionStore` data
+structures.
+
+**Full-text search (fti + bleve).** *(landed Apr 15)* A dedicated `fti`
+shepherd owns a [bleve](https://blevesearch.com/) scorch full-text
+index. maildb hands documents to fti via uring IPC at import time;
+mail can issue `SearchMail` queries through the same protocol and get
+matching message IDs back. The index lives on tmpfs at `/tmp` (the
+128MB off-heap ramdisk introduced in the Apr 3 entry).
+
+**Mail database (maildb) with mbox import.** *(landed Apr 13)* maildb
+is a userspace shepherd that owns a [BadgerDB](https://dgraph.io/docs/badger/)
+database of mail messages. At boot it imports gmail mbox test data from
+disk into BadgerDB and serves `GetHeaders` and `GetBody` requests to
+the mail app over uring. The storage layer is what the mail v2 client
+above is reading.
+
+**Go 1.26.2 migration.** *(landed Apr 20)* The toolchain rebased onto
+Go 1.26.2, with corresponding rebases of all three runtime overlays
+(kernel, shepherd, userspace). One small but important wrinkle: Go
+1.26 introduced `RandomizedHeapBase64`, which is incompatible with how
+mazarin's overlays compute span addresses; the build now sets
+`GOEXPERIMENT=norandomizedheapbase64` to opt out. Most overlay edits
+were preserved verbatim in the rebase.
+
+**File-backed mmap with write-back.** *(landed Apr 13)* `MAP_SHARED`
+writable file-backed mmap actually works now. The linux shepherd's
+page cache demand-faults pages from ext2 on first access, and dirty
+pages are flushed back to the file on `munmap` and on shepherd death.
+This is what makes BadgerDB and bleve usable -- both rely on
+mmap-with-writeback semantics.
+
+**Window manager: decorations, drag, focus.** *(landed Apr 4-6)* Rachel
+grew real window decorations: focused and unfocused title bars with
+distinct neumorphic styling, click-and-drag window moves with screen
+clipping (a window can't be dragged off-screen), click-to-focus, and
+alpha-composited drag previews so the user sees what's behind the
+window during a drag. The blit pipeline now batches VirtIO GPU
+commands per frame.
+
+### Lowlight
+
+**RISC-V removed.** *(Apr 24)* We didn't want to do this. Two facts
+forced our hand. First, there is no open-source UEFI boot code we can
+use for the RISC-V "virt" board in QEMU; we had been booting via
+OpenSBI's `-kernel` flag with a custom early path, but that path was
+diverging further from arm64 and amd64 every week. Second, and more
+fundamentally: the Go compiler cannot currently produce
+position-independent code for RISC-V, which makes the new `.maz`
+plugin model -- and most of the architectural progress on this branch
+-- unworkable on RISC-V. We've deferred RISC-V support; the
+architecture has been removed from the build, and the per-arch RISC-V
+code paths in diplomat and kmazarin are gone. We'd love to come back
+to this when the toolchain catches up. *(Sad face.)*
+
 ## Apr 3, 2026
 
 **Uring IPC replaces mailbox.** The mailbox IPC system described in the
