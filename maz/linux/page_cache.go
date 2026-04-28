@@ -269,6 +269,22 @@ func (pc *pageCache) RemoveRange(sid int16, inum uint32, startOffset int64, leng
 	return result
 }
 
+// InumsFor returns a snapshot of all inums the cache currently holds pages
+// for, for the given sid. Safe under the cache's own lock.
+func (pc *pageCache) InumsFor(sid int16) []uint32 {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	inodes, ok := pc.data[sid]
+	if !ok {
+		return nil
+	}
+	result := make([]uint32, 0, len(inodes))
+	for inum := range inodes {
+		result = append(result, inum)
+	}
+	return result
+}
+
 // HasPagesFor reports whether the cache holds any pages for (sid, inum).
 // Used by sysClose to decide whether to keep the fs handle alive past
 // close (Linux semantics: mmap survives close, so the handle must too,
