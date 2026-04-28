@@ -1,5 +1,53 @@
 # Progress Log
 
+## Session: 2026-04-29 (Opus, evening) — L-cadence wedge persists; strip TEMP items; merge & pivot to website
+
+### Branch state
+
+`fix/concurrent-boot-wedge`, 6 commits ahead of `fix/uring-missed-retries@5352357`. Final commits this session:
+- `86e2482` — fix: bounded retry on EAGAIN in fs.respond() + RespCh cap 4 → 1
+- `db6c688` — strip TEMP-DIAGNOSTIC items per MANDATORY EXIT CRITERION
+
+### L-cadence sweep — fix landed but wedge persists
+
+| Run | Outcome |
+|-----|---------|
+| L1 | wedge: sid=1 (rachel) tid=63 Fstatat 155 s, no `[fsclient:TIMEOUT]` |
+| L2 | clean 161 s |
+| L3 | clean 164 s |
+| L4 | wedge: sid=9 tid=238 Fstatat 156 s, no diagnostics fire |
+| L5 | severe: 0 shepherds main entered, 3 wedged ~116 s, timeout DID fire once with stale-reply mismatch |
+
+3 wedges in 5 runs (60%). The fix did not eliminate the wedge; the audit was incomplete. L1/L4 wedges happen with NO `[fsclient:TIMEOUT]` and NO `[fs:ipc]` errors — the worker isn't in `callLocked`, the bug is upstream of fsclient.
+
+### Conclusion
+
+The EAGAIN-drop in `fs.respond()` is a real bug — fixed (`86e2482`) and merged. The fix is unconditionally correct as defense in depth. But the wedge symptom persists at roughly the historical rate; there's another failure mode (likely in linux's ring-1 dispatcher → file-lane → worker pool path) that we haven't located. Documented in `task_plan.md` ARCHIVED section with the suggested next concrete step (worker-entry/exit instrumentation in `handler.handle`).
+
+### TEMP-DIAGNOSTIC removal (per MANDATORY EXIT CRITERION)
+
+Stripped before merge:
+- `fsclient.callLocked` 30 s timeout + stale-drain + `[fsclient:TIMEOUT]` / `[fsclient:STALE-DRAIN]` logs.
+- `[fs:serve]` per-iteration instrumentation in fs's serve loop.
+
+Kept (real fix):
+- EAGAIN retry in `fs.respond()` (`maz/fs/fsipc.go`).
+- `fsclient.Client.RespCh` cap 4 → 1.
+
+M1 60 s smoke for the cleanup confirmed no diagnostic-line leakage.
+
+### Merge plan (executing)
+
+1. Merge `fix/concurrent-boot-wedge` → `fix/uring-missed-retries` (fast-forward).
+2. Merge `fix/uring-missed-retries` → `master`.
+3. Pivot to website updates.
+
+### Stopping point
+
+About to perform the two merges. Branch tip is `db6c688`.
+
+---
+
 ## Session: 2026-04-29 (Opus, continued) — fix/concurrent-boot-wedge: K-cadence sweep + audit confirms hypothesis 2
 
 ### Branch state
