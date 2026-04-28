@@ -2,9 +2,9 @@ version: '3'
 
 tasks:
   arm64:
-    desc: Build fti shepherd (ARM64) — both legacy ET_EXEC and new .maz plugin
+    desc: Build fti.maz via mazgo (ET_DYN plugin, UNDEF runtime loaded by generic shepherd)
     run: once
-    deps: [':check-env', ':merged-shepherd-overlay', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
       - 'maz/fti/**/*.go'
       - 'maz/fti/**/*.s'
@@ -12,20 +12,13 @@ tasks:
       - 'maz/**/*.s'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'
       - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.FTI_ELF}}'
       - '{{.FTI_MAZ}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building fti for ARM64 (legacy ET_EXEC)..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FTI_ELF}} ./maz/fti'
-      - '{{.GO}} tool go-echo "fti ARM64 ET_EXEC built at {{.FTI_ELF}}"'
       - '{{.GO}} tool go-echo "Building fti.maz (mazgo + mazlink, -buildmode=plugin)..."'
       - |
         CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
@@ -37,9 +30,9 @@ tasks:
       - '{{.GO}} tool go-echo "fti.maz ready at {{.FTI_MAZ}}"'
 
   x86_64:
-    desc: Build fti shepherd (x86_64) — legacy ET_EXEC + new .maz plugin
+    desc: Build fti.maz for x86_64 via mazgo
     run: once
-    deps: [':check-env', ':merged-shepherd-overlay-amd64', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
       - 'maz/fti/**/*.go'
       - 'maz/fti/**/*.s'
@@ -47,21 +40,14 @@ tasks:
       - 'maz/**/*.s'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'
       - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.FTI_AMD64_ELF}}'
       - '{{.FTI_MAZ_AMD64}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building fti for x86_64 (legacy ET_EXEC)..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.FTI_AMD64_ELF}} ./maz/fti'
-      - '{{.GO}} tool go-echo "fti x86_64 ET_EXEC built at {{.FTI_AMD64_ELF}}"'
-      - '{{.GO}} tool go-echo "Building fti.maz for x86_64 (mazgo + mazlink, -buildmode=plugin)..."'
+      - '{{.GO}} tool go-echo "Building fti.maz for x86_64 (mazgo + mazlink)..."'
       - |
         CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
         {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \

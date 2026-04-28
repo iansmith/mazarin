@@ -2,27 +2,20 @@ version: '3'
 
 tasks:
   arm64:
-    desc: Build mail (ARM64) — both legacy ET_EXEC and new .maz plugin
+    desc: Build mail.maz via mazgo (ET_DYN plugin, UNDEF runtime loaded by generic shepherd)
     run: once
-    deps: [':check-env', ':merged-shepherd-overlay', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mancini:compile-constraints']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mancini:compile-constraints']
     sources:
       - 'mazarin/apps/mail/**/*'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'
       - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.MAIL_ELF}}'
       - '{{.MAIL_MAZ}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building mail for ARM64 (legacy ET_EXEC)..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.MAIL_ELF}} ./mazarin/apps/mail'
-      - '{{.GO}} tool go-echo "mail ARM64 ET_EXEC built at {{.MAIL_ELF}}"'
       - '{{.GO}} tool go-echo "Building mail.maz (mazgo + mazlink, -buildmode=plugin)..."'
       - |
         CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
@@ -34,28 +27,21 @@ tasks:
       - '{{.GO}} tool go-echo "mail.maz ready at {{.MAIL_MAZ}}"'
 
   x86_64:
-    desc: Build mail (x86_64) — legacy ET_EXEC + new .maz plugin
+    desc: Build mail.maz for x86_64 via mazgo
     run: once
-    deps: [':check-env', ':merged-shepherd-overlay-amd64', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mancini:compile-constraints']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mancini:compile-constraints']
     sources:
       - 'mazarin/apps/mail/**/*'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'
       - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.MAIL_AMD64_ELF}}'
       - '{{.MAIL_MAZ_AMD64}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building mail for x86_64 (legacy ET_EXEC)..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.MAIL_AMD64_ELF}} ./mazarin/apps/mail'
-      - '{{.GO}} tool go-echo "mail x86_64 ET_EXEC built at {{.MAIL_AMD64_ELF}}"'
-      - '{{.GO}} tool go-echo "Building mail.maz for x86_64 (mazgo + mazlink, -buildmode=plugin)..."'
+      - '{{.GO}} tool go-echo "Building mail.maz for x86_64 (mazgo + mazlink)..."'
       - |
         CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
         {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \

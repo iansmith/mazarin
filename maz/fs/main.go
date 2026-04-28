@@ -369,50 +369,16 @@ func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {
 	return &cfg
 }
 
-// launchShepherd reads an ELF from ext2 and launches it as a new shepherd.
-// If path ends in ".maz", the generic shepherd.elf is launched with the
-// plugin path as its sole argument — the shepherd then loads the plugin
-// via mazdl.OpenBytes. Otherwise (legacy ET_EXEC shepherds), the ELF
-// bytes are handed to RunShepherd directly.
+// launchShepherd loads the generic /shepherd.elf host and hands it the
+// requested plugin path (a .maz file) as its sole argument. shepherd.elf's
+// main() reads os.Args[2] and calls mazdl.OpenBytes on that path via fs's
+// own LoadFile delegate — which is already serving by the time shepherds
+// launch, since fs IS this process.
+//
+// All shepherds are .maz plugins now; the legacy ET_EXEC path is gone.
 // memlimitMB > 0 overrides the system-wide GOMEMLIMIT for this shepherd.
 // gcPercent > 0 overrides the system-wide GOGC for this shepherd.
-func launchShepherd(fsys *ext2.FileSystem, name, path string, memlimitMB, gcPercent int) {
-	if strings.HasSuffix(path, ".maz") {
-		launchPluginShepherd(fsys, name, path, memlimitMB, gcPercent)
-		return
-	}
-	fmt.Printf("[fs] reading %s...\n", path)
-	va, numPages, bytesRead, err := readFileIntoPages(fsys, path, false)
-	if err != nil {
-		fmt.Printf("[fs] failed to read %s\n", path)
-		return
-	}
-	fmt.Printf("[fs] read done %s bytes=%d numPages=%d\n", path, bytesRead, numPages)
-	var extraArgs []string
-	if memlimitMB > 0 {
-		extraArgs = append(extraArgs, "__MAZZY_GOMEMLIMIT="+strconv.Itoa(memlimitMB))
-	}
-	if gcPercent > 0 {
-		extraArgs = append(extraArgs, "__MAZZY_GCPERCENT="+strconv.Itoa(gcPercent))
-	}
-	fmt.Printf("[fs] calling RunShepherd %s pages=%d bytes=%d\n", name, numPages, bytesRead)
-	rpErr := sys.RunShepherd(name, va, numPages, bytesRead, extraArgs...)
-	// Free temporary pages (RunShepherd copies them to the new shepherd).
-	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
-	if rpErr != nil {
-		fmt.Printf("[fs] RunShepherd FAILED for %s\n", name)
-		return
-	}
-}
-
-// launchPluginShepherd loads the generic /shepherd.elf host and hands it
-// the requested plugin path as its sole argument. shepherd.elf's main()
-// reads os.Args[2] and calls mazdl.OpenBytes on that path (via fs's own
-// LoadFile delegate — which is already serving by the time shepherds
-// launch, since fs IS this process).
-// memlimitMB > 0 overrides the system-wide GOMEMLIMIT for this shepherd.
-// gcPercent > 0 overrides the system-wide GOGC for this shepherd.
-func launchPluginShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB, gcPercent int) {
+func launchShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB, gcPercent int) {
 	fmt.Printf("[fs] reading /shepherd.elf (for %s → %s)...\n", name, pluginPath)
 	va, numPages, bytesRead, err := readFileIntoPages(fsys, "/shepherd.elf", false)
 	if err != nil {
@@ -431,7 +397,7 @@ func launchPluginShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlim
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead, args...)
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
 	if rpErr != nil {
-		fmt.Printf("[fs] RunShepherd FAILED for plugin shepherd %s\n", name)
+		fmt.Printf("[fs] RunShepherd FAILED for shepherd %s\n", name)
 		return
 	}
 }
