@@ -1,52 +1,42 @@
-# Continuation prompt — `fix/uring-missed-retries` step 7 (F16-F20 + commit)
+# Continuation prompt — `diag/mail-elf-load-hang` (post-phase-2)
 
-## What this branch is fixing
+## Where we are
 
-Sync UART writes (`klog.Criticalf`, `serial.PollWrite`, `.maz` `rawPuts`) run inside ARM64 SVC handlers with `DAIF.I` masked. On `-smp 1` QEMU each ~80-byte sync write IRQ-blocks the system for ~7 ms, starves the linux shepherd ring drainers, and causes the `OpenFontReply EAGAIN` to fontsvc that F2 caught. See `memory/sync_uart_irq_masked.md`.
+Branch `diag/mail-elf-load-hang`, 1 commit ahead of `fix/uring-missed-retries@e7422c5`:
 
-Architecture (agreed, not negotiable):
-- Kernel-side block-with-deadline for both rings (10 ms per attempt, FCFS single blocker).
-- Userspace pacing: 3-attempt retry with `time.Sleep` (NOT `runtime.Gosched`) bounded at ~30 ms total wall time.
-- `Send`/`Recv`/`Connect` are one-line ring-0 wrappers; `*WithRing` is the primitive.
-- **No yields anywhere in this fix.** "Yields cover up bugs that will bite later." Both kernel-side and userspace-side are Gosched-free.
+- `f466010` — `linux: per-request goroutines for delegated syscalls + fti.maz migration` (12 files, +230/-62)
 
-## Where you left off
+The commit bundles three things:
+1. **Stage 1 of "ONE shepherd binary" cleanup** — fti.elf → fti.maz dual-build + startup.toml flip. fti now launches via `/shepherd.elf` host (same path as maildb). `/fti.elf` still built and on disk for fallback.
+2. **Linux file-lane phase 2** — every delegated `SyscallRequest` runs in its own goroutine. Per-shepherd ordering preserved by `ShepherdFilesystemData.mu`. Cross-shepherd state (`syscallHandler.shepherds`/`orphanHandles`, `pageCache`, `flockTable`) gets short-held mutexes. `fsclient.Client` was already self-locked. Notifications (death/stdinDecRef/idleFlush) stay on the serial reader.
+3. **Launch-path checkpoint instrumentation** — kernel `runshepherd.go` and userspace `fs/main.go` get one-shot logs at every silent gap in the launch chain. These support diagnosing the original mail.elf-load hang DIVERSION.
 
-Branch `fix/uring-missed-retries`, off `feature/mail-dumb@68a7254`. **Steps 1-6 done, uncommitted.** 180 s ARM64 HVF smoke clean: `uart-ring: dropped=0`, no `[uring.Send] retried/FAILED`, no fontsvc errors, no kernel panic.
+**Verified:** 171s ARM64 HVF run (G-fti-maz-2). All four shepherds reached steady state. `delegate stuck:` empty on every status line. `uart-ring: dropped=0`. No panic / EE25 / KERNEL EXIT.
 
-Per-step state lives in `progress.md` and `task_plan.md`. The user has not yet reviewed the diff, so **don't commit kernel/userspace changes** at the start of the session — wait for review/approval. Tracking-file commits (progress, task_plan, this prompt) may go on top.
+## What this branch did NOT do
 
-## Step 7 — F16-F20 (5 × 180 s ARM64 HVF, no clicks)
+- Stage 2 (`mail.elf` → `mail.maz`) — deferred. Mail uses `userspace-overlay` only; switching to `merged-shepherd-overlay` may surface real behavioral changes in louis14 / GridTable / attr.
+- fs concurrent-readers — fs serve loop is still single-goroutine. User explicitly OK'd "slow fs is acceptable" since fs's blocking points are kernel-level (no userspace cycles) and can't deadlock.
+- Root cause for the phase-1 wedge that motivated phase 2 (linux file lane stuck on a hung `fsclient.call` from fs that never replied). Phase 2 makes this only stall the one goroutine. If it recurs we should chase.
+- Reproduction of the original mail.elf-load DIVERSION hang. Did NOT fire in G-fti-maz-2; instrumentation is in place for next time.
 
-**Goal:** confirm the kernel + userspace pacing combination is stable across 5 boots and surface any retry / failure log lines that didn't appear in the single step-6 smoke.
+## Suggested next steps
 
-### Concrete plan
+1. **G-cadence stability check.** 5×180s ARM64 HVF on the current branch to confirm phase 2 is stable across reboots and to look for any new failure modes from the concurrent dispatcher. Watch `delegate stuck:` under click-driven load (open emails, body fetches).
 
-1. Run 5 × 180 s ARM64 HVF, no clicks. Save serial logs at `/tmp/F1{6..20}-180s.log`.
-2. For each run, post-hoc check via `$GO tool safe-serial-read /tmp/F1N-180s.log | grep -E '...'`:
-   - `[uring.Send] ... retried, attempts=N` — pacing kicked in but the send eventually succeeded. Expected to be rare; benign.
-   - `[uring.Send] ... FAILED after 3 attempts, err=...` — exhausted retry budget. Real problem; investigate sender / target.
-   - `[fontsvc] uring.Send OpenFontReply FAILED:` — propagates from above; should match the FAILED line.
-   - `uart-ring: dropped=N` on the `[status]` line — kernel-side pushString backpressure. Must stay 0.
-   - Any kernel `EE25` / `KERNEL EXIT GROUP` / panic / data abort.
-   - Any userspace panic.
-3. Summarize results in a F16-F20 table in `progress.md` like F1-F15 entries.
+2. **If stable: decide on branch destination.** Either:
+   - Merge `diag/mail-elf-load-hang` into `feature/mail-dumb` so subsequent work picks up phase 2.
+   - Continue iterating on the branch (stage 2: mail.maz, fs concurrent reads).
 
-### Decision tree
+3. **If the original mail.elf-load hang reappears**, the new checkpoints localize the silent gap:
+   - Between `[RS] copied X bytes from user` and `[RS] unmapped N caller pages` → `unmapUserPages` (6644 pages for mail).
+   - Between `unmapped` and `mapped FB+constraint` → page table setup.
+   - Between `mapped FB+constraint` and `pre-loadELF` → `buildSymbolTable` / `findHighestVA`.
+   - Between `pre-loadELF` and `loadELF ok` → `loadELF` itself.
+   - Between `loadELF ok` and `created userspace thread` → thread creation.
+   - For F18-style fs-side variant: post-Open / pre-ReadInto / read-done split says where in the 27 MB file read it hangs.
 
-- **All 5 clean (0 retries, 0 FAILED, 0 dropped, no panic):** the fix is verified at the F-series cadence. Record results, ask user for go-ahead to commit steps 1-6 (kernel + userspace + tracking).
-- **Some retries fire but 0 FAILED:** pacing is doing its job. Record the senders/targets that retried (often a hint about which path is bursting). Still safe to commit.
-- **Any FAILED line:** the 30 ms budget is too short for that path, OR there's a real ring-drain hang. Investigate before committing — don't paper over with a longer budget.
-- **Any kernel-side `dropped > 0` or panic:** kernel-side regression. Step 3 (`pushStringFull` block-with-deadline) needs another look. Don't commit.
-- **Any fti bleve panic recurrence (see `findings.md`):** independent userspace bug. Note in findings, do NOT chase from this branch.
-
-## After step 7 (assuming clean)
-
-8. **Commit prep.** Two logical commits at minimum:
-   - Kernel: steps 1-3 (`kmazarin/kmazarin/threads.go`, `uring_ipc.go`, `serial_console.go`, `soft_irq_slots.go`, `kmazarin/ksyscall/uring_ipc.go`, `uring_ipc_asm.go`).
-   - Userspace: steps 4-5 (`mazarin/uring/syscall.go`, `maz/fontsvc/main.go`).
-   - Tracking: `findings.md`, `progress.md`, `task_plan.md`, `next_session_prompt.md` — separate commit.
-   - Show the user the diff before each commit; do not push.
+4. **Optional but valuable: stage 2 — mail.elf → mail.maz.** Once stage 1 is observed stable, the migration unifies `launchShepherd` body with `launchPluginShepherd`. `launchShepherd`'s legacy ET_EXEC branch becomes dead code. Mail is the largest binary in the launch chain, so the read shifts from a single 27 MB read of `/mail.elf` (direct ET_EXEC) to a 7 MB read of `/shepherd.elf` (via `launchPluginShepherd`) plus a 27 MB LoadFile of `/mail.maz` from the running shepherd. That's a different I/O shape — diagnostically interesting either way.
 
 ## Project setup (always)
 
@@ -57,15 +47,13 @@ Per-step state lives in `progress.md` and `task_plan.md`. The user has not yet r
 
 ## Reminders / non-negotiables
 
-- **No `runtime.Gosched()` anywhere in this fix.** Both block paths use staticDeadlineQueue.
-- Per-call sync UART (`klog.Criticalf`, `rawPuts`) is reserved for "about to die" only — not debug logging.
-- Don't commit kernel/userspace changes until user reviews the diff.
+- No `runtime.Gosched()` in the uring-pacing fix (still holds — phase 2 doesn't add any).
+- Per-call sync UART (`klog.Criticalf`, `rawPuts`) is reserved for "about to die" only — phase 2's instrumentation uses one-shot per-launch checkpoints, not per-syscall logs.
+- Phase 2 changed `pageCache`/`flockTable`/`syscallHandler` locking — concurrent goroutines now access these. If adding new methods, follow the established lock pattern (lock at method entry; for any callback that does fsclient I/O, snapshot under the lock and release before calling).
 
 ## Side context (don't re-litigate)
 
-- Step 2 verification done (race-free publish, fallback paths, lock discipline; caveat: drainer fast-path read of `slot.BlockedSenderTID` is non-atomic, 10 ms deadline is the safety net for missed-wake — acceptable).
-- Step 3 verified by 90 s smoke (kernel stable, `dropped=0`).
-- Step 6 verified by 180 s smoke (kernel stable, `dropped=0`, no retries surfaced — idle run).
-- Bug-B-family chase paused. F1-F15 disconfirmed VA-collision at SharePages layer (~1850 calls, 0 out-of-range). GC mspan didn't reproduce in 15 boots.
-- `findings.md` top section: fti bleve `index out of range [0]` panic surfaced in step-3 smoke. Independent of this branch. Revisit after F16-F20 if it persists.
-- `clocks_stdio_delegate_stall.md`, `bug_attr_init_crash.md`, `bug_virtio_emptyirq_hang.md` unrelated and unaffected.
+- `fix/uring-missed-retries` is committed (e7422c5 / 4ba1a15 / b907e8d). Don't recommit those changes.
+- Bug-B-family chase paused. F1-F15 disconfirmed VA-collision at SharePages layer.
+- `findings.md` has the fti bleve `index out of range [0]` panic from a step-3 smoke; independent of this branch, untouched.
+- The phase-1 wedge (G-fti-maz-1) had 3 readlinkats stuck for 110+s. sysid=50 in the status line is `Readlinkat` (counted iota in `shared/sysid/sysid.go`). `sysReadlinkat` is a one-line `Reply(EINVAL)`. The wait was purely queueing in the file lane.

@@ -1,8 +1,31 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: `fix/uring-missed-retries` — kernel-side block-with-deadline (2026-04-28 night)
+## TOP OF STACK: `diag/mail-elf-load-hang` — linux per-request goroutines + fti.maz (2026-04-29)
 
-**Branch:** `fix/uring-missed-retries`, off `feature/mail-dumb` at `68a7254`.
+**Branch:** `diag/mail-elf-load-hang`, off `fix/uring-missed-retries@e7422c5`.
+
+**Commit:** `f466010` — `linux: per-request goroutines for delegated syscalls + fti.maz migration`. 12 files, +230/-62.
+
+**What was done:**
+- **fti.elf → fti.maz migration (stage 1 of "ONE shepherd binary" cleanup).** Dual-build pattern in `maz/fti/Taskfile.yml` mirroring maildb's. `MazarinMain` shim added to `maz/fti/main.go`. `Taskfile.yml` root + `disk-arm64`/`disk-x86_64` updated. `config/startup.{arm64,amd64}.toml` flipped to `/fti.maz`.
+- **Linux dispatcher concurrency.** Migrating fti to .maz exposed a head-of-line block: 3 shepherds stuck on `Readlinkat` for 110+s because linux's file-lane was a single goroutine and one slow `fsclient.call` queued every other delegated syscall behind it (even stateless ones). Fix: file lane spawns `go handler.handle(req)` per `SyscallRequest`. Per-shepherd ordering preserved by `ShepherdFilesystemData.mu`. Cross-shepherd state (`syscallHandler.shepherds`/`orphanHandles`, `pageCache`, `flockTable`) gets short-held mutexes. `FlushAllPagesForInum/SID` converted to snapshot-then-write so `pc.mu` isn't held across fsclient. Notifications (death/stdinDecRef/idleFlush) stay on the reader. `fsclient.Client` was already self-locked.
+- **Launch-path checkpoint instrumentation** (separate, supports the original DIVERSION). `kmazarin/ksyscall/runshepherd.go` gained post-unmap / post-FB+constraint-map / pre-loadELF checkpoints. `maz/fs/main.go` gained post-Open / pre-ReadInto / read-done / calling-RunShepherd checkpoints in `launchShepherd`/`launchPluginShepherd` and in `readFileIntoPages`. One-shot per launch.
+
+**Verified:** 171s ARM64 HVF clean run (G-fti-maz-2-180s.log). All four shepherds (linux, fti, maildb, mail) reached steady state. `delegate stuck:` empty on every status line. `uart-ring: dropped=0`. No kernel panic, EE25, or KERNEL EXIT. maildb completed 317-doc fti index ingestion. mail-app rendering "Mail" window blit #2500.
+
+**Not yet done (deferred):**
+- **Stage 2 — mail.elf → mail.maz.** Would unify `launchShepherd`'s legacy ET_EXEC body with `launchPluginShepherd`. Bigger lift: mail uses `userspace-overlay` only (not `merged-shepherd-overlay`). Switching it surfaces real behavioral changes — louis14, GridTable, attr usage. Defer until phase 2's stability is observed across more runs.
+- **fs concurrent-readers refactor.** fs serve loop is also single-goroutine ("ext2 not thread-safe"). Slow but not deadlocking — its blocking points are kernel-level, not other-userspace. Acceptable today per user. Revisit if concurrent-LoadFile throughput becomes a real bottleneck.
+- **Underlying wedge from the original phase-1 boot test (G-fti-maz-1).** Linux's file lane was wedged on a hung `fsclient.call` waiting for fs that never replied. Phase 2 makes this only stall the one goroutine (others proceed), but the root cause of that wedge is unrouted. Likely uring-EAGAIN interaction. Revisit if it recurs.
+
+**Reminders:**
+- The original DIVERSION (mail.elf-load boot hang) instrumentation landed but the hang itself didn't fire in this run. The instrumentation is in place for the next time it does.
+
+---
+
+## ARCHIVED: `fix/uring-missed-retries` — kernel-side block-with-deadline (2026-04-28 night)
+
+**Branch:** `fix/uring-missed-retries`, off `feature/mail-dumb` at `68a7254`. Now committed (b907e8d kernel, 4ba1a15 userspace, e7422c5 docs). `diag/mail-elf-load-hang` builds on top.
 
 **Why:** F1-F15 chase identified the root cause of `OpenFontReply EAGAIN`: synchronous UART writes (`klog.Criticalf`, etc.) run with ARM64 SVC's hardware-default DAIF.I=masked, and on `-smp 1` QEMU this IRQ-blocks the entire system for ~7 ms per call. Receiver's userspace reader gets starved → ring fills → sender gets EAGAIN. See `memory/sync_uart_irq_masked.md` for the architectural write-up.
 
@@ -29,7 +52,9 @@
 
 ---
 
-## DIVERSION: intermittent mail.elf-load boot hang (cross-session)
+## DIVERSION: intermittent mail.elf-load boot hang (cross-session) — instrumentation landed, hang didn't fire under phase 2
+
+**Status update (2026-04-29):** Phase-2 boot-test 171s clean — hang did NOT reproduce. Instrumentation (post-unmap / mapped FB+constraint / pre-loadELF in kernel; post-Open / pre-ReadInto / read-done / calling-RunShepherd in fs) is in place on `diag/mail-elf-load-hang@f466010` for the next reproduction attempt. May or may not still happen — phase 2's removal of the linux file-lane head-of-line block could have eliminated the trigger if it was related to delegate-dispatcher saturation. Track but don't actively chase until it recurs.
 
 **Symptom:** Boot reaches `[fs] launching mail from /mail.elf` → `[fs] reading /mail.elf...` → optionally `[RS][RunShepherd] start name=mail pages=6644 bytes=27210767` and/or `[RS][RunShepherd] mail: copied 27210767 bytes from user`, then **silence**. No further log output for the full 180s timeout. No panic, no data abort, no `EE25` / `EXIT_GROUP`. No status lines ever print, so we have no telemetry from the hung run.
 
@@ -58,12 +83,17 @@
 2. **Demand-paging stall during init** — large user-text region (>27 MB) means many demand faults early; if any single fault path can deadlock against the launcher, we'd see exactly this.
 3. **Linux shepherd dispatcher-not-yet-ready race** — `[uring:reader] ring1 got msg #2` in F18 before the hang suggests linux shepherd is processing IPCs; if the ordering between "linux is up" and "mail-app starts making syscalls" can flip, an early mail-app syscall might wait for a service that's not registered yet.
 
-**Next-action when this is picked up:**
-- Add a `klog.Logf` immediately after the `created userspace thread tid=N` line for each shepherd, then another at first-instruction-of-userspace (`enterShepherdAtAddress` entry). Confirms whether the hang is "kernel never enters userspace" vs "userspace never makes its first syscall."
-- If userspace IS entered: instrument the `.maz` runtime entry (`runtime.rt0_go` overlay or similar) to log when `mazMain` begins. Localizes the hang to before/after Go-runtime init.
-- Force-grow stack at launch path entry (independent of mail.elf's choice) to rule out morestack.
+**Next-action when this is picked up (revised 2026-04-29):**
+- F-cadence reproduction attempt on `diag/mail-elf-load-hang@f466010` (or successor) — 5×180s ARM64 HVF, watch for the silence-after-mail-launch signature. The new checkpoints will say which silent gap the hang is in.
+- If hang fires between `copied X bytes from user` and `unmapped N caller pages` → kernel `unmapUserPages` of 6644 pages.
+- If between `unmapped` and `mapped FB+constraint` → `CreateProcessPageTable` / `MapUserFramebufferWithL0` / `MapUserConstraintPagesWithL0`.
+- If between `mapped FB+constraint` and `pre-loadELF` → `buildSymbolTable` / `findHighestVA`.
+- If between `pre-loadELF` and `loadELF ok` → `loadELF` itself.
+- If between `loadELF ok` and `created userspace thread` → `CreateUserspaceThread`.
+- If between `created userspace thread` and userspace-side `[mail] main()` → kernel never schedules the new thread, OR mail's runtime hangs before first syscall.
+- For the fs-side (F18-style) variant: post-Open / pre-ReadInto / read-done split says whether `Open` returned, whether `ReadInto` was entered, and how far the 27 MB read got.
 
-**Status:** Tracked, NOT actively investigated. Resume once `fix/uring-missed-retries` is merged. Do NOT chase this from any other branch's session unless it actively blocks something.
+**Status:** Tracked, instrumented. Resume only if the hang recurs on the new branch.
 
 ---
 

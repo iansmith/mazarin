@@ -1,5 +1,56 @@
 # Progress Log
 
+## Session: 2026-04-29 (Opus) — `diag/mail-elf-load-hang`: fti.maz + linux per-request goroutines
+
+### Branch state
+
+New branch `diag/mail-elf-load-hang`, off `fix/uring-missed-retries@e7422c5` (which was committed at session start — confirmed `git status` clean despite progress.md saying otherwise; the "uncommitted" wording in tracking files was stale). One commit: `f466010 — linux: per-request goroutines for delegated syscalls + fti.maz migration` (12 files, +230/-62).
+
+### What ran
+
+1. **DIVERSION investigation entry.** Read F18/F20 logs; discovered the two hang sites are NOT the same. F18 hangs in fs's `readFileIntoPages` for `/mail.elf` (27 MB, fs-side stall, before kernel sees RunShepherd). F20 hangs in the silent kernel-side gap between `[RS] mail: copied 27210767 bytes from user` and the would-be `[RS] loadELF ok` (covers `unmapUserPages`, `CreateProcessPageTable`, `Map*WithL0`, `buildSymbolTable`, `findHighestVA`, `loadELF`). Original task_plan next-action assumed both were post-thread-creation; revised plan.
+
+2. **Launch-path instrumentation landed.** Per-call checkpoints added (kernel: post-unmap / mapped FB+constraint / pre-loadELF; fs: post-Open / pre-ReadInto / read-done / calling-RunShepherd). All `klog.Criticalf`/`fmt.Printf`, one-shot per launch.
+
+3. **Stage 1 of "ONE shepherd binary" cleanup: fti.elf → fti.maz.** Per user direction (option B). `maz/fti/Taskfile.yml` adopts maildb's dual-build pattern (.elf + .maz). `maz/fti/main.go` gets `var MazEntryPoint func() = MazarinMain; func MazarinMain() { main() }` shim. Root `Taskfile.yml` declares `FTI_MAZ`/`FTI_MAZ_AMD64`, adds them to disk-image sources + mkext2 args. `config/startup.{arm64,amd64}.toml` flips `path = "/fti.elf"` → `"/fti.maz"`.
+
+4. **First boot test (G-fti-maz-1) HANG.** fti.maz launched mechanically — kernel side fully clean through `created userspace thread tid=0x396`. shepherd.elf for fti reached `[shepherd] loading /fti.maz`, fs hit `[fs] read: pre-ReadInto /fti.maz size=23035900`, then system stuck for 100+s with `[status]` continuing every 20s. 3 shepherds in delegate stuck — fti, maildb, mail — all on `sysid=50` for 110+s. Investigation: sysid=50 is `Readlinkat` (counted iota in `shared/sysid/sysid.go`), which is a one-line `Reply(EINVAL)`. They're not stuck IN sysReadlinkat; they're queued behind something else in linux's file-lane single-goroutine.
+
+5. **Linux dispatcher concurrency investigation.** `maz/linux/main.go:230` confirmed: file-lane is `go func() { for raw := range delegateCh { ... } }()` — single goroutine. Comment explicitly says "preserves existing serialization required by syscallHandler's per-shepherd maps and by fsclient's shared data area." Reading `mazarin/fsclient/client.go` revealed fsclient.Client has its OWN `mu sync.Mutex` and `callLocked` requires the lock; so fsclient is already concurrent-safe at the call level — the "single goroutine" comment was conservative.
+
+6. **Phase 2 implementation (per user-confirmed plan, 2-step discussion).**
+   - Reasoning: linux's file lane CAN deadlock on userspace cycles (waiting for fs which waits for linux for stdout writes etc.); fs's serve loop CAN'T deadlock on userspace (its blocking points are kernel-level: blockdev IRQ, ext2 metadata, kernel syscalls). So linux phase-2 is the urgent fix; fs is "slow but acceptable." User explicitly OK'd "slow fs is acceptable now."
+   - Concretely: file lane spawns `go handler.handle(req)` per `SyscallRequest`. Per-shepherd ordering preserved by adding `mu sync.Mutex` to `ShepherdFilesystemData` (held across the entire dispatch). Cross-shepherd state gets short-held mutexes: `syscallHandler.mu` for `shepherds`/`orphanHandles` maps, `pageCache.mu` for cache state (all public methods locked), `flockTable.mu` for flock state. `FlushAllPagesForInum/SID` rewritten to snapshot tuples under lock then call `write()` (fsclient) outside — avoids holding cache mutex across IPC. Notifications (death/stdinDecRef/idleFlush) stay on the reader goroutine — cheap and ordering-sensitive. `cleanupShepherd` snapshots fs handles under lock then closes them outside.
+
+7. **Phase 2 boot test (G-fti-maz-2) — 171s clean.** All four shepherds reach steady state: `[fti] main() entered` → `bleve index created` → `dispatcher started` → `Ready=true`. `[mail] main() entered`. `[maildb] main() entered` → `fti: complete — 317 docs, 4813005 bytes in 18.612s`. mail-app rendering "Mail" window blit #2500. End-of-run status: `delegate stuck:` empty, `uart-ring: dropped=0`, no panic / EE25 / KERNEL EXIT.
+
+### Files touched (all in commit `f466010`)
+
+- Kernel-side instrumentation: `kmazarin/ksyscall/runshepherd.go` (3 new `klog.Criticalf` checkpoints).
+- fs-side instrumentation: `maz/fs/main.go` (4 new `fmt.Printf` checkpoints across `launchShepherd`/`launchPluginShepherd`/`readFileIntoPages`).
+- fti migration: `maz/fti/main.go` (MazarinMain shim), `maz/fti/Taskfile.yml` (dual-build pattern), `Taskfile.yml` (FTI_MAZ vars + disk-image), `config/startup.arm64.toml`, `config/startup.amd64.toml`.
+- Linux phase 2: `maz/linux/syscalls.go` (syscallHandler.mu, getShepherd/cleanupShepherd locking, orphanHandles helpers, handle() takes per-shepherd lock), `maz/linux/fdtable.go` (mu in ShepherdFilesystemData), `maz/linux/page_cache.go` (mu, all methods locked, Flush*PagesFor* snapshot pattern), `maz/linux/flock.go` (mu, lock acquire/release/releaseAll), `maz/linux/main.go` (file lane spawns goroutines, sidIncRef/sidDecRef wrap each).
+
+### What this does NOT include
+
+- Stage 2 (`mail.elf` → `mail.maz`) — bigger lift due to userspace-overlay vs merged-shepherd-overlay difference. Deferred.
+- fs concurrent-readers — slow but not deadlocking; user explicitly accepted "slow fs is OK now."
+- Root cause for the G-fti-maz-1 wedge (linux's file lane stuck on a hung `fsclient.call` from fs that never replied). Phase 2 makes this only stall the one goroutine — others proceed. If it recurs, investigate.
+- Reproduction of the original DIVERSION mail.elf-load hang. Did NOT fire in this session's run; instrumentation is now in place for next time it does.
+
+### Stopping point
+
+Tracking files updated. Branch `diag/mail-elf-load-hang` ahead of `fix/uring-missed-retries` by 1 commit. Not pushed.
+
+### Next session direction (open)
+
+- More G-cadence runs (180s × 5) on `diag/mail-elf-load-hang` to confirm phase 2 is stable across reboots.
+- Watch for `delegate stuck:` patterns under load (clicks, body fetches).
+- Decide whether to merge `diag/mail-elf-load-hang` into `feature/mail-dumb` or keep iterating on the branch.
+- If the original mail.elf-load hang reappears, the new instrumentation localizes which silent gap it's in.
+
+---
+
 ## Session: 2026-04-29 (Opus) — Step 7 of `fix/uring-missed-retries` (F16-F20 sweep)
 
 ### Branch state
