@@ -1,5 +1,63 @@
 # Progress Log
 
+## Session: 2026-04-29 (Opus, continued) — fix/concurrent-boot-wedge: K-cadence sweep + audit confirms hypothesis 2
+
+### Branch state
+
+`fix/concurrent-boot-wedge`, 3 commits ahead of `fix/uring-missed-retries@5352357`:
+- `65f8cac` — docs pivot
+- `322e3a8` — TEMP-DIAGNOSTIC fsclient.callLocked timeout + fs serve-loop instrumentation
+- `fef642c` — drop fs:serve IPC pick logs (UART overload from K1)
+
+### K-cadence sweep results
+
+| Run | Outcome | Detail |
+|-----|---------|--------|
+| K1 | wedge + 738 UART drops | 2 threads on sid=21 (maildb) stuck on Fstatat 148s+. fs alive throughout, serving IPCs from sender=28. UART overload prevented `[fsclient:TIMEOUT]` from being visible. |
+| K2 | clean 161s | uart-ring dropped=0 |
+| K3 | clean 172s | clean |
+| K4 | clean 171s | `for=0ms` state-reporter glitch in kernel — not a wedge, just noise |
+| K5 | userspace `fatal error: missing deferreturn` | plugin runtime panic-recovery bug, separate from wedge |
+| K6 | clean 172s | clean |
+
+1 wedge in 6 runs (~17%), within historical 1-in-5 range.
+
+### Audit findings (hypothesis 2 confirmed by source)
+
+Trace through `maz/fs/fsipc.go:178-183` and `mazarin/uring/reader.go:198`:
+
+1. Linux's ring-0 dispatcher does **blocking** `route.ch <- typed` to one of: `wmCh`(8), `fontReplyCh`(8), `delegateCh`(8), `fsClient.RespCh`(4).
+2. If any channel fills (likely `wmCh`/`fontReplyCh` during boot WM/font spike), dispatcher blocks, stops draining ring 0.
+3. Kernel ring 0 fills → `uring.Send` to ring 0 returns EAGAIN after 30 ms pacing budget (per `fix/uring-missed-retries`).
+4. **`fs.respond()` logs `[fs:ipc] Send response... failed: %v` and DROPS the reply.** No retry.
+5. Linux's worker parked on `<-c.RespCh` waits forever for the discarded reply.
+6. Worker holds `shep.mu`. Subsequent same-shepherd syscalls queue. `delegate stuck`.
+
+This is a regression introduced by `fix/uring-missed-retries`: pre-fix, `uring.Send` retried forever via Gosched and the drop path in `respond()` was effectively unreachable. The new bounded backpressure (3 attempts × 10ms = 30ms) made the drop path reachable, and the wedge surfaced.
+
+### Channel-depth analysis (with user)
+
+User asked: are 4/8 arbitrary? Answer: yes, mostly defensive scaffolding. `RespCh` cap 4 is unmotivated — at most 1 in flight by `c.mu` construction. `wmCh`/`fontReplyCh` are bursty so buffer is plausible but the size is unjustified. `delegateCh` was sized for pre-phase-2 single-goroutine consumer; phase 2 made it obsolete.
+
+The buffers don't fix the underlying consumer-stall — they just delay the cascade by N messages. Smaller (or 0) buffers expose the bug faster; bigger ones hide it longer.
+
+### Plan (4-step sequence agreed with user)
+
+1. **Capture direct evidence** — K7-K9 with current quieter instrumentation. Watch for `[fs:ipc] Send response... failed: EAGAIN` and `[fsclient:TIMEOUT]`.
+2. **Minimal fix in `respond()`** — bounded retry on EAGAIN (e.g., 100 × 30 ms). One-line change in `maz/fs/fsipc.go:178`.
+3. **Rationalize channel depths** — shrink `RespCh` to cap 1 (or 0); audit `wmCh`/`fontReplyCh` for "always-ready"; shrink as appropriate.
+4. **Architectural change deferred** — kernel-ring drain decoupled from per-protocol routing is the right long-term answer; separate discussion, not this branch.
+
+### MANDATORY EXIT CRITERION (recorded in task_plan.md)
+
+The TEMP-DIAGNOSTIC timeout in `fsclient.callLocked`, the stale-drain logic, the `[fs:serve]` instrumentation, and the `[fsclient:TIMEOUT]` log all MUST be removed before this branch merges. Per user policy "polling or timeouts = architectural change."
+
+### Stopping point
+
+About to execute step 1 (K7-K9 evidence capture) and then steps 2+3 (the actual fix).
+
+---
+
 ## Session: 2026-04-29 (Opus, continued) — merge diag/mail-elf-load-hang → fix/uring-missed-retries; new branch fix/concurrent-boot-wedge
 
 ### Branch state

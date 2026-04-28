@@ -19,17 +19,16 @@ Concurrent-boot-wedge — see `task_plan.md` TOP OF STACK for full description. 
 - NOT mail-related — wedged shepherds are whoever's doing fs IPC during the busy fs window. H5 had sid=20/28/29 (rachel-plugin chain).
 - Worker pool keeps the system alive, but specific shepherds hang indefinitely.
 
-## Plan (per task_plan.md)
+## Plan (4-step sequence — see task_plan.md for full detail)
 
-1. **Add a `fsclient.callLocked` timeout** (~30 s) to convert indefinite stalls into recoverable errors. Safety net + telemetry handle. **Architectural — discuss with user before adding** (timeouts are a user-policy boundary).
-2. **Per-message-class instrumentation in fs's serve loop** at `maz/fs/main.go:232`. Log when fs picks `fsIPCCh` vs `fsDelegateCh` and the request type. Confirms hypothesis 1: are LoadFile delegate ops starving IPC?
-3. **Reproduce H5 deterministically.** Heavy concurrent boot LoadFiles trigger it. Add extra shepherds to startup.toml or parallelize bootSequence to make it ~100% reliable. Without a reliable reproducer we can't measure.
+1. **Capture direct evidence** — K7-K9 with quieter instrumentation. Watch for `[fs:ipc] Send response... failed: EAGAIN` and `[fsclient:TIMEOUT]`. Confirms the audit's hypothesis-2 chain end-to-end.
+2. **Minimal fix in `respond()`** — bounded retry on EAGAIN (e.g., 100 × 30 ms = 3 s). One-line change in `maz/fs/fsipc.go:178-183`. Probably eliminates the wedge — fs's drop on EAGAIN is the silent loss point.
+3. **Rationalize channel depths** — shrink `fsClient.RespCh` to cap 1 or 0 (only 1 in-flight call by construction). Audit `wmCh`(8)/`fontReplyCh`(8)/`delegateCh`(8) consumers for "always-ready" — shrink if so.
+4. **Architectural change deferred** — kernel-ring drain decoupled from per-protocol routing.
 
-## Hypotheses (priority order)
+## Hypothesis (audit-confirmed)
 
-1. **fs single-goroutine serve loop blocked on a slow LoadFile.** While fs is mid-`file.ReadInto` for a 23 MB file, no `fsIPCCh` requests are processed. Linux's worker parked in `fsclient.callLocked` waits indefinitely.
-2. **Reply was sent but linux's `RespCh` demuxer dropped it.** `fsclient.Client.RespCh` capacity 4. Multiple replies arriving fast may EAGAIN at uring layer; possibly lost without retry. Audit fs reply path.
-3. **Cleanup-on-disconnect race.** Less likely.
+**The wedge is fs silently dropping a reply when `uring.Send` returns EAGAIN.** Pre-`fix/uring-missed-retries`, `uring.Send` retried forever via Gosched; the drop path in `fs.respond()` was effectively unreachable. The new bounded backpressure (3 × 10 ms = 30 ms) made it reachable, and the wedge surfaced. Linux's worker parked on `<-RespCh` waits forever for the discarded reply.
 
 ## Setup
 

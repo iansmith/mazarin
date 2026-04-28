@@ -8,27 +8,45 @@
 
 **NOT mail-related.** Mail is just one possible victim (when it's in the wedge window). H5's wedged shepherds were sid=20/28/29 — none was mail; they were rachel-plugin-load shepherds (fontsvc / prefs / keymapper / linux-ui / helloworld). The wedge fires whenever fs is busy with a slow op (typically a multi-MB LoadFile read off blockdev) while several shepherds simultaneously try fs operations through the shared `fsclient.Client.mu`.
 
-**Hypotheses (in priority order):**
+**Audit completed 2026-04-29.** Hypothesis 2 (reply silently dropped) is confirmed by source inspection. Hypothesis 1 (fs serve-loop bottleneck) is weakened by K1 (fs was alive serving IPCs throughout the 148 s wedge).
 
-1. **fs's single-goroutine serve loop is the bottleneck.** `maz/fs/main.go:232` is one goroutine selecting between `fsDelegateCh` (LoadFile/ReadFilePages) and `fsIPCCh` (shepherd IPC). While fs is mid-`file.ReadInto` for a 23 MB LoadFile, no `fsIPCCh` requests are processed. Linux's worker, parked inside `fsclient.callLocked` waiting for fs's reply on its IPC, sits there until the LoadFile finishes. With multiple slow LoadFiles back-to-back (rachel.maz then linux.maz then fti.maz then maildb.maz then mail.maz), the queue of waiting fsclient calls can grow.
+### Mechanism (confirmed by source)
 
-2. **Reply was sent but linux's `RespCh` demuxer dropped it.** `fsclient.Client.RespCh` has capacity 4. If multiple replies arrive faster than `mazarin/fsclient/client.go::callLocked`'s consumer pulls them, the kernel-side ring fills. Our recent uring fix gives 10 ms block-with-deadline; on deadline expiry the sender sees EAGAIN and (need to verify) the request may be lost without retry. Audit fs's reply path for "uring.Send EAGAIN swallowed".
+1. Linux's ring-0 dispatcher (`mazarin/uring/reader.go:198`) does a **blocking** `route.ch <- typed` to one of four destination channels: `wmCh` (cap 8), `fontReplyCh` (cap 8), `delegateCh` (cap 8), `fsClient.RespCh` (cap 4).
+2. If any of those channels fill (most plausibly `wmCh`/`fontReplyCh` during a boot WM/font traffic spike), the dispatcher reader blocks, stops draining ring 0.
+3. New messages from any sender (rachel, fontsvc, fs) accumulate in the kernel-side ring 0.
+4. When the kernel ring fills, `uring.Send` returns `EAGAIN` after the 30 ms pacing budget (`fix/uring-missed-retries`).
+5. **`maz/fs/fsipc.go:178-183`'s `respond()` logs and DROPS the reply on any error** — including EAGAIN. No retry.
+6. Linux's worker parked on `<-fsClient.RespCh` waits forever.
+7. Worker holds per-shepherd `shep.mu`. Subsequent same-shepherd syscalls queue. `delegate stuck`.
 
-3. **Cleanup-on-disconnect race.** If a shepherd dies during fs IPC, fs might tear down state without replying.
+This is consistent with `fix/uring-missed-retries`: pre-fix, `uring.Send` retried forever via Gosched; the drop-on-error path in `respond()` was effectively unreachable. The new bounded backpressure made it reachable, and the wedge surfaced.
 
-**First steps:**
+### Channel-depth rationalization
 
-1. **Add a TEMPORARY DIAGNOSTIC timeout to `fsclient.callLocked`** (~30 s). On timeout, log + return error. The wedged worker unwedges itself, the shepherd's per-shepherd lock releases, queued same-shepherd syscalls drain. This is a safety net + telemetry handle, **NOT** a root-cause fix.
-2. **Per-message-class instrumentation in fs's serve loop.** Log when fs picks `fsIPCCh` vs `fsDelegateCh`, plus the request type. Confirms or refutes hypothesis 1: are LoadFile delegate operations starving IPC requests during the wedge window?
-3. **Reproduce H5 deterministically.** The wedge appeared during heavy concurrent boot LoadFiles. Make it ~100% reliable by adding a few extra shepherds to `startup.toml` or by adjusting bootSequence to start more shepherds in parallel. Without a reliable reproducer, we can't measure fixes.
+| Channel | Cap | Producer→Consumer | Justified? |
+|---------|-----|-------------------|------------|
+| `RespCh` | 4 | dispatcher → `callLocked` (1-in-flight via `c.mu`) | NO — at most 1 ever in flight by construction |
+| `wmCh` | 8 | dispatcher → linux→linux-ui forwarder | bursty, plausible |
+| `fontReplyCh` | 8 | dispatcher → font reply forwarder | bursty, plausible |
+| `delegateCh` | 8 | dispatcher → file-lane reader → workCh(1024) | drains fast post-phase-2 |
+
+The buffers were defensive scaffolding. They don't fix the consumer-stall they were meant to absorb — they just delay the cascade by N messages. Smaller buffers surface the bug faster; bigger ones hide it longer in tests.
+
+### Proposed fix sequence
+
+1. **Capture direct evidence.** Run K7-K9 (5×180 s with current quieter instrumentation). Watch for `[fs:ipc] Send response... failed: EAGAIN` and `[fsclient:TIMEOUT]`. Confirms the chain end-to-end.
+2. **Minimal fix in `respond()`.** Bounded retry on EAGAIN (e.g., 100 attempts × 30 ms = 3 s). One-line-ish change in `maz/fs/fsipc.go:178`. Probably eliminates the wedge.
+3. **Rationalize channel depths.** Shrink `RespCh` to cap 1 (or 0). Audit `wmCh`/`fontReplyCh` consumers for "always-ready" — shrink if so. NOT architectural — just removing arbitrary padding.
+4. **Architectural change deferred.** Decoupling kernel-ring drain from per-protocol routing (so no consumer stall can ever back up the kernel ring) is the right long-term answer. Separate discussion, not this branch.
 
 ### MANDATORY EXIT CRITERION (before merging this branch / moving to other problems)
 
-> **The timeout in `fsclient.callLocked` is TEMPORARY and MUST be removed before this branch lands or any other work begins on top.** It exists only to convert wedges into observable error events for diagnosis. Per user policy, "polling or timeouts = architectural change" — leaving it in trades the wedge for a long-tail latency mask. Once root cause is fixed and verified across an I-cadence sweep with no wedge events, **delete the timeout in the same branch**, re-verify clean, and only then merge.
+> **The timeout in `fsclient.callLocked` AND the `[fs:serve]`/`[fsclient:STALE-DRAIN]`/`[fsclient:TIMEOUT]` instrumentation are TEMPORARY and MUST be removed before this branch lands.** They exist only to convert wedges into observable error events for diagnosis. Per user policy, "polling or timeouts = architectural change" — leaving them in trades the wedge for a long-tail latency mask. Once root cause is fixed and verified across a clean sweep, **delete them in the same branch**, re-verify clean, and only then merge.
 
 **Reminders:**
-- Do NOT roll back phase 2 (worker pool) — it's what keeps the wedge from cascading to system death. Without it, the wedge would lock up everyone.
-- This wedge is independent of the original DIVERSION mail.elf-load hang (still untracked, still hasn't fired under phase 2).
+- Do NOT roll back phase 2 (worker pool) — it's what keeps the wedge from cascading to system death.
+- This wedge is independent of the original DIVERSION mail.elf-load hang (still hasn't fired under phase 2).
 
 ---
 
