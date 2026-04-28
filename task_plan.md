@@ -11,15 +11,28 @@
 - **Linux dispatcher concurrency.** Migrating fti to .maz exposed a head-of-line block: 3 shepherds stuck on `Readlinkat` for 110+s because linux's file-lane was a single goroutine and one slow `fsclient.call` queued every other delegated syscall behind it (even stateless ones). Fix: file lane spawns `go handler.handle(req)` per `SyscallRequest`. Per-shepherd ordering preserved by `ShepherdFilesystemData.mu`. Cross-shepherd state (`syscallHandler.shepherds`/`orphanHandles`, `pageCache`, `flockTable`) gets short-held mutexes. `FlushAllPagesForInum/SID` converted to snapshot-then-write so `pc.mu` isn't held across fsclient. Notifications (death/stdinDecRef/idleFlush) stay on the reader. `fsclient.Client` was already self-locked.
 - **Launch-path checkpoint instrumentation** (separate, supports the original DIVERSION). `kmazarin/ksyscall/runshepherd.go` gained post-unmap / post-FB+constraint-map / pre-loadELF checkpoints. `maz/fs/main.go` gained post-Open / pre-ReadInto / read-done / calling-RunShepherd checkpoints in `launchShepherd`/`launchPluginShepherd` and in `readFileIntoPages`. One-shot per launch.
 
-**Verified:** 171s ARM64 HVF clean run (G-fti-maz-2-180s.log). All four shepherds (linux, fti, maildb, mail) reached steady state. `delegate stuck:` empty on every status line. `uart-ring: dropped=0`. No kernel panic, EE25, or KERNEL EXIT. maildb completed 317-doc fti index ingestion. mail-app rendering "Mail" window blit #2500.
+**Verified across 5×180s G-/H-cadence sweep + initial G2 boot test:**
+
+| Run | Outcome | Notes |
+|-----|---------|-------|
+| G2  | clean 171s | initial phase-2 boot test (unbounded `go ...`) |
+| G3, G4, G5 | clean | unbounded `go ...`, transient ms-scale stalls |
+| G6  | SIGSEGV | direct unsynced read of `h.cache.data` — fix `37f1956` |
+| H1  | SIGSEGV | runtime unwinder under goroutine churn — fix: worker pool `ef449b5` |
+| H2  | steady state then `bug_attr_init_crash` | pre-existing constraint-VM bug, unrelated |
+| H3  | clean 180s | numGoroutine=1041 stable |
+| H4  | clean 180s | numGoroutine=1041 stable |
+| H5  | mid-boot stall | 3 shepherds wedged on per-shepherd lock; underlying fs-reply wedge — see "Not yet done" #3 |
+
+Two real bugs caught and fixed during the sweep: (1) `pageCache.data` direct map access bypassing `pc.mu` in `sysMmapPageFlush`'s diagnostic block (commit `37f1956`); (2) unbounded `go h.handle(req)` was generating ~14k goroutine spawns per 180s run, exposing a runtime crash in `traceback.go:resolveInternal` during copystack of freshly-spawned workers (likely interacting with goroutine leakage when fsclient.call wedged) — replaced with 1024-worker persistent pool (commit `ef449b5`).
 
 **Not yet done (deferred):**
-- **Stage 2 — mail.elf → mail.maz.** Would unify `launchShepherd`'s legacy ET_EXEC body with `launchPluginShepherd`. Bigger lift: mail uses `userspace-overlay` only (not `merged-shepherd-overlay`). Switching it surfaces real behavioral changes — louis14, GridTable, attr usage. Defer until phase 2's stability is observed across more runs.
-- **fs concurrent-readers refactor.** fs serve loop is also single-goroutine ("ext2 not thread-safe"). Slow but not deadlocking — its blocking points are kernel-level, not other-userspace. Acceptable today per user. Revisit if concurrent-LoadFile throughput becomes a real bottleneck.
-- **Underlying wedge from the original phase-1 boot test (G-fti-maz-1).** Linux's file lane was wedged on a hung `fsclient.call` waiting for fs that never replied. Phase 2 makes this only stall the one goroutine (others proceed), but the root cause of that wedge is unrouted. Likely uring-EAGAIN interaction. Revisit if it recurs.
+- **Stage 2 — mail.elf → mail.maz.** Would unify `launchShepherd`'s legacy ET_EXEC body with `launchPluginShepherd`. Bigger lift: mail uses `userspace-overlay` only (not `merged-shepherd-overlay`). Switching it surfaces real behavioral changes — louis14, GridTable, attr usage. Phase-2-with-worker-pool stability now significantly improves the safety margin: the runtime unwinder edge case is gone, goroutine leakage is impossible. Mechanically the same recipe as fti / maildb. Open: louis14 plugin compat (mail directly imports `louis14/pkg/resource`).
+- **fs concurrent-readers refactor.** fs serve loop is single-goroutine ("ext2 not thread-safe"). Slow but not deadlocking — its blocking points are kernel-level, not other-userspace. Acceptable today per user.
+- **Underlying fs-reply wedge.** Reproduced in G-fti-maz-1 (3 readlinkats stuck for 110s) and again in H5 (3 shepherds, sid=20/28/29, wedged for 60s+ on per-shepherd lock with readlinkats queued). fs sometimes doesn't reply to something a worker is waiting on; that worker holds shep.mu indefinitely; subsequent same-shepherd syscalls (including fast ones like readlinkat) queue. Phase 2 + worker pool make this only affect the wedged shepherd(s), not the whole system, so OTHER shepherds continue. Root cause unrouted. ~1-in-5 rate at 180s. Likely related to fs's serial serve loop running long ext2/blockdev reads while a worker awaits a reply — but unproven.
 
 **Reminders:**
-- The original DIVERSION (mail.elf-load boot hang) instrumentation landed but the hang itself didn't fire in this run. The instrumentation is in place for the next time it does.
+- The original DIVERSION (mail.elf-load boot hang) hasn't fired in any phase-2 run. Could be: (a) related to the same delegate-saturation pattern that phase 2 fixes, (b) instrumentation perturbed timing, (c) intermittent and we got lucky. Instrumentation is in place for next time.
 
 ---
 

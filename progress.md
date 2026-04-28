@@ -1,5 +1,67 @@
 # Progress Log
 
+## Session: 2026-04-29 (Opus, continued) — G/H sweep + 1024-worker pool
+
+### Branch state
+
+`diag/mail-elf-load-hang`, 4 commits ahead of `fix/uring-missed-retries@e7422c5`:
+- `f466010` — initial fti.maz + per-request goroutines + checkpoints (prior session entry)
+- `6ae4d63` — initial docs (prior session entry)
+- `37f1956` — `linux: route sysMmapPageFlush diagnostic through pageCache.InumsFor` (this session)
+- `ef449b5` — `linux: 1024-worker pool replaces per-request goroutine spawning` (this session)
+
+### G-/H-cadence sweep results
+
+| Run | Outcome | Notes |
+|-----|---------|-------|
+| G2  | clean 171s | unbounded `go ...`, original phase-2 boot test (last session) |
+| G3  | clean | unbounded, transient ms-scale stalls |
+| G4  | clean | unbounded, transient |
+| G5  | clean | unbounded, transient |
+| G6  | SIGSEGV | direct unsynced read of `h.cache.data` from `sysMmapPageFlush` diagnostic block; fixed `37f1956` |
+| H1  | SIGSEGV | same `traceback.go:377 resolveInternal` PC, different stack — runtime unwinder failing during copystack of freshly-spawned worker; goroutine ID 14253 at crash time = ~14k spawns; fixed by worker pool `ef449b5` |
+| H2  | reached steady state (all 3 main entered + mail cache rebalance), then `bug_attr_init_crash.md` panic in mail-app | pre-existing constraint-VM bug, unrelated to phase 2 |
+| H3  | clean 180s | numGoroutine=1041 stable across all status lines (1024 workers + 17 baseline) |
+| H4  | clean 180s | numGoroutine=1041 stable |
+| H5  | mid-boot stall (62s+) | 3 shepherds (sid=20, 28, 29) wedged, sysid=50 (Readlinkat) for 58+s — same fs-reply wedge as G-fti-maz-1 |
+
+### Two real bugs found + fixed
+
+**1. `pageCache.data` direct access (G6)** — `sysMmapPageFlush`'s `[pageCache:FALLBACK_ALLFDS]` and `[pageCache:DRAIN]` diagnostic block at `syscalls.go:1344` was reading `h.cache.data[callerSID]` directly, bypassing the `pc.mu` lock that the rest of pageCache now takes. Concurrent `Add`/`Remove*` calls plus this unlocked read = Go's "concurrent map" detection trips, traceback unwinder hits invalid state, SIGSEGV.
+
+Fix: added `pageCache.InumsFor(sid)` accessor that snapshots inum keys under `pc.mu`, routed the diagnostic through it.
+
+**2. Unbounded goroutine spawning (H1)** — `go handler.handle(req)` per request was creating ~14k goroutines per 180s run. Most exited cleanly, but any handler that wedged inside `fsclient.call` (waiting for an fs reply that never came) leaked its goroutine forever. The runtime unwinder hit `traceback.go:resolveInternal +0x238 PC=0xbc2e8` during copystack of a fresh worker — same crash on different goroutines (G6 was on `getShepherd`'s mapaccess, H1 was on `fsclient.Stat`'s `Mutex.Lock`). User suggested goroutine leakage as root cause; consistent with what we see.
+
+Fix: 1024 persistent worker goroutines parked on a buffered `fileLaneWorkItem` channel. Reader pushes work items carrying `req` + `isStdinRead` flag. Workers serve one request at a time and return to the channel. No goroutine churn. `numGoroutine` stays flat at 1041 across runs.
+
+### What we learned about mail.maz feasibility
+
+User asked. Honest read: stage 2 risk is significantly LOWER post-worker-pool than it was before:
+
+- The runtime unwinder edge case (the biggest unknown) is gone with bounded concurrency.
+- Goroutine leakage is impossible — workers always return to the channel.
+- The `bug_attr_init_crash.md` we caught in H2 fired in mail-app userspace at the constraint VM (`attr.ValueToFlat`) — completely independent of launch path. Migrating mail to .maz neither helps nor hurts this.
+- The original DIVERSION mail.elf-load hang has NOT reproduced in any phase-2 run.
+
+Remaining mail.maz risks: louis14 plugin compat (mail directly imports `louis14/pkg/resource`; other shepherds reach louis14 indirectly), userspace-overlay → merged-shepherd-overlay switch (strict superset, audited via fti/maildb success).
+
+### Underlying fs-reply wedge (NOT fixed)
+
+H5 reproduced the same wedge that motivated phase 2 in the first place. Three shepherds (during boot's parallel rachel-plugin-load phase) had workers stuck holding their per-shepherd `shep.mu` for 58+s, with subsequent fast syscalls queued. Phase 2 + worker pool make this affect ONLY the wedged shepherds (others continue). The system doesn't crash. But specific shepherds can hang indefinitely. ~1-in-5 rate at 180s.
+
+Likely cause: fs's still-single-goroutine serve loop holds up some fs IPC reply for long enough that the linux-side worker times out / wedges. Unproven. Low-priority for now; might want fs concurrent-readers eventually.
+
+### Stopping point
+
+Branch has 2 new commits this session (`37f1956`, `ef449b5`) on top of last session's 2 commits. Tracking files updated. Worker pool stable across 2 of the 4 H-runs that reached steady state; 1 hit a pre-existing unrelated bug; 1 hit the underlying wedge.
+
+### Next session direction
+
+User decision pending: proceed with mail.maz migration (stage 2) or continue triaging the underlying fs-reply wedge.
+
+---
+
 ## Session: 2026-04-29 (Opus) — `diag/mail-elf-load-hang`: fti.maz + linux per-request goroutines
 
 ### Branch state

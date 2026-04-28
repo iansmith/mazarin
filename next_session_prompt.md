@@ -1,34 +1,37 @@
-# Continuation prompt — `diag/mail-elf-load-hang` (post-phase-2)
+# Continuation prompt — `diag/mail-elf-load-hang` (post-phase-2 + worker pool + sweep)
 
 ## Where we are
 
-Branch `diag/mail-elf-load-hang`, 1 commit ahead of `fix/uring-missed-retries@e7422c5`:
+Branch `diag/mail-elf-load-hang`, 4 commits ahead of `fix/uring-missed-retries@e7422c5`:
 
 - `f466010` — `linux: per-request goroutines for delegated syscalls + fti.maz migration` (12 files, +230/-62)
+- `6ae4d63` — initial docs update
+- `37f1956` — `linux: route sysMmapPageFlush diagnostic through pageCache.InumsFor` (G6 fix)
+- `ef449b5` — `linux: 1024-worker pool replaces per-request goroutine spawning` (H1 fix)
 
-The commit bundles three things:
+The first commit bundles three things:
 1. **Stage 1 of "ONE shepherd binary" cleanup** — fti.elf → fti.maz dual-build + startup.toml flip. fti now launches via `/shepherd.elf` host (same path as maildb). `/fti.elf` still built and on disk for fallback.
 2. **Linux file-lane phase 2** — every delegated `SyscallRequest` runs in its own goroutine. Per-shepherd ordering preserved by `ShepherdFilesystemData.mu`. Cross-shepherd state (`syscallHandler.shepherds`/`orphanHandles`, `pageCache`, `flockTable`) gets short-held mutexes. `fsclient.Client` was already self-locked. Notifications (death/stdinDecRef/idleFlush) stay on the serial reader.
 3. **Launch-path checkpoint instrumentation** — kernel `runshepherd.go` and userspace `fs/main.go` get one-shot logs at every silent gap in the launch chain. These support diagnosing the original mail.elf-load hang DIVERSION.
 
-**Verified:** 171s ARM64 HVF run (G-fti-maz-2). All four shepherds reached steady state. `delegate stuck:` empty on every status line. `uart-ring: dropped=0`. No panic / EE25 / KERNEL EXIT.
+**Verified across G2 + 5×180s G-/H-cadence sweep:**
+- Worker pool (post-`ef449b5`): H3, H4 clean 180s, numGoroutine=1041 stable. H2 reached steady state then hit pre-existing `bug_attr_init_crash.md`. H5 hit underlying fs-reply wedge (3 shepherds stuck, system stayed alive).
+- Pre-worker-pool (G2-G5 with unbounded `go ...`): 4 clean runs, then G6 + H1 SIGSEGV in `traceback.go:377 resolveInternal` under goroutine churn. Both fixed.
 
 ## What this branch did NOT do
 
-- Stage 2 (`mail.elf` → `mail.maz`) — deferred. Mail uses `userspace-overlay` only; switching to `merged-shepherd-overlay` may surface real behavioral changes in louis14 / GridTable / attr.
-- fs concurrent-readers — fs serve loop is still single-goroutine. User explicitly OK'd "slow fs is acceptable" since fs's blocking points are kernel-level (no userspace cycles) and can't deadlock.
-- Root cause for the phase-1 wedge that motivated phase 2 (linux file lane stuck on a hung `fsclient.call` from fs that never replied). Phase 2 makes this only stall the one goroutine. If it recurs we should chase.
-- Reproduction of the original mail.elf-load DIVERSION hang. Did NOT fire in G-fti-maz-2; instrumentation is in place for next time.
+- Stage 2 (`mail.elf` → `mail.maz`) — deferred but **risk now significantly lower**. Worker pool eliminates the unwinder/leakage risk; mechanically same recipe as fti/maildb. Open: louis14 plugin compat (mail directly imports `louis14/pkg/resource`).
+- fs concurrent-readers — fs serve loop is still single-goroutine. User OK'd "slow fs is acceptable." But H5 confirmed an underlying wedge: fs sometimes doesn't reply, hangs the worker that called fsclient on per-shepherd lock; subsequent same-shepherd syscalls queue. Phase 2 + worker pool make this affect only the wedged shepherd, not the system.
+- Root cause for the underlying fs-reply wedge. ~1-in-5 rate at 180s. Likely fs's serial loop holding things up. Unproven.
+- Reproduction of the original mail.elf-load DIVERSION hang. Did NOT fire in any phase-2 run.
 
 ## Suggested next steps
 
-1. **G-cadence stability check.** 5×180s ARM64 HVF on the current branch to confirm phase 2 is stable across reboots and to look for any new failure modes from the concurrent dispatcher. Watch `delegate stuck:` under click-driven load (open emails, body fetches).
+1. **Decide between two directions:**
+   - **(A) Stage 2 — mail.maz migration.** Same recipe as fti. 4–5 file edits + boot test. Worker pool makes the safety margin good. After this, `launchShepherd`'s legacy ET_EXEC body becomes dead code (stage 3).
+   - **(B) Triage the underlying fs-reply wedge.** Add per-fsclient-call timeout / detection. Or audit fs's serve loop for what could cause a dropped/delayed reply. H5 reproduced it; can probably reproduce on demand to investigate.
 
-2. **If stable: decide on branch destination.** Either:
-   - Merge `diag/mail-elf-load-hang` into `feature/mail-dumb` so subsequent work picks up phase 2.
-   - Continue iterating on the branch (stage 2: mail.maz, fs concurrent reads).
-
-3. **If the original mail.elf-load hang reappears**, the new checkpoints localize the silent gap:
+2. **If picking (A) and the original mail.elf-load hang reappears**, the new checkpoints localize the silent gap:
    - Between `[RS] copied X bytes from user` and `[RS] unmapped N caller pages` → `unmapUserPages` (6644 pages for mail).
    - Between `unmapped` and `mapped FB+constraint` → page table setup.
    - Between `mapped FB+constraint` and `pre-loadELF` → `buildSymbolTable` / `findHighestVA`.
@@ -36,7 +39,7 @@ The commit bundles three things:
    - Between `loadELF ok` and `created userspace thread` → thread creation.
    - For F18-style fs-side variant: post-Open / pre-ReadInto / read-done split says where in the 27 MB file read it hangs.
 
-4. **Optional but valuable: stage 2 — mail.elf → mail.maz.** Once stage 1 is observed stable, the migration unifies `launchShepherd` body with `launchPluginShepherd`. `launchShepherd`'s legacy ET_EXEC branch becomes dead code. Mail is the largest binary in the launch chain, so the read shifts from a single 27 MB read of `/mail.elf` (direct ET_EXEC) to a 7 MB read of `/shepherd.elf` (via `launchPluginShepherd`) plus a 27 MB LoadFile of `/mail.maz` from the running shepherd. That's a different I/O shape — diagnostically interesting either way.
+4. **Stage 3 — delete `launchShepherd` legacy body — blocked on stage 2.** Once mail is `.maz`, nothing in startup.toml routes through the legacy ET_EXEC body. ~10 line cleanup.
 
 ## Project setup (always)
 
@@ -47,9 +50,10 @@ The commit bundles three things:
 
 ## Reminders / non-negotiables
 
-- No `runtime.Gosched()` in the uring-pacing fix (still holds — phase 2 doesn't add any).
+- No `runtime.Gosched()` in the uring-pacing fix (still holds).
 - Per-call sync UART (`klog.Criticalf`, `rawPuts`) is reserved for "about to die" only — phase 2's instrumentation uses one-shot per-launch checkpoints, not per-syscall logs.
-- Phase 2 changed `pageCache`/`flockTable`/`syscallHandler` locking — concurrent goroutines now access these. If adding new methods, follow the established lock pattern (lock at method entry; for any callback that does fsclient I/O, snapshot under the lock and release before calling).
+- Phase 2 changed `pageCache`/`flockTable`/`syscallHandler` locking — concurrent goroutines now access these. If adding new methods, follow the established lock pattern (lock at method entry; for any callback that does fsclient I/O, snapshot under the lock and release before calling). Don't reach into `pc.data` etc. directly — go through public methods. The G6 SIGSEGV was a direct `h.cache.data[...]` access bypassing `pc.mu`.
+- **No unbounded `go ...` per request in hot loops on the .maz plugin runtime.** Use a fixed worker pool (1024 is fine — generous, not a real bound). H1 SIGSEGV'd in `traceback.go:resolveInternal` after ~14k goroutine spawns; the runtime unwinder doesn't tolerate that churn rate.
 
 ## Side context (don't re-litigate)
 
