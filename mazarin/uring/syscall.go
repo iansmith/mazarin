@@ -11,10 +11,11 @@
 package uring
 
 import (
+	"fmt"
 	"mazzy/shared/ipc"
 	"mazzy/shared/mazzy"
-	"runtime"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -70,64 +71,72 @@ func ConnectWithRing(targetUringID uint64, ringIdx int) (handle int, err error) 
 }
 
 // Send sends a 128-byte message to a target shepherd's uring ring 0.
-//
-// Retries on EAGAIN (target ring full) up to sendRetryLimit times, yielding
-// the goroutine between attempts so the receiver has a chance to drain.
-// On Linux, write to a full pipe blocks; the closest equivalent here is a
-// bounded userspace retry. After the retry budget is exhausted the EAGAIN
-// is surfaced to the caller — at which point fontsvc / similar reply paths
-// have a real problem (receiver is wedged, not just slow) and dropping the
-// message preserves the prior behavior.
 func Send(targetSID int, msg *ipc.UringIPCMsg) error {
 	return SendWithRing(targetSID, msg, 0)
 }
 
-// sendRetryLimit caps how long we'll spin on EAGAIN. At the budget below
-// (~256 yields), even a heavily-loaded receiver gets ample opportunity to
-// drain a single 128-byte slot before we give up.
-const sendRetryLimit = 256
+// sendMaxAttempts caps wall-time budget at sendMaxAttempts * sendPerAttemptMs
+// (~30 ms). The kernel parks senders on the static deadline queue for
+// sendPerAttemptMs each time the target ring is full and we're the first
+// blocker; subsequent senders fast-bounce with EAGAIN. Userspace pacing
+// converts those fast bounces into a real off-CPU sleep so we don't spin.
+const (
+	sendMaxAttempts  = 3
+	sendPerAttemptMs = 10
+	// sendFastBounceMs is the threshold below which we treat the EAGAIN as
+	// a fast bounce (kernel didn't park us for the full deadline) and pace.
+	// At/above this we assume the kernel already waited the deadline and
+	// retry immediately.
+	sendFastBounceMs = 8
+)
 
 // SendWithRing sends a 128-byte message to a specific ring on the target shepherd.
 // ringIdx selects which ring on the target (0 = default, 1-2 = additional).
 //
-// Uses RawSyscall (P held) because this is a fast non-blocking operation.
-// Retries on EAGAIN (target ring full) up to sendRetryLimit times with a
-// runtime.Gosched between attempts. Without this retry, transient bursts
-// (e.g. linux-ui asking fontsvc for several fonts during boot) fail
-// silently when the target's reader hasn't yet drained the prior message.
+// On EAGAIN the kernel either parked us for ~10 ms on the target slot's
+// blocker queue (slow path) or returned immediately because another sender
+// was already parked / no thread was available (fast bounce). We retry up
+// to sendMaxAttempts times, sleeping ~sendPerAttemptMs between attempts
+// only if the previous attempt was a fast bounce — total wall-time budget
+// ~30 ms. Logs only on retry-success or final exhaustion.
 func SendWithRing(targetSID int, msg *ipc.UringIPCMsg, ringIdx int) error {
-	_, err := SendWithStats(targetSID, msg, ringIdx)
-	return err
-}
-
-// SendWithStats is identical to SendWithRing but also returns the number of
-// EAGAIN-driven retry attempts that elapsed before the call returned.
-// attempts==0 means the very first SysUringSend syscall succeeded.
-// Used by call sites that want to surface ring-full pressure in their logs.
-func SendWithStats(targetSID int, msg *ipc.UringIPCMsg, ringIdx int) (attempts int, err error) {
-	for attempt := 0; ; attempt++ {
+	var lastErr error
+	for attempt := 0; attempt < sendMaxAttempts; attempt++ {
+		start := time.Now()
 		r1, _, errno := syscall.RawSyscall6(mazzy.SysUringSend,
 			uintptr(targetSID),
 			uintptr(unsafe.Pointer(msg)),
 			uintptr(ringIdx),
 			0, 0, 0)
+		var err error
 		if errno != 0 {
-			if errno == syscall.EAGAIN && attempt < sendRetryLimit {
-				runtime.Gosched()
-				continue
-			}
-			return attempt, errno
+			err = errno
+		} else if int64(r1) < 0 {
+			err = syscall.Errno(-int64(r1))
 		}
-		if int64(r1) < 0 {
-			e := syscall.Errno(-int64(r1))
-			if e == syscall.EAGAIN && attempt < sendRetryLimit {
-				runtime.Gosched()
-				continue
+		if err == nil {
+			if attempt > 0 {
+				fmt.Printf("[uring.Send] target=%d ring=%d retried, attempts=%d\n",
+					targetSID, ringIdx, attempt+1)
 			}
-			return attempt, e
+			return nil
 		}
-		return attempt, nil
+		if err != syscall.EAGAIN {
+			return err
+		}
+		lastErr = err
+		if attempt+1 >= sendMaxAttempts {
+			break
+		}
+		// Conditional pacing: only sleep if the kernel bounced us fast.
+		// If it held us for the full deadline already, retry immediately.
+		if time.Since(start) < sendFastBounceMs*time.Millisecond {
+			time.Sleep(sendPerAttemptMs * time.Millisecond)
+		}
 	}
+	fmt.Printf("[uring.Send] target=%d ring=%d FAILED after %d attempts, err=%v\n",
+		targetSID, ringIdx, sendMaxAttempts, lastErr)
+	return lastErr
 }
 
 // Recv blocks until a message arrives on the caller's uring ring 0.
