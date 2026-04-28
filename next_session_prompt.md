@@ -2,12 +2,15 @@
 
 ## Where we are
 
-Branch `diag/mail-elf-load-hang`, 4 commits ahead of `fix/uring-missed-retries@e7422c5`:
+Branch `diag/mail-elf-load-hang`, 7 commits ahead of `fix/uring-missed-retries@e7422c5`:
 
 - `f466010` — `linux: per-request goroutines for delegated syscalls + fti.maz migration` (12 files, +230/-62)
 - `6ae4d63` — initial docs update
 - `37f1956` — `linux: route sysMmapPageFlush diagnostic through pageCache.InumsFor` (G6 fix)
 - `ef449b5` — `linux: 1024-worker pool replaces per-request goroutine spawning` (H1 fix)
+- `c0c2b04` — docs: G/H sweep results
+- `e9247bc` — `stage 2: mail.elf → mail.maz migration`
+- `aabdfa2` — `stage 3 + cleanup: drop dual builds and launchShepherd legacy body`
 
 The first commit bundles three things:
 1. **Stage 1 of "ONE shepherd binary" cleanup** — fti.elf → fti.maz dual-build + startup.toml flip. fti now launches via `/shepherd.elf` host (same path as maildb). `/fti.elf` still built and on disk for fallback.
@@ -18,20 +21,26 @@ The first commit bundles three things:
 - Worker pool (post-`ef449b5`): H3, H4 clean 180s, numGoroutine=1041 stable. H2 reached steady state then hit pre-existing `bug_attr_init_crash.md`. H5 hit underlying fs-reply wedge (3 shepherds stuck, system stayed alive).
 - Pre-worker-pool (G2-G5 with unbounded `go ...`): 4 clean runs, then G6 + H1 SIGSEGV in `traceback.go:377 resolveInternal` under goroutine churn. Both fixed.
 
+## What this branch DID accomplish
+
+- **Shepherd unification done.** All startup.toml shepherds (fti, maildb, mail) migrated to `.maz` plugins via `/shepherd.elf`. Dual-build pattern dropped — disk ships only `.maz` for these. `launchShepherd`'s legacy ET_EXEC body deleted.
+- **Linux dispatcher concurrency.** 1024-worker pool serves delegated syscalls so a slow / stuck handler can't starve unrelated requests. Per-shepherd ordering preserved. All four primitives (syscallHandler, ShepherdFilesystemData, pageCache, flockTable) have appropriate locks.
+- **fti.maz migration + launch-path checkpoint instrumentation** in commit `f466010`.
+
 ## What this branch did NOT do
 
-- Stage 2 (`mail.elf` → `mail.maz`) — deferred but **risk now significantly lower**. Worker pool eliminates the unwinder/leakage risk; mechanically same recipe as fti/maildb. Open: louis14 plugin compat (mail directly imports `louis14/pkg/resource`).
-- fs concurrent-readers — fs serve loop is still single-goroutine. User OK'd "slow fs is acceptable." But H5 confirmed an underlying wedge: fs sometimes doesn't reply, hangs the worker that called fsclient on per-shepherd lock; subsequent same-shepherd syscalls queue. Phase 2 + worker pool make this affect only the wedged shepherd, not the system.
-- Root cause for the underlying fs-reply wedge. ~1-in-5 rate at 180s. Likely fs's serial loop holding things up. Unproven.
+- fs concurrent-readers — fs serve loop is still single-goroutine. User OK'd "slow fs is acceptable." But H5 / G-fti-maz-1 / J-runs (~1-in-5 rate) confirm an underlying wedge: fs sometimes doesn't reply, hangs the worker that called fsclient on per-shepherd lock; subsequent same-shepherd syscalls queue. Phase 2 + worker pool make this affect only the wedged shepherd, not the system.
+- Root cause for the underlying fs-reply wedge. Likely fs's serial loop holding things up. Unproven.
 - Reproduction of the original mail.elf-load DIVERSION hang. Did NOT fire in any phase-2 run.
 
 ## Suggested next steps
 
-1. **Decide between two directions:**
-   - **(A) Stage 2 — mail.maz migration.** Same recipe as fti. 4–5 file edits + boot test. Worker pool makes the safety margin good. After this, `launchShepherd`'s legacy ET_EXEC body becomes dead code (stage 3).
-   - **(B) Triage the underlying fs-reply wedge.** Add per-fsclient-call timeout / detection. Or audit fs's serve loop for what could cause a dropped/delayed reply. H5 reproduced it; can probably reproduce on demand to investigate.
+1. **Active item B — fs-reply wedge triage.** Reproduces ~1-in-5 at 180s; deterministic enough to chase. First steps in `task_plan.md`:
+   - Add timeout to `fsclient.callLocked` so a wedged worker eventually unwedges itself with an error.
+   - Add per-message-class instrumentation to fs's serve loop: when does it pick `fsIPCCh` vs `fsDelegateCh`? Are LoadFile delegate operations starving IPC requests?
+   - Reproduce H5 deterministically (heavy concurrent boot LoadFiles) to make the wedge a reliable test bed.
 
-2. **If picking (A) and the original mail.elf-load hang reappears**, the new checkpoints localize the silent gap:
+2. **If the original mail.elf-load hang reappears**, the new checkpoints localize the silent gap:
    - Between `[RS] copied X bytes from user` and `[RS] unmapped N caller pages` → `unmapUserPages` (6644 pages for mail).
    - Between `unmapped` and `mapped FB+constraint` → page table setup.
    - Between `mapped FB+constraint` and `pre-loadELF` → `buildSymbolTable` / `findHighestVA`.
@@ -39,7 +48,7 @@ The first commit bundles three things:
    - Between `loadELF ok` and `created userspace thread` → thread creation.
    - For F18-style fs-side variant: post-Open / pre-ReadInto / read-done split says where in the 27 MB file read it hangs.
 
-4. **Stage 3 — delete `launchShepherd` legacy body — blocked on stage 2.** Once mail is `.maz`, nothing in startup.toml routes through the legacy ET_EXEC body. ~10 line cleanup.
+4. **Decide on branch destination.** With shepherd unification complete and worker pool stable, this branch could land on `feature/mail-dumb` so subsequent work picks it up. Or keep iterating if pursuing fs-reply-wedge triage.
 
 ## Project setup (always)
 

@@ -28,22 +28,11 @@ Two real bugs caught and fixed during the sweep: (1) `pageCache.data` direct map
 
 **Active plan:**
 
-### A. Stage 2 — mail.elf → mail.maz (IN PROGRESS — picking up now)
+### A. Shepherd unification — DONE
 
-Migrate mail to the unified shepherd binary model (`launchPluginShepherd` via `/shepherd.elf`). After this, `launchShepherd`'s legacy ET_EXEC body becomes dead code and stage 3 deletes it.
+Stage 2 (`mail.elf` → `mail.maz`, commit `e9247bc`) and stage 3 + cleanup (drop dual-builds + delete `launchShepherd` legacy body, commit `aabdfa2`). All shepherds in startup.toml are now `.maz` plugins launched via `/shepherd.elf`. Disk ships only `.maz` for fti / maildb / mail (plus rachel / linux / fontsvc / linux-ui etc. that were already plugin-only). `launchShepherd` in `maz/fs/main.go` is a single-path function — the legacy ET_EXEC body is gone.
 
-**Recipe (proven for fti, maildb):**
-1. `mazarin/apps/mail/main.go`: add `var MazEntryPoint func() = MazarinMain; func MazarinMain() { main() }` shim.
-2. `mazarin/apps/mail/Taskfile.yml`: switch deps from `mazarin:userspace-overlay` to `merged-shepherd-overlay` + `mazgo-build` + `mazlink-build` + `mazgo-toolexec-build`. Add the dual-build commands (.elf via stock Go + mazhost tag, .maz via mazgo + -buildmode=plugin).
-3. Root `Taskfile.yml`: declare `MAIL_MAZ` + `MAIL_MAZ_AMD64`, add to disk-arm64 + disk-x86_64 sources + mkext2 args.
-4. `config/startup.{arm64,amd64}.toml`: flip `path = "/mail.elf"` → `"/mail.maz"`.
-5. Build + boot test. If it boots and reaches `[mail] main() entered` and steady state, commit.
-
-**Open risks:**
-- mail directly imports `louis14/pkg/resource` — louis14 plugin-mode compat unaudited (other shepherds reach louis14 only indirectly via mancini).
-- mail switches from `userspace-overlay` (today) to `merged-shepherd-overlay`. Strict superset, but mail is the largest app exercising attr / GridTable / WebInteractor under merged-shepherd-overlay for the first time.
-
-**Stage 3 (after stage 2 ships and is stable): delete `launchShepherd` legacy ET_EXEC body** — `launchShepherd` becomes a one-line wrapper for `launchPluginShepherd`; the file-read-then-RunShepherd path goes away. `launchShepherd` already routes `.maz` to `launchPluginShepherd` at the top, so this is mostly removing the legacy branch.
+**Verified:** I1 reached full mail-app steady state then hit the pre-existing intermittent attr.Init/exit_group family (unrelated to migration). I2 clean 154s+. J1 (post-cleanup) clean 172s. Mechanically working.
 
 ### B. Underlying fs-reply wedge — triage (DEFERRED — pick up after A)
 

@@ -1,5 +1,50 @@
 # Progress Log
 
+## Session: 2026-04-29 (Opus, continued) — mail.maz migration + drop dual-builds + delete launchShepherd legacy body
+
+### Branch state
+
+`diag/mail-elf-load-hang`, 7 commits ahead of `fix/uring-missed-retries@e7422c5`. New this session:
+- `e9247bc` — `stage 2: mail.elf → mail.maz migration`
+- `aabdfa2` — `stage 3 + cleanup: drop dual builds and launchShepherd legacy body`
+
+### Stage 2 — mail.maz migration
+
+Mechanically copied the pattern from fti / maildb:
+- `mazarin/apps/mail/main.go`: added `var MazEntryPoint func() = MazarinMain; func MazarinMain() { main() }` shim.
+- `mazarin/apps/mail/Taskfile.yml`: switched from `userspace-overlay`-only to `merged-shepherd-overlay` + mazgo + mazlink dual-build (initially).
+- `Taskfile.yml`: added `MAIL_MAZ` / `MAIL_MAZ_AMD64`.
+- `config/startup.{arm64,amd64}.toml`: flipped `/mail.elf` → `/mail.maz`.
+
+Boot tests:
+- I1: reached full steady state — `[mail] main() entered`, scratch dir, screen dimensions, AppStart, backing store ready, sent CreateCollection, collection created (19 messages), `cache ready, initial rebalance`, then `KERNEL EXIT GROUP` with no panic visible. Same intermittent attr.Init/exit_group family as in earlier runs. NOT a stage-2 regression.
+- I2: clean 154s+. `delegate stuck:` empty, `uart-ring: dropped=0`, `numGoroutine=1041` stable in linux.
+
+### Stage 3 + dual-build cleanup
+
+Per user direction ("dual-builds because that is silly"):
+
+1. `maz/fti/Taskfile.yml`, `maz/maildb/Taskfile.yml`, `mazarin/apps/mail/Taskfile.yml`: replaced with plugin-only build pattern matching rachel/linux/fontsvc. Dropped the legacy ET_EXEC `go build -tags mazhost` step.
+2. Root `Taskfile.yml`: removed `FTI_ELF`, `FTI_AMD64_ELF`, `MAILDB_ELF`, `MAILDB_AMD64_ELF`, `MAIL_ELF`, `MAIL_AMD64_ELF` variables. Removed corresponding entries from disk-arm64 + disk-x86_64 sources, mkext2 args, and disk-staging-amd64 cp commands. Disk image no longer ships `fti.elf` / `maildb.elf` / `mail.elf`.
+3. `maz/fs/main.go`: deleted `launchPluginShepherd` (renamed `launchShepherd` to take its place). Legacy ET_EXEC body removed. `launchShepherd` is now a single-path function that loads `/shepherd.elf` with the plugin path as arg.
+
+Boot test:
+- J1: clean 172s ARM64 HVF run. All 3 shepherds reach `main()` entered, `[mail] cache ready, initial rebalance`, no panic, `uart-ring: dropped=0`.
+
+Net diff for stage 3 + cleanup: −118/+26 lines.
+
+### What remains on the branch
+
+- **B (deferred): underlying fs-reply wedge.** ~1-in-5 rate, 3 shepherds wedged on per-shepherd lock with readlinkats queued. Triage approach in `task_plan.md` (timeout in `fsclient.callLocked`, audit fs's serve loop fairness between `fsDelegateCh` and `fsIPCCh`, reproduce deterministically).
+- **Open: bug_attr_init_crash family.** Caught in I1; pre-existing, separate from launch path. Tracked in `MEMORY.md`.
+- **Open: original DIVERSION mail.elf-load hang.** Hasn't fired in any phase-2 run. Instrumentation is in place if it returns.
+
+### Stopping point
+
+7 commits on `diag/mail-elf-load-hang`. Ready for either further stability runs, B triage, or branch destination decision (merge into `feature/mail-dumb`).
+
+---
+
 ## Session: 2026-04-29 (Opus, continued) — G/H sweep + 1024-worker pool
 
 ### Branch state
