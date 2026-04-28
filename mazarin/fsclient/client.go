@@ -79,10 +79,17 @@ type Client struct {
 
 // New creates a new fs client targeting the given shepherd ID.
 // Call Connect() after the uring Dispatcher is started to establish the link.
+//
+// RespCh is cap 1: the dispatcher posts at most one response at a time
+// because every public method holds c.mu for the full request/response
+// cycle, so by construction there's never more than one in-flight call.
+// A larger buffer just hides bugs (e.g., a stale reply from a previously
+// timed-out call would silently accumulate). Cap 1 makes such anomalies
+// surface immediately at the dispatcher's send-side.
 func New(fsSID int) *Client {
 	return &Client{
 		fsSID:  fsSID,
-		RespCh: make(chan any, 4),
+		RespCh: make(chan any, 1),
 	}
 }
 

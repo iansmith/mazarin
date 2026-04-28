@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"syscall"
+	"time"
 	"unsafe"
 
 	"mazzy/mazarin/uring"
@@ -175,11 +177,42 @@ func (s *fsIPCServer) handleConnect(sid int16, req *ipc.FSIPCReqPayload) {
 }
 
 // respond sends a ProtoFSIPCResp back to the requesting shepherd via uring.
+//
+// `uring.Send` already retries internally up to `sendMaxAttempts` (3) with
+// `sendPerAttemptMs` (10 ms) pacing on EAGAIN — total ~30 ms. That budget is
+// fine for foreground senders that will return the error to a Go caller, but
+// not for fs's reply path: the receiver (linux's worker) is parked on
+// `<-RespCh` and will never get the reply if we drop it. Dropping the reply
+// strands the worker forever holding its per-shepherd lock and produces the
+// concurrent-boot wedge symptom.
+//
+// On EAGAIN we retry with a longer total budget (~3 s) so that brief ring-0
+// backpressure spikes from concurrent shepherd boot traffic don't cost a
+// silent drop. On any non-EAGAIN error (target dead, etc.), we log and
+// give up — those are terminal.
 func (s *fsIPCServer) respond(sid int16, resp *ipc.FSIPCRespPayload) {
 	msg := ipc.EncodeFSIPCResp(resp)
-	if err := uring.Send(int(sid), &msg); err != nil {
-		fmt.Printf("[fs:ipc] Send response to SID=%d failed: %v\n", sid, err)
+	const respondMaxAttempts = 100             // 100 × 30 ms ≈ 3 s total budget
+	const respondPerAttemptMs = 30 * time.Millisecond
+	for attempt := 0; attempt < respondMaxAttempts; attempt++ {
+		err := uring.Send(int(sid), &msg)
+		if err == nil {
+			if attempt > 0 {
+				fmt.Printf("[fs:ipc] respond SID=%d retried, attempts=%d\n", sid, attempt+1)
+			}
+			return
+		}
+		if err != syscall.EAGAIN {
+			fmt.Printf("[fs:ipc] respond SID=%d failed (terminal): %v\n", sid, err)
+			return
+		}
+		// EAGAIN: the linux ring-0 dispatcher hasn't drained our prior sends
+		// fast enough. Sleep briefly and retry — the dispatcher is alive,
+		// just momentarily backpressured.
+		time.Sleep(respondPerAttemptMs)
 	}
+	fmt.Printf("[fs:ipc] respond SID=%d EAGAIN exhausted after %d attempts (~%dms total) — DROPPING reply, worker will wedge\n",
+		sid, respondMaxAttempts, respondMaxAttempts*30)
 }
 
 // pathFromReq reads the null-terminated path from the connection's data area.
