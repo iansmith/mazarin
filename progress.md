@@ -1,5 +1,47 @@
 # Progress Log
 
+## Session: 2026-04-28 (Opus) — Stage 4 prep landed, VA-collision probe regression caught + fix, preliminary VA data favors disconfirmation
+
+### What ran
+
+1. **GOGC=5 plumbing**: `config/startup.arm64.toml` `gc_percent = 5` for mail.elf, plus `maz/fs/main.go` plumbing of `StartupConfig.GCPercent` through `launchShepherd`/`launchPluginShepherd` as `__MAZZY_GCPERCENT=N` (already consumed in `kmazarin/ksyscall/launch.go`). Verified active: mail-app reaches `gc=3337` in 90s, `gc=6176` in 180s — way above prior baselines.
+
+2. **VA-collision probe (commit `b039800`)**: unconditional `klog.Criticalf("[fV]", "[fontslot:VA] caller=%d target=%d va=%x type=%s", ...)` in `SyscallSharePages` after a successful map. Intended to capture target VAs when fontsvc shares font-cache pages into mail-app, then compare them against the Go heap range (`~0xC000000000+`).
+
+3. **E1 (180s, probe ON, user clicked once)**: probe fired 132×, all VAs in `0x500000xxxxxx` (IPC region). `populateSlot server=4` fired at boot — no crash. After click → `[mail:click]` → `[click-agent] Click on *std.RowPercentage` → `[mail] body: 40246 bytes variant=1` → `KERNEL EXIT GROUP — halting` with NO panic message visible. The kernel's own runtime called `exit_group` (per `kmazarin/ksyscall/exit.go::SyscallExitGroup` PID==0 branch). Body rendering after click triggers a heavy SharePages burst; the synchronous Criticalf writes regressed the system.
+
+4. **Probe fix (commit `459dab0`)**: gated behind `vaCollisionProbeEnabled` (default false). Boot-time runs can flip the var to true if more data is needed.
+
+5. **E2 (180s, probe OFF, no click)**: clean. `populateSlot server=4` fired at boot. `gc=6176` for mail-app. ~151 lines of `[maildb] send to SID 29 failed: resource temporarily unavailable` during fti shepherd launch — needs investigation but not crash-causing.
+
+6. **E3 (180s, probe OFF, no click)**: clean. Same `gc=6176` ballpark. No crashes, no exits.
+
+### Findings
+
+- **VA-collision hypothesis at SharePages layer is provisionally weakened.** All 132 [fontslot:VA] entries from E1 have the form `va=500000xxxxxx` with `type=FontCache`, `caller=fontsvc-sid`, `target=mail-app-sid`. None fall in mail-app's Go heap range. Go's `findObject` returns nil for non-arena pointers, so the GC marker should never walk into 0x500000xxxxxx. One boot's data is not conclusive, but the VAs are consistently picked from a non-overlapping region. To fully rule out, would need a crash-run with the probe firing — which requires re-architecting the probe to not stall under heavy traffic (option: write into a ring buffer + dump on crash, not synchronous Criticalf).
+
+- **Probe-induced regression**: kernel `runtime.throw()` after click likely caused by Criticalf contention or a stack-budget issue in a hot path. No panic message reached UART before exit_group; either stderr was unhealthy at fault time or throw was bypassed. Not investigated further — fix is to gate the probe.
+
+- **GOGC=5 timing lock not yet tested**: 0 crashes in E2 + E3 (only 2 boot-only samples). Baseline crash rate is 1/5 at 180s, so 0/2 is within noise. Need 5+ boot-only samples to compare crash rate against baseline. Not run this session.
+
+- **`[maildb] send to SID 29 failed`**: 151 lines during fti shepherd launch in E2. Source is `maz/maildb/mail_handler.go::sendMailMsg` (uring.Send returning EAGAIN). May be a pre-existing race exposed by the maildb mlog routing change (now visible in serial because mlogErrorf does both console + Println), or a real ordering issue between maildb and a freshly-launched mail-app shepherd. To audit later.
+
+### Stopping point
+
+Three commits this session:
+- `b039800` — kernel+fs: Stage 4 prep — GOGC=5 mail-app + VA-collision probe (regressed click)
+- `8b91d34`, `24ee044`, `ade5319` — committed earlier this session (maildb console routing, Stage 3 probes, docs)
+- `459dab0` — kernel: default VA-collision probe off (fixes the regression)
+
+### Next session
+
+1. Re-enable `vaCollisionProbeEnabled = true` for **boot-only** 5×180s sweep (no clicks). Boot SharePages traffic is moderate; render-time traffic is the killer. Capture VAs from a crash run if the boot-time mspan crash reproduces.
+2. If the boot-only crash rate is meaningfully lower under GOGC=5, that's a clue (corruption may be GC-pressure-modulated).
+3. If a boot-time crash repros and VAs are still in `0x500000xxxxxx` region: VA-collision at SharePages layer fully ruled out. Pivot to **Stage 4 Option 3** (VirtIO DMA target-PA audit) per `task_plan.md`.
+4. Audit the `[maildb] send to SID 29 failed` flood — confirm it's not a regression from this session's mlog routing change. Compare with a pre-`8b91d34` baseline if uncertain.
+
+---
+
 ## Session: 2026-04-27 (evening, Sonnet) — Stage 3 probes applied, Suspects 5+1 disproven, crash timing lock identified
 
 ### What ran
