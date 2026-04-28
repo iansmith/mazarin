@@ -171,13 +171,19 @@ func handleDeathNotification(deadSID int16) {
 //
 //   - File lane (delegateCh): file-system syscalls (may block on fsclient),
 //     stdin reads (async via reqQueue), and notifications (death, idleFlush,
-//     stdinDecRef). The reader goroutine spawns one worker goroutine per
-//     SyscallRequest so a slow handler (e.g., one parked inside fsclient.call
-//     waiting for fs) cannot starve unrelated requests behind it. Per-shepherd
+//     stdinDecRef). The reader hands each SyscallRequest to a fixed-size
+//     persistent worker pool (fileLaneWorkers). Workers serve concurrent
+//     requests so a slow handler (e.g., parked inside fsclient.call waiting
+//     for fs) cannot starve unrelated requests behind it. Per-shepherd
 //     ordering is preserved by ShepherdFilesystemData.mu, which the worker
 //     holds for the dispatch lifetime. Notifications (death, idleFlush,
 //     stdinDecRef) stay on the reader goroutine — they're cheap and
-//     ordering-sensitive relative to the requests they accompany.
+//     ordering-sensitive relative to the requests they accompany. We use a
+//     persistent pool (not `go handler.handle(req)` per request) because the
+//     .maz plugin runtime's morestack/copystack/unwinder is unstable under
+//     the goroutine-creation rate that unbounded spawning produced (~14k
+//     spawns per 180s run reliably crashed the runtime in
+//     traceback.go:resolveInternal).
 //
 //   - Stdout lane (stdoutCh): only Write(fd ≤ 2). Runs concurrently with the
 //     file lane so fs.maz's fmt.Printf can complete even while the file lane
@@ -187,6 +193,34 @@ func handleDeathNotification(deadSID int16) {
 // suppressSerialCopy is retained for API parity but no longer consulted in
 // this function (the kernel already pushed bytes to the TX ring before
 // delegating; we just reply and forward to the line accumulator).
+
+// fileLaneWorkers is the number of persistent goroutines that serve
+// delegated SyscallRequests in parallel. 1024 is generous — effectively
+// unbounded for any realistic workload — while still giving us a fixed
+// count of long-lived goroutines instead of churning a fresh goroutine
+// per request.
+const fileLaneWorkers = 1024
+
+// fileLaneWorkItem is what the reader hands to the worker pool. We carry
+// the stdin-read flag explicitly so workers know whether to sidDecRef on
+// completion (stdin reads have their own inc/dec via sysRead+fulfillRead).
+type fileLaneWorkItem struct {
+	req         sys.SyscallRequest
+	isStdinRead bool
+}
+
+// fileLaneWorker runs one of the fileLaneWorkers persistent goroutines.
+// It blocks on workCh, processes one request at a time, and returns to the
+// channel for the next one. Workers exit only when workCh is closed (i.e.
+// shepherd shutdown — never in normal operation).
+func fileLaneWorker(workCh <-chan fileLaneWorkItem, handler *syscallHandler) {
+	for w := range workCh {
+		handler.handle(w.req)
+		if !w.isStdinRead {
+			sidDecRef(w.req.CallerPID)
+		}
+	}
+}
 func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallRequest, handler *syscallHandler, suppressSerialCopy bool) <-chan delegateMsg {
 	_ = suppressSerialCopy
 	dataCh := make(chan delegateMsg, 32)
@@ -231,9 +265,14 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 			}
 		}
 	}()
-	// File lane — reader spawns a worker goroutine per SyscallRequest so a
-	// slow handler can't starve unrelated requests behind it. Per-shepherd
-	// ordering is preserved inside handler.handle by the per-shepherd lock.
+	// File lane — reader hands each SyscallRequest to a fixed-size persistent
+	// worker pool. Workers serve concurrent requests so a slow handler can't
+	// starve unrelated requests behind it. Per-shepherd ordering is preserved
+	// inside handler.handle by the per-shepherd lock.
+	workCh := make(chan fileLaneWorkItem, fileLaneWorkers)
+	for i := 0; i < fileLaneWorkers; i++ {
+		go fileLaneWorker(workCh, handler)
+	}
 	go func() {
 		for raw := range delegateCh {
 			switch v := raw.(type) {
@@ -247,22 +286,18 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 				handler.flushOneBuffer()
 
 			case sys.SyscallRequest:
-				req := v // capture by value for the goroutine
+				req := v // capture by value for the worker
 				sid := req.CallerPID
 				// For stdin reads, sidIncRef happens at enqueue time in sysRead,
 				// and sidDecRef happens in fulfillRead. For all other syscalls,
-				// the worker takes a refcount for the dispatch lifetime so
-				// concurrent shepherd-death cleanup doesn't tear out state mid-call.
-				if req.SysID == sysid.Read && handler.isStdinRead(req) {
-					// Don't wrap with inc/dec — sysRead handles it.
-					go handler.handle(req)
-				} else {
+				// take a refcount for the dispatch lifetime so concurrent
+				// shepherd-death cleanup doesn't tear out state mid-call. The
+				// matching sidDecRef runs in fileLaneWorker once handle returns.
+				isStdinRead := req.SysID == sysid.Read && handler.isStdinRead(req)
+				if !isStdinRead {
 					sidIncRef(sid)
-					go func() {
-						defer sidDecRef(sid)
-						handler.handle(req)
-					}()
 				}
+				workCh <- fileLaneWorkItem{req: req, isStdinRead: isStdinRead}
 			}
 		}
 	}()
