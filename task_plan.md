@@ -18,14 +18,17 @@
 
 **First steps:**
 
-1. **Add a timeout to `fsclient.callLocked`** (e.g. 30 s). On timeout, log + return error. The wedged worker unwedges itself, the shepherd's per-shepherd lock releases, queued same-shepherd syscalls drain. This is a safety net, not a root-cause fix — but it converts an indefinite stall into a recoverable error and gives us actionable telemetry.
+1. **Add a TEMPORARY DIAGNOSTIC timeout to `fsclient.callLocked`** (~30 s). On timeout, log + return error. The wedged worker unwedges itself, the shepherd's per-shepherd lock releases, queued same-shepherd syscalls drain. This is a safety net + telemetry handle, **NOT** a root-cause fix.
 2. **Per-message-class instrumentation in fs's serve loop.** Log when fs picks `fsIPCCh` vs `fsDelegateCh`, plus the request type. Confirms or refutes hypothesis 1: are LoadFile delegate operations starving IPC requests during the wedge window?
 3. **Reproduce H5 deterministically.** The wedge appeared during heavy concurrent boot LoadFiles. Make it ~100% reliable by adding a few extra shepherds to `startup.toml` or by adjusting bootSequence to start more shepherds in parallel. Without a reliable reproducer, we can't measure fixes.
+
+### MANDATORY EXIT CRITERION (before merging this branch / moving to other problems)
+
+> **The timeout in `fsclient.callLocked` is TEMPORARY and MUST be removed before this branch lands or any other work begins on top.** It exists only to convert wedges into observable error events for diagnosis. Per user policy, "polling or timeouts = architectural change" — leaving it in trades the wedge for a long-tail latency mask. Once root cause is fixed and verified across an I-cadence sweep with no wedge events, **delete the timeout in the same branch**, re-verify clean, and only then merge.
 
 **Reminders:**
 - Do NOT roll back phase 2 (worker pool) — it's what keeps the wedge from cascading to system death. Without it, the wedge would lock up everyone.
 - This wedge is independent of the original DIVERSION mail.elf-load hang (still untracked, still hasn't fired under phase 2).
-- Tracking: per-fsclient-call timeout adds an architectural-style change (timeouts) — that's a user-policy boundary. **Discuss with user** before adding the timeout if it's the first step. (User-flagged: "polling or timeouts = architectural change".)
 
 ---
 

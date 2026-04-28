@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 	"unsafe"
 
 	"mazzy/mazarin/mem"
@@ -32,6 +33,27 @@ import (
 	"mazzy/mazarin/uring"
 	"mazzy/shared/ipc"
 )
+
+// =============================================================================
+// TEMP-DIAGNOSTIC — DO NOT MERGE WITH THIS IN PLACE
+// =============================================================================
+//
+// callLocked has a 30 s timeout below to convert the fix/concurrent-boot-wedge
+// stall (where fs sometimes never replies and the worker hangs forever holding
+// per-shepherd shep.mu) into an observable error event. This is a SAFETY NET
+// for diagnosis, not a fix.
+//
+// Per user policy "polling or timeouts = architectural change", this timeout
+// MUST be removed before this branch is merged or any other work begins on
+// top of it. See task_plan.md "MANDATORY EXIT CRITERION" under
+// fix/concurrent-boot-wedge.
+//
+// =============================================================================
+
+// callTimeout is the diagnostic timeout in callLocked. See the TEMP-DIAGNOSTIC
+// banner above. Keep aggressive enough to catch wedges in <1 status cycle but
+// loose enough that legitimate slow ops (large LoadFile reads) succeed.
+const callTimeout = 30 * time.Second
 
 const dataPages = 16 // shared data area size (64KB)
 
@@ -108,7 +130,34 @@ func (c *Client) Connect() error {
 // callLocked sends a request and blocks for the response. Caller must hold
 // c.mu — that's how we keep nextID consistent and stop two goroutines from
 // each consuming the other's RespCh value.
+//
+// TEMP-DIAGNOSTIC: the receive on RespCh is wrapped with a callTimeout select
+// (see banner at top of file). On timeout we log the wedge details and return
+// an error so the caller releases its per-shepherd lock. MUST be removed
+// before this branch merges — see task_plan.md MANDATORY EXIT CRITERION.
+//
+// Stale-reply drain: if a previous call timed out and the late reply arrives
+// after we've returned the error, that reply is now sitting in RespCh waiting
+// for the next call to consume it — which would associate it with the wrong
+// reqID. We drain RespCh non-blockingly before sending so the next call
+// always sees a fresh reply path. This narrows the corruption window but
+// doesn't close it (a reply that arrives between the drain and the receive
+// would still be misattributed). Acceptable for diagnostic purposes only.
 func (c *Client) callLocked(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, error) {
+	// TEMP-DIAGNOSTIC: drain any stale reply from a previously-timed-out call.
+	for {
+		select {
+		case stale := <-c.RespCh:
+			if r, ok := stale.(ipc.FSIPCRespPayload); ok {
+				fmt.Printf("[fsclient:STALE-DRAIN] dropping reply reqID=%d (likely from prior timed-out call)\n", r.ReqID)
+			} else {
+				fmt.Printf("[fsclient:STALE-DRAIN] dropping non-payload value\n")
+			}
+		default:
+			goto sendReq
+		}
+	}
+sendReq:
 	c.nextID++
 	req.ReqID = c.nextID
 	if req.DataVA == 0 {
@@ -120,12 +169,19 @@ func (c *Client) callLocked(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, err
 		return ipc.FSIPCRespPayload{}, fmt.Errorf("fsclient: Send: %w", err)
 	}
 
-	raw := <-c.RespCh
-	resp, ok := raw.(ipc.FSIPCRespPayload)
-	if !ok {
-		return ipc.FSIPCRespPayload{}, errors.New("fsclient: unexpected response type")
+	// TEMP-DIAGNOSTIC: timeout wedge detection.
+	select {
+	case raw := <-c.RespCh:
+		resp, ok := raw.(ipc.FSIPCRespPayload)
+		if !ok {
+			return ipc.FSIPCRespPayload{}, errors.New("fsclient: unexpected response type")
+		}
+		return resp, nil
+	case <-time.After(callTimeout):
+		fmt.Printf("[fsclient:TIMEOUT] op=%d reqID=%d sid=%d after %s — fs did not reply\n",
+			req.Op, req.ReqID, os.Getpid(), callTimeout)
+		return ipc.FSIPCRespPayload{}, fmt.Errorf("fsclient: timeout waiting for fs reply (op=%d reqID=%d)", req.Op, req.ReqID)
 	}
-	return resp, nil
 }
 
 // DataLen returns the shared data area size in bytes. Constant — safe to
