@@ -163,6 +163,9 @@ func SyscallUringRecv(arg0, arg1, _, _, _, _ uint64) int64 {
 	if ok {
 		result := copyUringMsgToUser(bufPtr, msgKVA)
 		advanceUringHead(sid, ringIdx)
+		// A slot just freed up — wake any sender parked on
+		// ThreadBlockedUringSend for this ring (Scenario B drain wake).
+		wakeSenderAfterDrain(sid, ringIdx)
 		return result
 	}
 
@@ -180,6 +183,7 @@ func SyscallUringRecv(arg0, arg1, _, _, _, _ uint64) int64 {
 		if ok {
 			result := copyUringMsgToUser(bufPtr, msgKVA)
 			advanceUringHead(sid, ringIdx)
+			wakeSenderAfterDrain(sid, ringIdx)
 			return result
 		}
 	}

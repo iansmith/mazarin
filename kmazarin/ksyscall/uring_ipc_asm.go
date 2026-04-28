@@ -20,6 +20,9 @@ func drainUringIPCRing(sid int16, ringIdx int) (uintptr, bool)
 //go:linkname advanceUringHead main.advanceUringHead
 func advanceUringHead(sid int16, ringIdx int)
 
+//go:linkname wakeSenderAfterDrain main.WakeSenderAfterDrain
+func wakeSenderAfterDrain(sid int16, ringIdx int)
+
 //go:linkname releaseUringConnection main.ReleaseUringConnection
 func releaseUringConnection(handle int, callerSID int16) int64
 

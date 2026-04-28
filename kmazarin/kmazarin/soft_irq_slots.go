@@ -511,8 +511,53 @@ func DrainSoftIRQSlotEvents(slotNum int32, buf []hid.HIDEvent, max int) int {
 		if slotNum < maxSoftIRQSlots {
 			atomic.AddUint32(&dbgDrainPerSlot[slotNum], uint32(n))
 		}
+		// If this is the UART ring, a slot just freed up — wake any
+		// kernel pusher parked on ThreadBlockedKernelRingPush. Mirrors
+		// WakeSenderAfterDrain in uring_ipc.go.
+		if slot.ring == &topHalfUartRing {
+			WakeKernelRingPusher()
+		}
 	}
 	return n
+}
+
+// WakeKernelRingPusher wakes the kernel pusher (typically thread 0) that is
+// parked on ThreadBlockedKernelRingPush waiting for topHalfUartRing space.
+// Symmetric to WakeSenderAfterDrain; called from the consumer's pop path
+// (DrainSoftIRQSlotEvents on the UART slot) after a successful drain.
+//
+//go:noinline
+func WakeKernelRingPusher() {
+	if atomic.LoadInt32(&kernelRingPushBlockerTID) == 0 {
+		return // fast path — no pusher parked
+	}
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+	tid := atomic.LoadInt32(&kernelRingPushBlockerTID)
+	if tid == 0 {
+		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
+		return
+	}
+	t := (*Thread)(unsafe.Pointer(pushBlockerThreadPtr))
+	if t == nil || t.State != ThreadBlockedKernelRingPush {
+		// Stale publish, or a deadline-expiry handler already woke it.
+		// Clear the pointer/TID to prevent future wake attempts.
+		atomic.StoreInt32(&kernelRingPushBlockerTID, 0)
+		pushBlockerThreadPtr = 0
+		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
+		return
+	}
+	atomic.StoreInt32(&kernelRingPushBlockerTID, 0)
+	pushBlockerThreadPtr = 0
+	atomic.StoreUint32(&pushBlockerDeadlineExpired, 0)
+	staticDeadlineQueue.Remove(int16(t.TID))
+	t.State = ThreadReady
+	enqueueReadySchedLockHeld(t)
+	asm.Dsb()
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 }
 
 

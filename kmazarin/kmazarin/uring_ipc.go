@@ -4,13 +4,20 @@ package main
 
 import (
 	"mazzy/kmazarin/asm"
+	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/ipc"
+	"mazzy/shared/mazzy"
 	"sync/atomic"
 	"unsafe"
 )
+
+// uringSendBlockDeadlineMs is how long the kernel will park a sender on
+// ThreadBlockedUringSend before giving up with EAGAIN. Matches the userspace
+// per-attempt expectation in mazarin/uring/syscall.go.
+const uringSendBlockDeadlineMs = 10
 
 // ============================================================================
 // Uring IPC — Per-Shepherd Message Ring for Inter-Shepherd Communication
@@ -30,13 +37,15 @@ var nextUringID uint64 = 1
 
 // UringIPCSlot holds per-shepherd kernel state for the IPC ring.
 type UringIPCSlot struct {
-	KVA          [ipc.UringIPCPagesNeeded]uintptr // kernel VAs for the 3 ring pages
-	PA           [ipc.UringIPCPagesNeeded]uintptr // physical addresses for cleanup
-	OwnerSID     int16                            // shepherd that consumes from this ring (-1 = unused)
-	BlockedTID   int16                            // TID blocked in SysUringRecv (-1 = none)
-	BlockedPtr   uintptr                          // *Thread as uintptr (nosplit-safe pointer)
-	RingRefCount int32                            // number of connections targeting this ring
-	Dead         bool                             // owner terminated; pages freed when RingRefCount reaches 0
+	KVA               [ipc.UringIPCPagesNeeded]uintptr // kernel VAs for the 3 ring pages
+	PA                [ipc.UringIPCPagesNeeded]uintptr // physical addresses for cleanup
+	OwnerSID          int16                            // shepherd that consumes from this ring (-1 = unused)
+	BlockedTID        int16                            // TID blocked in SysUringRecv (-1 = none)
+	BlockedPtr        uintptr                          // *Thread as uintptr (nosplit-safe pointer)
+	BlockedSenderTID  int16                            // TID blocked in SyscallUringSend (ring full) — single blocker per slot, -1 = none
+	BlockedSenderPtr  uintptr                          // *Thread for the blocked sender
+	RingRefCount      int32                            // number of connections targeting this ring
+	Dead              bool                             // owner terminated; pages freed when RingRefCount reaches 0
 }
 
 var uringIPCSlots [proc.MaxShepherds][ipc.MaxRingsPerShepherd]UringIPCSlot
@@ -69,6 +78,7 @@ func init() {
 		for j := range uringIPCSlots[i] {
 			uringIPCSlots[i][j].OwnerSID = -1
 			uringIPCSlots[i][j].BlockedTID = -1
+			uringIPCSlots[i][j].BlockedSenderTID = -1
 		}
 	}
 }
@@ -287,8 +297,27 @@ func releaseProducerLock(hdr *ipc.UringIPCRingHeader) {
 // the message (already copied from userspace by the syscall handler).
 // ringIdx selects which ring on the target shepherd (0 = default).
 //
-// Returns (0, ctxPtr) on success, (negative errno, 0) on failure.
-// ctxPtr is the woken thread's context pointer for immediate switch, or 0.
+// senderSID >= 0 means the call originated from a userspace shepherd; in
+// that case, when the target ring is full and no other sender is already
+// blocked on this slot, the calling thread parks on ThreadBlockedUringSend
+// with a uringSendBlockDeadlineMs deadline. The drainer (SyscallUringRecv)
+// or the deadline handler (processStaticDeadlinesSchedLockHeld) wakes it.
+//
+// senderSID < 0 means the call originated from kernel-internal code
+// (KernelWriteToRing for death notifications, etc.); in that case full
+// rings return -EAGAIN immediately — the kernel never blocks itself here.
+//
+// Return contract:
+//   - (0, 0)             : send completed, no thread to switch to
+//   - (0, recvCtxPtr)    : send completed AND woke a blocked receiver — switch
+//   - (0, blockCtxPtr)   : sender blocked; switch to the returned thread.
+//                          Caller's syscall return is meaningless (will be
+//                          overwritten on rewind+retry when sender wakes).
+//   - (-11, 0)           : EAGAIN — ring full and either kernel-internal
+//                          caller, or another sender already blocked, or
+//                          we just woke from a 10ms deadline expiry.
+//   - (-22, 0)           : EINVAL
+//   - (-3,  0)           : ESRCH (target ring dead/missing)
 //
 //go:noinline
 func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) (int64, uintptr) {
@@ -301,6 +330,18 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 		return -3, 0 // ESRCH — no ring for target (or owner dead)
 	}
 
+	// If this is a rewind+retry from a deadline-expired wake, surface EAGAIN
+	// without re-blocking. Only userspace senders set this flag.
+	var senderThread *Thread
+	if senderSID >= 0 {
+		senderThread = GetCurrentThread()
+		if senderThread != nil && atomic.LoadUint32(&senderThread.UringSendDeadlineExpired) == 1 {
+			atomic.StoreUint32(&senderThread.UringSendDeadlineExpired, 0)
+			senderThread.UringSendBlockedSlotPtr = 0
+			return -11, 0 // EAGAIN — kernel waited the full deadline, give up
+		}
+	}
+
 	hdr := ringHeader(slot)
 
 	savedDAIF := SaveAndDisableIRQs()
@@ -311,9 +352,72 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 	head := atomic.LoadUint32(&hdr.Head)
 	tail := atomic.LoadUint32(&hdr.Tail)
 	if tail-head >= ipc.UringIPCCapacity {
+		// Ring full. Decide between immediate-EAGAIN and block.
 		releaseProducerLock(hdr)
+
+		// Kernel-internal caller (KernelWriteToRing): never block; EAGAIN.
+		if senderSID < 0 || senderThread == nil {
+			RestoreIRQs(savedDAIF)
+			return -11, 0
+		}
+
+		// Block path. Take scheduler lock and re-check head/tail so we
+		// don't miss a drainer who just popped between our first check
+		// and the publish. Without this re-check, a drainer that advances
+		// head and then takes sched lock to look for a blocker could see
+		// BlockedSenderTID == -1 (we hadn't published yet), miss the wake,
+		// and leave us waiting for nothing but the deadline.
+		schedulerLock.Lock()
+		head = atomic.LoadUint32(&hdr.Head)
+		tail = atomic.LoadUint32(&hdr.Tail)
+		if tail-head < ipc.UringIPCCapacity {
+			// Drainer drained while we were releasing producer lock —
+			// the slot is no longer full. Drop straight back into the
+			// send path by retrying.
+			schedulerLock.Unlock()
+			RestoreIRQs(savedDAIF)
+			return UringSendKernel(senderSID, targetSID, ringIdx, msgKVA)
+		}
+
+		// Still full. Single-blocker-per-slot: if someone else is already
+		// parked on this slot, we return EAGAIN immediately. Userspace
+		// retries with paced nanosleep so it doesn't return prematurely.
+		if slot.BlockedSenderTID >= 0 {
+			schedulerLock.Unlock()
+			RestoreIRQs(savedDAIF)
+			return -11, 0 // EAGAIN — fast bounce
+		}
+
+		// Find a thread to switch to. If there's nothing to run, we can't
+		// safely block (would deadlock), so EAGAIN out.
+		next := findNextThreadForBlockSchedLockHeld(senderThread)
+		if next == nil {
+			schedulerLock.Unlock()
+			RestoreIRQs(savedDAIF)
+			return -11, 0
+		}
+
+		// Publish blocked state.
+		slot.BlockedSenderTID = int16(senderThread.TID)
+		slot.BlockedSenderPtr = uintptr(unsafe.Pointer(senderThread))
+		senderThread.UringSendBlockedSlotPtr = uintptr(unsafe.Pointer(slot))
+		atomic.StoreUint32(&senderThread.UringSendDeadlineExpired, 0)
+		senderThread.SoftIRQSlotArg = uint64(uint16(targetSID)) // arg0 for rewind
+		senderThread.SoftIRQSyscallNum = mazzy.SysUringSend
+		senderThread.State = ThreadBlockedUringSend
+
+		// Register a 10ms deadline so a wedged consumer doesn't strand us.
+		freq := uint64(kirq.GetTimerFrequency())
+		deadline := kirq.ReadCounterValue() + (freq*uringSendBlockDeadlineMs)/1000
+		// Already under schedulerLock — touch the queue directly instead of
+		// AddDeadlineStatic (which would re-acquire the lock).
+		staticDeadlineQueue.Remove(int16(senderThread.TID))
+		staticDeadlineQueue.Insert(int16(senderThread.TID), deadline)
+
+		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
-		return -11, 0 // EAGAIN — ring full
+
+		return 0, uintptr(unsafe.Pointer(&next.Context))
 	}
 
 	// Write message to slot[tail & mask]
@@ -350,10 +454,46 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 		}
 	}
 
+	// If the calling thread had previously been blocked and is now succeeding
+	// after rewind, clear its slot-ptr cookie so future syscalls don't see
+	// stale state.
+	if senderThread != nil && senderThread.UringSendBlockedSlotPtr != 0 {
+		senderThread.UringSendBlockedSlotPtr = 0
+	}
+
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 
 	return 0, wokenCtx
+}
+
+// wakeBlockedSenderSchedLockHeld wakes a sender parked on slot's blocked-
+// sender hook (Scenario B drain-wake). REQUIRES schedulerLock held.
+// Returns the woken thread's context pointer (0 if no sender was blocked).
+//
+//go:nosplit
+func wakeBlockedSenderSchedLockHeld(slot *UringIPCSlot) uintptr {
+	if slot.BlockedSenderTID < 0 {
+		return 0
+	}
+	t := (*Thread)(unsafe.Pointer(slot.BlockedSenderPtr))
+	slot.BlockedSenderTID = -1
+	slot.BlockedSenderPtr = 0
+	if t == nil || t.State != ThreadBlockedUringSend {
+		return 0
+	}
+	// Drain happened — sender will retry the send and likely succeed.
+	staticDeadlineQueue.Remove(int16(t.TID))
+	t.UringSendBlockedSlotPtr = 0
+	atomic.StoreUint32(&t.UringSendDeadlineExpired, 0)
+	t.Context.RewindToSyscall()
+	t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+	t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+	t.State = ThreadReady
+	t.PriorityWoken = true
+	enqueueReadyPrioritySchedLockHeld(t)
+	asm.Dsb()
+	return uintptr(unsafe.Pointer(&t.Context))
 }
 
 // KernelWriteToRing writes a message directly to a shepherd's ring 0 without
@@ -476,6 +616,29 @@ func advanceUringHead(sid int16, ringIdx int) {
 	hdr := ringHeader(&uringIPCSlots[sid][ringIdx])
 	head := atomic.LoadUint32(&hdr.Head)
 	atomic.StoreUint32(&hdr.Head, head+1)
+}
+
+// WakeSenderAfterDrain wakes any sender parked on this slot via the new
+// ThreadBlockedUringSend mechanism. Called by SyscallUringRecv right after
+// advanceUringHead so the just-freed slot can be filled by a waiting sender.
+// Kept distinct from advanceUringHead because advanceUringHead is nosplit
+// and the wake path takes schedulerLock — which costs more stack budget
+// than nosplit allows.
+//
+//go:noinline
+func WakeSenderAfterDrain(sid int16, ringIdx int) {
+	if sid < 0 || int(sid) >= proc.MaxShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
+		return
+	}
+	slot := &uringIPCSlots[sid][ringIdx]
+	if slot.BlockedSenderTID < 0 {
+		return // common case — fast exit, no lock acquisition
+	}
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+	wakeBlockedSenderSchedLockHeld(slot)
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 }
 
 // BlockForUringRecv blocks the current thread waiting for a message on its
@@ -615,6 +778,25 @@ func CleanupUringIPCForShepherd(sid int16) {
 			}
 			slot.BlockedTID = -1
 			slot.BlockedPtr = 0
+		}
+		// Also wake any sender parked on this slot — receiver is gone, so
+		// the sender will get -ESRCH on its retry instead of waiting for a
+		// drain that will never come. Set deadline-expired so the rewind
+		// path skips re-blocking and surfaces the error directly.
+		if slot.BlockedSenderTID >= 0 {
+			t := (*Thread)(unsafe.Pointer(slot.BlockedSenderPtr))
+			if t != nil && t.State == ThreadBlockedUringSend {
+				atomic.StoreUint32(&t.UringSendDeadlineExpired, 1)
+				t.UringSendBlockedSlotPtr = 0
+				staticDeadlineQueue.Remove(int16(t.TID))
+				t.Context.RewindToSyscall()
+				t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+				t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+				t.State = ThreadReady
+				enqueueReadySchedLockHeld(t)
+			}
+			slot.BlockedSenderTID = -1
+			slot.BlockedSenderPtr = 0
 		}
 	}
 

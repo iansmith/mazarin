@@ -3,10 +3,10 @@ package main
 import (
 	"fmt"
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/klog"
 	"mazzy/shared/hid"
 	"reflect"
-	"runtime"
 	"sync/atomic"
 	_ "unsafe" // for go:linkname
 )
@@ -146,6 +146,35 @@ var softIRQConsole *SoftIRQConsole
 //go:linkname suppressSerial runtime.suppressSerial
 var suppressSerial uint32
 
+// kernelRingPushBlockerTID tracks thread 0 when it parks itself in
+// pushStringFull because topHalfUartRing is full. Set non-zero while
+// thread 0 is in ThreadBlockedKernelRingPush. The userspace consumer's
+// pop path checks this and wakes thread 0 when slots free up. Single
+// blocker — only thread 0 ever pushes, so no list is needed.
+//
+// Layout: 0 = no pusher blocked. Non-zero = TID waiting for ring space.
+// Published+cleared under schedulerLock; readers use atomic.Load for the
+// fast path so the wake-side fast exit doesn't have to take the lock.
+var kernelRingPushBlockerTID int32
+
+// pushBlockerThreadPtr is the *Thread (as uintptr for nosplit safety)
+// of the parked pusher; companion to kernelRingPushBlockerTID. Both are
+// published under schedulerLock inside SaveThread0AndYield's deadline
+// path when pendingYieldBlockState == ThreadBlockedKernelRingPush.
+var pushBlockerThreadPtr uintptr
+
+// pushBlockerDeadlineExpired is set to 1 by the deadline handler when
+// the pusher's 10ms timer fires before any drain wake. pushStringFull
+// checks this after returning from the yield: if set, the remainder
+// is dropped and softIRQDroppedBytes is bumped. Cleared on the next
+// block attempt.
+var pushBlockerDeadlineExpired uint32
+
+// softIRQDroppedBytes counts bytes dropped by pushStringFull when its
+// 10ms wait expires (linux consumer genuinely wedged). Cumulative per
+// boot, surfaced on the [status] line.
+var softIRQDroppedBytes uint64
+
 // EnableSoftIRQConsole switches the kernel console from direct MMIO
 // to the soft IRQ ring. Must be called after SetupUartSoftIRQ and
 // after a userspace shepherd has registered on the UART slot.
@@ -187,15 +216,79 @@ func pushStringToRing(c *SoftIRQConsole, fd byte, s string) int {
 	return n
 }
 
-// pushStringFull pushes all of s to the ring, yielding to the scheduler and
-// retrying whenever the ring is full. Guarantees all bytes reach the ring.
+// pushStringBlockBudgetMs is the cumulative wall-time ceiling pushStringFull
+// will spend waiting for ring space across one call. Past this, the remainder
+// is dropped and softIRQDroppedBytes is bumped. 10 ms matches the per-attempt
+// deadline on the userspace uring sender side.
+const pushStringBlockBudgetMs = 10
+
+// pushStringFull pushes all of s to the ring. If the ring is full mid-push,
+// it wakes the consumer and parks the calling thread on
+// ThreadBlockedKernelRingPush with a deadline; the consumer's pop path
+// (DrainSoftIRQSlotEvents → WakeKernelRingPusher) wakes us early. If
+// pushStringBlockBudgetMs elapses without enough drain, the remaining bytes
+// are dropped and counted in softIRQDroppedBytes.
+//
+// Replaces the old runtime.Gosched() retry loop, which was the only Gosched
+// left in kernel code and was implicated in IRQ-mask-induced starvation
+// (see memory/sync_uart_irq_masked.md).
 func pushStringFull(c *SoftIRQConsole, fd byte, s string) {
+	if len(s) == 0 {
+		return
+	}
+
+	// One-shot budget: track wall-time elapsed across all parks in this call.
+	freq := uint64(kirq.GetTimerFrequency())
+	budgetTicks := freq * pushStringBlockBudgetMs / 1000
+
+	// Single-blocker policy. If another kernel pusher is already parked on
+	// this ring, we don't queue behind it — drop and count instead. Same
+	// rationale as the uring single-sender policy (Scenario D); avoids
+	// unbounded blocker chains and keeps wake-side bookkeeping trivial.
+	pushIfBlockerFreeOrDrop := func(remaining string) bool {
+		if atomic.LoadInt32(&kernelRingPushBlockerTID) != 0 {
+			atomic.AddUint64(&softIRQDroppedBytes, uint64(len(remaining)))
+			return false
+		}
+		return true
+	}
+
+	startTick := kirq.ReadCounterValue()
+
 	for len(s) > 0 {
 		n := pushStringToRing(c, fd, s)
 		s = s[n:]
-		if len(s) > 0 {
-			c.wake()
-			runtime.Gosched()
+		if len(s) == 0 {
+			break
+		}
+
+		// Ring full mid-string. Make sure the consumer is awake, then park.
+		c.wake()
+
+		now := kirq.ReadCounterValue()
+		elapsed := now - startTick
+		if elapsed >= budgetTicks {
+			atomic.AddUint64(&softIRQDroppedBytes, uint64(len(s)))
+			return
+		}
+		if !pushIfBlockerFreeOrDrop(s) {
+			return
+		}
+
+		// Block until the drainer wakes us, or our deadline fires.
+		// SaveThread0AndYield publishes (TID, ptr, state) atomically with
+		// the deadline-queue insert under schedulerLock, so the wake side
+		// (WakeKernelRingPusher) sees a consistent snapshot.
+		atomic.StoreUint32(&pushBlockerDeadlineExpired, 0)
+		pendingYieldBlockState = ThreadBlockedKernelRingPush
+		thread0PendingDeadline = startTick + budgetTicks
+		YieldToReadyThread()
+
+		// Resumed. If the deadline expiry handler beat the drain wake,
+		// drop the rest — the consumer is genuinely wedged.
+		if atomic.LoadUint32(&pushBlockerDeadlineExpired) == 1 {
+			atomic.AddUint64(&softIRQDroppedBytes, uint64(len(s)))
+			return
 		}
 	}
 	c.wake()

@@ -218,6 +218,8 @@ const (
 	ThreadBlockedIOUring      ThreadState = 16 // Blocked waiting for io_uring completions
 	ThreadBlockedUringRecv    ThreadState = 17 // Blocked waiting for IPC uring message
 	ThreadBlockedWaitingIO    ThreadState = 18 // Blocked waiting for TX ring space (write fd 1/2)
+	ThreadBlockedUringSend    ThreadState = 19 // Blocked in SyscallUringSend (target ring full); woken by drainer or 10ms deadline
+	ThreadBlockedKernelRingPush ThreadState = 20 // Thread 0 blocked in pushStringFull (topHalfUartRing full); woken by consumer pop or 10ms deadline
 )
 
 // MaxShepherds is the maximum number of shepherd processes (userspace programs).
@@ -403,6 +405,24 @@ type Thread struct {
 	// also save the original syscall number for restoration on rewind.
 	SoftIRQSlotArg    uint64
 	SoftIRQSyscallNum uint64
+
+	// UringSendBlockedSlotPtr points at the UringIPCSlot the thread is
+	// blocked on while in ThreadBlockedUringSend. Used by the deadline
+	// expiry path to clear slot.BlockedSenderTID without scanning all slots.
+	// 0 when the thread is not blocked on send.
+	//
+	// Args 1 and 2 (msgPtr and ringIdx) are not stashed separately because
+	// the SVC return path only overwrites X0 (return value); X1/X2 in
+	// t.Context retain their original SVC-entry values across block/wake.
+	// arg0 (targetSID) is restored from SoftIRQSlotArg via RestoreSyscallArg0.
+	UringSendBlockedSlotPtr uintptr
+
+	// UringSendDeadlineExpired is set to 1 by the deadline handler when a
+	// blocked sender's 10ms timer fires before any drainer woke it. On the
+	// rewind+retry, UringSendKernel checks this flag: if set, return -EAGAIN
+	// immediately rather than re-blocking. Cleared when the thread enters
+	// the block path or when send succeeds.
+	UringSendDeadlineExpired uint32
 
 	// WaitingIO state — used when write(fd=1/2) blocks because the PL011 TX
 	// ring buffer is full. The kernel copies user data (with CR expansion) into
@@ -640,6 +660,14 @@ var sleepingQueue ds.StaticQueue[ThreadId]
 // Only accessed by thread 0 (set before yield, consumed during yield), so no
 // cross-thread races.
 var thread0PendingDeadline uint64
+
+// pendingYieldBlockState overrides the state SaveThread0AndYield assigns on the
+// deadline path. Zero (default) means "use ThreadSleeping", which preserves the
+// existing KernelBlockSleep semantics. Setting it to ThreadBlockedKernelRingPush
+// (or another future block-state) causes the yielding thread to be parked in
+// that state, on the static deadline queue only — the wake side handles the
+// queue and state transitions. Consumed (zeroed) inside SaveThread0AndYield.
+var pendingYieldBlockState ThreadState
 
 // ID allocators - initialized in InitIdAllocators()
 var threadIdAllocator ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
@@ -1131,6 +1159,42 @@ func processStaticDeadlinesSchedLockHeld() {
 					}
 				}
 			}
+		} else if t.State == ThreadBlockedUringSend {
+			// Sender's 10ms deadline fired before any drainer woke it.
+			// Clear the per-slot blocker hook so future drainers don't
+			// try to wake an already-readied thread, mark the deadline-
+			// expired flag so the rewind+retry path returns -EAGAIN
+			// instead of re-blocking, then ready the thread.
+			if t.UringSendBlockedSlotPtr != 0 {
+				slot := (*UringIPCSlot)(unsafe.Pointer(t.UringSendBlockedSlotPtr))
+				if slot.BlockedSenderTID == int16(tid) {
+					slot.BlockedSenderTID = -1
+					slot.BlockedSenderPtr = 0
+				}
+				t.UringSendBlockedSlotPtr = 0
+			}
+			atomic.StoreUint32(&t.UringSendDeadlineExpired, 1)
+			t.Context.RewindToSyscall()
+			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+			t.State = ThreadReady
+			enqueueReadySchedLockHeld(t)
+		} else if t.State == ThreadBlockedKernelRingPush {
+			// Kernel pusher's 10ms deadline fired before the consumer
+			// drained the topHalfUartRing. Flag the expiry so pushStringFull
+			// drops the remainder + bumps softIRQDroppedBytes on resume,
+			// clear the global blocker hook (so a late drain doesn't try
+			// to wake an already-ready thread), and ready the thread.
+			// Unlike ThreadBlockedUringSend, this is not an SVC rewind —
+			// pushStringFull is regular kernel code, so YieldToReadyThread
+			// returns straight to the caller after the wake.
+			atomic.StoreUint32(&pushBlockerDeadlineExpired, 1)
+			if int32(tid) == atomic.LoadInt32(&kernelRingPushBlockerTID) {
+				atomic.StoreInt32(&kernelRingPushBlockerTID, 0)
+				pushBlockerThreadPtr = 0
+			}
+			t.State = ThreadReady
+			enqueueReadySchedLockHeld(t)
 		} else {
 			// Deadline fired but thread in unexpected state — dropped
 		}
@@ -1360,6 +1424,7 @@ func printEpochStatus() {
 	stalePTEScans, stalePTEHits := kmem.StalePTEStats()
 	canaryFills, canaryVerifies, canaryHits := kmem.FreeCanaryStats()
 	probeInIPC, probeOutIPC, probeMin, probeMax := ksyscall.ProbeShareCounts()
+	uartDropped := atomic.LoadUint64(&softIRQDroppedBytes)
 
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
@@ -1374,7 +1439,8 @@ func printEpochStatus() {
 			"  delegate stuck:%s\n"+
 			"  stale-pte: enabled=%v scans=%d hits=%d\n"+
 			"  free-canary: enabled=%v fills=%d verifies=%d hits=%d\n"+
-			"  va-probe: inIPC=%d outIPC=%d minVA=%x maxVA=%x\n",
+			"  va-probe: inIPC=%d outIPC=%d minVA=%x maxVA=%x\n"+
+			"  uart-ring: dropped=%d\n",
 		uptimeSec, totalSVC, actualHz, tcs,
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nIOUring, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
@@ -1388,6 +1454,7 @@ func printEpochStatus() {
 		kmem.StalePTECheckEnabled(), stalePTEScans, stalePTEHits,
 		kmem.FreeCanaryEnabled(), canaryFills, canaryVerifies, canaryHits,
 		probeInIPC, probeOutIPC, probeMin, probeMax,
+		uartDropped,
 	)
 }
 
@@ -1635,6 +1702,8 @@ func SaveThread0AndYield() uint64 {
 	// Check if caller requested a deadline-based sleep (KernelBlockSleep).
 	deadline := thread0PendingDeadline
 	thread0PendingDeadline = 0
+	blockState := pendingYieldBlockState
+	pendingYieldBlockState = 0
 
 	if deadline != 0 {
 		// Sleep mode: add deadline and put thread 0 to sleep.
@@ -1642,9 +1711,22 @@ func SaveThread0AndYield() uint64 {
 		atomic.AddUint64(&dbgYieldSleepPath, 1)
 		staticDeadlineQueue.Remove(int16(t0.TID))
 		staticDeadlineQueue.Insert(int16(t0.TID), deadline)
-		t0.State = ThreadSleeping
 		pluckFromAllQueues(t0.TID)
-		sleepingQueue.PushNoDuplicate(t0.TID)
+		if blockState == 0 {
+			t0.State = ThreadSleeping
+			sleepingQueue.PushNoDuplicate(t0.TID)
+		} else {
+			// Custom block state (e.g. ThreadBlockedKernelRingPush). The
+			// thread lives on the static deadline queue only; the wake
+			// path (drain hook or deadline expiry) flips state and pushes
+			// it back onto a ready queue.
+			t0.State = blockState
+			if blockState == ThreadBlockedKernelRingPush {
+				atomic.StoreInt32(&kernelRingPushBlockerTID, int32(t0.TID))
+				pushBlockerThreadPtr = uintptr(unsafe.Pointer(t0))
+				atomic.StoreUint32(&pushBlockerDeadlineExpired, 0)
+			}
+		}
 	} else {
 		// Normal yield: thread 0 goes to back of ready queue.
 		atomic.AddUint64(&dbgYieldYieldPath, 1)
@@ -1670,6 +1752,10 @@ func SaveThread0AndYield() uint64 {
 		if deadline != 0 {
 			sleepingQueue.Pluck(t0.TID)
 			staticDeadlineQueue.Remove(int16(t0.TID))
+			if blockState == ThreadBlockedKernelRingPush {
+				atomic.StoreInt32(&kernelRingPushBlockerTID, 0)
+				pushBlockerThreadPtr = 0
+			}
 		} else {
 			// Normal yield: remove from ready queue (we just pushed it).
 			GetPerCPU().LocalReadyQueue.Pluck(t0.TID)
