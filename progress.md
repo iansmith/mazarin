@@ -1,5 +1,36 @@
 # Progress Log
 
+## Session: 2026-04-27 (evening, Sonnet) — Stage 3 probes applied, Suspects 5+1 disproven, crash timing lock identified
+
+### What ran
+
+1. **Stage 3 probe application**: Applied two diagnostic-only edits.
+   - `maz/linux/page_cache.go:78` — dropped `old.VA != va` predicate from `[pageCache:OVERWRITE]` check; now logs every overwrite with `same-VA=true/false` annotation.
+   - `maz/linux/syscalls.go` (in `sysMmapPageFlush`, `!inumKnown` branch) — added `[pageCache:FALLBACK_ALLFDS]` log (with inum count) and `[pageCache:DRAIN]` per-inum loop before `FlushAllPagesForSID`/`RemoveAllBatch` fallback fires.
+   Both compile cleanly. Build successful.
+
+2. **Smoke run (90s)**: Crash reproduced (`nelems=256 nalloc=35111`) with **0 probe fires**. Crash fired immediately after `populateSlot client=0 server=4 kind=1` + `initial rebalance first=-1 last=-1 vis=0`.
+
+3. **Five 180s diagnostic runs** (D1–D5): D1 = kernel EL1 data-abort write `FAR=0x9000000 ESR=0x96000045` (translation fault L1 at UART address); D2 = mspan crash `nelems=341 nalloc=4024`; D3–D5 = clean. **0 probe fires across all 6 crash-eligible runs.**
+
+### Findings
+
+- **Suspects 5 and 1 disproven.** The `[pageCache:FALLBACK_ALLFDS]` and (broadened) `[pageCache:OVERWRITE]` probes never fired in any run, including both crash runs. The `sysMmapPageFlush` fallback-flush path and the `cache.Add` overwrite path are not involved in the corruption.
+
+- **Crash timing lock is the primary signal.** Every crash — across all seven diagnostic rounds including this one — fires at the same program point: `populateSlot client=0 server=4 kind=1 cacheLen=49152 fontDataLen=53504` → `cache ready, initial rebalance first=-1 last=-1 vis=0` → `[mem:linux]` → crash. No probe has ever fired before the crash. No crash has ever fired before this point. The corruption window is bounded to what happens between `populateSlot server=4` and the GC sweep that follows the initial rebalance.
+
+- **D1 kernel EL1 abort**: write fault at `VA=0x9000000` (UART), L1 translation missing. This is a different failure mode than the mspan crash — it suggests the kernel's own page tables may be corrupted in some runs, not just mail-app's heap.
+
+- **Primary hypothesis reframed**: VA collision — the kernel maps the 12 font-cache pages at a VA in mail-app's address space that overlaps Go's heap region. The GC's next sweep reads font-file bytes as mspan struct fields → nonsensical `nelems`/`nalloc` → crash.
+
+### Next session
+
+1. **GOGC=5 for mail-app** (verify launch.go sets it; if not, add it). Run 5 × 180s. If timing lock holds under aggressive GC → corruption window confirmed bounded to `populateSlot server=4` → initial-rebalance.
+2. **VA-collision probe** (Stage 4 Option 1): log the VA being mapped into mail-app during `populateSlot server=4`; check against Go heap range. One `klog.Logf` in the kernel map-user-pages path.
+3. See `task_plan.md` Stage 4 pivot options (ordered) for the full decision tree.
+
+---
+
 ## Session: 2026-04-27 (late afternoon, Opus) — Option B run, H-T2 ruled out, Option A next
 
 ### What ran
@@ -37,20 +68,22 @@ New file `kmazarin/kmem/free_canary.go`. At `BuddyFreeTyped` (after `buddyInsert
 
 The most plausible channel for H-T3b is the **linux page-cache writeback path** (`sysWrite` / `flushWriteBuf` / `updateCachedPages` / `flushAndCleanupPages` / `handleFlushReply`). Earlier session `12e5f0d` added a partial-munmap range guard there; a different variant may still exist.
 
+### Late-session: Stage 2 read-only page-cache audit complete
+
+Read `maz/linux/page_cache.go`, `maz/linux/syscalls.go` (relevant excerpts: sysClose, sysFtruncate, sysWrite, flushWriteBuf, sysMmapPageFlush, mmap-fill handler), `maz/linux/main.go` (delegate-handler goroutine setup), `kmazarin/ksyscall/munmap.go`, `kmazarin/ksyscall/mmap_writeback.go`, plus traced direct `BuddyFreeTyped` callers and `RefCount` mutators.
+
+**Result: protocol invariants I1–I5 (in `findings.md`) hold in mainline.** No straightforward bug found. But surfaced two specific paths worth targeted instrumentation:
+
+- **Suspect 5 (PRIMARY) — `sysMmapPageFlush` `!inumKnown` fallback over-flushes.** Lines 1271–1302 of `maz/linux/syscalls.go`: when kernel sends a non-allFDs MmapPageFlush IPC for a fd that has been freed by a prior sysClose (close-before-munmap), the handler falls back to `FlushAllPagesForSID` + `RemoveAllBatch`, draining the cache for **every inum the sid has cached** — including ones whose file mappings are still live in the caller's PT. Code comment at lines 1268–1273 documents the fallback as "better than leaking" but the cure is itself the corruption mechanism if other live file mappings exist for the sid.
+- **Suspect 1 — `[pageCache:OVERWRITE]` coverage gap.** Current overwrite log fires only when `cache.Add` finds an existing entry with a *different* VA (`old.VA != va` at `page_cache.go:78`). A re-fault into the same offset that lands on the same handler VA wouldn't fire.
+
 ### Next session
 
-**Stage 2 read-only audit** of the linux page-cache mutation paths. Files to read:
-- `maz/linux/page_cache.go`
-- `maz/linux/syscalls.go` (sysWrite, sysFtruncate, sysMmapPageFlush)
-- `maz/linux/main.go` (flushWriteBuf / updateCachedPages)
-- `kmazarin/ksyscall/munmap.go` + `kmazarin/ksyscall/mmap_writeback.go`
-- `kmazarin/ksyscall/cleanup.go`
-
-Goal: produce a written audit (in `findings.md` or `task_plan.md`) of every cache-mutation path with yes/no on whether it can leave a stale entry pointing to a freed PA. Concrete fix proposals only after audit is reviewed by user.
+**Stage 3: instrument Suspects 5 and 1, run 5 × 180s.** Both are ~1-line diagnostic-only probes. See `task_plan.md` TOP OF STACK for files-to-touch table. If `[pageCache:FALLBACK_ALLFDS]` fires + crash reproduces in same run → Suspect 5 confirmed; design and propose a fix. If `[pageCache:OVERWRITE]` (broadened) fires → Suspect 1 confirmed; investigate the re-fault path. If both silent + crash reproduces → pivot to H-T1' (ASID swap on munmap) or VirtIO DMA target-PA audit.
 
 ### Stopping point
 
-Five commits on the bug-B-family chain in this session: `3942ae8`, `8a64a92`, `4460c14`, `ca7f5f6`, `612ed58`, plus the upcoming free-canary commit. Option A reverted. Tracking docs current.
+Six commits on the bug-B-family chain: `3942ae8`, `8a64a92`, `4460c14`, `ca7f5f6`, `612ed58`, `c4684ad`. Tracking docs current. Continuation prompt for the next session at `next_session_prompt.md`.
 
 **Diagnostic toggles in tree:**
 - `stalePTECheckEnabled` (`kmazarin/kmem/stale_pte_check.go`) — default false. Telemetry: `stale-pte: enabled scans hits` on [status] line.

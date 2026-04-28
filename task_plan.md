@@ -1,61 +1,65 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: bug B family — page-cache writeback path re-audit (2026-04-27)
+## TOP OF STACK: bug B family — Suspect 5 / Suspect 1 page-cache instrumentation (2026-04-27)
 
 **Branch:** `feature/mail-dumb`
-**Last commits:** `3942ae8` (A+B font leak fix) → `8a64a92` (caller-first close + checkpoints) → `4460c14` (docs retarget) → `ca7f5f6` (kernel double-free / underflow / loop-progress guards) → `612ed58` (Option B stale-PTE verifier — ruled out H-T2) → (next: free-canary commit)
+**Last commits:** `3942ae8` (A+B font leak fix) → `8a64a92` (caller-first close + checkpoints) → `4460c14` (docs retarget) → `ca7f5f6` (kernel double-free / underflow / loop-progress guards) → `612ed58` (Option B stale-PTE verifier — H-T2 ruled out) → `c4684ad` (free-canary — H-T3a ruled out)
 
-### Where we are (2026-04-27 PM)
+### Where we are (2026-04-27 evening)
 
-The font close cycle exposes an intermittent kernel bug that always corrupts an mspan struct field in mail-app's heap. Five diagnostic rounds have ruled out:
+The font close cycle exposes an intermittent kernel bug that always corrupts an mspan struct field in mail-app's heap. Seven diagnostic rounds have ruled out:
 
 - **Buddy double-free / RefCount underflow / unmapLoop hang** (`ca7f5f6` guards silent).
 - **H-T2 stale PTE in another shepherd's PT memory** (`612ed58` Option B verifier silent across 5 × 180s, 184K–203K scans/run, 0 hits).
-- **H-T1 (specifically: missing trailing TLB flush at `SyscallMunmap`)** — Option A reverted as a no-op (per-page `tlbiVAE1IS` already broadcasts in IS domain; trailing local `TlbiVMALLE1` is redundant). Stronger H-T1 tests not yet attempted.
-- **H-T3a kernel write between `BuddyFreeTyped` and the next `BuddyAllocTyped` of the same PA** — sentinel-byte canary 5 × 180s, ~1.5M+ verifies aggregate, 0 hits, including in C3 which reproduced the mspan crash (`nelems=1008 nalloc=23628` at boot during mail-app initial cache rebalance, no clicks). The corrupting write is **not** happening in the free→reuse window.
+- **H-T1 (specifically: missing trailing TLB flush at `SyscallMunmap`)** — Option A reverted as a no-op (per-page `tlbiVAE1IS` already broadcasts in IS domain; trailing local `TlbiVMALLE1` is redundant).
+- **H-T3a kernel write between `BuddyFreeTyped` and reuse** — `c4684ad` free-canary 5 × 180s, ~1.5M+ verifies aggregate, 0 hits, including a confirmed crash repro (C3). The corrupting write is NOT in the free→reuse window.
+- **Page-cache audit (Stage 2 read-only)** — protocol invariants I1–I5 in `findings.md` all hold in mainline. Audit surfaced Suspects 5 and 1 for Stage 3.
+- **Suspect 5 — `sysMmapPageFlush` `!inumKnown` fallback over-flush** — Stage 3 probe `[pageCache:FALLBACK_ALLFDS]` applied and ran 6 × crash-eligible runs (smoke + 5 × 180s). **0 fires.** Disproven.
+- **Suspect 1 — `[pageCache:OVERWRITE]` same-VA coverage gap** — Stage 3 broadened probe (dropped `old.VA != va` predicate) applied same runs. **0 fires.** Disproven.
 
-### Active hypotheses (post free-canary)
+### Strongest lead: crash timing is locked to a single program point
 
-**H-T3b — Kernel path with a stale handle writes AFTER the freed PA has been reissued and legitimately used.** The PA gets freed → canary'd → allocated to mail-app → mail-app's first write overwrites the canary with normal data → THEN a kernel path with a stale PA-derived pointer writes through. The canary is gone by the time of the corrupting write, so this case is invisible to the existing probe. The most plausible channel for this: **the linux page-cache writeback path** (`maz/linux/page_cache.go`, `sysWrite`, `flushWriteBuf`, `updateCachedPages`, `flushAndCleanupPages`, `handleFlushReply`). Earlier session (`12e5f0d`) added a partial-munmap range guard there to fix one variant of this bug — a different variant may still exist.
+Every crash across all sessions fires at exactly the same point:
+```
+[provider] populateSlot client=0 server=4 kind=1 cacheLen=49152 fontDataLen=53504
+...
+[mail] cache ready, initial rebalance first=-1 last=-1 vis=0
+[mem:linux] heap=NkB ...
+<crash>
+```
+This is the mail-app-specific font slot (server=4) being populated, followed immediately by the first collection rebalance. The crash fires during the GC sweep that follows this allocation spike — before any click-driven activity. This temporal lock is the strongest signal we have. Corruption is happening in (or caused by) the populateSlot IPC / initial rebalance window, and the GC discovers it on the very next sweep.
 
-**H-T1' (residual)** — TLB cache holding a translation past `tlbiVAE1IS` (HW erratum or barrier ordering). Hard to test; revisit only if the page-cache audit comes back empty.
+### Active hypothesis: kernel maps font-cache pages at a VA that collides with mail-app's Go heap
 
-**H-T2** — RULED OUT.
+H-T3b (stale-handle write after reissue) is no longer the primary frame. The Stage 3 results, combined with the crash-timing lock, point toward a **VA collision** during `populateSlot server=4`: the kernel maps the 12 font-cache pages (49152 bytes) into mail-app's address space at a VA that overlaps Go's heap region. When the GC next sweeps the span that happens to live at that VA, it reads font-file bytes instead of mspan struct data → `nelems`/`nalloc` nonsensical → crash.
 
-### Plan: Stage 2 (READ-ONLY) — re-audit the page-cache writeback path
+This would also explain D1's variant failure: kernel EL1 data-abort write-fault at `FAR=0x9000000` (UART), `ESR=0x96000045` (translation fault L1, write). Kernel page-table pages could themselves be the victim in that run rather than mail-app's heap.
 
-**This stage is investigation, not a code change.** Read the relevant files, map the dual-mapping flow (kernel → linux handler → kernel-side flush reply), and look for any path where:
-1. A cached page entry holds a `(sid, inum, offset, va, pa)` tuple,
-2. That underlying PA can be released to buddy via a release path (e.g. munmap, ftruncate, shepherd death) without removing the cache entry, **and**
-3. A subsequent `sysWrite` / `flushWriteBuf` / `updateCachedPages` lookup matches the stale entry and writes through the now-recycled PA.
+**H-T1' (residual)** — TLB holding stale translation past `tlbiVAE1IS`. Hard to test. Lower priority now.
 
-Files to read (no edits unless we surface a concrete bug for review):
+### Preliminary experiment: GOGC=5 for mail-app
 
-| File | Why |
-|------|-----|
-| `maz/linux/page_cache.go` | The cache structure + add/lookup/remove/range APIs. Where ownership semantics live. |
-| `maz/linux/syscalls.go` | `sysWrite`, `sysFtruncate`, `sysMmapPageFlush` — every path that mutates the cache. |
-| `maz/linux/main.go` | `flushWriteBuf`, `updateCachedPages` (if present) — the writers that consult the cache and write through PA. |
-| `kmazarin/ksyscall/munmap.go` + `kmazarin/ksyscall/mmap_writeback.go` | Kernel side of the flush IPC: `flushAndCleanupPages` populates `DelegateCallInfo`, `handleFlushReply` releases pages. |
-| `kmazarin/ksyscall/cleanup.go` (and shepherd-death paths) | Death-time cleanup: does it tell linux to drop its cached entries? Look for any window where shepherd dies but linux retains entries. |
+Before Stage 4 probes, run 5 × 180s with mail-app's GC throttle lowered from default 100% to 5% (matching other shepherds). Rationale: if the crash still locks to the same `populateSlot server=4` + initial-rebalance point under aggressive GC, it confirms the corruption is bounded to what happens in that window — not a delayed discovery of an earlier event. File to change: `kmazarin/ksyscall/launch.go` — ensure `GOGC=5` is set for mail.elf (verify it isn't already; CLAUDE.md says shepherds get GOGC=5 but confirm the actual code).
 
-Specific things to look for:
-- A code path that calls `cache.Add` with an entry whose VA may already be in the cache from a previous use (`[pageCache:OVERWRITE]` instrumented but silent — confirm coverage).
-- `sysFtruncate` was flagged as discarding `RemoveRange` results without telling the kernel to drop the handler-side mappings (Bug A in `findings.md`). Re-examine whether the `[ftruncate:LEAK]` warning is firing in any reproducer log.
-- An `sysWrite` that consults the cache by `(fd, offset)` and writes to the cached PA without re-validating that PA still belongs to the original mapping — race window between cache lookup and PA write.
-- A `flushAndCleanupPages` that returns before the handler completes, with the kernel proceeding to free the PA while linux still has entries.
-- Any path where linux writes to the cached PA AFTER receiving a `MmapPageFlush` (i.e., after the kernel has released).
+### Stage 4 pivot options (in priority order)
 
-Deliverable from Stage 2: a written audit (in this file or `findings.md`) listing each cache-mutation path with a yes/no + justification on whether it can leave a stale entry pointing to a freed PA. Concrete fix proposals only after the audit is reviewed.
+**Option 1 (FIRST) — VA-collision probe.** Log the VA range that `populateSlot server=4` maps into mail-app, and compare against mail-app's known Go heap range. One `klog.Logf` in the kernel's map-user-pages path (e.g. `MapUserConstraintPagesWithL0` or `handleFileMappedPageFault`) printing the VA being mapped, together with the page type and SID. If the VA is in `[~0xC000000000, ...]` for ARM64, that's the smoking gun.
+
+**Option 3 (SECOND) — VirtIO DMA target-PA audit.** maildb reads BBolt pages from disk via VirtIO block. If the block driver's DMA descriptor references a PA that was freed and reissued to mail-app as heap, the DMA write would corrupt it. Audit: check whether the DMA target buffer PA is derived from a user-mapped VA (which could be freed mid-request), or from a stable kernel-allocated buffer. Focus on `kmazarin/kvirtio/block*.go` and the descriptor-setup path.
+
+**Option 4 (THIRD) — heap-corruption forensics.** Record exactly which mspan bytes are corrupted and what they contain. The value that overwrites `nalloc` or `nelems` could identify the source (font-file magic bytes, PTE values, IPC header fields). Add a small patch to `runtime.(*sweepLocked).sweep` or a pre-sweep hook that dumps the raw mspan bytes when corruption is detected. This would narrow the mechanism without needing to catch it in the act.
+
+**Option 2 (FOURTH) — H-T1' proper test.** ASID swap on munmap (force TLB invalidation for a specific ASID), or a same-VA read probe immediately post-`tlbiVAE1IS` to verify the invalidation actually reached the CPU's TLB. More invasive than the above; try only if Options 1–3/4 come back clean.
 
 ### Run plan
 
 1. ✅ Baseline: 5 × 180s → 1 mspan crash, 1 boot hang, 3 clean.
 2. ✅ Option B verifier (`612ed58`): 5 × 180s → 1 mspan crash, 2 boot hangs, 2 clean. **H-T2 RULED OUT** (0 hits).
 3. ✅ Option A TLB flush at SyscallMunmap end: 5 × 180s → 2 mspan crashes, 1 boot hang, 2 clean. Crash rate unchanged. **Reverted** (no-op vs per-page `tlbiVAE1IS`).
-4. ✅ H-T3 Stage 1 sentinel-byte canary: 5 × 180s → 1 mspan crash (C3, no clicks), 2 boot hangs, 2 clean (one click-driven). Canary 0 hits across ~1.5M+ verifies. **H-T3a (free→reuse window) RULED OUT.**
-5. **NEXT — Stage 2 page-cache audit (read-only).** Read the listed files, produce a written audit of cache-mutation paths, present concrete fix candidates for review.
-6. Stage 3 (only after audit): apply the most likely fix or add targeted instrumentation around the suspect path; 5 × 180s.
+4. ✅ H-T3 Stage 1 sentinel-byte canary (`c4684ad`): 5 × 180s → 1 mspan crash (C3, no clicks), 2 boot hangs, 2 clean (one click-driven). Canary 0 hits across ~1.5M+ verifies. **H-T3a RULED OUT.**
+5. ✅ Stage 2 page-cache audit (read-only): protocol invariants I1–I5 hold in mainline; surfaced Suspects 5 and 1.
+6. ✅ Stage 3 Suspect 5 + Suspect 1 probes: smoke + 5 × 180s → 2 crashes (D1 kernel EL1 abort, D2 mspan `nelems=341 nalloc=4024`), 3 clean. **0 probe fires across all runs.** Suspects 5 and 1 DISPROVEN.
+7. **NEXT — GOGC=5 mail-app smoke run** (verify timing lock holds under aggressive GC), then **Stage 4 Option 1** (VA-collision logging in map-user-pages path).
 
 ### Reminders — diagnostic toggles in tree
 
