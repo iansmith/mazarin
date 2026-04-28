@@ -1,6 +1,12 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: `fix/concurrent-boot-wedge` — fs-reply wedge during parallel shepherd boot (2026-04-29)
+## TOP OF STACK: website updates (2026-04-29)
+
+Pivoting away from systems debugging. `fix/concurrent-boot-wedge` partial-fix landed and merged; the underlying boot wedge is documented but not fully resolved (audit was incomplete — see ARCHIVED section below).
+
+---
+
+## ARCHIVED: `fix/concurrent-boot-wedge` — partial fix, wedge persists (2026-04-29)
 
 **Branch:** `fix/concurrent-boot-wedge`, off `fix/uring-missed-retries@5352357` (merged from `diag/mail-elf-load-hang`).
 
@@ -33,20 +39,44 @@ This is consistent with `fix/uring-missed-retries`: pre-fix, `uring.Send` retrie
 
 The buffers were defensive scaffolding. They don't fix the consumer-stall they were meant to absorb — they just delay the cascade by N messages. Smaller buffers surface the bug faster; bigger ones hide it longer in tests.
 
-### Proposed fix sequence
+### Final state (2026-04-29 evening)
 
-1. **Capture direct evidence.** Run K7-K9 (5×180 s with current quieter instrumentation). Watch for `[fs:ipc] Send response... failed: EAGAIN` and `[fsclient:TIMEOUT]`. Confirms the chain end-to-end.
-2. **Minimal fix in `respond()`.** Bounded retry on EAGAIN (e.g., 100 attempts × 30 ms = 3 s). One-line-ish change in `maz/fs/fsipc.go:178`. Probably eliminates the wedge.
-3. **Rationalize channel depths.** Shrink `RespCh` to cap 1 (or 0). Audit `wmCh`/`fontReplyCh` consumers for "always-ready" — shrink if so. NOT architectural — just removing arbitrary padding.
-4. **Architectural change deferred.** Decoupling kernel-ring drain from per-protocol routing (so no consumer stall can ever back up the kernel ring) is the right long-term answer. Separate discussion, not this branch.
+**Landed permanent fixes** (in `86e2482`):
+- Bounded retry on EAGAIN in `fs.respond()` (`maz/fs/fsipc.go`). 100 × 30 ms = ~3 s budget. Distinguishes EAGAIN (retryable) from other errors (terminal). Real bug — pre-`fix/uring-missed-retries`, `uring.Send` retried forever via `Gosched`; the new bounded backpressure made the silent-drop path reachable. The retry is unconditionally correct defense-in-depth.
+- `fsclient.Client.RespCh` shrunk from cap 4 to cap 1. By construction (`c.mu` serialization) at most 1 in-flight call exists; cap 4 was arbitrary defensive padding.
 
-### MANDATORY EXIT CRITERION (before merging this branch / moving to other problems)
+**TEMP-DIAGNOSTIC items REMOVED before merge** (per the MANDATORY EXIT CRITERION):
+- 30 s timeout + stale-reply drain in `fsclient.callLocked`.
+- `[fs:serve]` per-iteration instrumentation in fs's serve loop.
+- `[fsclient:TIMEOUT]`, `[fsclient:STALE-DRAIN]` log lines.
 
-> **The timeout in `fsclient.callLocked` AND the `[fs:serve]`/`[fsclient:STALE-DRAIN]`/`[fsclient:TIMEOUT]` instrumentation are TEMPORARY and MUST be removed before this branch lands.** They exist only to convert wedges into observable error events for diagnosis. Per user policy, "polling or timeouts = architectural change" — leaving them in trades the wedge for a long-tail latency mask. Once root cause is fixed and verified across a clean sweep, **delete them in the same branch**, re-verify clean, and only then merge.
+**L-cadence sweep results** (5 × 180 s after fix landed but before TEMP removal):
 
-**Reminders:**
-- Do NOT roll back phase 2 (worker pool) — it's what keeps the wedge from cascading to system death.
-- This wedge is independent of the original DIVERSION mail.elf-load hang (still hasn't fired under phase 2).
+| Run | Outcome | Detail |
+|-----|---------|--------|
+| L1 | wedge | sid=1 (rachel) tid=63 Fstatat 155 s — NO `[fsclient:TIMEOUT]`, NO `[fs:ipc]` errors. Worker not in `callLocked`; bug is upstream of fsclient. |
+| L2 | clean 161 s | |
+| L3 | clean 164 s | |
+| L4 | wedge | sid=9 tid=238 Fstatat 156 s — same signature as L1 |
+| L5 | severe | boot incomplete (0 shepherds main entered), 3 shepherds wedged ~116 s, timeout DID fire, stale-drain DID drop a reply with mismatched reqID |
+
+3 wedges in 5 runs (60%) — wedge rate did NOT improve with the fix. Conclusion: the EAGAIN-drop is real but is NOT the sole cause; the audit was incomplete. The wedge has at least one other failure mode upstream of fsclient (likely in linux's ring-1 dispatcher path → file-lane reader → worker pool pipeline) that we haven't located.
+
+**Why we paused:** the user moved focus to website updates. The partial fix is correct on its own merits and is being merged. The remaining bug is documented for resumption.
+
+### Reminders for future resumption
+
+- The audit found a real EAGAIN-drop bug in `fs.respond()` — fixed and merged.
+- The wedge symptom signature (`delegate stuck: tid=X/sid=Y/sysid=44/for=N+ms`) for tens of seconds with NO `[fs:ipc]` errors and NO timeout firing suggests the request never reaches a worker, OR the worker is parked in something other than `callLocked`.
+- Next concrete step (saved): add worker-entry/exit instrumentation in `handler.handle` (sid+sysid+reqID, enter/return) to find whether wedged requests reach a worker at all.
+- If they don't reach a worker, look at `delegateDispatcher.OnFunc(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, ...)` in `maz/linux/main.go` and the `<-` to `delegateCh` for silent drops.
+- Do NOT roll back phase 2 (worker pool) or shepherd unification — those are stable.
+
+### Side context
+
+- This wedge is independent of the original mail.elf-load DIVERSION (still hasn't fired under phase 2).
+- Channels `wmCh`/`fontReplyCh`/`delegateCh` left at cap 8 — their consumers are tight forwarder loops; shrinking adds little value.
+- `bug_attr_init_crash.md` is a separate constraint-VM bug seen in I1; not related.
 
 ---
 

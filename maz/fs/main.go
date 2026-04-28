@@ -228,12 +228,6 @@ func main() {
 	// 7. Serve delegate requests + shepherd IPC requests.
 	// Both are processed in the main goroutine to avoid concurrent
 	// filesystem access (ext2 is not thread-safe).
-	//
-	// TEMP-DIAGNOSTIC: log only the slow-op picks (LoadFile / ReadFilePages
-	// — these read from blockdev, can take seconds for multi-MB files) for
-	// the fix/concurrent-boot-wedge investigation. IPC ops are high-frequency
-	// and fast; logging them flooded the UART ring (738 drops in K1). Remove
-	// with the timeout — see task_plan.md.
 	fmt.Println("[fs] entering serve loop")
 	for {
 		select {
@@ -242,14 +236,12 @@ func main() {
 			if !ok {
 				continue
 			}
-			fmt.Printf("[fs:serve] picked=delegate sysid=%d sender=%d\n", int(req.SysID), int(req.CallerPID))
 			switch req.SysID {
 			case sysid.LoadFile:
 				handleLoadFile(mt, &req)
 			case sysid.ReadFilePages:
 				handleReadFilePages(&req)
 			}
-			fmt.Printf("[fs:serve] done    =delegate sysid=%d sender=%d\n", int(req.SysID), int(req.CallerPID))
 		case raw := <-fsIPCCh:
 			req, ok := raw.(fsIPCRequest)
 			if !ok {
