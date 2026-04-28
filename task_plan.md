@@ -1,10 +1,39 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: `diag/mail-elf-load-hang` — linux per-request goroutines + fti.maz (2026-04-29)
+## TOP OF STACK: `fix/concurrent-boot-wedge` — fs-reply wedge during parallel shepherd boot (2026-04-29)
 
-**Branch:** `diag/mail-elf-load-hang`, off `fix/uring-missed-retries@e7422c5`.
+**Branch:** `fix/concurrent-boot-wedge`, off `fix/uring-missed-retries@5352357` (merged from `diag/mail-elf-load-hang`).
 
-**Commit:** `f466010` — `linux: per-request goroutines for delegated syscalls + fti.maz migration`. 12 files, +230/-62.
+**Symptom:** ~1-in-5 of 180 s ARM64 HVF boots, three shepherds (whichever happen to be in startup at the same moment) get stuck on their per-shepherd `shep.mu` for 60–110 s. The lock holder is parked in `fsclient.callLocked` waiting on a fs reply that doesn't come for an extended period. Subsequent same-shepherd syscalls (notably stateless `Readlinkat`) queue behind it and surface as `delegate stuck: tid=X/sid=Y/sysid=50/for=60000ms+`. Other shepherds proceed normally — the system as a whole stays alive (worker pool from `ef449b5` ensures this).
+
+**NOT mail-related.** Mail is just one possible victim (when it's in the wedge window). H5's wedged shepherds were sid=20/28/29 — none was mail; they were rachel-plugin-load shepherds (fontsvc / prefs / keymapper / linux-ui / helloworld). The wedge fires whenever fs is busy with a slow op (typically a multi-MB LoadFile read off blockdev) while several shepherds simultaneously try fs operations through the shared `fsclient.Client.mu`.
+
+**Hypotheses (in priority order):**
+
+1. **fs's single-goroutine serve loop is the bottleneck.** `maz/fs/main.go:232` is one goroutine selecting between `fsDelegateCh` (LoadFile/ReadFilePages) and `fsIPCCh` (shepherd IPC). While fs is mid-`file.ReadInto` for a 23 MB LoadFile, no `fsIPCCh` requests are processed. Linux's worker, parked inside `fsclient.callLocked` waiting for fs's reply on its IPC, sits there until the LoadFile finishes. With multiple slow LoadFiles back-to-back (rachel.maz then linux.maz then fti.maz then maildb.maz then mail.maz), the queue of waiting fsclient calls can grow.
+
+2. **Reply was sent but linux's `RespCh` demuxer dropped it.** `fsclient.Client.RespCh` has capacity 4. If multiple replies arrive faster than `mazarin/fsclient/client.go::callLocked`'s consumer pulls them, the kernel-side ring fills. Our recent uring fix gives 10 ms block-with-deadline; on deadline expiry the sender sees EAGAIN and (need to verify) the request may be lost without retry. Audit fs's reply path for "uring.Send EAGAIN swallowed".
+
+3. **Cleanup-on-disconnect race.** If a shepherd dies during fs IPC, fs might tear down state without replying.
+
+**First steps:**
+
+1. **Add a timeout to `fsclient.callLocked`** (e.g. 30 s). On timeout, log + return error. The wedged worker unwedges itself, the shepherd's per-shepherd lock releases, queued same-shepherd syscalls drain. This is a safety net, not a root-cause fix — but it converts an indefinite stall into a recoverable error and gives us actionable telemetry.
+2. **Per-message-class instrumentation in fs's serve loop.** Log when fs picks `fsIPCCh` vs `fsDelegateCh`, plus the request type. Confirms or refutes hypothesis 1: are LoadFile delegate operations starving IPC requests during the wedge window?
+3. **Reproduce H5 deterministically.** The wedge appeared during heavy concurrent boot LoadFiles. Make it ~100% reliable by adding a few extra shepherds to `startup.toml` or by adjusting bootSequence to start more shepherds in parallel. Without a reliable reproducer, we can't measure fixes.
+
+**Reminders:**
+- Do NOT roll back phase 2 (worker pool) — it's what keeps the wedge from cascading to system death. Without it, the wedge would lock up everyone.
+- This wedge is independent of the original DIVERSION mail.elf-load hang (still untracked, still hasn't fired under phase 2).
+- Tracking: per-fsclient-call timeout adds an architectural-style change (timeouts) — that's a user-policy boundary. **Discuss with user** before adding the timeout if it's the first step. (User-flagged: "polling or timeouts = architectural change".)
+
+---
+
+## ARCHIVED: `diag/mail-elf-load-hang` — linux per-request goroutines + fti.maz + shepherd unification (2026-04-29)
+
+**Branch:** `diag/mail-elf-load-hang`, off `fix/uring-missed-retries@e7422c5`. Now merged into `fix/uring-missed-retries` (fast-forward to `5352357`). 8 commits.
+
+**Commits:** `f466010` (linux per-request goroutines + fti.maz + checkpoints), `6ae4d63`, `37f1956` (pageCache.data race fix), `ef449b5` (1024-worker pool), `c0c2b04`, `e9247bc` (mail.maz migration), `aabdfa2` (drop dual-builds + delete launchShepherd legacy body), `5352357`.
 
 **What was done:**
 - **fti.elf → fti.maz migration (stage 1 of "ONE shepherd binary" cleanup).** Dual-build pattern in `maz/fti/Taskfile.yml` mirroring maildb's. `MazarinMain` shim added to `maz/fti/main.go`. `Taskfile.yml` root + `disk-arm64`/`disk-x86_64` updated. `config/startup.{arm64,amd64}.toml` flipped to `/fti.maz`.

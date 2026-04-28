@@ -1,5 +1,28 @@
 # Progress Log
 
+## Session: 2026-04-29 (Opus, continued) — merge diag/mail-elf-load-hang → fix/uring-missed-retries; new branch fix/concurrent-boot-wedge
+
+### Branch state
+
+- `diag/mail-elf-load-hang` (8 commits) fast-forward-merged into `fix/uring-missed-retries`. Both now point at `5352357`. All work on the diag branch is preserved with its full history.
+- New branch `fix/concurrent-boot-wedge` created off `5352357`. Working tree clean. Ready for B work.
+
+### Why the merge here
+
+Phase 2 + worker pool + shepherd unification is logically a unit (each enabled the next). Keeping it separate made sense during diagnosis. With the runtime crashes fixed and the wedge bug isolated as its own thing, a clean merge keeps history readable. The wedge fix gets its own branch since it's a different surface (linux↔fs interaction).
+
+### Tracking updates
+
+- `task_plan.md`: TOP OF STACK pivoted to `fix/concurrent-boot-wedge` with full hypotheses + plan. Previous TOP OF STACK (`diag/mail-elf-load-hang`) moved to ARCHIVED with all sweep tables intact.
+- `next_session_prompt.md`: rewritten for `fix/concurrent-boot-wedge`. References the merged history as context.
+- Memory: `shepherd_binary_unification.md` and `linux_dispatcher_concurrent.md` already final in earlier session.
+
+### Stopping point
+
+Ready to begin B (concurrent-boot-wedge fix) on `fix/concurrent-boot-wedge`. First step per plan: discuss with user whether to add the `fsclient.callLocked` timeout (architectural — user policy on timeouts).
+
+---
+
 ## Session: 2026-04-29 (Opus, continued) — mail.maz migration + drop dual-builds + delete launchShepherd legacy body
 
 ### Branch state
