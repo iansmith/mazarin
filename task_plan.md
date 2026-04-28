@@ -1,9 +1,15 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: bug B family — Suspect 5 / Suspect 1 page-cache instrumentation (2026-04-27)
+## TOP OF STACK: bug B family — Stage 4 VA-collision probe gated, awaiting boot-only sweep (2026-04-28)
 
 **Branch:** `feature/mail-dumb`
-**Last commits:** `3942ae8` (A+B font leak fix) → `8a64a92` (caller-first close + checkpoints) → `4460c14` (docs retarget) → `ca7f5f6` (kernel double-free / underflow / loop-progress guards) → `612ed58` (Option B stale-PTE verifier — H-T2 ruled out) → `c4684ad` (free-canary — H-T3a ruled out)
+**Last commits:** `3942ae8` (A+B font leak fix) → `8a64a92` (caller-first close + checkpoints) → `4460c14` (docs retarget) → `ca7f5f6` (kernel double-free / underflow / loop-progress guards) → `612ed58` (Option B stale-PTE verifier — H-T2 ruled out) → `c4684ad` (free-canary — H-T3a ruled out) → `8b91d34` (maildb console routing) → `24ee044` (Stage 3 page-cache probes) → `b039800` (Stage 4 prep — GOGC=5 + VA-collision probe) → `ade5319` (docs) → `459dab0` (gate VA probe — fix click-induced regression) → `2fbd078` (docs)
+
+### Where we are (2026-04-28)
+
+Stage 4 prep landed. GOGC=5 for mail-app verified active (`gc=6176` in 180s vs prior tens). VA-collision probe in `SyscallSharePages` produced **132 [fontslot:VA] entries from one boot — every VA in `0x500000xxxxxx` (IPC region), none in mail-app's Go heap (`~0xC000000000+`).** Probe was unconditional; clicking once after boot triggered a heavy SharePages burst during body render, the synchronous Criticalfs regressed the system to a kernel `runtime.throw()` / `exit_group` with no panic message visible. Probe now gated behind `vaCollisionProbeEnabled` (default false).
+
+**Provisional read on VA-collision hypothesis:** weakened. The kernel's SharePages target VA picker is consistently picking from the IPC region — Go GC's `findObject` returns nil for non-arena pointers, so marking should never walk into 0x500000xxxxxx. One sample is not conclusive but the consistency is a strong signal. To fully rule out we need a crash run with the probe firing — see Stage 4 plan below.
 
 ### Where we are (2026-04-27 evening)
 
@@ -43,13 +49,15 @@ Before Stage 4 probes, run 5 × 180s with mail-app's GC throttle lowered from de
 
 ### Stage 4 pivot options (in priority order)
 
-**Option 1 (FIRST) — VA-collision probe.** Log the VA range that `populateSlot server=4` maps into mail-app, and compare against mail-app's known Go heap range. One `klog.Logf` in the kernel's map-user-pages path (e.g. `MapUserConstraintPagesWithL0` or `handleFileMappedPageFault`) printing the VA being mapped, together with the page type and SID. If the VA is in `[~0xC000000000, ...]` for ARM64, that's the smoking gun.
+**Option 1 (FIRST, IN PROGRESS) — VA-collision probe.** Implemented in `SyscallSharePages` as `[fontslot:VA]` log, gated by `vaCollisionProbeEnabled` (default false; flip to true in `kmazarin/ksyscall/mailbox.go` for boot-only runs). One boot's data shows all VAs in `0x500000xxxxxx` (IPC region). To finish: re-enable probe, run **boot-only** 5×180s (no clicks — render-time SharePages traffic regresses the system), capture VAs from any crash run. If a crash repros AND VAs remain in 0x500000xxxxxx → VA-collision at SharePages layer fully ruled out → move to Option 3.
 
 **Option 3 (SECOND) — VirtIO DMA target-PA audit.** maildb reads BBolt pages from disk via VirtIO block. If the block driver's DMA descriptor references a PA that was freed and reissued to mail-app as heap, the DMA write would corrupt it. Audit: check whether the DMA target buffer PA is derived from a user-mapped VA (which could be freed mid-request), or from a stable kernel-allocated buffer. Focus on `kmazarin/kvirtio/block*.go` and the descriptor-setup path.
 
 **Option 4 (THIRD) — heap-corruption forensics.** Record exactly which mspan bytes are corrupted and what they contain. The value that overwrites `nalloc` or `nelems` could identify the source (font-file magic bytes, PTE values, IPC header fields). Add a small patch to `runtime.(*sweepLocked).sweep` or a pre-sweep hook that dumps the raw mspan bytes when corruption is detected. This would narrow the mechanism without needing to catch it in the act.
 
 **Option 2 (FOURTH) — H-T1' proper test.** ASID swap on munmap (force TLB invalidation for a specific ASID), or a same-VA read probe immediately post-`tlbiVAE1IS` to verify the invalidation actually reached the CPU's TLB. More invasive than the above; try only if Options 1–3/4 come back clean.
+
+**Side issue surfaced 2026-04-28** — `[maildb] send to SID 29 failed: resource temporarily unavailable` flooded ~151× during fti shepherd launch in E2/E3. Source: `maz/maildb/mail_handler.go::sendMailMsg` (uring.Send EAGAIN). Could be pre-existing (was previously routed through `fmt.Printf` and possibly silent in heavy boot logs) or a new ordering issue between maildb and a freshly-launched mail-app. Audit before drawing further conclusions about Stage 4 results.
 
 ### Run plan
 
@@ -59,12 +67,14 @@ Before Stage 4 probes, run 5 × 180s with mail-app's GC throttle lowered from de
 4. ✅ H-T3 Stage 1 sentinel-byte canary (`c4684ad`): 5 × 180s → 1 mspan crash (C3, no clicks), 2 boot hangs, 2 clean (one click-driven). Canary 0 hits across ~1.5M+ verifies. **H-T3a RULED OUT.**
 5. ✅ Stage 2 page-cache audit (read-only): protocol invariants I1–I5 hold in mainline; surfaced Suspects 5 and 1.
 6. ✅ Stage 3 Suspect 5 + Suspect 1 probes: smoke + 5 × 180s → 2 crashes (D1 kernel EL1 abort, D2 mspan `nelems=341 nalloc=4024`), 3 clean. **0 probe fires across all runs.** Suspects 5 and 1 DISPROVEN.
-7. **NEXT — GOGC=5 mail-app smoke run** (verify timing lock holds under aggressive GC), then **Stage 4 Option 1** (VA-collision logging in map-user-pages path).
+7. ✅ Stage 4 prep — GOGC=5 plumbing + VA-collision probe. E1 (180s, probe ON, click) → 132 [fontslot:VA] entries all in 0x500000xxxxxx, then click→`KERNEL EXIT GROUP` regression. Probe gated. E2/E3 (180s each, probe OFF, no clicks) → 2 clean runs at GOGC=5 (mail-app gc=6176). Crash rate 0/2 within noise vs baseline 1/5.
+8. **NEXT — boot-only 5×180s with `vaCollisionProbeEnabled=true`.** No clicks. Capture probe data from any crash run. Decision tree below.
 
 ### Reminders — diagnostic toggles in tree
 
 - **Option B stale-PTE verifier** at `612ed58`. Default `stalePTECheckEnabled = false` in `kmazarin/kmem/stale_pte_check.go`. Telemetry on `[status]` line: `stale-pte: enabled scans hits`. Flip the var to true to re-enable for any future PT-memory diagnostic.
-- **Free-canary** (next commit). Default `freeCanaryEnabled = false` in `kmazarin/kmem/free_canary.go`. Telemetry on `[status]` line: `free-canary: enabled fills verifies hits`. Flip the var to true to re-enable for any future free→reuse-window diagnostic.
+- **Free-canary** at `c4684ad`. Default `freeCanaryEnabled = false` in `kmazarin/kmem/free_canary.go`. Telemetry on `[status]` line: `free-canary: enabled fills verifies hits`. Flip the var to true to re-enable for any future free→reuse-window diagnostic.
+- **VA-collision probe** at `b039800`/`459dab0`. Default `vaCollisionProbeEnabled = false` in `kmazarin/ksyscall/mailbox.go`. **Boot-only safe** — heavy SharePages traffic during body-render after click regresses the system to kernel exit_group. Logs `[fontslot:VA] caller=N target=M va=X type=T` per SharePages call.
 
 ### Active instrumentation (already in tree)
 

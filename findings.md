@@ -79,9 +79,9 @@ needed to discriminate fix-correct vs not-yet-triggered.
 
 ---
 
-## Bug B family — write-through-stale-mapping into mail-app heap (UPDATED 2026-04-27 evening, post page-cache audit)
+## Bug B family — write-through-stale-mapping into mail-app heap (UPDATED 2026-04-28, post Stage 4 prep)
 
-**Status:** Seven diagnostic rounds. H-T2 ruled out, H-T1 weakened, H-T3a ruled out, Suspects 5 and 1 disproven. Crash timing is locked to a single program point across all sessions. VA-collision probe is next (Stage 4 Option 1).
+**Status:** Eight diagnostic rounds. H-T2 ruled out, H-T1 weakened, H-T3a ruled out, Suspects 5 and 1 disproven. **VA-collision at SharePages layer provisionally weakened** by E1 boot-time data (132/132 VAs in IPC region, none in Go heap) — needs crash-run confirmation. Crash timing locked to `populateSlot server=4` + initial rebalance.
 
 ### Page-cache protocol invariants verified by audit
 
@@ -146,8 +146,11 @@ H-T3b is no longer the primary frame. The kernel may be mapping the 12 font-cach
 | Free-canary at buddy free/alloc | `c4684ad` (default off) | Paint freed pages with `0xDEADBEEFDEADBEEF` (skip first 8 bytes for buddy next-pointer); verify intact at next allocation. 5 × 180s, ~1.5M+ verifies aggregate, **0 hits**, including in C3 which reproduced `nelems=1008 nalloc=23628` at boot during mail-app initial cache rebalance with no clicks. Confirms the corrupting write does NOT happen between `BuddyFreeTyped` and the next `BuddyAllocTyped` of the same PA. **H-T3a ruled out.** |
 | Page-cache audit (read-only) | (2026-04-27 afternoon) | Mapped the dual-mapping protocol; verified invariants I1–I5 hold in mainline. Surfaced two specific paths worth instrumenting: Suspect 5 (`sysMmapPageFlush` `!inumKnown` fallback over-flush) and Suspect 1 (`[pageCache:OVERWRITE]` same-VA coverage gap). |
 | Stage 3 Suspects 5+1 probes | (2026-04-27 evening) | Applied `[pageCache:FALLBACK_ALLFDS]`/`[pageCache:DRAIN]` and broadened `[pageCache:OVERWRITE]`. Smoke + 5 × 180s: 2 crashes (D1 kernel EL1 abort, D2 mspan `nelems=341 nalloc=4024`), 3 clean. **0 probe fires across all runs.** Suspects 5 and 1 DISPROVEN. Crash timing lock identified as primary lead. |
+| Stage 4 prep — GOGC=5 + VA-collision probe | `b039800` / `459dab0` (2026-04-28) | GOGC=5 plumbed into mail-app via `config/startup.arm64.toml` `gc_percent = 5` + fs main.go (`__MAZZY_GCPERCENT` env). Verified active: mail-app `gc=6176` in 180s. VA-collision probe: `[fontslot:VA] caller=N target=M va=X type=T` `klog.Criticalf` in `SyscallSharePages`. **E1 (180s, probe ON): 132 entries, 100% in `0x500000xxxxxx` IPC region, 0 in Go heap range. No crash at boot.** Click after boot triggered SharePages burst during body render; synchronous Criticalfs caused kernel `runtime.throw()` / `exit_group` ("KERNEL EXIT GROUP — halting" with no panic message). Probe gated behind `vaCollisionProbeEnabled` (default false). E2/E3 (180s, probe OFF, no clicks): 2 clean runs at GOGC=5. Insufficient samples (0/2 vs baseline 1/5) to call timing lock. **VA-collision at SharePages layer provisionally weakened — needs crash-run probe data to fully rule out.** |
 
-The corrupting write doesn't go through PageDescriptor accounting, doesn't leave a stale PTE in PT memory, isn't fixed by a redundant TLB flush, doesn't land in the free→reuse window, and doesn't go through any page-cache path. The crash is temporally locked to `populateSlot server=4` + initial rebalance across every session. Active hypothesis: VA collision maps font-cache pages into mail-app's heap VA range.
+The corrupting write doesn't go through PageDescriptor accounting, doesn't leave a stale PTE in PT memory, isn't fixed by a redundant TLB flush, doesn't land in the free→reuse window, and doesn't go through any page-cache path. Boot-time SharePages target VAs are consistently in `0x500000xxxxxx` (IPC region), well outside Go's heap arena range — Go's `findObject` returns nil for non-arena pointers, so a GC walk into 0x500000xxxxxx would mark nothing.
+
+If the crash-run boot-only sweep (Stage 4 next step) confirms VAs stay in IPC region during a crash, the VA-collision hypothesis at the SharePages layer is dead and we pivot to Option 3 (VirtIO DMA target-PA audit).
 
 ### Crash signatures (all same family)
 

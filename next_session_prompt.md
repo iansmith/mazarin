@@ -1,75 +1,73 @@
-# Continuation prompt — bug B family Stage 4 (GOGC=5 + VA-collision probe)
+# Continuation prompt — bug B family Stage 4 (boot-only VA-collision sweep)
 
-## What this is
+## Where we left off (2026-04-28)
 
-A self-contained briefing for the next Claude Code session on the mazzy project. We are chasing an intermittent kernel bug that corrupts an mspan struct field in mail-app's heap. Seven diagnostic rounds have ruled out buddy double-free, stale PTEs, stale TLB flush, the free→reuse window, and all page-cache paths (Suspects 5 and 1). The strongest remaining signal is a **crash timing lock**: every crash fires at exactly the same point — right after `populateSlot client=0 server=4 kind=1 cacheLen=49152 fontDataLen=53504` and the subsequent `initial rebalance first=-1 last=-1 vis=0`. The active hypothesis is a **VA collision**: the kernel maps 12 font-cache pages at a VA in mail-app's address space that overlaps Go's heap region.
+Bug B family chase. Eight diagnostic rounds in. Recent state:
+- GOGC=5 plumbed for mail-app (`config/startup.arm64.toml` + `maz/fs/main.go` + `__MAZZY_GCPERCENT` env). Verified active: `gc=6176` in 180s.
+- VA-collision probe in `SyscallSharePages` (`kmazarin/ksyscall/mailbox.go`) implemented but gated behind `vaCollisionProbeEnabled` (default **false**) after click-induced `KERNEL EXIT GROUP` regression.
+- One boot's data (E1, probe on, 132 entries): **all VAs in `0x500000xxxxxx` IPC region; none in mail-app's Go heap (`~0xC000000000+`).** Provisionally weakens VA-collision hypothesis at the SharePages layer. Need crash-run confirmation to fully rule out.
 
-## Project context
-
-- **Repo:** `/Users/iansmith/mazzy`, branch `feature/mail-dumb`.
-- **Build/run:** See `CLAUDE.md`. Key: `$GO tool task` for builds, `$GO tool task run-arm64-hvf TIMEOUT=N` for runs (always `run-arm64-hvf`, never `run-arm64`), `$GO tool safe-serial-read /tmp/diplomat-arm64-serial.log` for log inspection. Required env every Bash call: `GOTOOLCHAIN=auto GO=/opt/homebrew/bin/go QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64`.
-- **Tracking docs:** `task_plan.md` (TOP OF STACK), `findings.md` (Stage 3 results + Stage 4 plan), `progress.md` (latest entry at top).
-- **Last bug-B commit:** `c4684ad` (free-canary, default off).
-- **Uncommitted work in tree:** Stage 3 probe edits (`maz/linux/page_cache.go:78`, `maz/linux/syscalls.go` `sysMmapPageFlush`) — diagnostic-only, leave in place. Unrelated maildb-console-routing changes (`maz/maildb/*`, `maz/mail-ui/main.go`, `mazarin/maildbio/maildbio.go`, `maz/maildb/mlog.go`, `maildb_console_plan.md`) — leave alone.
-
-## What's been ruled out (don't re-investigate)
+## Context (don't re-investigate)
 
 | Hypothesis | Status |
-|------------|--------|
-| Buddy double-free / RefCount underflow | ruled out (`ca7f5f6` guards silent) |
-| H-T2 stale PTE in PT memory | ruled out (`612ed58` Option B verifier 0 hits across 5 × 180s) |
-| H-T1 missing TLB flush at SyscallMunmap | ruled out as no-op (per-page `tlbiVAE1IS` already broadcasts) |
-| H-T3a write between BuddyFreeTyped and reuse | ruled out (`c4684ad` free-canary ~1.5M+ verifies, 0 hits) |
-| Suspect 5 `sysMmapPageFlush` fallback over-flush | ruled out (Stage 3 `[pageCache:FALLBACK_ALLFDS]` probe 0 fires across 6 crash-eligible runs including 2 crash repros) |
-| Suspect 1 `[pageCache:OVERWRITE]` same-VA gap | ruled out (Stage 3 broadened probe 0 fires same runs) |
+|---|---|
+| Buddy double-free / RefCount underflow | ruled out (`ca7f5f6`) |
+| H-T2 stale PTE in PT memory | ruled out (`612ed58` Option B verifier) |
+| H-T1 missing TLB flush at SyscallMunmap | ruled out as no-op |
+| H-T3a write between BuddyFreeTyped and reuse | ruled out (`c4684ad` free-canary) |
+| Suspect 5 `sysMmapPageFlush` fallback | ruled out (Stage 3 probe 0 fires) |
+| Suspect 1 `[pageCache:OVERWRITE]` gap | ruled out (Stage 3 broadened probe 0 fires) |
+| VA-collision at SharePages layer | **provisionally weakened**, needs crash run |
 
-## Crash timing lock (primary signal)
+**Crash timing lock:** every historical crash fires at `[provider] populateSlot client=0 server=4 kind=1 cacheLen=49152 fontDataLen=53504` → `[mail] cache ready, initial rebalance first=-1 last=-1 vis=0` → `[mem:linux]` → mspan crash (or kernel EL1 abort variant).
 
-Every crash across all seven rounds fires at:
-```
-[provider] populateSlot client=0 server=4 kind=1 cacheLen=49152 fontDataLen=53504
-[mail] cache ready, initial rebalance first=-1 last=-1 vis=0
-[mem:linux] heap=...
-<crash: sweep increased allocation count  OR  kernel EL1 write-fault FAR=0x9000000>
-```
-No crash has ever fired before this point. No probe has ever fired before a crash.
+## Project setup (always)
 
-## What to do (in order)
+- Branch: `feature/mail-dumb`. Repo: `/Users/iansmith/mazzy`.
+- Required env: `GOTOOLCHAIN=auto GO=/opt/homebrew/bin/go QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64`.
+- Build/run: `$GO tool task` for builds, `$GO tool task run-arm64-hvf TIMEOUT=N` to run (always `run-arm64-hvf`, never `run-arm64`), `$GO tool safe-serial-read /tmp/diplomat-arm64-serial.log` for log inspection.
+- Logs: `/tmp/diplomat-arm64-serial.log`. Save per-run copies (`/tmp/F1-180s.log`, etc.) for post-hoc compare.
 
-### Step 1 — GOGC=5 verification and run
+## Step 1 — Boot-only VA probe sweep (5×180s)
 
-Check `kmazarin/ksyscall/launch.go` to see what env vars mail.elf receives. If `GOGC` is not set to `"5"` for the mail shepherd, add it (match the pattern already used for other shepherds). Then run 5 × 180s ARM64 HVF and check whether the crash still locks to the same program point.
+1. **Enable probe**: flip `vaCollisionProbeEnabled = true` in `kmazarin/ksyscall/mailbox.go:11`. Build.
+2. **Run 5×180s sequentially**, **NO CLICKS** — render-time SharePages burst regresses the system to kernel exit_group. Save each log as `/tmp/F{1..5}-180s.log`.
+3. **Per run, capture**:
+   - Did `populateSlot client=0 server=4 kind=1 cacheLen=49152 fontDataLen=53504` fire? (yes = boot reached crash trigger point)
+   - Did mspan crash fire (`fatal error: sweep increased allocation count`) or kernel EL1 abort?
+   - Last 5 `[fontslot:VA]` lines before the crash. What VA range?
 
-**Goal:** confirm the corruption window is bounded to the `populateSlot server=4` → initial-rebalance moment, not a delayed discovery of an earlier event. If timing lock holds under aggressive GC → proceed to Step 2. If crashes appear at different points → note new timing and report before proceeding.
+## Decision tree from Step 1
 
-### Step 2 — VA-collision probe (Stage 4 Option 1)
+- **Crash repros AND last VAs are in `0x500000xxxxxx` (IPC region)** → VA-collision at SharePages layer fully ruled out. Move to Stage 4 Option 3: **VirtIO DMA target-PA audit**. Files: `kmazarin/kvirtio/block*.go`, descriptor-setup path. Question: does `maildb`'s BBolt reads use a DMA target buffer PA derived from a user VA (could be freed mid-request) or a stable kernel buffer?
+- **Crash repros AND any VA falls in `~0xC000000000+`** → smoking gun. Stop and propose fix to user (kernel VA picker bug; check `MapPageInProcess` / `ksMapping` allocator).
+- **0 crashes in 5 runs** → GOGC=5 may have shifted the timing. Run 5 more (10 total samples) before drawing conclusions.
 
-Add a diagnostic log in the kernel's map-user-pages path that prints the VA being mapped into mail-app when font-cache pages are established for `server=4`. The goal is to compare that VA against mail-app's Go heap range (`~0xC000000000+` on ARM64).
+## Step 2 — Audit `[maildb] send to SID 29 failed` flood (side issue)
 
-Candidate locations: `kmazarin/ksyscall/map_shared.go` (SharePages / MapUserConstraintPagesWithL0), or the demand-fault handler that maps file-backed pages into mail-app. Print: `[fontslot:VA] sid=N va=X pages=K type=T` at minimum. Use `klog.Logf` (kernel code).
+Surfaced 2026-04-28 in E2 (151 lines during fti shepherd launch). Source: `maz/maildb/mail_handler.go:543 sendMailMsg`. uring.Send returns EAGAIN. Could be:
+- Pre-existing race exposed by mlog routing change (was previously `fmt.Printf`, may have been silent in heavy boot logs).
+- New ordering issue between maildb and freshly-launched mail-app.
 
-After applying the probe: build + smoke run. Inspect the logged VAs. If any VA falls in the Go heap range for ARM64, that is the smoking gun — stop and report before changing anything else.
+Quick test: `git stash` the mlog-related changes (commit `8b91d34` would need revert) and re-run; if errors disappear → mlog change is the regression source. If errors persist → pre-existing.
 
-### Step 3 (if Steps 1–2 come back clean) — report to user
+Don't block Step 1 on this; just note frequency in Step 1's runs.
 
-If GOGC=5 changes the crash timing AND/OR the VA probe shows no collision, report the new data and wait for direction. Do not proceed to the lower-priority pivots (VirtIO DMA audit, heap forensics, H-T1' proper test) without discussing with the user first.
-
-## Decision tree from Step 2
-
-- **VA in Go heap range fires + crash reproduces** → VA collision confirmed. Stop; propose fix candidates to user (e.g. ensure font-slot VA is allocated from a non-heap region; check VA picker in `MapUserConstraintPagesWithL0` for off-by-one or wrong base).
-- **VA probe shows sane VAs but crash still fires** → VA collision disproven. Move to Step 3 (report).
-- **No crash in 5 × 180s after GOGC=5** → lower-than-expected crash rate; run another 5 × 180s before concluding.
-
-## Reminders
+## Reminders / gotchas
 
 - **Don't** edit `~/louis14` (read-only by default).
 - **Don't** commit unless the user asks.
-- **Don't** run `go build` / `go vet` directly — always `$GO tool task`.
-- **Use** `klog.Logf`/`klog.Errf` for kernel logs, `fmt.Printf` for shepherd logs.
-- **Serial log safety:** never `cat`/`head`/`tail`/Read the raw log; always `$GO tool safe-serial-read`.
-- **Always** use `run-arm64-hvf`, never `run-arm64` (TCG is 100× slower).
-- **Crash grep:** `$GO tool safe-serial-read /tmp/diplomat-arm64-serial.log 2>&1 | grep -E "fatal error|sweep increased|HSHEFAIL|!!FAIL"`
-- **Probe grep:** `$GO tool safe-serial-read /tmp/... 2>&1 | grep -E "pageCache:FALLBACK_ALLFDS|pageCache:DRAIN|pageCache:OVERWRITE|fontslot:VA"`
-- **Diagnostic toggles in tree (default off):** `stalePTECheckEnabled` (`kmazarin/kmem/stale_pte_check.go`), `freeCanaryEnabled` (`kmazarin/kmem/free_canary.go`).
+- **Don't** run `go build`/`go vet` directly — always `$GO tool task`.
+- **Use** `klog.Logf`/`klog.Errf` for kernel logs, `fmt.Printf` for shepherd logs (or `mlogInfo`/`mlogErrorf` inside maildb).
+- **Serial log safety**: never `cat`/`head`/`tail`/Read raw log; always `$GO tool safe-serial-read`.
+- **Always** `run-arm64-hvf`, never `run-arm64` (TCG is 100× slower).
+- **Crash grep**: `$GO tool safe-serial-read /tmp/F1-180s.log 2>&1 | grep -E "fatal error|sweep increased|HSHEFAIL|KERNEL EXIT|\\[fontslot:VA\\]"`
+- **Don't enable VA probe with clicks** — it freezes the kernel after first click. Boot-only.
 
-Good luck.
+## Diagnostic toggles in tree (default off)
+
+- `stalePTECheckEnabled` — `kmazarin/kmem/stale_pte_check.go`
+- `freeCanaryEnabled` — `kmazarin/kmem/free_canary.go`
+- `vaCollisionProbeEnabled` — `kmazarin/ksyscall/mailbox.go` (boot-only safe)
+
+Status counters appear on the periodic `[status]` line.
