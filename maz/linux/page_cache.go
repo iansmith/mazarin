@@ -75,9 +75,9 @@ func (pc *pageCache) Add(sid int16, inum uint32, offset int64, va uintptr, handl
 		pages = make(map[int64]cachedPage)
 		inodes[inum] = pages
 	}
-	if old, present := pages[offset]; present && old.VA != va {
-		fmt.Printf("[pageCache:OVERWRITE] sid=%d inum=%d off=%d oldVA=%x newVA=%x oldHandle=%d newHandle=%d (handler PTE for oldVA orphaned)\n",
-			sid, inum, offset, uint64(old.VA), uint64(va), old.Handle, handle)
+	if old, present := pages[offset]; present {
+		fmt.Printf("[pageCache:OVERWRITE] sid=%d inum=%d off=%d oldVA=%x newVA=%x oldHandle=%d newHandle=%d same-VA=%v (handler PTE for oldVA orphaned)\n",
+			sid, inum, offset, uint64(old.VA), uint64(va), old.Handle, handle, old.VA == va)
 	}
 	pages[offset] = cachedPage{VA: va, Handle: handle, Dirty: false}
 }

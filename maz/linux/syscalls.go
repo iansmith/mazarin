@@ -1289,6 +1289,13 @@ func (h *syscallHandler) sysMmapPageFlush(req sys.SyscallRequest) {
 		return h.writePageByHandle(callerSID, handle, offset, data)
 	}
 	if allFDs || !inumKnown {
+		if !allFDs {
+			inumCount := len(h.cache.data[callerSID])
+			fmt.Printf("[pageCache:FALLBACK_ALLFDS] sid=%d fd=%d inumCount=%d (fd not in fdt, draining all)\n", callerSID, fd, inumCount)
+			for inum := range h.cache.data[callerSID] {
+				fmt.Printf("[pageCache:DRAIN] sid=%d inum=%d\n", callerSID, inum)
+			}
+		}
 		h.cache.FlushAllPagesForSID(callerSID, flushByHandle)
 	} else {
 		h.cache.FlushAllPagesForInum(callerSID, inum, flushByHandle)
