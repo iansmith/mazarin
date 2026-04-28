@@ -447,7 +447,7 @@ func handleOpenFont(senderSID int, msg *wm.OpenFont) {
 		return
 	}
 
-	shareCacheAndReply(conn, connIdx, senderSID, fontID)
+	shareCacheAndReply(conn, connIdx, senderSID, fontID, msg.Variant, msg.Size, family)
 }
 
 // sharedMapping tracks the VA of previously shared pages.
@@ -465,7 +465,7 @@ type perFontSharedVAs struct {
 
 var sharedVAs [32]perFontSharedVAs // indexed by shepherdConns slot
 
-func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID int32) {
+func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID int32, variant, size int32, family string) {
 	slot := &fonts[fontID]
 	cache := slot.cache
 
@@ -553,12 +553,38 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 		FontAddr:      uint64(fontFirstVA),
 		FontSize:      uint64(len(slot.fontData)),
 	})
-	if err := uring.Send(senderSID, &encoded); err != nil {
-		rawPuts("[fontsvc] uring.Send OpenFontReply FAILED: senderSID=")
-		rawPutsInt(senderSID)
-		rawPuts(" err=")
-		rawPuts(err.Error())
-		rawPuts("\n")
+	attempts, err := uring.SendWithStats(senderSID, &encoded, 0)
+	if err != nil {
+		// FAILED — synchronous UART is justified: a dropped reply leaves
+		// the caller blocked on its ReplyCh and is a real bug to chase.
+		buf := append([]byte("[fontsvc] OpenFontReply FAILED senderSID="), itoaBytes(senderSID)...)
+		buf = append(buf, " fontID="...)
+		buf = append(buf, itoaBytes(int(fontID))...)
+		buf = append(buf, " variant="...)
+		buf = append(buf, itoaBytes(int(variant))...)
+		buf = append(buf, " size="...)
+		buf = append(buf, itoaBytes(int(size))...)
+		buf = append(buf, " attempts="...)
+		buf = append(buf, itoaBytes(attempts)...)
+		buf = append(buf, " family="...)
+		buf = append(buf, family...)
+		buf = append(buf, " err="...)
+		buf = append(buf, err.Error()...)
+		buf = append(buf, '\n')
+		rawPuts(string(buf))
+	} else if attempts > 0 {
+		// Retry-but-success — diagnostically interesting (target ring was
+		// full but eventually drained). Single rawPuts to keep UART blocking
+		// to the minimum.
+		buf := append([]byte("[fontsvc] OpenFontReply retried senderSID="), itoaBytes(senderSID)...)
+		buf = append(buf, " fontID="...)
+		buf = append(buf, itoaBytes(int(fontID))...)
+		buf = append(buf, " attempts="...)
+		buf = append(buf, itoaBytes(attempts)...)
+		buf = append(buf, " family="...)
+		buf = append(buf, family...)
+		buf = append(buf, '\n')
+		rawPuts(string(buf))
 	}
 }
 
@@ -1203,13 +1229,21 @@ func rawPuts(s string) {
 }
 
 func rawPutsInt(n int) {
-	if n < 0 {
-		rawPuts("-")
-		n = -n
-	}
+	rawPuts(string(itoaBytes(n)))
+}
+
+// itoaBytes returns the decimal representation of n as a byte slice, suitable
+// for accumulating a single log line in a buffer before a single rawPuts call.
+// Avoids strconv (not always linked into .maz) and avoids the per-fragment
+// UART syscall cost of multiple rawPuts.
+func itoaBytes(n int) []byte {
 	if n == 0 {
-		rawPuts("0")
-		return
+		return []byte{'0'}
+	}
+	neg := false
+	if n < 0 {
+		neg = true
+		n = -n
 	}
 	var buf [20]byte
 	i := len(buf)
@@ -1218,7 +1252,13 @@ func rawPutsInt(n int) {
 		buf[i] = byte('0' + n%10)
 		n /= 10
 	}
-	rawPuts(string(buf[i:]))
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	out := make([]byte, len(buf)-i)
+	copy(out, buf[i:])
+	return out
 }
 
 // rawPutsHex writes n as lowercase hex (no "0x" prefix). Used for

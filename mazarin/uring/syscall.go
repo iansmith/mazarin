@@ -96,6 +96,15 @@ const sendRetryLimit = 256
 // (e.g. linux-ui asking fontsvc for several fonts during boot) fail
 // silently when the target's reader hasn't yet drained the prior message.
 func SendWithRing(targetSID int, msg *ipc.UringIPCMsg, ringIdx int) error {
+	_, err := SendWithStats(targetSID, msg, ringIdx)
+	return err
+}
+
+// SendWithStats is identical to SendWithRing but also returns the number of
+// EAGAIN-driven retry attempts that elapsed before the call returned.
+// attempts==0 means the very first SysUringSend syscall succeeded.
+// Used by call sites that want to surface ring-full pressure in their logs.
+func SendWithStats(targetSID int, msg *ipc.UringIPCMsg, ringIdx int) (attempts int, err error) {
 	for attempt := 0; ; attempt++ {
 		r1, _, errno := syscall.RawSyscall6(mazzy.SysUringSend,
 			uintptr(targetSID),
@@ -107,17 +116,17 @@ func SendWithRing(targetSID int, msg *ipc.UringIPCMsg, ringIdx int) error {
 				runtime.Gosched()
 				continue
 			}
-			return errno
+			return attempt, errno
 		}
 		if int64(r1) < 0 {
-			err := syscall.Errno(-int64(r1))
-			if err == syscall.EAGAIN && attempt < sendRetryLimit {
+			e := syscall.Errno(-int64(r1))
+			if e == syscall.EAGAIN && attempt < sendRetryLimit {
 				runtime.Gosched()
 				continue
 			}
-			return err
+			return attempt, e
 		}
-		return nil
+		return attempt, nil
 	}
 }
 

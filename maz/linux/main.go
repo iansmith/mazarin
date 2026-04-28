@@ -322,6 +322,7 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 		}
 	})
 	ipcDispatcher.Start()
+	fmt.Printf("[linux] uring dispatcher ring=0 started (ipc: WM/Font/FS/Death/IdleHint)\n")
 
 	// Ring 1: blocking delegated syscalls. Includes fd>2 Write (the
 	// kernel routes fd<=2 Writes to ring 2 separately).
@@ -334,6 +335,7 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 		delegateCh <- req
 	})
 	delegateDispatcher.Start()
+	fmt.Printf("[linux] uring dispatcher ring=1 started (delegated syscalls)\n")
 
 	// Ring 2: pipe-buffered stdio Writes only (Write fd<=2 via the
 	// SysRegisterStdioWriteRing override). The reader does the minimum
@@ -349,6 +351,7 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 		stdoutCh <- req
 	})
 	stdioDispatcher.Start()
+	fmt.Printf("[linux] uring dispatcher ring=2 started (stdio writes)\n")
 }
 
 // decodeRawPayload copies the raw UringIPCMsg payload without interpreting it.

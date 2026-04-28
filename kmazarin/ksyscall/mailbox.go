@@ -1,15 +1,51 @@
 package ksyscall
 
 import (
+	"sync/atomic"
+
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 )
 
-// vaCollisionProbeEnabled toggles the [fontslot:VA] log in SyscallSharePages.
-// Default off — the synchronous Criticalf write per page can be expensive
-// under heavy share traffic (font cache populate during body render).
-var vaCollisionProbeEnabled = false
+// vaCollisionProbeEnabled toggles the SharePages target-VA collision check.
+// Default off; flip true for a focused diagnostic run.
+//
+// Design: only Criticalf-syncs to UART when a smoking-gun event happens
+// (target VA falls outside the IPC bump region — this is the failure mode
+// we want to catch). Routine in-region maps just increment a counter that
+// the [status] line surfaces, so probe-on doesn't synchronously block the
+// kernel under heavy SharePages bursts (the reason the original probe
+// regressed render-time).
+var vaCollisionProbeEnabled = true
+
+// VA-collision probe counters (atomic). Surfaced on the [status] line and
+// reset never (cumulative since boot).
+var (
+	probeShareInIPC  uint64 // VA in [0x500000000000, 0xC000000000) — expected
+	probeShareOutIPC uint64 // VA outside expected IPC region — smoking gun
+	probeMinVA       uint64 // lowest VA seen this boot, 0 = unset
+	probeMaxVA       uint64 // highest VA seen this boot
+)
+
+// IPC bump pointer range. Kernel-allocated shepherd-side mappings live at
+// or above 0x500000000000 (IPC region, 88 TiB). Anything below — including
+// the shepherd's own Go heap arena base (0xC000000000) — is suspect: a VA
+// below this means the kernel picked from the wrong allocator.
+const (
+	probeIPCStart  uint64 = 0x500000000000
+	probeHeapStart uint64 = 0xC000000000 // mail-app Go heap base, for log clarity
+)
+
+// ProbeShareCounts returns cumulative probe stats. Used by the [status] line
+// so the data appears alongside other kernel telemetry without needing
+// per-call sync UART traffic.
+func ProbeShareCounts() (inIPC, outIPC, minVA, maxVA uint64) {
+	return atomic.LoadUint64(&probeShareInIPC),
+		atomic.LoadUint64(&probeShareOutIPC),
+		atomic.LoadUint64(&probeMinVA),
+		atomic.LoadUint64(&probeMaxVA)
+}
 
 // SyscallSharePages maps a page from the caller's address space into
 // a target shepherd's address space and caches the VA↔VA translation.
@@ -89,11 +125,41 @@ func SyscallSharePages(arg0, arg1, _, _, _, _ uint64) int64 {
 		return -12 // ENOMEM
 	}
 
-	// VA-collision probe: log all new page-share mappings to UART. Toggle below.
-	// Grep for [fontslot:VA] and check whether the target VA falls in Go heap range.
+	// VA-collision probe: only sync-UART log if the target VA falls outside
+	// the expected IPC bump region — that would be the smoking gun for the
+	// "kernel maps font-cache page into mail-app's Go heap" hypothesis.
+	// Routine in-region maps just bump counters; counts + observed range
+	// show up on the [status] line. Synchronous Criticalf is reserved for
+	// the actual failure mode, keeping the hot path non-blocking.
 	if vaCollisionProbeEnabled {
-		klog.Criticalf("[fV]", "[fontslot:VA] caller=%d target=%d va=%x type=%s\n",
-			callerSID, targetSID, uint64(targetPageVA), desc.Type.String())
+		va := uint64(targetPageVA)
+		if va >= probeIPCStart {
+			atomic.AddUint64(&probeShareInIPC, 1)
+		} else {
+			atomic.AddUint64(&probeShareOutIPC, 1)
+			klog.Criticalf("[fV]", "[fontslot:VA OUT-OF-RANGE] caller=%d target=%d va=%x type=%s\n",
+				callerSID, targetSID, va, desc.Type.String())
+		}
+		// Track lowest/highest VA seen — surfaces drift in the bump pointer
+		// across boots without per-call sync UART.
+		for {
+			cur := atomic.LoadUint64(&probeMinVA)
+			if cur != 0 && va >= cur {
+				break
+			}
+			if atomic.CompareAndSwapUint64(&probeMinVA, cur, va) {
+				break
+			}
+		}
+		for {
+			cur := atomic.LoadUint64(&probeMaxVA)
+			if va <= cur {
+				break
+			}
+			if atomic.CompareAndSwapUint64(&probeMaxVA, cur, va) {
+				break
+			}
+		}
 	}
 
 	// Cache the translation

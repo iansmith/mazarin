@@ -1,5 +1,105 @@
 # Progress Log
 
+## Session: 2026-04-28 late evening (Opus) — F6-F10 + smarter probe + OpenFont instrumentation
+
+### What changed in tree (uncommitted)
+
+1. **`kmazarin/ksyscall/mailbox.go`**: replaced per-call `klog.Criticalf` probe (132×/boot synchronous UART) with atomic counters + range check. `Criticalf` now only fires if a target VA falls **outside** `[0x500000000000, ...)` (smoking-gun case). Counters surfaced on `[status]` line as `va-probe: inIPC=N outIPC=M minVA=X maxVA=Y`. `vaCollisionProbeEnabled` flipped to true.
+2. **`kmazarin/kmazarin/threads.go`**: extended `[status]` line with `va-probe:` line.
+3. **`mazarin/uring/syscall.go`**: added `SendWithStats(target, msg, ringIdx) (attempts int, err error)` — same retry logic as `SendWithRing` but returns the EAGAIN-retry count so callers can log when they hit ring-full pressure.
+4. **`maz/fontsvc/main.go`**: replaced `uring.Send` in `shareCacheAndReply` with `SendWithStats`. Logs `[fontsvc] OpenFontReply FAILED` (with senderSID/fontID/variant/size/attempts/family/err) on exhausted-retry failures, and `[fontsvc] OpenFontReply retried` on successful retries. **No log on clean first-try success** — keeps synchronous UART traffic bounded to actual EAGAIN events. Added `itoaBytes` helper to consolidate multi-fragment logs into single `rawPuts` calls.
+5. **`maz/linux/main.go`**: added one-line `[linux] uring dispatcher ring=N started` log per dispatcher (uses `fmt.Printf` → buffered Linux Write delegate, so async).
+
+### F6-F10 results (180s each, no clicks, probe ON with corrected range)
+
+| Run | Outcome | mail-font slot | va-probe inIPC | OUT-OF-RANGE | OpenFontReply FAILED | retried |
+|-----|---------|----------------|----------------|--------------|----------------------|---------|
+| F6  | clean 164s | yes | 132 | 0 | 0 | 0 |
+| F7  | clean 162s | yes | 132 | 0 | 0 | 0 |
+| F8  | **panic** (attr.Init/D1-variant) | yes | (no status) | 0 | 0 | 0 |
+| F9  | mid-boot hang (mail.elf load) | no (didn't reach) | (no status) | 0 | 0 | 0 |
+| F10 | clean 172s | yes | 132 | 0 | 0 | 0 |
+
+Combined with F1-F5 + E1: **7 successful mail-font-slot populates × 132 SharePages = ~924 IPC-region picks, 0 out-of-range across all runs.** minVA=`0x500000000000`, maxVA=`0x500001d3e000` exactly the same in every clean boot — kernel's IPC bump-pointer picker is fully deterministic.
+
+### F8 — different bug, captured incidentally
+
+```
+panic: attr: ValueToFlat failed: flat: unsupported vm type 0 for conversion
+goroutine 1 [running]:
+mazzy/mazarin/attr.(*Attribute[...]).evaluate
+mazzy/mazarin/attr.(*Attribute[...]).Get
+mazzy/mazarin/mancini.(*LayoutAttributes).FullDamage
+main.main() at mazarin/apps/mail/main.go:408
+```
+
+Followed by kernel `EE25 status=2 / FAIL EL=1 FAR=0x9000000 ELR=...458BE918 ESR=0x96000045` — UART data abort variant of D1.
+
+This matches the **attr.Init constraint page crash** bug B-family member already in `MEMORY.md`. Different mechanism than the GC mspan crash (`sweep increased allocation count`).
+
+### Findings
+
+- **VA-collision hypothesis at SharePages layer is now strongly disconfirmed.** The corrected probe ran across 7 successful boots × 132 calls each (~924 SharePages) with **zero** out-of-range picks. The IPC bump pointer is reliably allocating from `0x500000000000+`, never near the Go heap (`0xC000000000`).
+- **The mspan-corruption "bug B" target did not reproduce in F1-F10** (10 boots, 8 reached steady state). Historical baseline was 1/5; current is 0/8 even-keeled. Combined with E2/E3 from earlier in the session, GOGC=5 plus the small timing perturbations from the probe instrumentation appear to have masked or mitigated the corruption window. We need a different way to provoke it.
+- **OpenFont EAGAIN didn't recur in F6-F10.** Yesterday's F2 had one occurrence (`senderSID=1` linux). The instrumentation is in place (FAILED + retried logs with attempts) but the condition didn't fire across these 5 runs. Need either more samples or boot-time pressure variation to catch it.
+- **F8 caught a sister bug** — attr.Init crash, separate from the GC mspan crash. Already tracked in `MEMORY.md` as `bug_attr_init_crash.md`.
+
+### Stopping point — instrumentation landed but uncommitted
+
+All edits unstaged. The probe is `enabled=true` in mailbox.go. No commits this session.
+
+### Next-step options
+
+A. **More runs** to catch either the GC mspan crash or another OpenFontReply EAGAIN. Both are intermittent at <1/5 rate, so 10+ more runs would be needed for confidence.
+
+B. **Pivot to Stage 4 Option 3 (VirtIO DMA target-PA audit)** in `kmazarin/kvirtio/block*.go`. The VA-collision hypothesis is now strongly disconfirmed; DMA-PA collision is the next candidate for the mspan crash.
+
+C. **Provoke EAGAIN deliberately** — e.g. add a temporary boot-time delay before linux's ring-0 dispatcher starts so OpenFont replies arrive while the ring is unattended. Would let us verify whether the EAGAIN is purely "reader not yet running" vs something else.
+
+D. **Investigate the F8 attr.Init crash** as its own thread.
+
+---
+
+## Session: 2026-04-28 evening (Opus) — Boot-only F1-F5 sweep, probe ON, 0 crashes, all VAs IPC-region
+
+### What ran
+
+Flipped `vaCollisionProbeEnabled = true` in `kmazarin/ksyscall/mailbox.go`. Built. Ran 5×180s ARM64 HVF, no clicks. Saved logs at `/tmp/F{1..5}-180s.log` and decoded text at `/tmp/F{1..5}-text.log`.
+
+### Per-run summary
+
+| Run | uptime | Crash | populateSlot server=4 | [fontslot:VA] | VAs outside IPC | SID 29 fail flood |
+|-----|--------|-------|----------------------|---------------|-----------------|-------------------|
+| F1  | 165s   | no    | yes (1×)             | 132           | 0               | 0                 |
+| F2  | 162s   | no    | no                   |  98           | 0               | 0                 |
+| F3  | 161s   | no    | yes (1×)             | 132           | 0               | 0                 |
+| F4  | 161s   | no    | yes (1×)             | 132           | 0               | 0                 |
+| F5  | 161s   | no    | yes (1×)             | 132           | 0               | 0                 |
+
+Total: 626 [fontslot:VA] entries across 5 boots, all in IPC region. VA prefix span seen: `0x500000000xxx` through `0x500001d3xxxx` — i.e. up to ~30 MB into the IPC region. None even close to Go heap (`0xC000000000+`).
+
+### Findings
+
+- **0 crashes in 5 runs.** Baseline (no probe) was 1/5; F1-F5 with probe ON gave 0/5. Either GOGC=5 has dropped the crash rate below baseline noise, or boot-only traffic alone isn't enough to trigger the corruption (E1's crash needed a click-driven render burst, but that's gated now).
+- **Every observed VA is in the IPC region** (`>= 0x500000000000`, well below `0xC000000000`). 4/5 runs reached the historic crash trigger point `populateSlot client=0 server=4 kind=1` without crashing. Combined with E1's 132 same-region VAs, this is now 5 boots × server=4 hits, all IPC-region — strong consistency.
+- **Per the decision tree, "fully ruled out" requires a crash run + IPC-region VAs.** No crash repro in F1-F5, so the formal disconfirmation isn't reached. But the consistency makes VA-collision at the SharePages layer increasingly improbable.
+- **`[maildb] send to SID 29 failed` flood DID NOT recur** in any of F1-F5. The 151-line E2 burst from yesterday's session may have been timing-sensitive; not actively regressing now. No mlog bisect needed at this time.
+- **Probe stayed safe** boot-only: no click-induced regression in any run.
+
+### Stopping point — no commits this session yet
+
+Probe still flipped to `true` in working tree. Diff is only the one-line toggle in `kmazarin/ksyscall/mailbox.go`. Awaiting user decision on next direction.
+
+### Next-step options
+
+A. **F6-F10 (more samples)** to chase a crash with the probe firing. Decision tree says 0/5 → run 5 more before drawing conclusions. ~15 min runtime.
+
+B. **Pivot now to Option 3 (VirtIO DMA target-PA audit)** given the 5/5 consistency of IPC-region VAs across server=4 hits. Files: `kmazarin/kvirtio/block*.go`, descriptor-setup path. Question: does maildb's BBolt read use a DMA target-PA derived from a user VA (could be freed mid-request) or a stable kernel buffer?
+
+C. **Hybrid**: revert probe flip + run 5 baseline (probe off) to compare crash rate. If baseline is still 0-1/5 at GOGC=5, the timing has genuinely shifted and we need a different way to provoke the crash before any further VA work.
+
+---
+
 ## Session: 2026-04-28 (Opus) — Stage 4 prep landed, VA-collision probe regression caught + fix, preliminary VA data favors disconfirmation
 
 ### What ran
