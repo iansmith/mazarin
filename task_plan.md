@@ -1,6 +1,27 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: bug B family — Stage 4 VA-collision probe gated, awaiting boot-only sweep (2026-04-28)
+## TOP OF STACK: `fix/uring-missed-retries` — kernel-side block-with-deadline (2026-04-28 night)
+
+**Branch:** `fix/uring-missed-retries`, off `feature/mail-dumb` at `68a7254`.
+
+**Why:** F1-F15 chase identified the root cause of `OpenFontReply EAGAIN`: synchronous UART writes (`klog.Criticalf`, etc.) run with ARM64 SVC's hardware-default DAIF.I=masked, and on `-smp 1` QEMU this IRQ-blocks the entire system for ~7 ms per call. Receiver's userspace reader gets starved → ring fills → sender gets EAGAIN. See `memory/sync_uart_irq_masked.md` for the architectural write-up.
+
+**Architecture (agreed with user):**
+- **Kernel-side block with deadline** for both `SyscallUringSend` and `pushStringFull` (`topHalfUartRing` push). 10 ms ceiling, woken early by drainer; deadline expiry surfaces EAGAIN cleanly.
+- **First-come-first-served, single blocker per slot.** Second sender returns -EAGAIN immediately.
+- **Userspace pacing**: 3-attempt retry in `mazarin/uring/syscall.go` with `nanosleep` (real deadline-queue block, not yield) when a previous attempt returned faster than the per-attempt deadline. No `runtime.Gosched()` anywhere — one was found in `pushStringFull`, removed; userspace had a 256× Gosched retry, removed.
+- **`Send`/`Recv`/`Connect`** are one-line ring-0 wrappers; `*WithRing` are the primitives.
+
+**Status:** Steps 1-2 done (kernel uring block path + drain wake + deadline expiry + receiver-death cleanup). Builds clean, untested, uncommitted. Steps 3-7 remaining (see `progress.md`).
+
+**Reminders / non-negotiables:**
+- No `runtime.Gosched()` anywhere in this fix — by user policy: "yields cover up bugs that will bite later."
+- No new architecture additions beyond the agreed scope without further discussion.
+- Don't commit until user reviews the diff.
+
+---
+
+## PAUSED: bug B family — VA-collision strongly disconfirmed, GC mspan crash didn't reproduce in 15 boots
 
 **Branch:** `feature/mail-dumb`
 **Last commits:** `3942ae8` (A+B font leak fix) → `8a64a92` (caller-first close + checkpoints) → `4460c14` (docs retarget) → `ca7f5f6` (kernel double-free / underflow / loop-progress guards) → `612ed58` (Option B stale-PTE verifier — H-T2 ruled out) → `c4684ad` (free-canary — H-T3a ruled out) → `8b91d34` (maildb console routing) → `24ee044` (Stage 3 page-cache probes) → `b039800` (Stage 4 prep — GOGC=5 + VA-collision probe) → `ade5319` (docs) → `459dab0` (gate VA probe — fix click-induced regression) → `2fbd078` (docs)

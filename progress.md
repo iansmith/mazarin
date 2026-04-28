@@ -1,5 +1,63 @@
 # Progress Log
 
+## Session: 2026-04-28 night (Opus) — Branched `fix/uring-missed-retries`, kernel block-with-deadline impl in flight
+
+### Branch state
+
+- New branch `fix/uring-missed-retries` off `feature/mail-dumb` at `68a7254`.
+- One committed predecessor on `feature/mail-dumb`: `68a7254` (instrumentation: counter-based VA probe + OpenFontReply EAGAIN logging + linux dispatcher-started logs).
+- This session's kernel work is **uncommitted** on `fix/uring-missed-retries`, awaiting review.
+
+### Architecture decision (recorded in `memory/sync_uart_irq_masked.md`)
+
+Synchronous UART writes (`klog.Criticalf`, `serial.PollWrite`, `.maz` `rawPuts`) are taken with ARM64 SVC's hardware-default DAIF.I=masked. With QEMU `-smp 1`, a 7 ms PL011 spin IRQ-blocks the entire system. This is why F2's `OpenFontReply EAGAIN` happened: the receiver's reader was starved while the kernel held the CPU.
+
+Fix architecture: **kernel-side block-with-deadline** for both rings + **userspace pacing** (no `runtime.Gosched()` anywhere).
+
+### Step 1 — data-only state (DONE)
+
+- `kmazarin/kmazarin/threads.go`: added `ThreadBlockedUringSend` (state 19) and `ThreadBlockedKernelRingPush` (state 20). Added `Thread.UringSendBlockedSlotPtr` and `Thread.UringSendDeadlineExpired`.
+- `kmazarin/kmazarin/uring_ipc.go`: added `UringIPCSlot.BlockedSenderTID` and `BlockedSenderPtr`; init initialises BlockedSenderTID = -1.
+- `kmazarin/kmazarin/serial_console.go`: added `kernelRingPushBlockerTID int32` and `softIRQDroppedBytes uint64` (data only — wiring in step 3).
+
+### Step 2 — uring kernel-side block (DONE, uncommitted)
+
+- `kmazarin/kmazarin/uring_ipc.go` `UringSendKernel` rewritten:
+  - Userspace senders (senderSID >= 0) park on `ThreadBlockedUringSend` with 10 ms deadline if ring full and no other sender is parked.
+  - Kernel-internal senders (senderSID < 0, `KernelWriteToRing`) keep immediate `-EAGAIN`.
+  - Single blocker per slot (Scenario D); second sender returns `-EAGAIN` immediately.
+  - Race-free publish: re-check head/tail under `schedulerLock` before publishing blocked state.
+  - On rewind+retry, `UringSendDeadlineExpired` flag short-circuits to `-EAGAIN`.
+  - `wakeBlockedSenderSchedLockHeld` helper (rewind+ready) is shared by drain wake and cleanup paths.
+- New `WakeSenderAfterDrain(sid, ringIdx)` — separate from `advanceUringHead` (the latter is `//go:nosplit`); called from `SyscallUringRecv` after each `advanceUringHead` to wake any parked sender.
+- `kmazarin/ksyscall/uring_ipc_asm.go`: linkname stub for `wakeSenderAfterDrain`.
+- `kmazarin/ksyscall/uring_ipc.go` `SyscallUringRecv`: calls `wakeSenderAfterDrain` post-advance in both drain branches.
+- `kmazarin/kmazarin/threads.go` `processStaticDeadlinesSchedLockHeld`: new branch for `ThreadBlockedUringSend` — clears slot blocker, sets `UringSendDeadlineExpired`, rewinds, readies.
+- `kmazarin/kmazarin/uring_ipc.go` `CleanupUringIPCForShepherd`: also wakes senders parked on a dying receiver's slot (sets deadline-expired so the rewind retry surfaces an error instead of re-blocking).
+
+Full tree builds clean (`$GO tool task`).
+
+### Steps 3-7 — REMAINING
+
+3. **Same pattern for `pushStringFull` + `topHalfUartRing` consumer.** Park thread 0 with `KernelBlockSleep` when `topHalfUartRing` is full. Wake from `SyscallWaitSoftIRQ`'s pop path. Drop-and-counter on deadline expiry.
+4. **Userspace rewrite of `mazarin/uring/syscall.go`** — remove `SendWithStats`, make `SendWithRing` the primitive with 3-attempt retry + nanosleep pacing on fast-EAGAIN + single log line. `Send` is the one-line ring-0 wrapper.
+5. **Revert `maz/fontsvc/main.go` instrumentation I added** (`itoaBytes`, attempts logging, `shareCacheAndReply` extra args). Just call `uring.Send` and let it handle retry + logging.
+6. **Build, smoke test.**
+7. **Run F16-F20 and compare to F6-F15 baseline.**
+
+### Key things to verify in the existing step-2 work before extending
+
+- The race window: producer's first head/tail check is under producer lock (atomic), and the BLOCKING publish takes scheduler lock and re-checks head/tail under it. Drainers advance head atomically (no lock) then take schedulerLock for the wake. The "drain happens between producer's first check and publish" case is handled by the recursive call to `UringSendKernel(...)` after the under-sched-lock re-check fails.
+- `findNextThreadForBlockSchedLockHeld(senderThread)` returning nil falls back to immediate EAGAIN — matches futex-block precedent.
+- `staticDeadlineQueue.Insert` after `Remove` because an already-blocked thread might have a leftover deadline (defensive, mirrors AddDeadlineStatic's behavior).
+- `t.Context` X1/X2 are not overwritten across SVC, so only `SoftIRQSlotArg` (= arg0/targetSID) needs RestoreSyscallArg0 on rewind.
+
+### Next-session resumption
+
+See `next_session_prompt.md`.
+
+---
+
 ## Session: 2026-04-28 late evening (Opus) — F6-F10 + smarter probe + OpenFont instrumentation
 
 ### What changed in tree (uncommitted)
