@@ -6,6 +6,11 @@ import (
 	"mazzy/kmazarin/proc"
 )
 
+// vaCollisionProbeEnabled toggles the [fontslot:VA] log in SyscallSharePages.
+// Default off — the synchronous Criticalf write per page can be expensive
+// under heavy share traffic (font cache populate during body render).
+var vaCollisionProbeEnabled = false
+
 // SyscallSharePages maps a page from the caller's address space into
 // a target shepherd's address space and caches the VA↔VA translation.
 // arg0 = targetSID (shepherd to map page into)
@@ -84,10 +89,12 @@ func SyscallSharePages(arg0, arg1, _, _, _, _ uint64) int64 {
 		return -12 // ENOMEM
 	}
 
-	// VA-collision probe: log all new page-share mappings to UART (Criticalf bypasses soft-IRQ).
+	// VA-collision probe: log all new page-share mappings to UART. Toggle below.
 	// Grep for [fontslot:VA] and check whether the target VA falls in Go heap range.
-	klog.Criticalf("[fV]", "[fontslot:VA] caller=%d target=%d va=%x type=%s\n",
-		callerSID, targetSID, uint64(targetPageVA), desc.Type.String())
+	if vaCollisionProbeEnabled {
+		klog.Criticalf("[fV]", "[fontslot:VA] caller=%d target=%d va=%x type=%s\n",
+			callerSID, targetSID, uint64(targetPageVA), desc.Type.String())
+	}
 
 	// Cache the translation
 	addVACacheEntry(callerSID, targetSID, callerPageVA, targetPageVA)
