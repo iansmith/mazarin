@@ -12,7 +12,9 @@ package mancini
 // Feedback is called on each state change during the drag. Complete
 // is called exactly once when the button is released.
 type StdMouseFeedback interface {
+	// Feedback reports whether the interactor is currently armed (active).
 	Feedback(active bool)
+	// Complete is called once when the press-drag-release ends; success is true if released inside.
 	Complete(success bool)
 }
 
@@ -22,5 +24,6 @@ type StdMouseFeedback interface {
 // bounding-box check passes. If the interactor does not implement this
 // interface, the bounding-box hit is accepted as-is.
 type DetailedHit interface {
+	// DetailedHit returns true if (localX, localY) is a real hit beyond the bounding-box check.
 	DetailedHit(localX, localY int64) bool
 }

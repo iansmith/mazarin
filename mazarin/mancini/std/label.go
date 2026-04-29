@@ -22,10 +22,13 @@ import (
 type Label struct {
 	impl.ThemedInteractor
 
-	Text        string         // static text (used when TextFunc is nil)
-	TextFunc    func() string  // dynamic text source (takes precedence)
-	FontSize    int64
-	Color       color.NRGBA
+	Text     string        // static text (used when TextFunc is nil)
+	TextFunc func() string // dynamic text source (takes precedence)
+	// FontSize is the text size in pixels.
+	FontSize int64
+	// Color is the foreground colour used to render the text.
+	Color color.NRGBA
+	// Bold selects the bold font variant when true.
 	Bold        bool
 	Transparent bool // skip background fill (parent paints background)
 	textFace    mancini.LatinTextFace

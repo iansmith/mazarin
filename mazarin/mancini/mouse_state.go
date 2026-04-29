@@ -24,6 +24,7 @@ func GlobalToLocal(globalX, globalY int64, d Drawer) (localX, localY int64, insi
 
 // ChildAccessor is implemented by decorator interactors that wrap a single child.
 type ChildAccessor interface {
+	// GetChild returns the wrapped child [Drawer], or nil.
 	GetChild() Drawer
 }
 

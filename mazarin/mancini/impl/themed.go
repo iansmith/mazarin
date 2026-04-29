@@ -58,13 +58,24 @@ func (t *ThemedInteractor) Initialize(owner mancini.Interactor, layout *mancini.
 	t.FullDamage()
 }
 
+// Theme returns the [mancini.Theme] in effect for this interactor.
 func (t *ThemedInteractor) Theme() mancini.Theme   { return t.theme }
+
+// BgColor returns the theme palette's Surface (background) color.
 func (t *ThemedInteractor) BgColor() color.NRGBA { return t.theme.Palette().Surface() }
+
+// FgColor returns the theme palette's Text (foreground) color.
 func (t *ThemedInteractor) FgColor() color.NRGBA { return t.theme.Palette().Text() }
+
+// Font resolves a [mancini.FontConfig] from the theme for the given feature and size.
 func (t *ThemedInteractor) Font(feature mancini.Feature, size int64) *mancini.FontConfig {
 	return t.theme.Font(feature, size)
 }
+
+// DefaultFont returns the theme's default [mancini.FontConfig].
 func (t *ThemedInteractor) DefaultFont() *mancini.FontConfig { return t.theme.DefaultFont() }
+
+// DefaultSize returns the theme's default font size in pixels.
 func (t *ThemedInteractor) DefaultSize() int64               { return t.theme.DefaultFontSize() }
 
 // Draw clears the interactor's background to the [mancini.Palette]'s

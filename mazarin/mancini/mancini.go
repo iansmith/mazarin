@@ -9,6 +9,7 @@ import (
 // This is the legacy interface — new interactors should implement
 // [NewDrawer] instead.
 type Drawer interface {
+	// Draw paints this interactor into the given bounds.
 	Draw(dc DrawContext, x, y, w, h float64)
 }
 
@@ -24,6 +25,7 @@ type Drawer interface {
 // All concrete interactors in [mazzy/mazarin/mancini/std] implement this
 // interface.
 type NewDrawer interface {
+	// Draw paints this interactor into the given bounds, restricted to damage.
 	Draw(self Interactor, x, y, w, h int64, damage image.Rectangle)
 }
 
@@ -31,6 +33,7 @@ type NewDrawer interface {
 // All interactors that embed [impl.Interactor] satisfy this interface
 // via the promoted GetLayout method.
 type Layouter interface {
+	// GetLayout returns this interactor's layout attributes.
 	GetLayout() *LayoutAttributes
 }
 
@@ -48,6 +51,7 @@ const (
 	Inset                  // Recessed into the surface — inner shadows.
 )
 
+// String returns the depth's name ("Raised", "Flush", "Inset").
 func (d NeuDepth) String() string {
 	switch d {
 	case Raised:
@@ -98,15 +102,26 @@ func (d NeuDepth) MouseDown() NeuDepth {
 // listed after DesktopBG.
 type Palette interface {
 	// ── Original roles ───────────────────────────────────────────
+
+	// Surface is the primary background color for interactors.
 	Surface() color.NRGBA
+	// SurfaceTint is a subtle variant of Surface for layered backgrounds.
 	SurfaceTint() color.NRGBA
+	// DarkShadow is the dark side of neumorphic shadows.
 	DarkShadow() color.NRGBA
+	// LightShadow is the light side of neumorphic shadows.
 	LightShadow() color.NRGBA
+	// Text is the default foreground color for text.
 	Text() color.NRGBA
+	// Icon is the foreground color for icons and glyphs.
 	Icon() color.NRGBA
+	// Highlight is the selection background color.
 	Highlight() color.NRGBA
+	// HighlightText is the foreground color used on Highlight backgrounds.
 	HighlightText() color.NRGBA
+	// DisabledAlpha is the alpha multiplier (0..1) applied to disabled controls.
 	DisabledAlpha() float64
+	// DesktopBG is the root window background color.
 	DesktopBG() color.NRGBA
 
 	// ── Extended color roles (Qt QPalette inspired) ──────────────
@@ -165,7 +180,9 @@ type Palette interface {
 // weight class. All interactors in [mazzy/mazarin/mancini/std] handle
 // nil gracefully by falling back to flat rendering.
 type NeumorphicParams interface {
+	// Heavy returns window-weight neumorphic parameters, or nil to disable.
 	Heavy() *NeuParams
+	// Light returns control-weight neumorphic parameters, or nil to disable.
 	Light() *NeuParams
 }
 
@@ -174,8 +191,11 @@ type NeumorphicParams interface {
 // DarkBlur/LightBlur set the Gaussian blur radius; DarkAlpha/LightAlpha
 // set the shadow opacity.
 type RaisedParams struct {
-	LightOff, LightBlur   float64
-	DarkOff, DarkBlur     float64
+	// LightOff and LightBlur set the light-side shadow offset and blur.
+	LightOff, LightBlur float64
+	// DarkOff and DarkBlur set the dark-side shadow offset and blur.
+	DarkOff, DarkBlur float64
+	// DarkAlpha and LightAlpha set the opacity of each shadow layer.
 	DarkAlpha, LightAlpha uint8
 }
 
@@ -184,7 +204,9 @@ type RaisedParams struct {
 // lower-right). DarkBlur and LightBlur set the Gaussian blur radius for
 // each shadow layer. Inner shadows are masked to the shape boundary.
 type InsetParams struct {
-	Off                 float64
+	// Off is the inner shadow offset in pixels.
+	Off float64
+	// DarkBlur and LightBlur set the Gaussian blur radius for each inner shadow layer.
 	DarkBlur, LightBlur float64
 }
 
@@ -192,7 +214,9 @@ type InsetParams struct {
 // state. EdgeW is the stroke width; EdgeAlpha is the opacity of both
 // the dark and light edge strokes.
 type FlushParams struct {
-	EdgeW     float64
+	// EdgeW is the stroke width of the edge outline.
+	EdgeW float64
+	// EdgeAlpha is the opacity of the dark and light edge strokes.
 	EdgeAlpha uint8
 }
 
@@ -203,9 +227,12 @@ type FlushParams struct {
 // A nil *NeuParams disables all neumorphic rendering. See
 // [NeumorphicParams] for details on the nil convention.
 type NeuParams struct {
+	// Raised holds parameters for the [Raised] depth state.
 	Raised RaisedParams
-	Flush  FlushParams
-	Inset  InsetParams
+	// Flush holds parameters for the [Flush] depth state.
+	Flush FlushParams
+	// Inset holds parameters for the [Inset] depth state.
+	Inset InsetParams
 }
 
 // GrooveParams are the default [InsetParams] used for thin inset separator
@@ -217,8 +244,11 @@ var GrooveParams = InsetParams{Off: 1, DarkBlur: 3, LightBlur: 2}
 // animation protocol. AppWindow dispatches animation messages to
 // registered Animatable interactors using their local animation ID.
 type Animatable interface {
+	// AnimationStart is called when an animation with the given local ID begins.
 	AnimationStart(localID uint64, startNanos int64)
+	// AnimationUpdate is called on each animation tick with elapsed-time fractions.
 	AnimationUpdate(localID uint64, startNanos, endNanos int64, coveredStart, coveredEnd float64, nanosSinceStart int64)
+	// AnimationFinish is called when the animation ends.
 	AnimationFinish(localID uint64, endNanos int64)
 }
 

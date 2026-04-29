@@ -51,6 +51,8 @@ import (
 type Decorator struct {
 	Interactor
 	Parent
+	// Top, Right, Bottom, Left are the decoration insets in pixels.
+	// The child is positioned and sized inside these insets.
 	Top, Right, Bottom, Left int64
 	lastOwnHash   int64
 	lastChildHash int64

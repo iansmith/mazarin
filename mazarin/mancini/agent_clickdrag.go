@@ -14,6 +14,7 @@ type ClickDragAgent struct {
 	startEvent *InputEvent // event that initiated the drag (from ClickDragStart)
 }
 
+// Name returns the agent's identifier for dispatch logging.
 func (a *ClickDragAgent) Name() string { return "clickdrag" }
 
 // FocusTarget returns the captured target, or nil when idle.

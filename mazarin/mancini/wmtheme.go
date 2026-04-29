@@ -27,23 +27,30 @@ const (
 // renders decorations independently of the application's interactor theme.
 // The standard implementation is [theme.DefaultWMTheme].
 type WMTheme interface {
+	// Name returns a human-readable identifier for this WM theme.
 	Name() string
+	// Palette returns the WM's color scheme.
 	Palette() Palette
+	// Style returns the [SurfaceStyle] used to render decorations.
 	Style() SurfaceStyle
 
 	// ── Decoration geometry ──────────────────────────────────────
 
-	// Shadow margins outside the NeuBox face.
+	// ShadowTop returns the top shadow margin outside the NeuBox face.
 	ShadowTop() int
+	// ShadowBottom returns the bottom shadow margin outside the NeuBox face.
 	ShadowBottom() int
+	// ShadowLeft returns the left shadow margin outside the NeuBox face.
 	ShadowLeft() int
+	// ShadowRight returns the right shadow margin outside the NeuBox face.
 	ShadowRight() int
 
-	// Title bar dimensions.
+	// TitleBarHeight returns the height of the window title bar.
 	TitleBarHeight() int
+	// TitleGap returns the gap between the title bar and the content area.
 	TitleGap() int
 
-	// Corner radius for the decoration NeuBox.
+	// CornerRadius returns the corner radius for the decoration NeuBox.
 	CornerRadius() float64
 
 	// ── Derived border totals (shadow + title + gap) ─────────────
@@ -55,20 +62,30 @@ type WMTheme interface {
 
 	// ── Title bar styling ────────────────────────────────────────
 
+	// TitleStyle returns the [TitleBarStyle] (striped, gradient, flat).
 	TitleStyle() TitleBarStyle
+	// TitleFont returns the font family used for window titles.
 	TitleFont() string
+	// TitleFontSize returns the font size for window titles.
 	TitleFontSize() int64
+	// TitleActiveAlpha returns the title text alpha for active windows.
 	TitleActiveAlpha() uint8
+	// TitleInactiveAlpha returns the title text alpha for inactive windows.
 	TitleInactiveAlpha() uint8
 
 	// ── Window state colors ──────────────────────────────────────
 
+	// ActiveBorderColor returns the border color for the focused window.
 	ActiveBorderColor() color.NRGBA
+	// InactiveBorderColor returns the border color for unfocused windows.
 	InactiveBorderColor() color.NRGBA
+	// UrgentBorderColor returns the border color for windows demanding attention.
 	UrgentBorderColor() color.NRGBA
 
 	// ── Unfocused window content ─────────────────────────────────
 
+	// UnfocusedContentMode returns how content is rendered when the window loses focus.
 	UnfocusedContentMode() UnfocusedMode
+	// UnfocusedDimAlpha returns the overlay alpha used when [UnfocusedDim] is active.
 	UnfocusedDimAlpha() uint8
 }

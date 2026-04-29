@@ -11,12 +11,12 @@ import (
 
 var manciniSID string
 
-// Init initializes the mancini layout system using the shepherd's SID from attr.SID().
-// Must be called after attr.Init().
 // VisSuffix is the URI suffix for the Visible attribute, used by constraint programs
 // to check child visibility.
 var VisSuffix = LayoutVisible.Suffix()
 
+// Init initializes the mancini layout system using the shepherd's SID from attr.SID().
+// Must be called after attr.Init().
 func Init() {
 	manciniSID = attr.SID()
 }
@@ -24,11 +24,11 @@ func Init() {
 // LayoutAttributes holds constraint system attributes for an interactor's layout.
 type LayoutAttributes struct {
 	name                         string               // interactor's constraint-system name
-	X, Y, Width, Height *attr.Attribute[int64]
-	Visible             *attr.Attribute[bool]
+	X, Y, Width, Height *attr.Attribute[int64] // local position and size
+	Visible             *attr.Attribute[bool]  // visibility flag
 	Bounds                       *attr.Attribute[vm.Value] // Rectangle2D: (x, y, x+w, y+h)
 	BoundsHash                   *attr.Attribute[int64]    // hash of X,Y,W,H for fast change detection
-	Parent                       *attr.Attribute[string]
+	Parent                       *attr.Attribute[string]   // parent's constraint-system name
 	SpacingAttr        *attr.Attribute[int64] // inter-child spacing (containers only)
 	CrossAlignAttr     *attr.Attribute[int64] // cross-axis alignment (containers only)
 	MaxWidthAttr       *attr.Attribute[int64] // max width for overflow clipping (Row)
@@ -47,6 +47,8 @@ func (lh *LayoutAttributes) Name() string {
 
 var nameCounter uint64
 
+// DefaultName returns a unique constraint-system name by suffixing typeName
+// with a process-local counter (e.g. "Button1", "Button2").
 func DefaultName(typeName string) string {
 	n := atomic.AddUint64(&nameCounter, 1)
 	return typeName + strconv.FormatUint(n, 10)

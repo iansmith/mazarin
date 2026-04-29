@@ -33,20 +33,26 @@ func (s *NeumorphicStyle) params(w mancini.Weight) *mancini.NeuParams {
 	return s.light
 }
 
+// DrawBox draws a rectangular neumorphic box by delegating to [NeuBoxWith]
+// with the parameters selected by weight.
 func (s *NeumorphicStyle) DrawBox(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, weight mancini.Weight,
 	x1, y1, x2, y2, r float64, face color.NRGBA) {
 	NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, face, s.params(weight))
 }
 
+// DrawCircle draws a circular neumorphic shape by delegating to
+// [NeuCircleWith] with the parameters selected by weight.
 func (s *NeumorphicStyle) DrawCircle(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, weight mancini.Weight,
 	cx, cy, radius float64, face color.NRGBA) {
 	NeuCircleWith(pal, dc, depth, cx, cy, radius, face, s.params(weight))
 }
 
+// Groove draws a horizontal neumorphic groove by delegating to [NeuGroove].
 func (s *NeumorphicStyle) Groove(pal mancini.Palette, dc mancini.DrawContext, x1, y, x2 float64) {
 	NeuGroove(pal, dc, x1, y, x2)
 }
 
+// Pad returns the maximum shadow padding required for the given weight.
 func (s *NeumorphicStyle) Pad(weight mancini.Weight) float64 {
 	p := s.params(weight)
 	if p == nil {
@@ -55,6 +61,8 @@ func (s *NeumorphicStyle) Pad(weight mancini.Weight) float64 {
 	return float64(mancini.NeuMaxPad(*p))
 }
 
+// TintOverlay draws a translucent face-colored tint over an existing
+// rectangular surface for hover/focus highlighting.
 func (s *NeumorphicStyle) TintOverlay(dc mancini.DrawContext, _ mancini.NeuDepth,
 	x1, y1, x2, y2, r float64, face color.NRGBA) {
 	canvas := dc.Image().(*image.RGBA)

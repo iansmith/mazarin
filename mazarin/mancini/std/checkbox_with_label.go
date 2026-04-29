@@ -31,7 +31,9 @@ const (
 type CheckboxWithLabel struct {
 	impl.ThemedInteractor
 
-	Checked   bool
+	// Checked indicates whether the checkbox is currently checked.
+	Checked bool
+	// Side specifies which side of the checkbox the label is drawn on.
 	Side      LabelSide
 	CheckSize float64      // side length of the checkbox square
 	Gap       float64      // space between checkbox and label

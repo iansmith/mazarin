@@ -9,7 +9,9 @@ package mancini
 // This uses the same callback-registration pattern as FontSvcInjector
 // to ensure the linker keeps interface methods alive in both binaries.
 type KeyMapperInjector interface {
+	// GetKeymapName returns the name of the keymap to load (e.g. "us").
 	GetKeymapName() string
+	// RegisterKeyMapper stores the constructed [KeyMapper] for the caller to read back.
 	RegisterKeyMapper(km KeyMapper)
 }
 

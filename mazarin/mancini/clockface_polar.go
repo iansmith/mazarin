@@ -25,6 +25,7 @@ func (f *PolarFace) Location() *time.Location {
 	return f.Loc
 }
 
+// FaceName returns the short display name "Polar".
 func (f *PolarFace) FaceName() string { return "Polar" }
 
 // DrawFace renders the Raketa Polar clock face.

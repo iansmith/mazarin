@@ -19,11 +19,17 @@ import (
 type FreeFloatingWindow struct {
 	impl.Decorator
 
-	Pal     mancini.Palette
+	// Pal is the palette used for the panel surface, title, and groove.
+	Pal mancini.Palette
+	// NeuPrms holds neumorphic shading parameters for the panel.
 	NeuPrms mancini.NeuParams
-	Style   mancini.SurfaceStyle
-	Title   string
-	Radius  float64
+	// Style is the surface style used to render the panel and groove.
+	Style mancini.SurfaceStyle
+	// Title is the text rendered in the title bar at the top of the panel.
+	Title string
+	// Radius is the corner radius of the panel rectangle in pixels.
+	Radius float64
+	// Visible controls whether Draw renders the window contents.
 	Visible bool
 
 	textFace     mancini.LatinTextFace

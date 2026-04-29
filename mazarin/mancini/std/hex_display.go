@@ -15,8 +15,11 @@ import (
 type OutputFormat int
 
 const (
+	// FormatDecimal renders integer values as base-10 decimal digits.
 	FormatDecimal OutputFormat = iota
+	// FormatHex renders integer values as uppercase hexadecimal digits.
 	FormatHex
+	// FormatBinary renders integer values as base-2 binary digits.
 	FormatBinary
 )
 

@@ -169,12 +169,25 @@ func (i *Interactor) DrawSelfOpaque(damage image.Rectangle, c color.NRGBA) {
 		float64(r.Dx()), float64(r.Dy()))
 }
 
+// X returns the interactor's X position from layout.
 func (i *Interactor) X() int64       { return i.layout.X.Get() }
+
+// Y returns the interactor's Y position from layout.
 func (i *Interactor) Y() int64       { return i.layout.Y.Get() }
+
+// W returns the interactor's width from layout.
 func (i *Interactor) W() int64       { return i.layout.Width.Get() }
+
+// H returns the interactor's height from layout.
 func (i *Interactor) H() int64       { return i.layout.Height.Get() }
+
+// Visible reports whether the interactor is currently visible.
 func (i *Interactor) Visible() bool  { return i.layout.Visible.Get() }
+
+// SetVisible sets the interactor's Visible layout attribute.
 func (i *Interactor) SetVisible(v bool) { i.layout.Visible.Set(v) }
+
+// DC returns the [mancini.DrawContext] last propagated to this interactor.
 func (i *Interactor) DC() mancini.DrawContext { return i.dc }
 
 // ScreenCoordConvertTo converts interactor-local coordinates to screen

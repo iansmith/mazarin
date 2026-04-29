@@ -35,16 +35,24 @@ const DefaultMaxLineCount = 200
 type MultiLineText struct {
 	impl.ThemedInteractor
 
-	FontSize    int64
-	Radius      float64
-	Padding     float64
+	// FontSize is the rendered font size in pixels.
+	FontSize int64
+	// Radius is the corner radius for the editor's background rectangle.
+	Radius float64
+	// Padding is the interior pixel padding between border and text.
+	Padding float64
+	// BorderWidth is the pixel width of the editor border.
 	BorderWidth float64
-	Focused     bool
-	TextColor   color.NRGBA
-	BgColor     *color.NRGBA // if non-nil, overrides pal.Base() for background
-	Disabled    bool
-	AppWindow   *AppWindow
-	AfterEdit   func() // optional; called after each text modification
+	// Focused controls cursor rendering: only a focused editor draws a caret.
+	Focused bool
+	// TextColor overrides the palette's BaseText() when non-zero.
+	TextColor color.NRGBA
+	BgColor   *color.NRGBA // if non-nil, overrides pal.Base() for background
+	// Disabled disables keyboard and mouse input handling.
+	Disabled bool
+	// AppWindow is required for animation-driven alerts.
+	AppWindow *AppWindow
+	AfterEdit func() // optional; called after each text modification
 
 	// Mu guards the gap buffer for concurrent access. The main goroutine
 	// (keyboard handler, draw) and any background reader (e.g., markdown
@@ -949,12 +957,17 @@ func (m *MultiLineText) ClearAlert() {
 	m.FullDamage()
 }
 
-func (m *MultiLineText) AnimationStart(localID uint64, startNanos int64)    {}
+// AnimationStart implements [mancini.Animatable]; no-op for the alert fade.
+func (m *MultiLineText) AnimationStart(localID uint64, startNanos int64) {}
+
+// AnimationUpdate implements [mancini.Animatable]; fades the alert border alpha.
 func (m *MultiLineText) AnimationUpdate(localID uint64,
 	startNanos, endNanos int64, coveredStart, coveredEnd float64, nanosSinceStart int64) {
 	m.alertAlpha = uint8(255.0 * (1.0 - coveredEnd))
 	m.FullDamage()
 }
+
+// AnimationFinish implements [mancini.Animatable]; clears the alert state.
 func (m *MultiLineText) AnimationFinish(localID uint64, endNanos int64) {
 	m.isAlerting = false
 	m.alertAlpha = 0

@@ -18,6 +18,7 @@ type RowPercentage struct {
 	impl.Interactor
 	impl.Parent
 
+	// Pal is the [mancini.Palette] used for selection backgrounds.
 	Pal            mancini.Palette
 	ClipChildren   bool      // clip each child to its cell bounds (prevents text overflow)
 	Percents       []float64 // percentage of width for each child position

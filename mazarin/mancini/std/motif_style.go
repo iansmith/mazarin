@@ -25,6 +25,8 @@ func NewMotifStyle(bevelWidth float64) *MotifStyle {
 	return &MotifStyle{bevelWidth: bevelWidth}
 }
 
+// DrawBox renders a rectangular surface with hard-edged Motif bevels
+// for the given [mancini.NeuDepth]. The radius parameter is ignored.
 func (s *MotifStyle) DrawBox(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, weight mancini.Weight,
 	x1, y1, x2, y2, _ float64, face color.NRGBA) {
 
@@ -47,6 +49,9 @@ func (s *MotifStyle) DrawBox(pal mancini.Palette, dc mancini.DrawContext, depth 
 	}
 }
 
+// DrawCircle renders a filled circle with a uniform Motif-style border.
+// Motif doesn't have a natural circular bevel; the depth only affects
+// the fill color.
 func (s *MotifStyle) DrawCircle(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, weight mancini.Weight,
 	cx, cy, radius float64, face color.NRGBA) {
 
@@ -69,6 +74,8 @@ func (s *MotifStyle) DrawCircle(pal mancini.Palette, dc mancini.DrawContext, dep
 	dc.Stroke()
 }
 
+// Groove draws a horizontal Motif-style groove (dark line above light
+// line) from x1 to x2 at height y.
 func (s *MotifStyle) Groove(pal mancini.Palette, dc mancini.DrawContext, x1, y, x2 float64) {
 	bw := s.bevelWidth / 2
 	if bw < 1 {
@@ -83,10 +90,14 @@ func (s *MotifStyle) Groove(pal mancini.Palette, dc mancini.DrawContext, x1, y, 
 	dc.Stroke()
 }
 
+// Pad returns the recommended interior padding in pixels for surfaces
+// of the given weight.
 func (s *MotifStyle) Pad(weight mancini.Weight) float64 {
 	return 3
 }
 
+// TintOverlay draws a translucent face-colored rectangle on top of an
+// existing surface to apply a hover/focus tint.
 func (s *MotifStyle) TintOverlay(dc mancini.DrawContext, depth mancini.NeuDepth,
 	x1, y1, x2, y2, _ float64, face color.NRGBA) {
 	dc.SetColor(color.NRGBA{face.R, face.G, face.B, 60})

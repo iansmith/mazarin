@@ -19,6 +19,7 @@ type Panel struct {
 	impl.Interactor
 	impl.Parent
 
+	// Pal supplies the [mancini.Palette] used to fill the panel background.
 	Pal mancini.Palette
 }
 

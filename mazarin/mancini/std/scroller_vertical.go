@@ -12,7 +12,9 @@ import (
 type ScrollbarStyle int
 
 const (
+	// ScrollbarStandard selects the full neumorphic [Scrollbar].
 	ScrollbarStandard ScrollbarStyle = iota
+	// ScrollbarLight selects the slimmer [LightScrollbar].
 	ScrollbarLight
 )
 
@@ -31,6 +33,7 @@ type ScrollerVertical struct {
 	impl.Interactor
 	impl.Parent
 
+	// Scroller is the inner [Scroller] that hosts the scrolling children.
 	Scroller  *Scroller
 	scrollbar mancini.Interactor // standard or light
 

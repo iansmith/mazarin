@@ -53,6 +53,7 @@ func NewClickAgent() *ClickAgent {
 	}
 }
 
+// Name returns the agent's identifier for dispatch logging.
 func (a *ClickAgent) Name() string { return "click" }
 
 // Deliver processes a raw press/release event through the click FSM.

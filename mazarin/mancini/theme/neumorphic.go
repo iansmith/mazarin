@@ -20,7 +20,10 @@ type DefaultNeumorphicParams struct {
 	light mancini.NeuParams
 }
 
+// Heavy returns the window-weight neumorphic shadow parameters.
 func (d *DefaultNeumorphicParams) Heavy() *mancini.NeuParams { return &d.heavy }
+
+// Light returns the control-weight neumorphic shadow parameters.
 func (d *DefaultNeumorphicParams) Light() *mancini.NeuParams { return &d.light }
 
 // NewDefaultNeumorphicParams returns the standard neumorphic shadow parameters.

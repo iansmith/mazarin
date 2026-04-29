@@ -26,28 +26,59 @@ type DefaultTheme struct {
 	resolve mancini.FontResolver
 }
 
+// Name returns the theme's display name.
 func (t *DefaultTheme) Name() string                         { return t.name }
+
+// Palette returns the theme's [mancini.Palette].
 func (t *DefaultTheme) Palette() mancini.Palette             { return t.pal }
+
+// Style returns the theme's active [mancini.SurfaceStyle].
 func (t *DefaultTheme) Style() mancini.SurfaceStyle          { return t.style }
+
+// Neumorphic returns the theme's [mancini.NeumorphicParams].
 func (t *DefaultTheme) Neumorphic() mancini.NeumorphicParams { return t.neu }
+
+// DefaultFontSize returns the theme's default font size in pixels.
 func (t *DefaultTheme) DefaultFontSize() int64               { return t.defSize }
 
 // ── Geometry ────────────────────────────────────────────────────────────
 
+// ControlRadius returns the corner radius used for buttons and similar controls.
 func (t *DefaultTheme) ControlRadius() float64      { return 8.0 }
+
+// FieldRadius returns the corner radius used for input fields.
 func (t *DefaultTheme) FieldRadius() float64         { return 6.0 }
+
+// FieldBorderWidth returns the border width used for input fields.
 func (t *DefaultTheme) FieldBorderWidth() float64    { return 2.0 }
+
+// FieldPadding returns the internal padding used for input fields.
 func (t *DefaultTheme) FieldPadding() float64        { return 8.0 }
+
+// ScrollbarThickness returns the scrollbar's cross-axis thickness in pixels.
 func (t *DefaultTheme) ScrollbarThickness() float64  { return 22.5 }
+
+// ScrollbarMinThumb returns the minimum scrollbar thumb length in pixels.
 func (t *DefaultTheme) ScrollbarMinThumb() float64   { return 20.0 }
 
 // ── Font configuration ──────────────────────────────────────────────────
 
+// FontFamily returns the theme's primary font family name.
 func (t *DefaultTheme) FontFamily() string     { return t.family }
+
+// FontFamilyMono returns the theme's monospace font family name.
 func (t *DefaultTheme) FontFamilyMono() string { return t.mono }
+
+// TitleFontSize returns the font size used for titles.
 func (t *DefaultTheme) TitleFontSize() int64   { return t.defSize + 2 }
+
+// ControlFontSize returns the font size used for controls.
 func (t *DefaultTheme) ControlFontSize() int64 { return t.defSize }
+
+// BodyFontSize returns the font size used for body text.
 func (t *DefaultTheme) BodyFontSize() int64    { return t.defSize }
+
+// SmallFontSize returns the font size used for small/secondary text.
 func (t *DefaultTheme) SmallFontSize() int64   { return t.defSize - 2 }
 
 // DefaultFont returns a FontConfig for the theme's default family and size

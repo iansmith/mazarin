@@ -22,8 +22,10 @@ import (
 // BackingStoreEntry tracks a shared backing store mapping so it can be
 // released via Munmap when superseded by a newer backing store.
 type BackingStoreEntry struct {
+	// Addr is the base address of the mapped backing store region.
 	Addr uintptr
-	Len  int
+	// Len is the length in bytes of the mapped region.
+	Len int
 }
 
 // AppWindow is the root application window — a thin, zero-inset decorator
@@ -45,7 +47,9 @@ type BackingStoreEntry struct {
 type AppWindow struct {
 	impl.Decorator
 
-	Pal     mancini.Palette
+	// Pal is the palette used for rendering this window's contents.
+	Pal mancini.Palette
+	// Focused indicates whether the window currently has input focus.
 	Focused bool
 	Title   string // informational — passed to rachel, not rendered here
 
@@ -71,8 +75,12 @@ type AppWindow struct {
 	lastBoundsHash int64
 
 	// --- Retained but unused: will move to rachel ---
-	NeuPrms      mancini.NeuParams
-	Radius       float64
+
+	// NeuPrms holds neumorphic shading parameters retained for future use.
+	NeuPrms mancini.NeuParams
+	// Radius is the corner radius retained for future use.
+	Radius float64
+	// TitleDraw is a custom title-bar draw callback retained for future use.
 	TitleDraw    func(dc mancini.DrawContext, focused bool, x, y, w, h float64)
 	shadowMargin int64
 	tbHeight     int64

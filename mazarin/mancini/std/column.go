@@ -32,8 +32,11 @@ type Column struct {
 	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
 	impl.Parent     // GetChildren() via constraint network
 
-	Pal               mancini.Palette
-	CrossAlign        mancini.Alignment
+	// Pal is the palette used for the optional background fill.
+	Pal mancini.Palette
+	// CrossAlign controls horizontal alignment of children within the column.
+	CrossAlign mancini.Alignment
+	// MaxHeight is the maximum column height in pixels (0 means unbounded).
 	MaxHeight         int64
 	VPadding          int64 // vertical padding applied at top and bottom edges
 	HPadding          int64 // horizontal padding applied at left and right edges

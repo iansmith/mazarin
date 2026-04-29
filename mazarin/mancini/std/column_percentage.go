@@ -27,6 +27,7 @@ type ColumnPercentage struct {
 	impl.Interactor
 	impl.Parent
 
+	// Pal is the palette retained for child rendering decisions.
 	Pal      mancini.Palette
 	HPadding int64     // horizontal padding applied at left and right edges
 	Percents []float64 // percentage of height for each child position

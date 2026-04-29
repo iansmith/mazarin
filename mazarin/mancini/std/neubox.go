@@ -21,11 +21,17 @@ import (
 type NeuBox struct {
 	impl.Decorator
 
-	Pal    mancini.Palette
-	Depth  mancini.NeuDepth
+	// Pal is the [mancini.Palette] used for shadow and surface colors.
+	Pal mancini.Palette
+	// Depth controls whether the box appears Raised, Flush, or Inset.
+	Depth mancini.NeuDepth
+	// Weight selects the shadow strength (Light/Medium/Heavy).
 	Weight mancini.Weight
-	Style  mancini.SurfaceStyle
-	Face   color.NRGBA
+	// Style supplies the [mancini.SurfaceStyle] that actually renders the box.
+	Style mancini.SurfaceStyle
+	// Face overrides the surface fill color when non-zero.
+	Face color.NRGBA
+	// Radius is the corner radius in pixels.
 	Radius float64
 
 	// Params is retained for backward compatibility with callers that

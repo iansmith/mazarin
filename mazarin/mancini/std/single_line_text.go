@@ -27,7 +27,8 @@ import (
 type SingleLineText struct {
 	impl.ThemedInteractor
 
-	Hint        string      // shown in italic at 80% alpha when text is empty
+	Hint string // shown in italic at 80% alpha when text is empty
+	// FontSize is the rendered font size in pixels.
 	FontSize    int64
 	Radius      float64     // corner radius (default 6)
 	Padding     float64     // horizontal padding inside field (default 8)
@@ -48,7 +49,8 @@ type SingleLineText struct {
 	isAlerting   bool
 	alertAlpha   uint8  // current border alpha (255 = opaque, 0 = gone)
 	alertLocalID uint64 // local animation ID (0 = no active animation)
-	AppWindow    *AppWindow
+	// AppWindow is required for animation-driven alerts.
+	AppWindow *AppWindow
 
 	// Font IDs for DrawContext text shaping (resolved lazily).
 	regularFontID int32

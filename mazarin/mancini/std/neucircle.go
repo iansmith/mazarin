@@ -32,11 +32,16 @@ const neuCircleBevel = 7
 type NeuCircle struct {
 	impl.Decorator
 
-	Pal    mancini.Palette
-	Depth  mancini.NeuDepth
+	// Pal is the [mancini.Palette] used for shadow and surface colors.
+	Pal mancini.Palette
+	// Depth controls whether the circle appears Raised, Flush, or Inset.
+	Depth mancini.NeuDepth
+	// Weight selects the shadow strength (Light/Medium/Heavy).
 	Weight mancini.Weight
-	Style  mancini.SurfaceStyle
-	Face   color.NRGBA
+	// Style supplies the [mancini.SurfaceStyle] used for the bevel ring.
+	Style mancini.SurfaceStyle
+	// Face overrides the surface fill color when non-zero.
+	Face color.NRGBA
 
 	// Params is retained for backward compatibility and for the bevel ring
 	// rendering in Decorate (which accesses Raised sub-params directly).

@@ -66,7 +66,9 @@ type DrainFunc func() bool
 // event loop includes it in its select so that app-driven messages
 // (e.g. status updates from a background goroutine) wake the loop.
 type BuildResult struct {
+	// Drain is the [DrainFunc] called by the event loop to process app messages.
 	Drain    DrainFunc
+	// NotifyCh, if non-nil, is included in the event loop's select to wake on app events.
 	NotifyCh <-chan struct{}
 }
 
@@ -79,11 +81,17 @@ type App[T any] struct {
 	// it would be a different interface.
 	Injected T
 
+	// FC is the FontCache used to resolve font faces.
 	FC        *fontcache.FontCache
+	// Fonts is the default [mancini.FontConfig] for the app.
 	Fonts     *mancini.FontConfig
+	// Pal is the [mancini.Palette] used by the theme.
 	Pal       mancini.Palette
+	// Theme is the [mancini.Theme] applied to the interactor tree.
 	Theme     mancini.Theme
+	// AppWindow is the top-level window interactor created by the framework.
 	AppWindow *std.AppWindow
+	// FontSize is the resolved default font size in pixels.
 	FontSize  int64
 
 	// RachelSID is the shepherd ID of rachel (window manager).

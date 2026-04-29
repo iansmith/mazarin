@@ -13,11 +13,17 @@ import (
 // published in the constraint network. [DrawContext] is set by the
 // parent before each draw pass via SetDC.
 type Interactor interface {
+	// X returns the interactor's local X position.
 	X() int64
+	// Y returns the interactor's local Y position.
 	Y() int64
+	// W returns the interactor's width.
 	W() int64
+	// H returns the interactor's height.
 	H() int64
+	// Visible reports whether the interactor should be drawn.
 	Visible() bool
+	// DC returns the [DrawContext] propagated from the parent.
 	DC() DrawContext
 
 	// ScreenCoordConvertTo converts a point in this interactor's local
@@ -35,10 +41,15 @@ type Interactor interface {
 // which most leaf interactors and controls embed.
 type ThemedInteractor interface {
 	Interactor
+	// BgColor returns the resolved background color from the theme.
 	BgColor() color.NRGBA
+	// FgColor returns the resolved foreground color from the theme.
 	FgColor() color.NRGBA
+	// Font returns a [FontConfig] for the given feature and size.
 	Font(feature Feature, size int64) *FontConfig
+	// DefaultFont returns the theme's default [FontConfig].
 	DefaultFont() *FontConfig
+	// DefaultSize returns the theme's default font size.
 	DefaultSize() int64
 }
 
@@ -53,7 +64,9 @@ type ThemedInteractor interface {
 // interactors ([impl.Decorator]) use GetChildren but handle the single
 // child directly in their own Draw method.
 type Parent interface {
+	// GetChildren returns this parent's children, discovered via the constraint network.
 	GetChildren() []Interactor
+	// DrawChildren paints this parent's children within the given bounds and damage rect.
 	DrawChildren(self Interactor, x, y, w, h int64, damage image.Rectangle)
 
 	// IsRectSingleChild returns the child that completely contains rect,
@@ -77,7 +90,9 @@ type Parent interface {
 // theme's Surface color. Concrete parent types can override DrawSelf
 // for custom background rendering.
 type SimpleParentDraw interface {
+	// DrawChildren paints this parent's children within the given bounds and damage rect.
 	DrawChildren(self Interactor, x, y, w, h int64, damage image.Rectangle)
+	// DrawSelf paints this parent's own background for a single rectangle.
 	DrawSelf(dc DrawContext, rect image.Rectangle)
 }
 
@@ -92,6 +107,7 @@ type SimpleParentDraw interface {
 // like [std.Scroller] override Pick to apply coordinate transforms
 // (e.g., adding a scroll offset before recursing into the child).
 type Picker interface {
+	// Pick returns the interactors hit at (localX, localY), front-to-back.
 	Pick(localX, localY int64) []Interactor
 }
 
@@ -99,6 +115,7 @@ type Picker interface {
 // keyboard focus. Children call FocusClaimer.SetFocusToSelf() on
 // their parent to request focus when clicked or otherwise activated.
 type FocusClaimer interface {
+	// SetFocusToSelf requests in-app keyboard focus for this interactor.
 	SetFocusToSelf()
 }
 
@@ -110,5 +127,6 @@ type FocusClaimer interface {
 //
 // x, y, w, h are the decorator's authoritative bounds from its parent.
 type Decoratable interface {
+	// Decorate draws the visual decoration around the decorator's child.
 	Decorate(self Interactor, x, y, w, h int64)
 }

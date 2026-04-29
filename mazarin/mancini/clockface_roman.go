@@ -29,6 +29,7 @@ func (f *RomanFace) Location() *time.Location {
 	return f.Loc
 }
 
+// FaceName returns the short display name "Roman".
 func (f *RomanFace) FaceName() string { return "Roman" }
 
 // DrawFace renders the Roman numeral clock face.

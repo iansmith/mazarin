@@ -49,35 +49,84 @@ type DefaultPalette struct {
 
 // ── Original accessors ──────────────────────────────────────────────────
 
+// Surface returns the primary surface (background) color.
 func (p *DefaultPalette) Surface() color.NRGBA      { return p.surface }
+
+// SurfaceTint returns the tinted surface color used for variant backgrounds.
 func (p *DefaultPalette) SurfaceTint() color.NRGBA   { return p.surfaceTint }
+
+// DarkShadow returns the dark shadow color used in neumorphic rendering.
 func (p *DefaultPalette) DarkShadow() color.NRGBA    { return p.darkShadow }
+
+// LightShadow returns the light highlight color used in neumorphic rendering.
 func (p *DefaultPalette) LightShadow() color.NRGBA   { return p.lightShadow }
+
+// Text returns the primary text color.
 func (p *DefaultPalette) Text() color.NRGBA          { return p.text }
+
+// Icon returns the color used for icon glyphs.
 func (p *DefaultPalette) Icon() color.NRGBA          { return p.icon }
+
+// Highlight returns the highlight (accent) color.
 func (p *DefaultPalette) Highlight() color.NRGBA     { return p.highlight }
+
+// HighlightText returns the text color drawn on highlighted backgrounds.
 func (p *DefaultPalette) HighlightText() color.NRGBA { return p.highlightText }
+
+// DisabledAlpha returns the alpha multiplier applied to disabled controls.
 func (p *DefaultPalette) DisabledAlpha() float64     { return p.disabledAlpha }
+
+// DesktopBG returns the desktop background color.
 func (p *DefaultPalette) DesktopBG() color.NRGBA     { return p.desktopBG }
 
 // ── Extended accessors ──────────────────────────────────────────────────
 
+// Base returns the base (input field) background color.
 func (p *DefaultPalette) Base() color.NRGBA            { return p.base }
+
+// BaseText returns the text color drawn on Base backgrounds.
 func (p *DefaultPalette) BaseText() color.NRGBA         { return p.baseText }
+
+// Midlight returns a color between Surface and LightShadow.
 func (p *DefaultPalette) Midlight() color.NRGBA         { return p.midlight }
+
+// Mid returns a color between Surface and DarkShadow.
 func (p *DefaultPalette) Mid() color.NRGBA              { return p.mid }
+
+// Shadow returns a strong dark shadow color (near-black).
 func (p *DefaultPalette) Shadow() color.NRGBA           { return p.shadow }
+
+// BrightText returns a high-contrast text color used on dark backgrounds.
 func (p *DefaultPalette) BrightText() color.NRGBA       { return p.brightText }
+
+// AlternateBase returns the alternating row color for Base areas.
 func (p *DefaultPalette) AlternateBase() color.NRGBA    { return p.alternateBase }
+
+// ToolTipBase returns the tooltip background color.
 func (p *DefaultPalette) ToolTipBase() color.NRGBA      { return p.toolTipBase }
+
+// ToolTipText returns the text color drawn on tooltips.
 func (p *DefaultPalette) ToolTipText() color.NRGBA      { return p.toolTipText }
+
+// Link returns the color used for hyperlink text.
 func (p *DefaultPalette) Link() color.NRGBA             { return p.link }
+
+// PlaceholderText returns the color used for input placeholder text.
 func (p *DefaultPalette) PlaceholderText() color.NRGBA  { return p.placeholderText }
+
+// Accent returns the accent color (typically same as Highlight).
 func (p *DefaultPalette) Accent() color.NRGBA           { return p.accent }
+
+// WindowText returns the text color used in window decorations.
 func (p *DefaultPalette) WindowText() color.NRGBA       { return p.windowText }
+
+// CursorColor returns the text-cursor color.
 func (p *DefaultPalette) CursorColor() color.NRGBA      { return p.cursorColor }
+
+// CursorTextColor returns the text color drawn under the cursor.
 func (p *DefaultPalette) CursorTextColor() color.NRGBA  { return p.cursorTextColor }
 
+// AnsiColor returns the ANSI palette entry at index (clamped to 0-15).
 func (p *DefaultPalette) AnsiColor(index int) color.NRGBA {
 	if index < 0 {
 		index = 0

@@ -8,6 +8,7 @@ package mancini
 // DrawFace. Implementations render content but do not clear the
 // background or modify persistent DC state.
 type Face interface {
+	// DrawFace paints content into the given rectangle.
 	DrawFace(dc DrawContext, x, y, w, h float64)
 }
 
@@ -33,7 +34,9 @@ const (
 // TextAlignmentParams controls text alignment for [LatinTextFace] rendering.
 // The zero value is center/center, the most common case.
 type TextAlignmentParams struct {
+	// HAlign controls horizontal placement.
 	HAlign HAlign
+	// VAlign controls vertical placement.
 	VAlign VAlign
 }
 
@@ -44,7 +47,10 @@ type TextAlignmentParams struct {
 // The standard implementation is [impl.LatinTextFaceImpl].
 type LatinTextFace interface {
 	Face
+	// SetText updates the text rendered by this face.
 	SetText(text string)
+	// Text returns the current text.
 	Text() string
+	// MeasureText returns the advance width of text without rasterizing.
 	MeasureText(text string) float64
 }

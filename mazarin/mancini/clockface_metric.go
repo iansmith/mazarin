@@ -26,6 +26,7 @@ func (f *MetricFace) Location() *time.Location {
 	return f.Loc
 }
 
+// FaceName returns the short display name "Metric".
 func (f *MetricFace) FaceName() string { return "Metric" }
 
 // DrawFace renders the metric clock face. The hour/minute/second/millis

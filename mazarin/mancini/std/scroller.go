@@ -38,14 +38,20 @@ type Scroller struct {
 
 	Pal mancini.Palette // background fill color (Surface)
 
-	VirtualWidth  *attr.Attribute[int64]
+	// VirtualWidth is the total content width in pixels.
+	VirtualWidth *attr.Attribute[int64]
+	// VirtualHeight is the total content height in pixels.
 	VirtualHeight *attr.Attribute[int64]
-	VirtualX      *attr.Attribute[int64]
-	VirtualY      *attr.Attribute[int64]
+	// VirtualX is the current horizontal scroll offset in pixels.
+	VirtualX *attr.Attribute[int64]
+	// VirtualY is the current vertical scroll offset in pixels.
+	VirtualY *attr.Attribute[int64]
 
 	MaxScrollY *attr.Attribute[int64] // constrained: VirtualHeight - Height
 
+	// ScrollNeededX is true when VirtualWidth exceeds the viewport width.
 	ScrollNeededX *attr.Attribute[bool]
+	// ScrollNeededY is true when VirtualHeight exceeds the viewport height.
 	ScrollNeededY *attr.Attribute[bool]
 
 	offBuf     *image.RGBA
@@ -105,7 +111,7 @@ func NewScroller(myName, parent string, pal mancini.Palette,
 	return s
 }
 
-// HeightURI returns the URI for the scroller's Height attribute.
+// ScrollerHeightURI returns the URI for the scroller's Height attribute.
 // Useful for callers that need to build the constraint before creating
 // the Scroller.
 func ScrollerHeightURI(myName string) string {

@@ -23,6 +23,7 @@ func (f *MovadoFace) Location() *time.Location {
 	return f.Loc
 }
 
+// FaceName returns the short display name "Movado".
 func (f *MovadoFace) FaceName() string { return "Movado" }
 
 // DrawFace renders the Movado-style clock face.

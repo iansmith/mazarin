@@ -23,6 +23,7 @@ type VSplitter struct {
 	impl.Interactor
 	impl.Parent
 
+	// Pal is the [mancini.Palette] used for default child backgrounds.
 	Pal      mancini.Palette
 	Percents [3]float64 // left, center, right percentages
 

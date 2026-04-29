@@ -24,7 +24,9 @@ type RowFillLastChild struct {
 	impl.Interactor
 	impl.Parent
 
-	Pal     mancini.Palette
+	// Pal is the [mancini.Palette] used for default child backgrounds.
+	Pal mancini.Palette
+	// HPadding is the horizontal padding applied at the row's left and right edges.
 	HPadding int64
 
 	spacingURI string

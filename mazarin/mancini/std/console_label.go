@@ -24,7 +24,8 @@ import (
 type ConsoleLabel struct {
 	impl.ThemedInteractor
 
-	FontSize  int64
+	// FontSize is the monospaced font size in pixels.
+	FontSize int64
 	BgColor   color.NRGBA          // per-instance background
 	TextFunc  func() string        // dynamic text source
 	ColorFunc func() color.NRGBA   // dynamic text color (stdout vs stderr)

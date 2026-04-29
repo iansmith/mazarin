@@ -54,6 +54,7 @@ func (f *ClassicFace) Location() *time.Location {
 	return f.Loc
 }
 
+// FaceName returns the short display name "Classic".
 func (f *ClassicFace) FaceName() string { return "Classic" }
 
 // DrawFace renders the classic clock face.

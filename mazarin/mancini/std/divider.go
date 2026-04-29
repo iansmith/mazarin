@@ -23,14 +23,18 @@ import (
 type Divider struct {
 	impl.Interactor
 
+	// Pal is the palette used to colour the track, pill, and grip lines.
 	Pal      mancini.Palette
 	ColIndex int // which column boundary (0 = after col 0, etc.)
 
 	// Overhang is the height of the bezel area above and below the
 	// parent grid where the marker is drawn.
-	Overhang  int64
+	Overhang int64
+	// TriHeight is the height in pixels of each pill capsule.
 	TriHeight int64
-	TriHalfW  int64
+	// TriHalfW is half the hit-test width in pixels for grabbing the pill.
+	TriHalfW int64
+	// Dangle is reserved geometry padding currently unused by Draw.
 	Dangle    int64
 
 	// MinPct is the minimum percentage this divider's column may take.

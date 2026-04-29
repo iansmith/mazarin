@@ -23,33 +23,41 @@ func nanotime() int64
 // All times in nanoseconds. Call ResetDrawPerf before a draw,
 // then PrintDrawPerf after.
 type DrawPerfStats struct {
-	AllocNs    atomic.Int64 // image.NewRGBA / NewNRGBA / NewAlpha
+	AllocNs atomic.Int64 // image.NewRGBA / NewNRGBA / NewAlpha
+	// AllocCount counts how many image buffers were allocated.
 	AllocCount atomic.Int64
+	// AllocBytes is the total bytes of image buffers allocated.
 	AllocBytes atomic.Int64
 	GGDrawNs   atomic.Int64 // gg context create + rasterize + fill
+	// GGCount counts how many gg context draw calls were made.
 	GGCount    atomic.Int64
 	ConvertNs  atomic.Int64 // rgbaToNRGBA
 	BlurNs     atomic.Int64 // gaussianBlurNRGBA
-	BlurCount  atomic.Int64
-	ComposeNs  atomic.Int64 // draw.Draw compositing
-	FaceNs     atomic.Int64 // dc.DrawRoundedRect/Circle + Fill (face)
+	// BlurCount counts the number of Gaussian-blur invocations.
+	BlurCount atomic.Int64
+	ComposeNs atomic.Int64 // draw.Draw compositing
+	FaceNs    atomic.Int64 // dc.DrawRoundedRect/Circle + Fill (face)
 
 	// Tree-level timing
-	AppDecorateNs atomic.Int64 // AppWindow.DecorateIfNeeded
-	AppClipNs     atomic.Int64 // WithClip + Flush
-	AppChildNs    atomic.Int64 // child.Draw inside AppWindow
+	AppDecorateNs atomic.Int64    // AppWindow.DecorateIfNeeded
+	AppClipNs     atomic.Int64    // WithClip + Flush
+	AppChildNs    atomic.Int64    // child.Draw inside AppWindow
 	RowChildNs    [8]atomic.Int64 // per-child draw time in Row (up to 8)
+	// RowChildCount is the number of children seen by Row this pass.
 	RowChildCount atomic.Int64
 	ColChildNs    atomic.Int64 // total Column child draw time
 	NeuDecorNs    atomic.Int64 // NeuCircle.DecorateIfNeeded
 	NeuChildNs    atomic.Int64 // NeuCircle child draw (Clock)
 	ClockFaceNs   atomic.Int64 // Clock.DrawFace
 	LabelNs       atomic.Int64 // Label.Draw total
-	LabelCount    atomic.Int64
+	// LabelCount counts how many Label draws occurred this pass.
+	LabelCount atomic.Int64
 }
 
 var drawPerf DrawPerfStats
 
+// ResetDrawPerf zeroes all draw-performance counters in preparation for
+// a new draw pass.
 func ResetDrawPerf() {
 	drawPerf.AllocNs.Store(0)
 	drawPerf.AllocCount.Store(0)
@@ -76,6 +84,8 @@ func ResetDrawPerf() {
 	drawPerf.LabelCount.Store(0)
 }
 
+// GetDrawPerf returns a pointer to the package-level [DrawPerfStats]
+// accumulator for inspection.
 func GetDrawPerf() *DrawPerfStats {
 	return &drawPerf
 }

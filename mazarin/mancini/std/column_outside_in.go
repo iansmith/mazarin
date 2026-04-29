@@ -24,6 +24,7 @@ type ColumnOutsideIn struct {
 	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
 	impl.Parent     // GetChildren() via constraint network
 
+	// BgColor is the background fill color drawn beneath children.
 	BgColor color.NRGBA
 }
 

@@ -48,24 +48,32 @@ type InputEvent struct {
 // BtnLeft is the evdev boundary between keyboard and mouse button codes.
 const BtnLeft = 0x110
 
+// IsMouseButton reports whether the event is a mouse press or release.
 func (e *InputEvent) IsMouseButton() bool { return e.Kind == EvPress || e.Kind == EvRelease }
-func (e *InputEvent) IsMouseMove() bool   { return e.Kind == EvMove }
-func (e *InputEvent) IsKeyboard() bool    { return e.Kind == EvKeyDown || e.Kind == EvKeyUp }
+
+// IsMouseMove reports whether the event is a mouse move.
+func (e *InputEvent) IsMouseMove() bool { return e.Kind == EvMove }
+
+// IsKeyboard reports whether the event is a key down or key up.
+func (e *InputEvent) IsKeyboard() bool { return e.Kind == EvKeyDown || e.Kind == EvKeyUp }
 
 // --- Protocol Interfaces ---
 
 // Clickable receives single-click callbacks.
 type Clickable interface {
+	// Click is invoked on a recognized single click. Returns true if consumed.
 	Click(ev *InputEvent) bool
 }
 
 // DoubleClickable receives double-click callbacks.
 type DoubleClickable interface {
+	// DoubleClick is invoked on a recognized double click. Returns true if consumed.
 	DoubleClick(ev *InputEvent) bool
 }
 
 // TripleClickable receives triple-click callbacks.
 type TripleClickable interface {
+	// TripleClick is invoked on a recognized triple click. Returns true if consumed.
 	TripleClick(ev *InputEvent) bool
 }
 
@@ -84,14 +92,19 @@ type TripleClickable interface {
 // continues tracking regardless. The interactor decides what outsideBounds
 // means for its own semantics.
 type ClickDraggable interface {
+	// ClickDragStart is called on press. Return true to begin a drag.
 	ClickDragStart(ev *InputEvent) bool
+	// ClickDragMove is called on each move while the drag is active.
 	ClickDragMove(ev *InputEvent, startEv *InputEvent, outsideBounds bool) bool
+	// ClickDragEnd is called on release. outsideBounds reports cursor position.
 	ClickDragEnd(ev *InputEvent, outsideBounds bool) bool
 }
 
 // KeyReceivable handles keyboard events.
 type KeyReceivable interface {
+	// KeyDown is called on a key-down event. Returns true if consumed.
 	KeyDown(ev *InputEvent) bool
+	// KeyUp is called on a key-up event. Returns true if consumed.
 	KeyUp(ev *InputEvent) bool
 }
 
@@ -101,7 +114,9 @@ type KeyReceivable interface {
 // Each agent targets a specific protocol interface and maintains its
 // own state machine.
 type Agent interface {
+	// Name returns the agent identifier (used in debug logs).
 	Name() string
+	// Deliver attempts to deliver ev to target. Returns true if consumed.
 	Deliver(ev *InputEvent, target Interactor) bool
 }
 
@@ -110,7 +125,9 @@ type Agent interface {
 // events are delivered to that target regardless of cursor position.
 type FocusAgent interface {
 	Agent
+	// FocusTarget returns the current focus target, or nil if none.
 	FocusTarget() Interactor
+	// SetFocus designates target as the new focus target.
 	SetFocus(target Interactor)
 }
 

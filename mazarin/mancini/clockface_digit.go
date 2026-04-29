@@ -25,6 +25,7 @@ func (f *DigitFace) Location() *time.Location {
 	return f.Loc
 }
 
+// FaceName returns the short display name "Digital".
 func (f *DigitFace) FaceName() string { return "Digital" }
 
 // DrawFace renders the digit clock face with rotated numerals.

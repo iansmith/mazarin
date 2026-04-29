@@ -32,6 +32,7 @@ type WebScrollerVertical struct {
 	impl.Interactor
 	impl.Parent
 
+	// Web is the inner [WebInteractor] that renders HTML content.
 	Web       *WebInteractor
 	scrollbar *Scrollbar
 

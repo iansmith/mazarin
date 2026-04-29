@@ -8,6 +8,7 @@ const (
 	Inactive                    // Window does not have focus.
 )
 
+// String returns the state's name ("Active" or "Inactive").
 func (s WindowState) String() string {
 	switch s {
 	case Active:
@@ -27,6 +28,7 @@ const (
 	GadgetType                               // Small utility or accessory window.
 )
 
+// String returns the type's name ("AppWindow", "FreeStandingWindow", or "Gadget").
 func (t WindowType) String() string {
 	switch t {
 	case AppWindowType:
@@ -44,5 +46,6 @@ func (t WindowType) String() string {
 // state and type. The title bar is drawn into the rectangle
 // (x, y, w, h) using the provided DrawContext.
 type TitleBar interface {
+	// DrawTitleBar paints a title bar with the given title, state, and type.
 	DrawTitleBar(dc DrawContext, title string, state WindowState, wtype WindowType, x, y, w, h float64)
 }

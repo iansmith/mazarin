@@ -14,9 +14,14 @@ type KeyAgent struct {
 	target Interactor
 }
 
-func (a *KeyAgent) Name() string            { return "keyboard" }
-func (a *KeyAgent) FocusTarget() Interactor  { return a.target }
-func (a *KeyAgent) SetFocus(t Interactor)    { a.target = t }
+// Name returns the agent's identifier for dispatch logging.
+func (a *KeyAgent) Name() string { return "keyboard" }
+
+// FocusTarget returns the [Interactor] currently receiving key events, or nil.
+func (a *KeyAgent) FocusTarget() Interactor { return a.target }
+
+// SetFocus directs subsequent key events to t.
+func (a *KeyAgent) SetFocus(t Interactor) { a.target = t }
 
 // Deliver translates keyboard events via the KeyMapper and fires
 // KeyPress on the focus target.

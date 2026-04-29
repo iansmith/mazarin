@@ -29,7 +29,9 @@ import (
 type Clock struct {
 	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
 
-	Pal     mancini.Palette
+	// Pal is the palette used by the active face for rendering.
+	Pal mancini.Palette
+	// Fonts is the font configuration passed to the active face.
 	Fonts   *mancini.FontConfig
 	Size    int64                        // preferred side length (logical pixels)
 	Face    mancini.ClockFace            // current active face

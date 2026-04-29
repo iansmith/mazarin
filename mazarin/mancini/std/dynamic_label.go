@@ -21,9 +21,13 @@ import (
 type DynamicLabel struct {
 	impl.ThemedInteractor
 
-	Text        string
-	Color       color.NRGBA
-	Bold        bool
+	// Text is the displayed text content.
+	Text string
+	// Color is the foreground colour used to render the text.
+	Color color.NRGBA
+	// Bold selects the bold font variant when true.
+	Bold bool
+	// Transparent disables the themed background fill so the parent shows through.
 	Transparent bool
 	textFace    mancini.LatinTextFace
 

@@ -25,18 +25,38 @@ type KeyMapper interface {
 // These test individual modifier keys in the mods bitmask carried by
 // InputEvent.Mods. Use these instead of manipulating bits directly.
 
-func IsLeftShiftDown(mods uint64) bool  { return mods&hid.ModLShift != 0 }
+// IsLeftShiftDown reports whether the left shift modifier is set in mods.
+func IsLeftShiftDown(mods uint64) bool { return mods&hid.ModLShift != 0 }
+
+// IsRightShiftDown reports whether the right shift modifier is set in mods.
 func IsRightShiftDown(mods uint64) bool { return mods&hid.ModRShift != 0 }
-func IsShiftDown(mods uint64) bool      { return mods&(hid.ModLShift|hid.ModRShift) != 0 }
 
-func IsLeftControlDown(mods uint64) bool  { return mods&hid.ModLCtrl != 0 }
+// IsShiftDown reports whether either shift modifier is set in mods.
+func IsShiftDown(mods uint64) bool { return mods&(hid.ModLShift|hid.ModRShift) != 0 }
+
+// IsLeftControlDown reports whether the left control modifier is set in mods.
+func IsLeftControlDown(mods uint64) bool { return mods&hid.ModLCtrl != 0 }
+
+// IsRightControlDown reports whether the right control modifier is set in mods.
 func IsRightControlDown(mods uint64) bool { return mods&hid.ModRCtrl != 0 }
-func IsControlDown(mods uint64) bool      { return mods&(hid.ModLCtrl|hid.ModRCtrl) != 0 }
 
-func IsLeftAltDown(mods uint64) bool  { return mods&hid.ModLAlt != 0 }
+// IsControlDown reports whether either control modifier is set in mods.
+func IsControlDown(mods uint64) bool { return mods&(hid.ModLCtrl|hid.ModRCtrl) != 0 }
+
+// IsLeftAltDown reports whether the left alt modifier is set in mods.
+func IsLeftAltDown(mods uint64) bool { return mods&hid.ModLAlt != 0 }
+
+// IsRightAltDown reports whether the right alt modifier is set in mods.
 func IsRightAltDown(mods uint64) bool { return mods&hid.ModRAlt != 0 }
-func IsAltDown(mods uint64) bool      { return mods&(hid.ModLAlt|hid.ModRAlt) != 0 }
 
-func IsLeftMetaDown(mods uint64) bool  { return mods&hid.ModLMeta != 0 }
+// IsAltDown reports whether either alt modifier is set in mods.
+func IsAltDown(mods uint64) bool { return mods&(hid.ModLAlt|hid.ModRAlt) != 0 }
+
+// IsLeftMetaDown reports whether the left meta modifier is set in mods.
+func IsLeftMetaDown(mods uint64) bool { return mods&hid.ModLMeta != 0 }
+
+// IsRightMetaDown reports whether the right meta modifier is set in mods.
 func IsRightMetaDown(mods uint64) bool { return mods&hid.ModRMeta != 0 }
-func IsMetaDown(mods uint64) bool      { return mods&(hid.ModLMeta|hid.ModRMeta) != 0 }
+
+// IsMetaDown reports whether either meta modifier is set in mods.
+func IsMetaDown(mods uint64) bool { return mods&(hid.ModLMeta|hid.ModRMeta) != 0 }

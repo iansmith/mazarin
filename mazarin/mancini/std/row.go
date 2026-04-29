@@ -29,10 +29,13 @@ type Row struct {
 	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
 	impl.Parent     // GetChildren() via constraint network
 
-	Pal        mancini.Palette
+	// Pal is the [mancini.Palette] used for default child backgrounds.
+	Pal mancini.Palette
+	// CrossAlign controls vertical alignment of children inside the Row.
 	CrossAlign mancini.Alignment
-	MaxWidth   int64
-	HPadding    int64 // horizontal padding applied at left and right edges
+	// MaxWidth caps the row width; children beyond this point are clipped.
+	MaxWidth int64
+	HPadding int64 // horizontal padding applied at left and right edges
 }
 
 // NewRow creates a Row wired to the constraint system.

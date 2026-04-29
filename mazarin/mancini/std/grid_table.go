@@ -14,9 +14,13 @@ import (
 // GridRow is the interface that each row's data must satisfy.
 // The grid table calls these methods to populate column labels.
 type GridRow interface {
+	// Sender returns the text for the sender column.
 	Sender() string
+	// Subject returns the text for the subject column.
 	Subject() string
+	// Date returns the text for the date column.
 	Date() string
+	// MsgNum returns the row's stable identifier used for selection tracking.
 	MsgNum() uint32
 }
 
@@ -35,7 +39,9 @@ type GridFrame struct {
 	impl.Interactor
 	impl.Parent
 
-	Pal      mancini.Palette
+	// Pal is the palette used for chrome, bezel strips, and dividers.
+	Pal mancini.Palette
+	// Overhang is the height in pixels of the bezel strips above and below the grid content.
 	Overhang int64
 
 	grid     *GridTable
@@ -451,6 +457,7 @@ func (gf *GridFrame) Draw(self mancini.Interactor, x, y, w, h int64, damage imag
 type GridTable struct {
 	ColumnPercentage // structural embedding for Interactor + Parent
 
+	// Theme is the theme used to style header and data labels.
 	Theme mancini.Theme
 
 	nCols        int                      // number of columns

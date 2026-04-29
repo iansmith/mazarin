@@ -26,6 +26,9 @@ func NewSubtleStyle(delta int) *SubtleStyle {
 	return &SubtleStyle{delta: delta}
 }
 
+// DrawBox renders a rounded rectangle with a directional bevel for the
+// given [mancini.NeuDepth]. The face color is adjusted by delta for
+// raised/inset depths.
 func (s *SubtleStyle) DrawBox(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, weight mancini.Weight,
 	x1, y1, x2, y2, r float64, face color.NRGBA) {
 
@@ -50,6 +53,8 @@ func (s *SubtleStyle) DrawBox(pal mancini.Palette, dc mancini.DrawContext, depth
 	}
 }
 
+// DrawCircle renders a filled circle with the face color brightness
+// adjusted by depth.
 func (s *SubtleStyle) DrawCircle(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, weight mancini.Weight,
 	cx, cy, radius float64, face color.NRGBA) {
 
@@ -65,6 +70,8 @@ func (s *SubtleStyle) DrawCircle(pal mancini.Palette, dc mancini.DrawContext, de
 	dc.Fill()
 }
 
+// Groove draws a thin two-line horizontal groove (Mid above Midlight)
+// from x1 to x2 at height y.
 func (s *SubtleStyle) Groove(pal mancini.Palette, dc mancini.DrawContext, x1, y, x2 float64) {
 	dc.SetColor(pal.Mid())
 	dc.SetLineWidth(1)
@@ -75,6 +82,8 @@ func (s *SubtleStyle) Groove(pal mancini.Palette, dc mancini.DrawContext, x1, y,
 	dc.Stroke()
 }
 
+// Pad returns the recommended interior padding in pixels for the given
+// surface weight.
 func (s *SubtleStyle) Pad(weight mancini.Weight) float64 {
 	if weight == mancini.HeavyWeight {
 		return 4
@@ -82,6 +91,8 @@ func (s *SubtleStyle) Pad(weight mancini.Weight) float64 {
 	return 2
 }
 
+// TintOverlay draws a translucent face-colored rounded rectangle on
+// top of an existing surface for hover/focus highlighting.
 func (s *SubtleStyle) TintOverlay(dc mancini.DrawContext, depth mancini.NeuDepth,
 	x1, y1, x2, y2, r float64, face color.NRGBA) {
 	dc.SetColor(color.NRGBA{face.R, face.G, face.B, 60})
