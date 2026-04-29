@@ -176,38 +176,36 @@ attributes of the beta and gamma labels.
 
 ## Step 2: Write the Shepherd
 
-### The Rachel Channel
+### How a shepherd talks to rachel
 
 Before we look at the code, it helps to understand how a shepherd
 communicates with rachel (the window manager).
 
-Shepherds and rachel talk through a **shared-memory ring buffer**.
-Each side allocates a ring buffer in its own address space and hands
-the other side the address via `sys.MailboxSend`.  Messages are
-fixed-size (128 bytes) and copied into the ring with `rb.Push` /
-`rb.Pop`.  There are no byte streams — this is a high-speed,
-structured message channel.
+Shepherds and rachel talk over **uring IPC** — a kernel-allocated
+shared-memory ring of fixed-size 128-byte message slots, with one ring
+per shepherd. Messages are typed by a 32-bit `Protocol` discriminator
+in the envelope. The relevant protocols for window management are:
 
-The two directions use different notification codes:
+| Protocol | Direction | Carries |
+|----------|-----------|---------|
+| `ipc.ProtoWMNotify` | shepherd → rachel | `AppStart` (window registration), `Blit` (frame ready) |
+| `ipc.ProtoShepherdNotify` | rachel → shepherd | `YouHaveFocus`, `YouLostFocus`, mouse / keyboard events, `BackingStoreReady` |
+| `ipc.ProtoFontResponse` | fontsvc → shepherd | font cache replies (handled by `mazarin/fontcache`) |
 
-| Direction | Code | Meaning |
-|-----------|------|---------|
-| shepherd → rachel | `wm.WMNotify` | "I have a message for the WM" |
-| rachel → shepherd | `wm.ShepherdNotify` | "I have a message for you" |
+You don't write the wire framing yourself. On the **send** side, the
+mancini standard library ships helpers like
+[`AppWindow.AnnounceToWM`](https://pkg.go.dev/mazzy/mazarin/mancini/std)
+and `AppWindow.SendBlit` that do the encoding plus `uring.Send` for
+you. On the **receive** side, you use a `uring.Dispatcher`: register
+one decoder per protocol, then call `Start()` and the dispatcher pumps
+incoming messages into typed Go channels in a background goroutine.
 
-The first `int64` of every message is a type discriminator.  A
-shepherd sends `MsgAppStart` ("I exist, here is my SID").  rachel
-replies with `MsgYouHaveFocus` or `MsgYouLostFocus` as focus changes,
-and forwards mouse events as `MsgMousePress` / `MsgMouseRelease` /
-`MsgMouseMove`.
-
-Font requests (`FontNotify` / `FontResponse`) share the same mailbox
-but use different codes, so the receive loop can distinguish them.
-
-A shepherd must also publish a `Ready` flag
-(`attr.ValueBool(wm.ReadyURI(...), true)`) so rachel knows when its
-constraint attributes are valid.  rachel ignores a shepherd until
-Ready is true.
+Every shepherd must also publish a `Ready` flag through
+`sys.SetReady(true)` once its uring dispatcher and constraint
+attributes are wired up. rachel and other shepherds use
+`sys.WaitForShepherdReady` to block until this flips. The three core
+services — `fs`, `rachel`, `linux` — are conventionally waited on as a
+group via `sys.WaitForCoreServices`.
 
 ### The Code
 
@@ -218,41 +216,62 @@ package main
 
 import (
     "fmt"
-    "os"
-    "unsafe"
+
+    "golang.org/x/image/font"
 
     "mazzy/mazarin/attr"
+    "mazzy/mazarin/fontcache"
     "mazzy/mazarin/mancini"
     "mazzy/mazarin/mancini/std"
-    "mazzy/mazarin/ringbuf"
+    mctheme "mazzy/mazarin/mancini/theme"
     "mazzy/mazarin/sys"
+    "mazzy/mazarin/uring"
     mfont "mazzy/shared/font"
+    "mazzy/shared/ipc"
     "mazzy/shared/wm"
 )
 
 // app is the root interactor — set during buildUI, read by the
-// mailbox receiver when rachel sends focus messages.
+// uring dispatcher when rachel sends focus messages.
 var app *std.AppWindow
 
+// wmCh receives typed WM messages from the uring Dispatcher.
+var wmCh = make(chan any, 4)
+
 func main() {
+    sys.UartWriteString("[demo] main() entered\n")
+
     // ── 1. Initialize the constraint system ──
     attr.Init()
     mancini.Init()
-    waitForServices() // blocks until fs, rachel (WM), and linux are ready
 
-    // ── 2. Set up fonts and theme ──
+    // ── 2. Wait for the core services (fs, rachel, linux) ──
+    if err := sys.WaitForCoreServices(20); err != nil {
+        panic(fmt.Sprintf("[demo] FATAL: core services: %v", err))
+    }
+
+    // ── 3. Set up fonts, palette, and theme ──
     rachelSID := sys.MustGetShepherdByName("rachel")
-    env := mancini.NewFontEnv(rachelSID, mfont.DefaultMono)
-    pal := mancini.DefaultPalette()
-    theme := env.DefaultTheme()
+    fc := fontcache.New(rachelSID)
 
-    // Start the mailbox receiver before any font requests — it
-    // handles both FontResponse (from fontsvc) and ShepherdNotify
-    // (focus messages from rachel) on the same channel.
-    go mailboxRecvLoop(env)
+    // Start the uring dispatcher BEFORE the first OpenFace call —
+    // OpenFace blocks waiting for FontResponse, which arrives via the
+    // dispatcher.
+    startUringDispatcher(fc)
 
-    // ── 3. Build the interactor tree ──
-    app, alpha, beta, gamma, sibling := buildUI(pal, env.Fonts(), theme)
+    pal := mctheme.NewDefaultPaletteSwapRB()
+    resolver := func(family string, feature mancini.Feature, size int64) font.Face {
+        style := mfont.Regular
+        if feature == mancini.Bold {
+            style = mfont.Bold
+        }
+        return fc.OpenFaceByName(family, style, size)
+    }
+    theme := mctheme.NewTheme(pal, mctheme.NewDefaultNeumorphicParams(),
+        mfont.DefaultMono, 18, resolver)
+
+    // ── 4. Build the interactor tree ──
+    alpha, beta, gamma, sibling := buildUI(pal, theme)
 
     // Wire each label's text to display its own Y position.
     for _, lbl := range []*std.Label{alpha, beta, gamma, sibling} {
@@ -262,42 +281,64 @@ func main() {
         }
     }
 
-    // ── 4. Framebuffer and initial position ──
-    //
-    // AppWindow creates a fresh gg.Context each draw pass from
-    // the framebuffer image, so no stale clip or transform state
-    // leaks between frames.
-    drawCtx := mancini.NewFramebufferContext()
-    app.SetFramebuffer(drawCtx)
-    screenW, screenH := screenDimensions()
-    appLH := app.GetLayout()
-    centerWindow(appLH, screenW, screenH)
-
     // ── 5. Make the root damage rect eager ──
     //
-    // WaitDirty only wakes when an eager attribute is dirty.  The
+    // WaitDirty only wakes when an eager attribute is dirty. The
     // AppWindow's DamageRect is the root of the damage tree — every
     // child's damage propagates upward through the parent damage
-    // constraints.  Making it eager means the main loop wakes whenever
-    // anything in the window needs repainting: a focus change, a
-    // constraint update, a goroutine calling FullDamage, etc.
+    // constraints. Making it eager means the main loop wakes whenever
+    // anything in the window needs repainting.
+    appLH := app.GetLayout()
     appLH.Damage.DamageRect.SetEager(true)
 
-    // ── 6. Announce to rachel ──
-    _ = appLH.Bounds.Get()
-    attr.ValueBool(wm.ReadyURI(attr.SID()), true)
-    announceToWM(rachelSID)
+    // ── 6. Announce ourselves to rachel ──
+    //
+    // AnnounceToWM sends an AppStart message via uring with our
+    // desired window size and initial screen position. Rachel
+    // allocates a backing store and (in due course) replies with
+    // BackingStoreReady on the same dispatcher.
+    app.RachelSID = rachelSID
+    app.AnnounceToWM(0, 0, 500, 320)
+
+    // Tell other shepherds we are ready.
+    sys.SetReady(true)
 
     // ── 7. Main loop ──
     for {
         x, y := appLH.X.Get(), appLH.Y.Get()
         w, h := appLH.Width.Get(), appLH.Height.Get()
-
-        app.Draw(app, x, y, w, h)
-        drawCtx.Flush(int32(x), int32(y), int32(x+w), int32(y+h))
-
+        app.Draw(app, x, y, w, h, app.GetLayout().Bounds.Get())
+        app.SendBlit()  // tell rachel "frame ready, please composite"
         attr.WaitDirty()
     }
+}
+
+// startUringDispatcher wires our uring ring 0 reader. The dispatcher
+// goroutine pumps font replies into fc.ReplyCh and WM notifications
+// into wmCh.
+func startUringDispatcher(fc *fontcache.FontCache) {
+    d := uring.NewDispatcher()
+    d.On(ipc.ProtoShepherdNotify, wm.DecodeShepherdNotify, wmCh)
+    d.On(ipc.ProtoFontResponse, wm.DecodeFontResponse, fc.ReplyCh)
+    d.Start()
+
+    // Drain wmCh in another goroutine — focus events flip the
+    // AppWindow's Focused flag and trigger a full-window repaint.
+    go func() {
+        for msg := range wmCh {
+            switch m := msg.(type) {
+            case wm.YouHaveFocus:
+                app.Focused = true
+                app.FullDamage()
+            case wm.YouLostFocus:
+                app.Focused = false
+                app.FullDamage()
+            case wm.BackingStoreReady:
+                _ = m
+                app.FullDamage()
+            }
+        }
+    }()
 }
 
 // buildUI constructs the interactor tree and the custom constraint.
@@ -310,17 +351,16 @@ func main() {
 //        │   └─ gamma
 //        └─ sibling (height = avg of beta.Y and gamma.Y)
 //
-func buildUI(pal mancini.Palette, fonts *mancini.FontConfig,
-    theme mancini.Theme) (*std.AppWindow, *std.Label, *std.Label, *std.Label, *std.Label) {
+func buildUI(pal mancini.Palette, theme mancini.Theme) (
+    *std.Label, *std.Label, *std.Label, *std.Label) {
 
-    gt := std.NewGradientTitle(pal, fonts, "Constraint Demo", 22, 8)
-    app = std.NewAppWindow(nil, pal, fonts,
-        "Constraint Demo", 26, 500, gt.TitleDraw)
+    app = std.NewAppWindow(pal, "Constraint Demo")
+    app.Focused = false // wait for rachel to grant focus
 
     row := std.NewRow("main_row", "AppWindow", pal, 0, mancini.AxisMinimum, 8)
     row.SetSpacing(20)
 
-    col := std.NewColumn("demo_col", "main_row", pal, 9999, mancini.AxisMinimum, 4, false)
+    col := std.NewColumn("demo_col", "main_row", pal, 9999, mancini.AxisMinimum, 4, 0, false)
     col.SetSpacing(12)
 
     fontSize := int64(18)
@@ -338,95 +378,28 @@ func buildUI(pal mancini.Palette, fonts *mancini.FontConfig,
             "_y2_", gamma.GetLayout().Y.URI()))
     sibling := std.NewLabel(sibLH, theme, "Y = ?", fontSize)
 
-    return app, alpha, beta, gamma, sibling
-}
-
-// waitForServices blocks until the required shepherds are ready.
-// rachel (window manager) is always needed.  fs and linux are only
-// required here because Go's time/tzdata package may load timezone
-// descriptions from files — a standard library decision, not ours.
-// Most shepherds only need to wait for rachel.
-func waitForServices() {
-    for _, name := range []string{"fs", "rachel", "linux"} {
-        if err := sys.WaitForShepherdReady(name, 10); err != nil {
-            panic("[demo] " + name + ": " + err.Error())
-        }
-    }
-}
-
-// screenDimensions reads the screen width and height from kernel
-// constraint attributes.
-func screenDimensions() (int, int) {
-    wProg := mancini.BindStrings(mancini.ProgIdentityI64,
-        "_source_", "attr:///kernel/int64/screen/width")
-    w := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), wProg)
-    hProg := mancini.BindStrings(mancini.ProgIdentityI64,
-        "_source_", "attr:///kernel/int64/screen/height")
-    h := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), hProg)
-    return int(w.Get()), int(h.Get())
-}
-
-// centerWindow positions the AppWindow at the center of the screen.
-func centerWindow(appLH *mancini.LayoutAttributes, screenW, screenH int) {
-    w := appLH.Width.Get()
-    h := appLH.Height.Get()
-    appLH.X.Set(int64(screenW)/2 - w/2)
-    appLH.Y.Set(int64(screenH)/2 - h/2)
-}
-
-// announceToWM sends MsgAppStart to rachel via the ring buffer
-// channel.  rachel adds this shepherd to its tracking list and
-// will later send MsgYouHaveFocus when the shepherd gains focus.
-func announceToWM(rachelSID int) {
-    rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
-    if err != nil {
-        return
-    }
-    var msg wm.AppStartMsg
-    msg.Type = wm.MsgAppStart
-    msg.SID = int64(os.Getpid())
-    rb.Push(unsafe.Pointer(&msg))
-    sys.MailboxSend(rachelSID, wm.WMNotify, rb.Addr())
-}
-
-// mailboxRecvLoop receives notifications on the shared mailbox.
-// FontResponse comes from fontsvc (glyph cache replies).
-// ShepherdNotify comes from rachel (focus, mouse events).
-func mailboxRecvLoop(env *mancini.FontEnv) {
-    for {
-        notif, err := sys.MailboxRecv()
-        if err != nil {
-            continue
-        }
-        switch notif.Code {
-        case wm.FontResponse:
-            env.HandleNotification(notif)
-        case wm.ShepherdNotify:
-            handleWMMessages(notif)
-        }
-    }
-}
-
-// handleWMMessages drains the ring buffer from rachel, processing
-// focus messages.  When the demo gains focus, it sets the AppWindow
-// to focused (which changes the neumorphic depth from Flush to
-// Raised) and calls FullDamage to trigger a repaint.
-func handleWMMessages(notif sys.MailboxNotification) {
-    rb := ringbuf.Open(uintptr(notif.RingAddr))
-    var raw [wm.SizeWMMessage]byte
-    for rb.Pop(unsafe.Pointer(&raw[0])) {
-        msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-        switch msgType {
-        case wm.MsgYouHaveFocus:
-            app.Focused = true
-            app.FullDamage()
-        case wm.MsgYouLostFocus:
-            app.Focused = false
-            app.FullDamage()
-        }
-    }
+    return alpha, beta, gamma, sibling
 }
 ```
+
+Notice what is **not** here: no manual `MailboxSend` / `MailboxRecv`,
+no ringbuf allocation, no hand-written message framing. The
+`AppWindow` helper methods (`AnnounceToWM`, `SendBlit`) and the
+`uring.Dispatcher` together cover the WM protocol; `fontcache.New`
+plus the dispatcher cover font replies; everything else is layout
+constraints and draw.
+
+> **Note — production-grade boot.** The example above is simplified to
+> keep the focus on constraints. A real shepherd does a touch more
+> after `AnnounceToWM`: it **synchronously waits** for a
+> `wm.BackingStoreReady` message from rachel (rachel allocates the
+> backing store and tells the shepherd its address, dimensions, and
+> insets), then constructs an `image.RGBA` over that shared memory
+> and a `DrawContext` for it before drawing. The draw loop renders
+> into that backing store, and `SendBlit` tells rachel "frame ready,
+> please composite." See `maz/clocks/main.go` for the canonical
+> reference. The constraint mechanics shown above are exactly the same
+> in either case — only the framebuffer plumbing differs.
 
 ### What Is Happening Here?
 
@@ -833,30 +806,21 @@ You also need to:
 
 ## Step 4: Add to the Boot Sequence (mazarin-specific)
 
-Edit `config/startup.arm64.toml` (and the amd64 variant) to
-include your new shepherd:
+Edit `config/startup.arm64.toml` (and the amd64 variant) to include
+your new shepherd. The startup config only lists **application**
+shepherds — fs, rachel, and linux are bootstrapped earlier by the fs
+shepherd's `bootSequence`, before this file is read, so do not list
+them here.
 
 ```toml
-[[shepherd]]
-name = "rachel"
-path = "/rachel.elf"
-
-[[shepherd]]
-name = "linux"
-path = "/linux.elf"
-
-[[shepherd]]
-name = "clocks"
-path = "/clocks.elf"
-
 [[shepherd]]
 name = "demo"
 path = "/demo.elf"
 ```
 
-Shepherds launch in the order listed.  rachel and linux must come first
-(they provide the window manager and I/O delegation), but your demo can
-come after clocks or replace it.
+Shepherds launch in the order listed.  By the time your demo's `main`
+runs, fs / rachel / linux are already up — `WaitForCoreServices` will
+return immediately.
 
 ## Step 5: Build and Run
 
@@ -865,8 +829,13 @@ export GOTOOLCHAIN=auto
 export GO=/opt/homebrew/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 
-# Build everything including the demo
-$GO tool task run TIMEOUT=30
+# Build everything (default task)
+$GO tool task
+
+# Run under QEMU + HVF (macOS Apple Silicon — the path that gets
+# tested every day). Drop `-hvf` for software-emulated ARM64, or
+# use `run-x86_64` instead.
+$GO tool task run-arm64-hvf TIMEOUT=30
 ```
 
 ## Step 6: Observe the Output
