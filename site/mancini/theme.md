@@ -22,24 +22,86 @@ Application code typically creates a theme via [NewDefaultTheme](<#NewDefaultThe
   - [func NewDefaultPalette\(\) \*DefaultPalette](<#NewDefaultPalette>)
   - [func NewDefaultPaletteSwapRB\(\) \*DefaultPalette](<#NewDefaultPaletteSwapRB>)
   - [func NewDefaultPaletteWithColors\(surface, text color.NRGBA\) \*DefaultPalette](<#NewDefaultPaletteWithColors>)
+  - [func \(p \*DefaultPalette\) Accent\(\) color.NRGBA](<#DefaultPalette.Accent>)
+  - [func \(p \*DefaultPalette\) AlternateBase\(\) color.NRGBA](<#DefaultPalette.AlternateBase>)
+  - [func \(p \*DefaultPalette\) AnsiColor\(index int\) color.NRGBA](<#DefaultPalette.AnsiColor>)
+  - [func \(p \*DefaultPalette\) Base\(\) color.NRGBA](<#DefaultPalette.Base>)
+  - [func \(p \*DefaultPalette\) BaseText\(\) color.NRGBA](<#DefaultPalette.BaseText>)
+  - [func \(p \*DefaultPalette\) BrightText\(\) color.NRGBA](<#DefaultPalette.BrightText>)
+  - [func \(p \*DefaultPalette\) CursorColor\(\) color.NRGBA](<#DefaultPalette.CursorColor>)
+  - [func \(p \*DefaultPalette\) CursorTextColor\(\) color.NRGBA](<#DefaultPalette.CursorTextColor>)
   - [func \(p \*DefaultPalette\) DarkShadow\(\) color.NRGBA](<#DefaultPalette.DarkShadow>)
+  - [func \(p \*DefaultPalette\) DesktopBG\(\) color.NRGBA](<#DefaultPalette.DesktopBG>)
   - [func \(p \*DefaultPalette\) DisabledAlpha\(\) float64](<#DefaultPalette.DisabledAlpha>)
   - [func \(p \*DefaultPalette\) Highlight\(\) color.NRGBA](<#DefaultPalette.Highlight>)
   - [func \(p \*DefaultPalette\) HighlightText\(\) color.NRGBA](<#DefaultPalette.HighlightText>)
   - [func \(p \*DefaultPalette\) Icon\(\) color.NRGBA](<#DefaultPalette.Icon>)
   - [func \(p \*DefaultPalette\) LightShadow\(\) color.NRGBA](<#DefaultPalette.LightShadow>)
+  - [func \(p \*DefaultPalette\) Link\(\) color.NRGBA](<#DefaultPalette.Link>)
+  - [func \(p \*DefaultPalette\) Mid\(\) color.NRGBA](<#DefaultPalette.Mid>)
+  - [func \(p \*DefaultPalette\) Midlight\(\) color.NRGBA](<#DefaultPalette.Midlight>)
+  - [func \(p \*DefaultPalette\) PlaceholderText\(\) color.NRGBA](<#DefaultPalette.PlaceholderText>)
+  - [func \(p \*DefaultPalette\) SetDesktopBG\(c color.NRGBA\)](<#DefaultPalette.SetDesktopBG>)
+  - [func \(p \*DefaultPalette\) Shadow\(\) color.NRGBA](<#DefaultPalette.Shadow>)
   - [func \(p \*DefaultPalette\) Surface\(\) color.NRGBA](<#DefaultPalette.Surface>)
   - [func \(p \*DefaultPalette\) SurfaceTint\(\) color.NRGBA](<#DefaultPalette.SurfaceTint>)
-  - [func \(p \*DefaultPalette\) SwapRB\(\) bool](<#DefaultPalette.SwapRB>)
   - [func \(p \*DefaultPalette\) Text\(\) color.NRGBA](<#DefaultPalette.Text>)
+  - [func \(p \*DefaultPalette\) ToolTipBase\(\) color.NRGBA](<#DefaultPalette.ToolTipBase>)
+  - [func \(p \*DefaultPalette\) ToolTipText\(\) color.NRGBA](<#DefaultPalette.ToolTipText>)
+  - [func \(p \*DefaultPalette\) WindowText\(\) color.NRGBA](<#DefaultPalette.WindowText>)
 - [type DefaultTheme](<#DefaultTheme>)
   - [func NewDefaultTheme\(family string, defaultSize int64, resolve mancini.FontResolver\) \*DefaultTheme](<#NewDefaultTheme>)
   - [func NewTheme\(pal mancini.Palette, neu mancini.NeumorphicParams, family string, defaultSize int64, resolve mancini.FontResolver\) \*DefaultTheme](<#NewTheme>)
+  - [func \(t \*DefaultTheme\) BodyFontSize\(\) int64](<#DefaultTheme.BodyFontSize>)
+  - [func \(t \*DefaultTheme\) ControlFontSize\(\) int64](<#DefaultTheme.ControlFontSize>)
+  - [func \(t \*DefaultTheme\) ControlRadius\(\) float64](<#DefaultTheme.ControlRadius>)
   - [func \(t \*DefaultTheme\) DefaultFont\(\) \*mancini.FontConfig](<#DefaultTheme.DefaultFont>)
   - [func \(t \*DefaultTheme\) DefaultFontSize\(\) int64](<#DefaultTheme.DefaultFontSize>)
+  - [func \(t \*DefaultTheme\) FieldBorderWidth\(\) float64](<#DefaultTheme.FieldBorderWidth>)
+  - [func \(t \*DefaultTheme\) FieldPadding\(\) float64](<#DefaultTheme.FieldPadding>)
+  - [func \(t \*DefaultTheme\) FieldRadius\(\) float64](<#DefaultTheme.FieldRadius>)
   - [func \(t \*DefaultTheme\) Font\(feature mancini.Feature, size int64\) \*mancini.FontConfig](<#DefaultTheme.Font>)
+  - [func \(t \*DefaultTheme\) FontFamily\(\) string](<#DefaultTheme.FontFamily>)
+  - [func \(t \*DefaultTheme\) FontFamilyMono\(\) string](<#DefaultTheme.FontFamilyMono>)
+  - [func \(t \*DefaultTheme\) Name\(\) string](<#DefaultTheme.Name>)
   - [func \(t \*DefaultTheme\) Neumorphic\(\) mancini.NeumorphicParams](<#DefaultTheme.Neumorphic>)
   - [func \(t \*DefaultTheme\) Palette\(\) mancini.Palette](<#DefaultTheme.Palette>)
+  - [func \(t \*DefaultTheme\) ScrollbarMinThumb\(\) float64](<#DefaultTheme.ScrollbarMinThumb>)
+  - [func \(t \*DefaultTheme\) ScrollbarThickness\(\) float64](<#DefaultTheme.ScrollbarThickness>)
+  - [func \(t \*DefaultTheme\) SetMonoFamily\(mono string\)](<#DefaultTheme.SetMonoFamily>)
+  - [func \(t \*DefaultTheme\) SetName\(name string\)](<#DefaultTheme.SetName>)
+  - [func \(t \*DefaultTheme\) SetStyle\(s mancini.SurfaceStyle\)](<#DefaultTheme.SetStyle>)
+  - [func \(t \*DefaultTheme\) SmallFontSize\(\) int64](<#DefaultTheme.SmallFontSize>)
+  - [func \(t \*DefaultTheme\) Style\(\) mancini.SurfaceStyle](<#DefaultTheme.Style>)
+  - [func \(t \*DefaultTheme\) TitleFontSize\(\) int64](<#DefaultTheme.TitleFontSize>)
+- [type DefaultWMTheme](<#DefaultWMTheme>)
+  - [func NewDefaultWMTheme\(pal mancini.Palette\) \*DefaultWMTheme](<#NewDefaultWMTheme>)
+  - [func \(t \*DefaultWMTheme\) ActiveBorderColor\(\) color.NRGBA](<#DefaultWMTheme.ActiveBorderColor>)
+  - [func \(t \*DefaultWMTheme\) BorderBottom\(\) int](<#DefaultWMTheme.BorderBottom>)
+  - [func \(t \*DefaultWMTheme\) BorderLeft\(\) int](<#DefaultWMTheme.BorderLeft>)
+  - [func \(t \*DefaultWMTheme\) BorderRight\(\) int](<#DefaultWMTheme.BorderRight>)
+  - [func \(t \*DefaultWMTheme\) BorderTop\(\) int](<#DefaultWMTheme.BorderTop>)
+  - [func \(t \*DefaultWMTheme\) CornerRadius\(\) float64](<#DefaultWMTheme.CornerRadius>)
+  - [func \(t \*DefaultWMTheme\) InactiveBorderColor\(\) color.NRGBA](<#DefaultWMTheme.InactiveBorderColor>)
+  - [func \(t \*DefaultWMTheme\) Name\(\) string](<#DefaultWMTheme.Name>)
+  - [func \(t \*DefaultWMTheme\) Palette\(\) mancini.Palette](<#DefaultWMTheme.Palette>)
+  - [func \(t \*DefaultWMTheme\) RaisedLightAlpha\(\) uint8](<#DefaultWMTheme.RaisedLightAlpha>)
+  - [func \(t \*DefaultWMTheme\) SetStyle\(s mancini.SurfaceStyle\)](<#DefaultWMTheme.SetStyle>)
+  - [func \(t \*DefaultWMTheme\) ShadowBottom\(\) int](<#DefaultWMTheme.ShadowBottom>)
+  - [func \(t \*DefaultWMTheme\) ShadowLeft\(\) int](<#DefaultWMTheme.ShadowLeft>)
+  - [func \(t \*DefaultWMTheme\) ShadowRight\(\) int](<#DefaultWMTheme.ShadowRight>)
+  - [func \(t \*DefaultWMTheme\) ShadowTop\(\) int](<#DefaultWMTheme.ShadowTop>)
+  - [func \(t \*DefaultWMTheme\) Style\(\) mancini.SurfaceStyle](<#DefaultWMTheme.Style>)
+  - [func \(t \*DefaultWMTheme\) TitleActiveAlpha\(\) uint8](<#DefaultWMTheme.TitleActiveAlpha>)
+  - [func \(t \*DefaultWMTheme\) TitleBarHeight\(\) int](<#DefaultWMTheme.TitleBarHeight>)
+  - [func \(t \*DefaultWMTheme\) TitleFont\(\) string](<#DefaultWMTheme.TitleFont>)
+  - [func \(t \*DefaultWMTheme\) TitleFontSize\(\) int64](<#DefaultWMTheme.TitleFontSize>)
+  - [func \(t \*DefaultWMTheme\) TitleGap\(\) int](<#DefaultWMTheme.TitleGap>)
+  - [func \(t \*DefaultWMTheme\) TitleInactiveAlpha\(\) uint8](<#DefaultWMTheme.TitleInactiveAlpha>)
+  - [func \(t \*DefaultWMTheme\) TitleStyle\(\) mancini.TitleBarStyle](<#DefaultWMTheme.TitleStyle>)
+  - [func \(t \*DefaultWMTheme\) UnfocusedContentMode\(\) mancini.UnfocusedMode](<#DefaultWMTheme.UnfocusedContentMode>)
+  - [func \(t \*DefaultWMTheme\) UnfocusedDimAlpha\(\) uint8](<#DefaultWMTheme.UnfocusedDimAlpha>)
+  - [func \(t \*DefaultWMTheme\) UrgentBorderColor\(\) color.NRGBA](<#DefaultWMTheme.UrgentBorderColor>)
 
 
 <a name="DefaultNeumorphicParams"></a>
@@ -74,7 +136,7 @@ NewDefaultNeumorphicParams returns the standard neumorphic shadow parameters.
 func (d *DefaultNeumorphicParams) Heavy() *mancini.NeuParams
 ```
 
-
+Heavy returns the window\-weight neumorphic shadow parameters.
 
 <a name="DefaultNeumorphicParams.Light"></a>
 ### func \(\*DefaultNeumorphicParams\) Light
@@ -83,7 +145,7 @@ func (d *DefaultNeumorphicParams) Heavy() *mancini.NeuParams
 func (d *DefaultNeumorphicParams) Light() *mancini.NeuParams
 ```
 
-
+Light returns the control\-weight neumorphic shadow parameters.
 
 <a name="DefaultPalette"></a>
 ## type DefaultPalette
@@ -114,7 +176,7 @@ NewDefaultPalette returns the standard purple neumorphic palette.
 func NewDefaultPaletteSwapRB() *DefaultPalette
 ```
 
-NewDefaultPaletteSwapRB returns the standard palette with red and blue channels swapped \(for framebuffers that use BGR byte order\).
+NewDefaultPaletteSwapRB returns the standard palette with red and blue channels pre\-swapped in every color \(for framebuffers that use BGR byte order\). Callers can use the returned colors directly without additional swapping.
 
 <a name="NewDefaultPaletteWithColors"></a>
 ### func NewDefaultPaletteWithColors
@@ -125,6 +187,78 @@ func NewDefaultPaletteWithColors(surface, text color.NRGBA) *DefaultPalette
 
 NewDefaultPaletteWithColors returns the standard palette with custom surface and text colors. Shadow colors and other fields use defaults.
 
+<a name="DefaultPalette.Accent"></a>
+### func \(\*DefaultPalette\) Accent
+
+```go
+func (p *DefaultPalette) Accent() color.NRGBA
+```
+
+Accent returns the accent color \(typically same as Highlight\).
+
+<a name="DefaultPalette.AlternateBase"></a>
+### func \(\*DefaultPalette\) AlternateBase
+
+```go
+func (p *DefaultPalette) AlternateBase() color.NRGBA
+```
+
+AlternateBase returns the alternating row color for Base areas.
+
+<a name="DefaultPalette.AnsiColor"></a>
+### func \(\*DefaultPalette\) AnsiColor
+
+```go
+func (p *DefaultPalette) AnsiColor(index int) color.NRGBA
+```
+
+AnsiColor returns the ANSI palette entry at index \(clamped to 0\-15\).
+
+<a name="DefaultPalette.Base"></a>
+### func \(\*DefaultPalette\) Base
+
+```go
+func (p *DefaultPalette) Base() color.NRGBA
+```
+
+Base returns the base \(input field\) background color.
+
+<a name="DefaultPalette.BaseText"></a>
+### func \(\*DefaultPalette\) BaseText
+
+```go
+func (p *DefaultPalette) BaseText() color.NRGBA
+```
+
+BaseText returns the text color drawn on Base backgrounds.
+
+<a name="DefaultPalette.BrightText"></a>
+### func \(\*DefaultPalette\) BrightText
+
+```go
+func (p *DefaultPalette) BrightText() color.NRGBA
+```
+
+BrightText returns a high\-contrast text color used on dark backgrounds.
+
+<a name="DefaultPalette.CursorColor"></a>
+### func \(\*DefaultPalette\) CursorColor
+
+```go
+func (p *DefaultPalette) CursorColor() color.NRGBA
+```
+
+CursorColor returns the text\-cursor color.
+
+<a name="DefaultPalette.CursorTextColor"></a>
+### func \(\*DefaultPalette\) CursorTextColor
+
+```go
+func (p *DefaultPalette) CursorTextColor() color.NRGBA
+```
+
+CursorTextColor returns the text color drawn under the cursor.
+
 <a name="DefaultPalette.DarkShadow"></a>
 ### func \(\*DefaultPalette\) DarkShadow
 
@@ -132,7 +266,16 @@ NewDefaultPaletteWithColors returns the standard palette with custom surface and
 func (p *DefaultPalette) DarkShadow() color.NRGBA
 ```
 
+DarkShadow returns the dark shadow color used in neumorphic rendering.
 
+<a name="DefaultPalette.DesktopBG"></a>
+### func \(\*DefaultPalette\) DesktopBG
+
+```go
+func (p *DefaultPalette) DesktopBG() color.NRGBA
+```
+
+DesktopBG returns the desktop background color.
 
 <a name="DefaultPalette.DisabledAlpha"></a>
 ### func \(\*DefaultPalette\) DisabledAlpha
@@ -141,7 +284,7 @@ func (p *DefaultPalette) DarkShadow() color.NRGBA
 func (p *DefaultPalette) DisabledAlpha() float64
 ```
 
-
+DisabledAlpha returns the alpha multiplier applied to disabled controls.
 
 <a name="DefaultPalette.Highlight"></a>
 ### func \(\*DefaultPalette\) Highlight
@@ -150,7 +293,7 @@ func (p *DefaultPalette) DisabledAlpha() float64
 func (p *DefaultPalette) Highlight() color.NRGBA
 ```
 
-
+Highlight returns the highlight \(accent\) color.
 
 <a name="DefaultPalette.HighlightText"></a>
 ### func \(\*DefaultPalette\) HighlightText
@@ -159,7 +302,7 @@ func (p *DefaultPalette) Highlight() color.NRGBA
 func (p *DefaultPalette) HighlightText() color.NRGBA
 ```
 
-
+HighlightText returns the text color drawn on highlighted backgrounds.
 
 <a name="DefaultPalette.Icon"></a>
 ### func \(\*DefaultPalette\) Icon
@@ -168,7 +311,7 @@ func (p *DefaultPalette) HighlightText() color.NRGBA
 func (p *DefaultPalette) Icon() color.NRGBA
 ```
 
-
+Icon returns the color used for icon glyphs.
 
 <a name="DefaultPalette.LightShadow"></a>
 ### func \(\*DefaultPalette\) LightShadow
@@ -177,7 +320,61 @@ func (p *DefaultPalette) Icon() color.NRGBA
 func (p *DefaultPalette) LightShadow() color.NRGBA
 ```
 
+LightShadow returns the light highlight color used in neumorphic rendering.
 
+<a name="DefaultPalette.Link"></a>
+### func \(\*DefaultPalette\) Link
+
+```go
+func (p *DefaultPalette) Link() color.NRGBA
+```
+
+Link returns the color used for hyperlink text.
+
+<a name="DefaultPalette.Mid"></a>
+### func \(\*DefaultPalette\) Mid
+
+```go
+func (p *DefaultPalette) Mid() color.NRGBA
+```
+
+Mid returns a color between Surface and DarkShadow.
+
+<a name="DefaultPalette.Midlight"></a>
+### func \(\*DefaultPalette\) Midlight
+
+```go
+func (p *DefaultPalette) Midlight() color.NRGBA
+```
+
+Midlight returns a color between Surface and LightShadow.
+
+<a name="DefaultPalette.PlaceholderText"></a>
+### func \(\*DefaultPalette\) PlaceholderText
+
+```go
+func (p *DefaultPalette) PlaceholderText() color.NRGBA
+```
+
+PlaceholderText returns the color used for input placeholder text.
+
+<a name="DefaultPalette.SetDesktopBG"></a>
+### func \(\*DefaultPalette\) SetDesktopBG
+
+```go
+func (p *DefaultPalette) SetDesktopBG(c color.NRGBA)
+```
+
+SetDesktopBG sets the desktop background color. This color is carried by the palette \(not derived from Surface\) so the compositor and decoration renderer can reference it without a separate global. If the palette uses RB\-swapped colors, pass the logical \(R,G,B\) color; the swap is applied automatically.
+
+<a name="DefaultPalette.Shadow"></a>
+### func \(\*DefaultPalette\) Shadow
+
+```go
+func (p *DefaultPalette) Shadow() color.NRGBA
+```
+
+Shadow returns a strong dark shadow color \(near\-black\).
 
 <a name="DefaultPalette.Surface"></a>
 ### func \(\*DefaultPalette\) Surface
@@ -186,7 +383,7 @@ func (p *DefaultPalette) LightShadow() color.NRGBA
 func (p *DefaultPalette) Surface() color.NRGBA
 ```
 
-
+Surface returns the primary surface \(background\) color.
 
 <a name="DefaultPalette.SurfaceTint"></a>
 ### func \(\*DefaultPalette\) SurfaceTint
@@ -195,16 +392,7 @@ func (p *DefaultPalette) Surface() color.NRGBA
 func (p *DefaultPalette) SurfaceTint() color.NRGBA
 ```
 
-
-
-<a name="DefaultPalette.SwapRB"></a>
-### func \(\*DefaultPalette\) SwapRB
-
-```go
-func (p *DefaultPalette) SwapRB() bool
-```
-
-
+SurfaceTint returns the tinted surface color used for variant backgrounds.
 
 <a name="DefaultPalette.Text"></a>
 ### func \(\*DefaultPalette\) Text
@@ -213,12 +401,39 @@ func (p *DefaultPalette) SwapRB() bool
 func (p *DefaultPalette) Text() color.NRGBA
 ```
 
+Text returns the primary text color.
 
+<a name="DefaultPalette.ToolTipBase"></a>
+### func \(\*DefaultPalette\) ToolTipBase
+
+```go
+func (p *DefaultPalette) ToolTipBase() color.NRGBA
+```
+
+ToolTipBase returns the tooltip background color.
+
+<a name="DefaultPalette.ToolTipText"></a>
+### func \(\*DefaultPalette\) ToolTipText
+
+```go
+func (p *DefaultPalette) ToolTipText() color.NRGBA
+```
+
+ToolTipText returns the text color drawn on tooltips.
+
+<a name="DefaultPalette.WindowText"></a>
+### func \(\*DefaultPalette\) WindowText
+
+```go
+func (p *DefaultPalette) WindowText() color.NRGBA
+```
+
+WindowText returns the text color used in window decorations.
 
 <a name="DefaultTheme"></a>
 ## type DefaultTheme
 
-DefaultTheme implements \[mancini.Theme\], combining a \[mancini.Palette\], \[mancini.NeumorphicParams\], and \[mancini.FontResolver\] into one value. It is the standard theme used by all interactors in [mazzy/mazarin/mancini/std](<https://pkg.go.dev/mazzy/mazarin/mancini/std/>).
+DefaultTheme implements \[mancini.Theme\], combining a \[mancini.Palette\], \[mancini.SurfaceStyle\], \[mancini.NeumorphicParams\], geometry, and \[mancini.FontResolver\] into one value. It is the standard theme used by all interactors in [mazzy/mazarin/mancini/std](<https://pkg.go.dev/mazzy/mazarin/mancini/std/>).
 
 Create with [NewDefaultTheme](<#NewDefaultTheme>) \(standard purple palette\) or [NewTheme](<#NewTheme>) \(fully customized\).
 
@@ -237,6 +452,8 @@ func NewDefaultTheme(family string, defaultSize int64, resolve mancini.FontResol
 
 NewDefaultTheme creates a Theme with the standard purple palette and default neumorphic parameters. resolve may be nil if font loading is not yet available.
 
+The returned theme has no SurfaceStyle set — call [DefaultTheme.SetStyle](<#DefaultTheme.SetStyle>) or use \[std.NewDefaultTheme\] which wires one up automatically.
+
 <a name="NewTheme"></a>
 ### func NewTheme
 
@@ -245,6 +462,33 @@ func NewTheme(pal mancini.Palette, neu mancini.NeumorphicParams, family string, 
 ```
 
 NewTheme creates a fully customized Theme.
+
+<a name="DefaultTheme.BodyFontSize"></a>
+### func \(\*DefaultTheme\) BodyFontSize
+
+```go
+func (t *DefaultTheme) BodyFontSize() int64
+```
+
+BodyFontSize returns the font size used for body text.
+
+<a name="DefaultTheme.ControlFontSize"></a>
+### func \(\*DefaultTheme\) ControlFontSize
+
+```go
+func (t *DefaultTheme) ControlFontSize() int64
+```
+
+ControlFontSize returns the font size used for controls.
+
+<a name="DefaultTheme.ControlRadius"></a>
+### func \(\*DefaultTheme\) ControlRadius
+
+```go
+func (t *DefaultTheme) ControlRadius() float64
+```
+
+ControlRadius returns the corner radius used for buttons and similar controls.
 
 <a name="DefaultTheme.DefaultFont"></a>
 ### func \(\*DefaultTheme\) DefaultFont
@@ -262,7 +506,34 @@ DefaultFont returns a FontConfig for the theme's default family and size using t
 func (t *DefaultTheme) DefaultFontSize() int64
 ```
 
+DefaultFontSize returns the theme's default font size in pixels.
 
+<a name="DefaultTheme.FieldBorderWidth"></a>
+### func \(\*DefaultTheme\) FieldBorderWidth
+
+```go
+func (t *DefaultTheme) FieldBorderWidth() float64
+```
+
+FieldBorderWidth returns the border width used for input fields.
+
+<a name="DefaultTheme.FieldPadding"></a>
+### func \(\*DefaultTheme\) FieldPadding
+
+```go
+func (t *DefaultTheme) FieldPadding() float64
+```
+
+FieldPadding returns the internal padding used for input fields.
+
+<a name="DefaultTheme.FieldRadius"></a>
+### func \(\*DefaultTheme\) FieldRadius
+
+```go
+func (t *DefaultTheme) FieldRadius() float64
+```
+
+FieldRadius returns the corner radius used for input fields.
 
 <a name="DefaultTheme.Font"></a>
 ### func \(\*DefaultTheme\) Font
@@ -273,6 +544,33 @@ func (t *DefaultTheme) Font(feature mancini.Feature, size int64) *mancini.FontCo
 
 Font returns a FontConfig whose LoadFace closure resolves the theme's font family with the given feature and size. If no FontResolver was provided, LoadFace is nil and callers fall back to FontConfig's built\-in estimate.
 
+<a name="DefaultTheme.FontFamily"></a>
+### func \(\*DefaultTheme\) FontFamily
+
+```go
+func (t *DefaultTheme) FontFamily() string
+```
+
+FontFamily returns the theme's primary font family name.
+
+<a name="DefaultTheme.FontFamilyMono"></a>
+### func \(\*DefaultTheme\) FontFamilyMono
+
+```go
+func (t *DefaultTheme) FontFamilyMono() string
+```
+
+FontFamilyMono returns the theme's monospace font family name.
+
+<a name="DefaultTheme.Name"></a>
+### func \(\*DefaultTheme\) Name
+
+```go
+func (t *DefaultTheme) Name() string
+```
+
+Name returns the theme's display name.
+
 <a name="DefaultTheme.Neumorphic"></a>
 ### func \(\*DefaultTheme\) Neumorphic
 
@@ -280,7 +578,7 @@ Font returns a FontConfig whose LoadFace closure resolves the theme's font famil
 func (t *DefaultTheme) Neumorphic() mancini.NeumorphicParams
 ```
 
-
+Neumorphic returns the theme's \[mancini.NeumorphicParams\].
 
 <a name="DefaultTheme.Palette"></a>
 ### func \(\*DefaultTheme\) Palette
@@ -289,6 +587,332 @@ func (t *DefaultTheme) Neumorphic() mancini.NeumorphicParams
 func (t *DefaultTheme) Palette() mancini.Palette
 ```
 
+Palette returns the theme's \[mancini.Palette\].
 
+<a name="DefaultTheme.ScrollbarMinThumb"></a>
+### func \(\*DefaultTheme\) ScrollbarMinThumb
+
+```go
+func (t *DefaultTheme) ScrollbarMinThumb() float64
+```
+
+ScrollbarMinThumb returns the minimum scrollbar thumb length in pixels.
+
+<a name="DefaultTheme.ScrollbarThickness"></a>
+### func \(\*DefaultTheme\) ScrollbarThickness
+
+```go
+func (t *DefaultTheme) ScrollbarThickness() float64
+```
+
+ScrollbarThickness returns the scrollbar's cross\-axis thickness in pixels.
+
+<a name="DefaultTheme.SetMonoFamily"></a>
+### func \(\*DefaultTheme\) SetMonoFamily
+
+```go
+func (t *DefaultTheme) SetMonoFamily(mono string)
+```
+
+SetMonoFamily sets the monospace font family name.
+
+<a name="DefaultTheme.SetName"></a>
+### func \(\*DefaultTheme\) SetName
+
+```go
+func (t *DefaultTheme) SetName(name string)
+```
+
+SetName sets the theme's display name.
+
+<a name="DefaultTheme.SetStyle"></a>
+### func \(\*DefaultTheme\) SetStyle
+
+```go
+func (t *DefaultTheme) SetStyle(s mancini.SurfaceStyle)
+```
+
+SetStyle sets the active SurfaceStyle. This is called by \[std.NewDefaultTheme\] after construction, since the theme package cannot import std \(where style implementations live\).
+
+<a name="DefaultTheme.SmallFontSize"></a>
+### func \(\*DefaultTheme\) SmallFontSize
+
+```go
+func (t *DefaultTheme) SmallFontSize() int64
+```
+
+SmallFontSize returns the font size used for small/secondary text.
+
+<a name="DefaultTheme.Style"></a>
+### func \(\*DefaultTheme\) Style
+
+```go
+func (t *DefaultTheme) Style() mancini.SurfaceStyle
+```
+
+Style returns the theme's active \[mancini.SurfaceStyle\].
+
+<a name="DefaultTheme.TitleFontSize"></a>
+### func \(\*DefaultTheme\) TitleFontSize
+
+```go
+func (t *DefaultTheme) TitleFontSize() int64
+```
+
+TitleFontSize returns the font size used for titles.
+
+<a name="DefaultWMTheme"></a>
+## type DefaultWMTheme
+
+DefaultWMTheme implements \[mancini.WMTheme\] with the default neumorphic decoration parameters matching rachel's current hardcoded constants.
+
+```go
+type DefaultWMTheme struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewDefaultWMTheme"></a>
+### func NewDefaultWMTheme
+
+```go
+func NewDefaultWMTheme(pal mancini.Palette) *DefaultWMTheme
+```
+
+NewDefaultWMTheme creates a WMTheme with default decoration parameters. pal should be the RB\-swapped palette used by rachel. style will be set via SetStyle after construction.
+
+<a name="DefaultWMTheme.ActiveBorderColor"></a>
+### func \(\*DefaultWMTheme\) ActiveBorderColor
+
+```go
+func (t *DefaultWMTheme) ActiveBorderColor() color.NRGBA
+```
+
+ActiveBorderColor returns the border color for the focused window.
+
+<a name="DefaultWMTheme.BorderBottom"></a>
+### func \(\*DefaultWMTheme\) BorderBottom
+
+```go
+func (t *DefaultWMTheme) BorderBottom() int
+```
+
+BorderBottom returns the total bottom border width.
+
+<a name="DefaultWMTheme.BorderLeft"></a>
+### func \(\*DefaultWMTheme\) BorderLeft
+
+```go
+func (t *DefaultWMTheme) BorderLeft() int
+```
+
+BorderLeft returns the total left border width.
+
+<a name="DefaultWMTheme.BorderRight"></a>
+### func \(\*DefaultWMTheme\) BorderRight
+
+```go
+func (t *DefaultWMTheme) BorderRight() int
+```
+
+BorderRight returns the total right border width.
+
+<a name="DefaultWMTheme.BorderTop"></a>
+### func \(\*DefaultWMTheme\) BorderTop
+
+```go
+func (t *DefaultWMTheme) BorderTop() int
+```
+
+BorderTop returns the total top border width \(shadow \+ title bar \+ gap\).
+
+<a name="DefaultWMTheme.CornerRadius"></a>
+### func \(\*DefaultWMTheme\) CornerRadius
+
+```go
+func (t *DefaultWMTheme) CornerRadius() float64
+```
+
+CornerRadius returns the window corner radius in pixels.
+
+<a name="DefaultWMTheme.InactiveBorderColor"></a>
+### func \(\*DefaultWMTheme\) InactiveBorderColor
+
+```go
+func (t *DefaultWMTheme) InactiveBorderColor() color.NRGBA
+```
+
+InactiveBorderColor returns the border color for unfocused windows.
+
+<a name="DefaultWMTheme.Name"></a>
+### func \(\*DefaultWMTheme\) Name
+
+```go
+func (t *DefaultWMTheme) Name() string
+```
+
+Name returns the WM theme's display name.
+
+<a name="DefaultWMTheme.Palette"></a>
+### func \(\*DefaultWMTheme\) Palette
+
+```go
+func (t *DefaultWMTheme) Palette() mancini.Palette
+```
+
+Palette returns the WM theme's \[mancini.Palette\].
+
+<a name="DefaultWMTheme.RaisedLightAlpha"></a>
+### func \(\*DefaultWMTheme\) RaisedLightAlpha
+
+```go
+func (t *DefaultWMTheme) RaisedLightAlpha() uint8
+```
+
+RaisedLightAlpha returns the custom light shadow alpha for window decorations. Rachel uses 160 instead of the default 255 to avoid a visible white margin in the border zone.
+
+<a name="DefaultWMTheme.SetStyle"></a>
+### func \(\*DefaultWMTheme\) SetStyle
+
+```go
+func (t *DefaultWMTheme) SetStyle(s mancini.SurfaceStyle)
+```
+
+SetStyle sets the active SurfaceStyle. Called by std after construction to break the theme→std import cycle.
+
+<a name="DefaultWMTheme.ShadowBottom"></a>
+### func \(\*DefaultWMTheme\) ShadowBottom
+
+```go
+func (t *DefaultWMTheme) ShadowBottom() int
+```
+
+ShadowBottom returns the bottom shadow margin in pixels.
+
+<a name="DefaultWMTheme.ShadowLeft"></a>
+### func \(\*DefaultWMTheme\) ShadowLeft
+
+```go
+func (t *DefaultWMTheme) ShadowLeft() int
+```
+
+ShadowLeft returns the left shadow margin in pixels.
+
+<a name="DefaultWMTheme.ShadowRight"></a>
+### func \(\*DefaultWMTheme\) ShadowRight
+
+```go
+func (t *DefaultWMTheme) ShadowRight() int
+```
+
+ShadowRight returns the right shadow margin in pixels.
+
+<a name="DefaultWMTheme.ShadowTop"></a>
+### func \(\*DefaultWMTheme\) ShadowTop
+
+```go
+func (t *DefaultWMTheme) ShadowTop() int
+```
+
+Shadow margins: left/right/bottom must be wide enough to contain the 12\-pixel resize handle semi\-circles \(radius 12 \+ 2px groove margin = 14\). Top is kept minimal since the title bar occupies that zone. ShadowTop returns the top shadow margin in pixels.
+
+<a name="DefaultWMTheme.Style"></a>
+### func \(\*DefaultWMTheme\) Style
+
+```go
+func (t *DefaultWMTheme) Style() mancini.SurfaceStyle
+```
+
+Style returns the WM theme's active \[mancini.SurfaceStyle\].
+
+<a name="DefaultWMTheme.TitleActiveAlpha"></a>
+### func \(\*DefaultWMTheme\) TitleActiveAlpha
+
+```go
+func (t *DefaultWMTheme) TitleActiveAlpha() uint8
+```
+
+TitleActiveAlpha returns the title text alpha for focused windows.
+
+<a name="DefaultWMTheme.TitleBarHeight"></a>
+### func \(\*DefaultWMTheme\) TitleBarHeight
+
+```go
+func (t *DefaultWMTheme) TitleBarHeight() int
+```
+
+TitleBarHeight returns the title bar height in pixels.
+
+<a name="DefaultWMTheme.TitleFont"></a>
+### func \(\*DefaultWMTheme\) TitleFont
+
+```go
+func (t *DefaultWMTheme) TitleFont() string
+```
+
+TitleFont returns the title bar font family name \(empty = theme default\).
+
+<a name="DefaultWMTheme.TitleFontSize"></a>
+### func \(\*DefaultWMTheme\) TitleFontSize
+
+```go
+func (t *DefaultWMTheme) TitleFontSize() int64
+```
+
+TitleFontSize returns the title bar font size in pixels.
+
+<a name="DefaultWMTheme.TitleGap"></a>
+### func \(\*DefaultWMTheme\) TitleGap
+
+```go
+func (t *DefaultWMTheme) TitleGap() int
+```
+
+TitleGap returns the gap in pixels between the title bar and the window content.
+
+<a name="DefaultWMTheme.TitleInactiveAlpha"></a>
+### func \(\*DefaultWMTheme\) TitleInactiveAlpha
+
+```go
+func (t *DefaultWMTheme) TitleInactiveAlpha() uint8
+```
+
+TitleInactiveAlpha returns the title text alpha for unfocused windows.
+
+<a name="DefaultWMTheme.TitleStyle"></a>
+### func \(\*DefaultWMTheme\) TitleStyle
+
+```go
+func (t *DefaultWMTheme) TitleStyle() mancini.TitleBarStyle
+```
+
+TitleStyle returns the title bar style \(\[mancini.TitleBarStriped\] by default\).
+
+<a name="DefaultWMTheme.UnfocusedContentMode"></a>
+### func \(\*DefaultWMTheme\) UnfocusedContentMode
+
+```go
+func (t *DefaultWMTheme) UnfocusedContentMode() mancini.UnfocusedMode
+```
+
+UnfocusedContentMode returns how unfocused window content should be rendered.
+
+<a name="DefaultWMTheme.UnfocusedDimAlpha"></a>
+### func \(\*DefaultWMTheme\) UnfocusedDimAlpha
+
+```go
+func (t *DefaultWMTheme) UnfocusedDimAlpha() uint8
+```
+
+UnfocusedDimAlpha returns the dim alpha applied when unfocused content is dimmed.
+
+<a name="DefaultWMTheme.UrgentBorderColor"></a>
+### func \(\*DefaultWMTheme\) UrgentBorderColor
+
+```go
+func (t *DefaultWMTheme) UrgentBorderColor() color.NRGBA
+```
+
+UrgentBorderColor returns the border color for windows requesting attention.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

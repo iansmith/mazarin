@@ -29,17 +29,17 @@ Concrete interactor types in [mazzy/mazarin/mancini/std](<https://pkg.go.dev/maz
 
 Go's struct embedding promotes methods but does not support virtual dispatch: if ThemedInteractor.Draw calls self.DC\(\), the call resolves to Interactor.DC\(\), not to an override on the concrete type. Mancini solves this by storing a backpointer to the outermost concrete type.
 
-[Interactor.Init](<#Interactor.Init>) takes an "owner" parameter of type \[mancini.Interactor\]:
+[Interactor.Initialize](<#Interactor.Initialize>) takes an "owner" parameter of type \[mancini.Interactor\]:
 
 ```
-func (i *Interactor) Init(owner mancini.Interactor, layout *mancini.LayoutAttributes)
+func (i *Interactor) Initialize(owner mancini.Interactor, layout *mancini.LayoutAttributes)
 ```
 
 Every concrete type passes itself as the owner during construction:
 
 ```
 b := &Button{Depth: Raised, Radius: 8.0}
-b.ThemedInteractor.Init(b, layout, theme)  // b is the owner
+b.ThemedInteractor.Initialize(b, layout, theme)  // b is the owner
 ```
 
 The Draw protocol then passes this backpointer as the "self" parameter:
@@ -57,59 +57,89 @@ Depending on which base is embedded, the required initialization calls are:
 For [ThemedInteractor](<#ThemedInteractor>) embedders:
 
 ```
-t.ThemedInteractor.Init(t, layout, theme)
+t.ThemedInteractor.Initialize(t, layout, theme)
 ```
 
-This calls [Interactor.Init](<#Interactor.Init>) internally, which registers the interactor in the global registry.
+This calls [Interactor.Initialize](<#Interactor.Initialize>) internally, which registers the interactor in the global registry.
 
 For [Interactor](<#Interactor>) \+ [Parent](<#Parent>) embedders:
 
 ```
-c.Interactor.Init(c, layout)
-c.Parent.InitParent(&c.Interactor)
+c.Interactor.Initialize(c, layout)
+c.Parent.Initialize(true, &c.Interactor)
 ```
 
-[Parent.InitParent](<#Parent.InitParent>) must be called after [Interactor.Init](<#Interactor.Init>) because it needs the Interactor's layout name for child discovery.
+[Parent.Initialize](<#Parent.Initialize>) must be called after [Interactor.Initialize](<#Interactor.Initialize>) because it needs the Interactor's layout name for child discovery.
 
 For [Decorator](<#Decorator>) embedders:
 
 ```
-d.Decorator.InitDecorator(d, layout, top, right, bottom, left)
+d.Decorator.Initialize(d, layout, top, right, bottom, left)
 ```
 
-This calls both [Interactor.Init](<#Interactor.Init>) and [Parent.InitParent](<#Parent.InitParent>) internally.
+This calls both [Interactor.Initialize](<#Interactor.Initialize>) and [Parent.Initialize](<#Parent.Initialize>) internally.
 
 ## Index
 
 - [type Decorator](<#Decorator>)
   - [func \(d \*Decorator\) Decorate\(self mancini.Interactor, x, y, w, h int64\)](<#Decorator.Decorate>)
   - [func \(d \*Decorator\) DecorateIfNeeded\(self mancini.Interactor, x, y, w, h int64\)](<#Decorator.DecorateIfNeeded>)
-  - [func \(d \*Decorator\) Draw\(self mancini.Interactor, x, y, w, h int64\)](<#Decorator.Draw>)
-  - [func \(d \*Decorator\) InitDecorator\(owner any, layout \*mancini.LayoutAttributes, top, right, bottom, left int64\)](<#Decorator.InitDecorator>)
+  - [func \(d \*Decorator\) Draw\(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle\)](<#Decorator.Draw>)
+  - [func \(d \*Decorator\) Initialize\(owner any, layout \*mancini.LayoutAttributes, top, right, bottom, left int64\)](<#Decorator.Initialize>)
 - [type Interactor](<#Interactor>)
+  - [func \(i \*Interactor\) BoundsRect\(\) image.Rectangle](<#Interactor.BoundsRect>)
+  - [func \(i \*Interactor\) ClearDamage\(\)](<#Interactor.ClearDamage>)
   - [func \(i \*Interactor\) DC\(\) mancini.DrawContext](<#Interactor.DC>)
+  - [func \(i \*Interactor\) Damaged\(damage image.Rectangle\) bool](<#Interactor.Damaged>)
+  - [func \(i \*Interactor\) DrawSelfOpaque\(damage image.Rectangle, c color.NRGBA\)](<#Interactor.DrawSelfOpaque>)
+  - [func \(i \*Interactor\) FullDamage\(\)](<#Interactor.FullDamage>)
   - [func \(i \*Interactor\) GetLayout\(\) \*mancini.LayoutAttributes](<#Interactor.GetLayout>)
   - [func \(i \*Interactor\) H\(\) int64](<#Interactor.H>)
-  - [func \(i \*Interactor\) Init\(owner mancini.Interactor, layout \*mancini.LayoutAttributes\)](<#Interactor.Init>)
+  - [func \(i \*Interactor\) Initialize\(owner mancini.Interactor, layout \*mancini.LayoutAttributes\)](<#Interactor.Initialize>)
   - [func \(i \*Interactor\) Layout\(\) \*mancini.LayoutAttributes](<#Interactor.Layout>)
   - [func \(i \*Interactor\) Owner\(\) mancini.Interactor](<#Interactor.Owner>)
+  - [func \(i \*Interactor\) Pick\(localX, localY int64\) \[\]mancini.Interactor](<#Interactor.Pick>)
+  - [func \(i \*Interactor\) ReInitializeOwner\(newOwner mancini.Interactor\)](<#Interactor.ReInitializeOwner>)
+  - [func \(i \*Interactor\) ScreenCoordConvertFrom\(screenX, screenY int64\) \(int64, int64\)](<#Interactor.ScreenCoordConvertFrom>)
+  - [func \(i \*Interactor\) ScreenCoordConvertTo\(localX, localY int64\) \(int64, int64\)](<#Interactor.ScreenCoordConvertTo>)
   - [func \(i \*Interactor\) SetDC\(dc mancini.DrawContext\)](<#Interactor.SetDC>)
+  - [func \(i \*Interactor\) SetVisible\(v bool\)](<#Interactor.SetVisible>)
+  - [func \(i \*Interactor\) SnapshotDamage\(\)](<#Interactor.SnapshotDamage>)
+  - [func \(i \*Interactor\) UnionDamage\(prev image.Rectangle\) image.Rectangle](<#Interactor.UnionDamage>)
   - [func \(i \*Interactor\) Visible\(\) bool](<#Interactor.Visible>)
   - [func \(i \*Interactor\) W\(\) int64](<#Interactor.W>)
   - [func \(i \*Interactor\) X\(\) int64](<#Interactor.X>)
   - [func \(i \*Interactor\) Y\(\) int64](<#Interactor.Y>)
+- [type LatinTextFaceImpl](<#LatinTextFaceImpl>)
+  - [func NewLatinTextFace\(fc \*mancini.FontConfig, bold bool, fontSize int64, params mancini.TextAlignmentParams\) \*LatinTextFaceImpl](<#NewLatinTextFace>)
+  - [func NewLatinTextFaceWithFontID\(fontID int32, params mancini.TextAlignmentParams\) \*LatinTextFaceImpl](<#NewLatinTextFaceWithFontID>)
+  - [func \(f \*LatinTextFaceImpl\) DrawFace\(dc mancini.DrawContext, x, y, w, h float64\)](<#LatinTextFaceImpl.DrawFace>)
+  - [func \(f \*LatinTextFaceImpl\) MeasureText\(text string\) float64](<#LatinTextFaceImpl.MeasureText>)
+  - [func \(f \*LatinTextFaceImpl\) SetText\(text string\)](<#LatinTextFaceImpl.SetText>)
+  - [func \(f \*LatinTextFaceImpl\) Text\(\) string](<#LatinTextFaceImpl.Text>)
 - [type Parent](<#Parent>)
-  - [func \(p \*Parent\) DrawChildren\(self mancini.Interactor, x, y, w, h int64\)](<#Parent.DrawChildren>)
+  - [func \(p \*Parent\) AddChildFirst\(child mancini.Interactor\)](<#Parent.AddChildFirst>)
+  - [func \(p \*Parent\) AddChildLast\(child mancini.Interactor\)](<#Parent.AddChildLast>)
+  - [func \(p \*Parent\) DeleteAllChildren\(\) \[\]mancini.Interactor](<#Parent.DeleteAllChildren>)
+  - [func \(p \*Parent\) DeleteChild\(child mancini.Interactor\) mancini.Interactor](<#Parent.DeleteChild>)
+  - [func \(p \*Parent\) DeleteFirst\(\) mancini.Interactor](<#Parent.DeleteFirst>)
+  - [func \(p \*Parent\) DeleteIthChild\(i int\) mancini.Interactor](<#Parent.DeleteIthChild>)
+  - [func \(p \*Parent\) DeleteLast\(\) mancini.Interactor](<#Parent.DeleteLast>)
+  - [func \(p \*Parent\) DrawChildren\(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle\)](<#Parent.DrawChildren>)
+  - [func \(p \*Parent\) DrawSelf\(dc mancini.DrawContext, rect image.Rectangle\)](<#Parent.DrawSelf>)
   - [func \(p \*Parent\) GetChildren\(\) \[\]mancini.Interactor](<#Parent.GetChildren>)
-  - [func \(p \*Parent\) InitParent\(i \*Interactor\)](<#Parent.InitParent>)
+  - [func \(p \*Parent\) Initialize\(wantDefaultDamageConstraint bool, i \*Interactor\)](<#Parent.Initialize>)
+  - [func \(p \*Parent\) IsRectSingleChild\(rect image.Rectangle\) mancini.Interactor](<#Parent.IsRectSingleChild>)
+  - [func \(p \*Parent\) SmallestDraw\(rect image.Rectangle\) \[\]image.Rectangle](<#Parent.SmallestDraw>)
 - [type ThemedInteractor](<#ThemedInteractor>)
   - [func \(t \*ThemedInteractor\) BgColor\(\) color.NRGBA](<#ThemedInteractor.BgColor>)
   - [func \(t \*ThemedInteractor\) DefaultFont\(\) \*mancini.FontConfig](<#ThemedInteractor.DefaultFont>)
   - [func \(t \*ThemedInteractor\) DefaultSize\(\) int64](<#ThemedInteractor.DefaultSize>)
-  - [func \(t \*ThemedInteractor\) Draw\(self mancini.Interactor, x, y, w, h int64\)](<#ThemedInteractor.Draw>)
+  - [func \(t \*ThemedInteractor\) Draw\(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle\)](<#ThemedInteractor.Draw>)
+  - [func \(t \*ThemedInteractor\) DrawSelf\(dc mancini.DrawContext, rect image.Rectangle\)](<#ThemedInteractor.DrawSelf>)
   - [func \(t \*ThemedInteractor\) FgColor\(\) color.NRGBA](<#ThemedInteractor.FgColor>)
   - [func \(t \*ThemedInteractor\) Font\(feature mancini.Feature, size int64\) \*mancini.FontConfig](<#ThemedInteractor.Font>)
-  - [func \(t \*ThemedInteractor\) Init\(owner mancini.Interactor, layout \*mancini.LayoutAttributes, theme mancini.Theme\)](<#ThemedInteractor.Init>)
+  - [func \(t \*ThemedInteractor\) Initialize\(owner mancini.Interactor, layout \*mancini.LayoutAttributes, theme mancini.Theme\)](<#ThemedInteractor.Initialize>)
   - [func \(t \*ThemedInteractor\) Theme\(\) mancini.Theme](<#ThemedInteractor.Theme>)
 
 
@@ -143,16 +173,18 @@ Decorator embeds [Parent](<#Parent>) for GetChildren but does NOT use DrawChildr
 
 ### Initialization
 
-Concrete types call \[InitDecorator\], which internally calls [Interactor.Init](<#Interactor.Init>) and [Parent.InitParent](<#Parent.InitParent>):
+Concrete types call [Decorator.Initialize](<#Decorator.Initialize>), which internally calls [Interactor.Initialize](<#Interactor.Initialize>) and [Parent.Initialize](<#Parent.Initialize>):
 
 ```
-n.Decorator.InitDecorator(n, layout, top, right, bottom, left)
+n.Decorator.Initialize(n, layout, top, right, bottom, left)
 ```
 
 ```go
 type Decorator struct {
     Interactor
     Parent
+    // Top, Right, Bottom, Left are the decoration insets in pixels.
+    // The child is positioned and sized inside these insets.
     Top, Right, Bottom, Left int64
     // contains filtered or unexported fields
 }
@@ -185,7 +217,7 @@ DecorateIfNeeded checks whether the decoration needs to be redrawn by comparing 
 ### func \(\*Decorator\) Draw
 
 ```go
-func (d *Decorator) Draw(self mancini.Interactor, x, y, w, h int64)
+func (d *Decorator) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle)
 ```
 
 Draw implements mancini.NewDrawer.
@@ -196,14 +228,14 @@ Draw implements mancini.NewDrawer.
 
 Note: the child's Width and Height are NOT set here. They are owned by the child \(inside\-out sizing\). The Decorator's own Width/Height come from constraint programs that read child.Width \+ Left \+ Right, etc.
 
-<a name="Decorator.InitDecorator"></a>
-### func \(\*Decorator\) InitDecorator
+<a name="Decorator.Initialize"></a>
+### func \(\*Decorator\) Initialize
 
 ```go
-func (d *Decorator) InitDecorator(owner any, layout *mancini.LayoutAttributes, top, right, bottom, left int64)
+func (d *Decorator) Initialize(owner any, layout *mancini.LayoutAttributes, top, right, bottom, left int64)
 ```
 
-InitDecorator wires the backpointer, layout, and decoration insets. It calls [Interactor.Init](<#Interactor.Init>) \(registering in the global registry\) and [Parent.InitParent](<#Parent.InitParent>) internally. The owner parameter must be the outermost concrete type \(the backpointer\).
+Initialize wires the backpointer, layout, and decoration insets. It calls [Interactor.Initialize](<#Interactor.Initialize>) \(registering in the global registry\) and [Parent.Initialize](<#Parent.Initialize>) internally. The owner parameter must be the outermost concrete type \(the backpointer\).
 
 Constraint\-based sizing \(Width = child.Width \+ Left \+ Right, etc.\) is set up separately by the concrete type's constructor via \[mancini.NewDecoratorLayout\] or \[mancini.NewDecoratorLayoutByParentName\].
 
@@ -218,7 +250,7 @@ Embedding Interactor promotes: X, Y, W, H, Visible, DC, SetDC, Owner, Layout, an
 
 ### Backpointer
 
-Interactor stores a backpointer \("owner"\) to the outermost concrete type. This enables virtual dispatch in the Draw protocol: when a parent calls child.Draw\(child, ...\), the child parameter is the concrete type, so self.DC\(\) and self.Visible\(\) resolve correctly. See \[Init\] for how the backpointer is established.
+Interactor stores a backpointer \("owner"\) to the outermost concrete type. This enables virtual dispatch in the Draw protocol: when a parent calls child.Draw\(child, ...\), the child parameter is the concrete type, so self.DC\(\) and self.Visible\(\) resolve correctly. See \[Initialize\] for how the backpointer is established.
 
 ### Embedding Hierarchy
 
@@ -234,6 +266,24 @@ type Interactor struct {
 }
 ```
 
+<a name="Interactor.BoundsRect"></a>
+### func \(\*Interactor\) BoundsRect
+
+```go
+func (i *Interactor) BoundsRect() image.Rectangle
+```
+
+BoundsRect returns the interactor's bounds as an image.Rectangle computed from layout X, Y, Width, Height. Returns empty rect if no layout is available.
+
+<a name="Interactor.ClearDamage"></a>
+### func \(\*Interactor\) ClearDamage
+
+```go
+func (i *Interactor) ClearDamage()
+```
+
+ClearDamage resets this interactor's damage rectangle to empty. For leaves \(value DamageRect\), this directly clears the value. For parents \(constraint DamageRect\), this is a no\-op — the constraint re\-evaluates to empty when all children clear.
+
 <a name="Interactor.DC"></a>
 ### func \(\*Interactor\) DC
 
@@ -241,7 +291,34 @@ type Interactor struct {
 func (i *Interactor) DC() mancini.DrawContext
 ```
 
+DC returns the \[mancini.DrawContext\] last propagated to this interactor.
 
+<a name="Interactor.Damaged"></a>
+### func \(\*Interactor\) Damaged
+
+```go
+func (i *Interactor) Damaged(damage image.Rectangle) bool
+```
+
+Damaged intersects the damage rectangle with this interactor's bounds \(from layout X, Y, Width, Height\). Returns true if the intersection is non\-empty — meaning this interactor overlaps the damaged region and should repaint.
+
+<a name="Interactor.DrawSelfOpaque"></a>
+### func \(\*Interactor\) DrawSelfOpaque
+
+```go
+func (i *Interactor) DrawSelfOpaque(damage image.Rectangle, c color.NRGBA)
+```
+
+DrawSelfOpaque intersects the damage rectangle with this interactor's bounds and fills the intersection with the given color. Designed for interactors that always show a painted background \(themed controls, opaque containers\).
+
+<a name="Interactor.FullDamage"></a>
+### func \(\*Interactor\) FullDamage
+
+```go
+func (i *Interactor) FullDamage()
+```
+
+FullDamage marks this interactor as needing a complete repaint. It sets the DamageRect to the interactor's full Bounds. Called automatically by Initialize to ensure the first draw paints everything; also available for input handlers that need to force a full repaint \(e.g., a clock face on tick\).
 
 <a name="Interactor.GetLayout"></a>
 ### func \(\*Interactor\) GetLayout
@@ -259,25 +336,27 @@ GetLayout satisfies the \[mancini.Layouter\] interface, returning the \[mancini.
 func (i *Interactor) H() int64
 ```
 
+H returns the interactor's height from layout.
 
-
-<a name="Interactor.Init"></a>
-### func \(\*Interactor\) Init
+<a name="Interactor.Initialize"></a>
+### func \(\*Interactor\) Initialize
 
 ```go
-func (i *Interactor) Init(owner mancini.Interactor, layout *mancini.LayoutAttributes)
+func (i *Interactor) Initialize(owner mancini.Interactor, layout *mancini.LayoutAttributes)
 ```
 
-Init wires the backpointer and layout attributes. Must be called from the concrete type's constructor, passing the concrete type as owner:
+Initialize wires the backpointer and layout attributes. Must be called from the concrete type's constructor, passing the concrete type as owner:
 
 ```
 b := &Button{...}
-b.Interactor.Init(b, layout)   // b is the backpointer
+b.Interactor.Initialize(b, layout)   // b is the backpointer
 ```
 
-Init also registers the interactor in the global registry \(see \[mancini.RegisterInteractor\]\) keyed by the layout's constraint\-system name, enabling child discovery by [Parent.GetChildren](<#Parent.GetChildren>).
+Initialize also registers the interactor in the global registry \(see \[mancini.RegisterInteractor\]\) keyed by the layout's constraint\-system name, enabling child discovery by [Parent.GetChildren](<#Parent.GetChildren>).
 
-For themed interactors, call [ThemedInteractor.Init](<#ThemedInteractor.Init>) instead, which calls this method internally.
+Initialize does NOT set up damage tracking. Leaf interactors must call \[FullDamage\] themselves \(e.g. via [ThemedInteractor.Initialize](<#ThemedInteractor.Initialize>)\). Parent interactors get damage from [Parent.Initialize](<#Parent.Initialize>), which installs a constraint that unions children's damage rectangles.
+
+For themed interactors, call [ThemedInteractor.Initialize](<#ThemedInteractor.Initialize>) instead, which calls this method internally.
 
 <a name="Interactor.Layout"></a>
 ### func \(\*Interactor\) Layout
@@ -297,6 +376,50 @@ func (i *Interactor) Owner() mancini.Interactor
 
 Owner returns the backpointer to the outermost concrete type. Used internally by [Decorator.DecorateIfNeeded](<#Decorator.DecorateIfNeeded>) to perform virtual dispatch on the \[mancini.Decoratable\] interface.
 
+<a name="Interactor.Pick"></a>
+### func \(\*Interactor\) Pick
+
+```go
+func (i *Interactor) Pick(localX, localY int64) []mancini.Interactor
+```
+
+Pick performs hit testing in this interactor's local coordinate frame. Returns front\-to\-back order \(deepest children first\).
+
+The parent walks its children last\-to\-first \(top z\-order first\). For each child the parent pre\-filters against that child's bounds in the parent's coordinate frame: if the click does not overlap the child there is no reason to recurse into it. Invisible children are also skipped. When a child does overlap, the parent transforms the click into the child's local frame \(subtracting the child's x,y within the parent\) before recursing.
+
+A child's bounds may legitimately extend outside the parent's own bounds \(e.g. a GridTable divider whose marker overhangs above and below the grid\). The parent still recurses into such children based on the child's own bounds — it does NOT pre\-filter by its own bounds.
+
+Self is appended to the result only if the click is within this interactor's local bounds and DetailedHit \(if implemented\) returns true.
+
+Concrete types \(e.g., Scroller\) may override Pick to apply additional coordinate transforms before recursing into children.
+
+<a name="Interactor.ReInitializeOwner"></a>
+### func \(\*Interactor\) ReInitializeOwner
+
+```go
+func (i *Interactor) ReInitializeOwner(newOwner mancini.Interactor)
+```
+
+ReInitializeOwner replaces the backpointer and re\-registers with the new owner. Used when a subclass wraps an already\-initialized interactor and needs dispatch to resolve to the subclass's methods.
+
+<a name="Interactor.ScreenCoordConvertFrom"></a>
+### func \(\*Interactor\) ScreenCoordConvertFrom
+
+```go
+func (i *Interactor) ScreenCoordConvertFrom(screenX, screenY int64) (int64, int64)
+```
+
+ScreenCoordConvertFrom converts screen\-absolute coordinates to this interactor's local coordinate frame.
+
+<a name="Interactor.ScreenCoordConvertTo"></a>
+### func \(\*Interactor\) ScreenCoordConvertTo
+
+```go
+func (i *Interactor) ScreenCoordConvertTo(localX, localY int64) (int64, int64)
+```
+
+ScreenCoordConvertTo converts interactor\-local coordinates to screen coordinates. \(0,0\) returns the screen position of this interactor's top\-left corner.
+
 <a name="Interactor.SetDC"></a>
 ### func \(\*Interactor\) SetDC
 
@@ -306,6 +429,33 @@ func (i *Interactor) SetDC(dc mancini.DrawContext)
 
 SetDC sets the \[mancini.DrawContext\] for this interactor. Called by parent interactors during the draw pass to propagate the drawing surface down the tree before calling Draw.
 
+<a name="Interactor.SetVisible"></a>
+### func \(\*Interactor\) SetVisible
+
+```go
+func (i *Interactor) SetVisible(v bool)
+```
+
+SetVisible sets the interactor's Visible layout attribute.
+
+<a name="Interactor.SnapshotDamage"></a>
+### func \(\*Interactor\) SnapshotDamage
+
+```go
+func (i *Interactor) SnapshotDamage()
+```
+
+SnapshotDamage copies current Bounds, Visible, and BoundsHash into "last\-painted" mirror attributes. The parent damage constraint compares current state to LP state — when they match, ownDamage stays empty and child damage passes through untouched. Call this after drawing an interactor so the next evaluation sees no change.
+
+<a name="Interactor.UnionDamage"></a>
+### func \(\*Interactor\) UnionDamage
+
+```go
+func (i *Interactor) UnionDamage(prev image.Rectangle) image.Rectangle
+```
+
+UnionDamage returns the union of prev \(the interactor's bounds before a size/position change\) and the interactor's current bounds. Use this when a child moves or resizes: save BoundsRect\(\) before the change, perform the change, then call UnionDamage\(saved\) to get the damage rect that covers both old and new positions.
+
 <a name="Interactor.Visible"></a>
 ### func \(\*Interactor\) Visible
 
@@ -313,7 +463,7 @@ SetDC sets the \[mancini.DrawContext\] for this interactor. Called by parent int
 func (i *Interactor) Visible() bool
 ```
 
-
+Visible reports whether the interactor is currently visible.
 
 <a name="Interactor.W"></a>
 ### func \(\*Interactor\) W
@@ -322,7 +472,7 @@ func (i *Interactor) Visible() bool
 func (i *Interactor) W() int64
 ```
 
-
+W returns the interactor's width from layout.
 
 <a name="Interactor.X"></a>
 ### func \(\*Interactor\) X
@@ -331,7 +481,7 @@ func (i *Interactor) W() int64
 func (i *Interactor) X() int64
 ```
 
-
+X returns the interactor's X position from layout.
 
 <a name="Interactor.Y"></a>
 ### func \(\*Interactor\) Y
@@ -340,7 +490,72 @@ func (i *Interactor) X() int64
 func (i *Interactor) Y() int64
 ```
 
+Y returns the interactor's Y position from layout.
 
+<a name="LatinTextFaceImpl"></a>
+## type LatinTextFaceImpl
+
+LatinTextFaceImpl implements \[mancini.LatinTextFace\] for Latin left\-to\-right text. Font opening is deferred to the first DrawFace call, since a DrawContext is typically not available at construction time.
+
+```go
+type LatinTextFaceImpl struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewLatinTextFace"></a>
+### func NewLatinTextFace
+
+```go
+func NewLatinTextFace(fc *mancini.FontConfig, bold bool, fontSize int64, params mancini.TextAlignmentParams) *LatinTextFaceImpl
+```
+
+NewLatinTextFace creates a LatinTextFaceImpl from a \[mancini.FontConfig\]. Font opening is deferred to the first DrawFace call when a DrawContext is available. If fc is nil or the font path is empty, fontID falls back to fc.ShapedFontID.
+
+<a name="NewLatinTextFaceWithFontID"></a>
+### func NewLatinTextFaceWithFontID
+
+```go
+func NewLatinTextFaceWithFontID(fontID int32, params mancini.TextAlignmentParams) *LatinTextFaceImpl
+```
+
+NewLatinTextFaceWithFontID creates a LatinTextFaceImpl that uses a pre\-opened fontID. No OpenFont call is ever made — the caller is responsible for ensuring the fontID is valid on whatever DrawContext the face will be rendered into. This is useful when the font was already opened on a shared glyph provider \(e.g., the app's main DC\) and the face will be drawn on an overlay or child DC that shares the same provider.
+
+<a name="LatinTextFaceImpl.DrawFace"></a>
+### func \(\*LatinTextFaceImpl\) DrawFace
+
+```go
+func (f *LatinTextFaceImpl) DrawFace(dc mancini.DrawContext, x, y, w, h float64)
+```
+
+DrawFace implements \[mancini.Face\]. It renders the current text into the rectangle \(x, y, w, h\) using the alignment from TextAlignmentParams. The caller must set the text color on dc before calling.
+
+<a name="LatinTextFaceImpl.MeasureText"></a>
+### func \(\*LatinTextFaceImpl\) MeasureText
+
+```go
+func (f *LatinTextFaceImpl) MeasureText(text string) float64
+```
+
+MeasureText returns the advance width of text in pixels.
+
+<a name="LatinTextFaceImpl.SetText"></a>
+### func \(\*LatinTextFaceImpl\) SetText
+
+```go
+func (f *LatinTextFaceImpl) SetText(text string)
+```
+
+SetText updates the text that DrawFace will render.
+
+<a name="LatinTextFaceImpl.Text"></a>
+### func \(\*LatinTextFaceImpl\) Text
+
+```go
+func (f *LatinTextFaceImpl) Text() string
+```
+
+Text returns the current text set on the face.
 
 <a name="Parent"></a>
 ## type Parent
@@ -363,11 +578,11 @@ type Column struct {
 
 ### Initialization
 
-InitParent must be called after [Interactor.Init](<#Interactor.Init>), because it needs the Interactor's layout name to discover children:
+Initialize must be called after [Interactor.Initialize](<#Interactor.Initialize>), because it needs the Interactor's layout name to discover children:
 
 ```
-c.Interactor.Init(c, layout)
-c.Parent.InitParent(&c.Interactor)
+c.Interactor.Initialize(c, layout)
+c.Parent.Initialize(true, &c.Interactor)
 ```
 
 ### Concrete Types That Use Parent
@@ -380,16 +595,92 @@ type Parent struct {
 }
 ```
 
+<a name="Parent.AddChildFirst"></a>
+### func \(\*Parent\) AddChildFirst
+
+```go
+func (p *Parent) AddChildFirst(child mancini.Interactor)
+```
+
+AddChildFirst adds child as the first \(lowest sequence number\) child of this parent. If the child's sequence number is already lower than all existing children, it is simply parented. Otherwise its sequence number is swapped with the current first child.
+
+Panics if child already has a parent.
+
+<a name="Parent.AddChildLast"></a>
+### func \(\*Parent\) AddChildLast
+
+```go
+func (p *Parent) AddChildLast(child mancini.Interactor)
+```
+
+AddChildLast adds child as the last \(highest sequence number\) child of this parent. If the child's sequence number is already higher than all existing children, it is simply parented. Otherwise its sequence number is swapped with the current last child.
+
+Panics if child already has a parent.
+
+<a name="Parent.DeleteAllChildren"></a>
+### func \(\*Parent\) DeleteAllChildren
+
+```go
+func (p *Parent) DeleteAllChildren() []mancini.Interactor
+```
+
+DeleteAllChildren removes all children from this parent by clearing each child's Parent attribute. Returns the removed children in sequence order. Returns an empty \(non\-nil\) slice if no children exist.
+
+<a name="Parent.DeleteChild"></a>
+### func \(\*Parent\) DeleteChild
+
+```go
+func (p *Parent) DeleteChild(child mancini.Interactor) mancini.Interactor
+```
+
+DeleteChild removes a specific child from this parent by clearing its Parent attribute. Returns the child, or nil if the child was not found among this parent's children.
+
+<a name="Parent.DeleteFirst"></a>
+### func \(\*Parent\) DeleteFirst
+
+```go
+func (p *Parent) DeleteFirst() mancini.Interactor
+```
+
+DeleteFirst removes the first child \(lowest sequence number\) from this parent and returns it. Returns nil if the parent has no children. The child's Parent attribute is cleared.
+
+<a name="Parent.DeleteIthChild"></a>
+### func \(\*Parent\) DeleteIthChild
+
+```go
+func (p *Parent) DeleteIthChild(i int) mancini.Interactor
+```
+
+DeleteIthChild removes the i\-th child \(0\-based, in sequence order\) from this parent. Returns the removed child, or nil if i is out of range.
+
+<a name="Parent.DeleteLast"></a>
+### func \(\*Parent\) DeleteLast
+
+```go
+func (p *Parent) DeleteLast() mancini.Interactor
+```
+
+DeleteLast removes the last child \(highest sequence number\) from this parent and returns it. Returns nil if the parent has no children. The child's Parent attribute is cleared.
+
 <a name="Parent.DrawChildren"></a>
 ### func \(\*Parent\) DrawChildren
 
 ```go
-func (p *Parent) DrawChildren(self mancini.Interactor, x, y, w, h int64)
+func (p *Parent) DrawChildren(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle)
 ```
 
 DrawChildren is the default child\-drawing implementation. For each child discovered by GetChildren, it propagates the \[mancini.DrawContext\] from self via SetDC, then calls the child's \[mancini.NewDrawer.Draw\] method. Children receive the parent's own bounds \(x, y, w, h\) — they fill the parent in this default implementation.
 
 Container interactors like \[std.Column\] and \[std.Row\] override this with custom layout logic that computes per\-child positions. [Decorator](<#Decorator>) does not use DrawChildren at all — it handles its single child directly in [Decorator.Draw](<#Decorator.Draw>).
+
+<a name="Parent.DrawSelf"></a>
+### func \(\*Parent\) DrawSelf
+
+```go
+func (p *Parent) DrawSelf(dc mancini.DrawContext, rect image.Rectangle)
+```
+
+DrawSelf is the default no\-op implementation for \[mancini.SimpleParentDraw\]. Parent interactors that need background clearing \(themed parents, etc.\) should override this method.
 
 <a name="Parent.GetChildren"></a>
 ### func \(\*Parent\) GetChildren
@@ -400,14 +691,39 @@ func (p *Parent) GetChildren() []mancini.Interactor
 
 GetChildren discovers children via the constraint network. Returns all \[mancini.Interactor\] instances whose Parent layout attribute matches this interactor's constraint\-system name, sorted by registration sequence number \(construction order\).
 
-<a name="Parent.InitParent"></a>
-### func \(\*Parent\) InitParent
+<a name="Parent.Initialize"></a>
+### func \(\*Parent\) Initialize
 
 ```go
-func (p *Parent) InitParent(i *Interactor)
+func (p *Parent) Initialize(wantDefaultDamageConstraint bool, i *Interactor)
 ```
 
-InitParent wires the back\-pointer to the embedding [Interactor](<#Interactor>). Must be called after [Interactor.Init](<#Interactor.Init>) so the layout name is available for child discovery.
+Initialize wires the back\-pointer to the embedding [Interactor](<#Interactor>). Must be called after [Interactor.Initialize](<#Interactor.Initialize>) so the layout name is available for child discovery. If wantDefaultDamageConstraint is true, \[mancini.InitDefaultParentDamage\] is called on the interactor's layout to set up a damage constraint that unions the parent's own damage with the first child's damage rectangle.
+
+<a name="Parent.IsRectSingleChild"></a>
+### func \(\*Parent\) IsRectSingleChild
+
+```go
+func (p *Parent) IsRectSingleChild(rect image.Rectangle) mancini.Interactor
+```
+
+IsRectSingleChild tests whether any single child of this parent completely contains the given rectangle. If so, that child is returned — the parent can skip its own drawing and forward Draw directly to that child. Returns nil if no single child contains rect or if the parent has no children.
+
+<a name="Parent.SmallestDraw"></a>
+### func \(\*Parent\) SmallestDraw
+
+```go
+func (p *Parent) SmallestDraw(rect image.Rectangle) []image.Rectangle
+```
+
+SmallestDraw computes the set of rectangles that cover the damaged region \(rect\) but do NOT overlap with any child. These are the "background strips" the parent needs to repaint — gaps between children, margins, etc.
+
+The algorithm:
+
+1. Compute the minimal bounding rectangle of all children.
+2. Intersect rect with that bounding box as the starting area.
+3. Subtract each child's bounds, collecting the remaining strips.
+4. Add back any parts of rect outside the children bounding box.
 
 <a name="ThemedInteractor"></a>
 ## type ThemedInteractor
@@ -451,7 +767,7 @@ type ThemedInteractor struct {
 func (t *ThemedInteractor) BgColor() color.NRGBA
 ```
 
-
+BgColor returns the theme palette's Surface \(background\) color.
 
 <a name="ThemedInteractor.DefaultFont"></a>
 ### func \(\*ThemedInteractor\) DefaultFont
@@ -460,7 +776,7 @@ func (t *ThemedInteractor) BgColor() color.NRGBA
 func (t *ThemedInteractor) DefaultFont() *mancini.FontConfig
 ```
 
-
+DefaultFont returns the theme's default \[mancini.FontConfig\].
 
 <a name="ThemedInteractor.DefaultSize"></a>
 ### func \(\*ThemedInteractor\) DefaultSize
@@ -469,13 +785,13 @@ func (t *ThemedInteractor) DefaultFont() *mancini.FontConfig
 func (t *ThemedInteractor) DefaultSize() int64
 ```
 
-
+DefaultSize returns the theme's default font size in pixels.
 
 <a name="ThemedInteractor.Draw"></a>
 ### func \(\*ThemedInteractor\) Draw
 
 ```go
-func (t *ThemedInteractor) Draw(self mancini.Interactor, x, y, w, h int64)
+func (t *ThemedInteractor) Draw(self mancini.Interactor, x, y, w, h int64, damage image.Rectangle)
 ```
 
 Draw clears the interactor's background to the \[mancini.Palette\]'s Surface color. If the background is fully transparent \(alpha == 0\), the fill is skipped.
@@ -488,6 +804,15 @@ l.ThemedInteractor.Draw(self, x, y, w, h)
 
 Interactors whose neumorphic rendering already fills the background \(via \[std.NeuBoxWith\] or similar\) skip this call entirely.
 
+<a name="ThemedInteractor.DrawSelf"></a>
+### func \(\*ThemedInteractor\) DrawSelf
+
+```go
+func (t *ThemedInteractor) DrawSelf(dc mancini.DrawContext, rect image.Rectangle)
+```
+
+DrawSelf implements \[mancini.SimpleParentDraw\]. Fills the intersection of rect with this interactor's bounds using the theme's Surface color.
+
 <a name="ThemedInteractor.FgColor"></a>
 ### func \(\*ThemedInteractor\) FgColor
 
@@ -495,7 +820,7 @@ Interactors whose neumorphic rendering already fills the background \(via \[std.
 func (t *ThemedInteractor) FgColor() color.NRGBA
 ```
 
-
+FgColor returns the theme palette's Text \(foreground\) color.
 
 <a name="ThemedInteractor.Font"></a>
 ### func \(\*ThemedInteractor\) Font
@@ -504,23 +829,23 @@ func (t *ThemedInteractor) FgColor() color.NRGBA
 func (t *ThemedInteractor) Font(feature mancini.Feature, size int64) *mancini.FontConfig
 ```
 
+Font resolves a \[mancini.FontConfig\] from the theme for the given feature and size.
 
-
-<a name="ThemedInteractor.Init"></a>
-### func \(\*ThemedInteractor\) Init
+<a name="ThemedInteractor.Initialize"></a>
+### func \(\*ThemedInteractor\) Initialize
 
 ```go
-func (t *ThemedInteractor) Init(owner mancini.Interactor, layout *mancini.LayoutAttributes, theme mancini.Theme)
+func (t *ThemedInteractor) Initialize(owner mancini.Interactor, layout *mancini.LayoutAttributes, theme mancini.Theme)
 ```
 
-Init wires the backpointer, layout, and theme. Must be called from the concrete type's constructor, passing the concrete type as owner:
+Initialize wires the backpointer, layout, and theme. Must be called from the concrete type's constructor, passing the concrete type as owner:
 
 ```
 b := &Button{...}
-b.ThemedInteractor.Init(b, layout, theme)
+b.ThemedInteractor.Initialize(b, layout, theme)
 ```
 
-This calls [Interactor.Init](<#Interactor.Init>) internally, which registers the interactor in the global registry.
+This calls [Interactor.Initialize](<#Interactor.Initialize>) internally, which registers the interactor in the global registry.
 
 <a name="ThemedInteractor.Theme"></a>
 ### func \(\*ThemedInteractor\) Theme
@@ -529,6 +854,6 @@ This calls [Interactor.Init](<#Interactor.Init>) internally, which registers the
 func (t *ThemedInteractor) Theme() mancini.Theme
 ```
 
-
+Theme returns the \[mancini.Theme\] in effect for this interactor.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)
