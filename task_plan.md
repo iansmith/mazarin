@@ -1,8 +1,99 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: website updates (2026-04-29)
+## TOP OF STACK: concurrent-boot-wedge localized to linux file-lane (2026-04-30 late morning)
 
-Pivoting away from systems debugging. `fix/concurrent-boot-wedge` partial-fix landed and merged; the underlying boot wedge is documented but not fully resolved (audit was incomplete — see ARCHIVED section below).
+After M-cadence sweep + A1 misdiagnosis (below), pivoted to investigate the N5 wedge (3 shepherds parked on Readlinkat ~48s). 5 follow-up sweeps (W/X/Y/Z/AA, ~50 runs total) localized the wedge to **between kernel ring 1 send and linux's file-lane reader's `case sys.SyscallRequest` branch**.
+
+### Z2 (the cleanest captured wedge)
+
+3 stuck Readlinkats from sids 2, 12, 14 (TIDs 85/716/695). Same TIDs successfully completed Openat→Read→Close earlier (logged in `[linux:flr]`). The (sid, 50) tuple never reached the file-lane reader. Kernel-side `uringSendKernel(ringIdx=1)` succeeded (`svc/delegated:50=3`, no `[DLG] uring send failed`). So the requests sit in kernel ring 1 → linux dispatcher → `delegateCh` (cap 8) → file-lane reader pipeline, somewhere upstream of the case-branch where my instrumentation fires.
+
+### Key ruled-out paths
+
+- Per-shepherd `mu` — 3 different SIDs, no contention.
+- Worker exhaustion — Z2 `wIn=wOut=9`, all workers return cleanly.
+- Kernel-side send failure — no `[DLG] uring send failed`.
+- Sysid-specific bug — fires on Openat (X3, X9), Readlinkat (N5, Z2), Fstatat (L-sweep). "First delegated syscall in a boot race window."
+
+### Most likely remaining hypothesis
+
+The file-lane reader (`maz/linux/main.go:276-302`) iterates `for raw := range delegateCh`. Between iterations, if a `deathNotification`/`idleFlushNotification`/`stdinDecRefNotification` is dispatched and its handler (`handleDeathNotification`, `flushOneBuffer`, or `sidDecRef`) blocks, the reader stops draining `delegateCh`. The dispatcher callback then blocks on `delegateCh <- req` (cap 8 fills), but `delegateDispatcher` is single-goroutine — it stops processing ring 1 messages, even though kernel keeps sending. The 3 stuck Readlinkats are queued in kernel ring 1 with no consumer.
+
+The N5 wedge happened during rachel-plugin-load (helloworld exits, plugins launch concurrently) → `deathNotification` traffic spike. Strong correlation with `handleDeathNotification` blocking.
+
+### Next concrete step
+
+Instrument the non-`SyscallRequest` case branches in `maz/linux/main.go:276-302`:
+
+```go
+case deathNotification:
+    fmt.Printf("[linux:flr-death] enter sid=%d\n", v.deadSID)
+    handleDeathNotification(v.deadSID)
+    fmt.Printf("[linux:flr-death] exit  sid=%d\n", v.deadSID)
+case idleFlushNotification:
+    fmt.Printf("[linux:flr-idle] enter\n")
+    handler.flushOneBuffer()
+    fmt.Printf("[linux:flr-idle] exit\n")
+case stdinDecRefNotification:
+    fmt.Printf("[linux:flr-decref] enter sid=%d\n", v.sid)
+    sidDecRef(v.sid)
+    fmt.Printf("[linux:flr-decref] exit  sid=%d\n", v.sid)
+```
+
+A wedge run with `enter` and no matching `exit` for one of these branches names the culprit. Then audit the relevant function for its blocking path.
+
+### Open mini-bugs found along the way
+
+- **44k delegated syscalls/sec on ring 1 normally** — surprising, much higher than `svc/delegated` counters track. Worth investigating separately whether this volume is necessary or a regression.
+- **`time.NewTicker` SIGSEGV in linux.maz init** — `internal/godebug.(*Setting).Value` returns a nil pointer in .maz binaries (init functions don't run, see MEMORY.md). Worked around by NOT using `time.NewTicker` in linux. The existing `time.After` at `main.go:734` works because it's in the running goroutine, not init. Worth a memory file entry — anyone reaching for `time.NewTicker` in .maz code will hit this.
+
+### Instrumentation left in tree (uncommitted)
+
+- `maz/linux/main.go` — `numWorkingWorkers`, `firstSeenPairs sync.Map`, `firstSeenStage()`, `[linux:flr]/[linux:wkr]` first-occurrence-per-(sid,sysid) logs (~50 lines/run).
+- `kmazarin/kmazarin/threads.go` — `[status] blk: ... emptySnap=N/raw=R/last=L` (A1 work, morning).
+- `mazarin/mancini/std/draw.go` — A2 NEGATIVE one-shot `debug.Stack()` (didn't fire).
+
+---
+
+## ARCHIVED: M-cadence no-click sweep + emptyIRQ misdiagnosis (2026-04-30 morning)
+
+Returned to systems debugging. Ran 5×180s ARM64 HVF no-click sweep (M1–M5), categorized open issues, attempted A1 (emptyIRQ), discovered the documented hypothesis was wrong.
+
+### Sweep summary
+
+4/5 clean to 180s, 1/5 (M4) `KERNEL EXIT GROUP` at `[mail] cache ready, initial rebalance` — bug-B-family. Counter signature consistent across clean runs: `irqs≈33000 drained=66552 emptyIRQ=496–557 missed=0 tmoBlkNE=0 uart-ring: dropped=0 va-probe: inIPC=132 outIPC=0`.
+
+### Categorization (no-click only)
+
+| Category | Item | Status |
+|----------|------|--------|
+| A: clear+fixable, every-run | A1 emptyIRQ counter (memory said missing barrier) | **DISPROVEN — barriers already present, raw==last on snap; not a bug** |
+| A: clear+fixable, one-run   | A2 `[localRect] NEGATIVE` (iy1=2481568 against 828x438 bounds) | open, low priority |
+| B: intermittent             | B1 bug-B kernel mspan/GC EXIT_GROUP | 1/5 (~historical 1/5), mechanism unknown after 7 rounds |
+| C: not bugs in this sweep   | concurrent-boot-wedge, attr.Init, mail.elf-load, fsclient TIMEOUT, maildb EAGAIN, fontsvc errors, ≥1s delegate-stuck | 0/5 fires (concurrent-boot-wedge likely click-driven) |
+
+### A1 attempt — what we learned
+
+Pre-attempt code review found `asm.InvalidateDCacheRange + asm.DmaRmb + asm.MmioRead16` already present in both `NonTimerIRQTopHalf` and `VirtqueueHasUsed`. The "missing barrier" claim in `bug_virtio_emptyirq_hang.md` was wrong.
+
+**Diagnostic added** (uncommitted): `[status]` `blk:` line now reports the existing one-shot `dbgBlockEmptyRawUsedIdx`/`dbgBlockEmptyLastUsedIdx` snap as `emptySnap=N/raw=R/last=L`. Edit in `kmazarin/kmazarin/threads.go`.
+
+90s smoke result: `emptySnap=1/raw=72/last=72`. **raw == last** — when first emptyIRQ fired, we had already drained everything. Benign re-IRQ (probable INTx level-trigger sharing or coalesced-completion duplicate), not a missed completion. Memory file `bug_virtio_emptyirq_hang.md` rewritten to reflect this.
+
+The 10s body-fetch hang is therefore a different bug, still open. emptyIRQ is mostly cosmetic noise.
+
+### Open from this sweep
+
+1. **Click sweep (next)** — 5×180s with input. Will likely surface concurrent-boot-wedge (0/5 here vs 3/5 historical L-sweep) and the actual body-fetch hang mechanism.
+2. **A2 localRect NEGATIVE** — small standalone bug, find the attribute feeding `iy1=2481568` and the layout site that consumed it without bounds-check.
+3. **B1 next concrete step (carried over from prior session)** — boot-only run with `vaCollisionProbeEnabled=true` to capture probe data on a crash run.
+4. **emptyIRQ realMissed counter** — extend the one-shot snap into a running counter incremented when `raw > last`. Confirms emptyIRQ is fully benign or finds the rare miss.
+
+---
+
+## ARCHIVED: website updates pivot (2026-04-29)
+
+`fix/concurrent-boot-wedge` partial-fix landed and merged; the underlying boot wedge is documented but not fully resolved (audit was incomplete — see ARCHIVED section below).
 
 ---
 
