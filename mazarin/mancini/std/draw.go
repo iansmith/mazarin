@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"runtime/debug"
 	"sync/atomic"
 	_ "unsafe"
 
@@ -13,6 +14,11 @@ import (
 
 	"mazzy/mazarin/mancini"
 )
+
+// localRectNegativeStackOnce ensures the [localRect] NEGATIVE stack trace
+// is printed only on the first occurrence per process; subsequent hits
+// just print the one-line summary so the log stays readable.
+var localRectNegativeStackOnce uint32
 
 // ── Draw performance instrumentation ────────────────────────────────────────
 
@@ -398,6 +404,9 @@ func localRect(canvas *image.RGBA, dc mancini.DrawContext, x1, y1, x2, y2, pad f
 	if lw < 0 || lh < 0 {
 		fmt.Printf("[localRect] NEGATIVE: lw=%d lh=%d ix1=%.1f iy1=%.1f ix2=%.1f iy2=%.1f pad=%.1f bounds=%v x1=%.1f y1=%.1f x2=%.1f y2=%.1f\n",
 			lw, lh, ix1, iy1, ix2, iy2, pad, b, x1, y1, x2, y2)
+		if atomic.CompareAndSwapUint32(&localRectNegativeStackOnce, 0, 1) {
+			fmt.Printf("[localRect] NEGATIVE stack (one-shot):\n%s", debug.Stack())
+		}
 		if lw < 0 {
 			lw = 0
 		}
