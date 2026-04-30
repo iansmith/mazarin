@@ -112,6 +112,17 @@ func (fs *FileSystem) freeInode(inum uint32) error {
 
 // WriteInode writes an inode to disk.
 func (fs *FileSystem) WriteInode(inum uint32, inode *Inode) error {
+	if !fs.writable {
+		return ErrReadOnly
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.writeInodeLocked(inum, inode)
+}
+
+// writeInodeLocked is the implementation of WriteInode. Caller must hold
+// fs.mu (Lock).
+func (fs *FileSystem) writeInodeLocked(inum uint32, inode *Inode) error {
 	if inum == 0 || inum > fs.sb.InodesCount {
 		return ErrInvalidInode
 	}
@@ -257,7 +268,7 @@ func (fs *FileSystem) addDirEntry(parentInum uint32, name string, childInum uint
 }
 
 func (fs *FileSystem) addDirEntryImpl(parentInum uint32, name string, childInum uint32, fileType uint8) error {
-	parent, err := fs.ReadInode(parentInum)
+	parent, err := fs.readInodeLocked(parentInum)
 	if err != nil {
 		return err
 	}
@@ -322,7 +333,7 @@ func (fs *FileSystem) addDirEntryImpl(parentInum uint32, name string, childInum 
 	}
 	parent.Size += fs.blockSize
 	parent.Blocks += fs.blockSize / 512
-	return fs.WriteInode(parentInum, parent)
+	return fs.writeInodeLocked(parentInum, parent)
 }
 
 // removeDirEntry removes a directory entry by name from the directory.
@@ -338,7 +349,7 @@ func (fs *FileSystem) removeDirEntry(parentInum uint32, name string) error {
 }
 
 func (fs *FileSystem) removeDirEntryImpl(parentInum uint32, name string) error {
-	parent, err := fs.ReadInode(parentInum)
+	parent, err := fs.readInodeLocked(parentInum)
 	if err != nil {
 		return err
 	}
@@ -399,13 +410,15 @@ func (fs *FileSystem) Create(path string, mode uint16) (*File, error) {
 	if !fs.writable {
 		return nil, ErrReadOnly
 	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	parentInum, name, err := fs.resolvePath(path)
 	if err != nil {
 		return nil, err
 	}
 
 	// Check it doesn't already exist
-	if _, err := fs.LookupDir(parentInum, name); err == nil {
+	if _, err := fs.lookupDirLocked(parentInum, name); err == nil {
 		return nil, ErrExists
 	}
 
@@ -419,7 +432,7 @@ func (fs *FileSystem) Create(path string, mode uint16) (*File, error) {
 		LinksCount: 1,
 	}
 
-	if err := fs.WriteInode(inum, inode); err != nil {
+	if err := fs.writeInodeLocked(inum, inode); err != nil {
 		return nil, err
 	}
 	if err := fs.addDirEntry(parentInum, name, inum, FTFile); err != nil {
@@ -440,6 +453,8 @@ func (fs *FileSystem) WriteFile(path string, data []byte, mode uint16) error {
 	if !fs.writable {
 		return ErrReadOnly
 	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 
 	parentInum, name, err := fs.resolvePath(path)
 	if err != nil {
@@ -449,8 +464,8 @@ func (fs *FileSystem) WriteFile(path string, data []byte, mode uint16) error {
 	// Check if file exists — if so, remove and recreate. Dirent first so
 	// path lookups see ENOENT immediately; defer the bitmap/inode/blocks
 	// free if any open handle still pins the inum (Linux unlink-while-open).
-	if de, err := fs.LookupDir(parentInum, name); err == nil {
-		inode, err := fs.ReadInode(de.Inode)
+	if de, err := fs.lookupDirLocked(parentInum, name); err == nil {
+		inode, err := fs.readInodeLocked(de.Inode)
 		if err != nil {
 			return err
 		}
@@ -471,7 +486,7 @@ func (fs *FileSystem) WriteFile(path string, data []byte, mode uint16) error {
 				return err
 			}
 			var zeroInode Inode
-			if err := fs.WriteInode(de.Inode, &zeroInode); err != nil {
+			if err := fs.writeInodeLocked(de.Inode, &zeroInode); err != nil {
 				return err
 			}
 			if err := fs.freeInode(de.Inode); err != nil {
@@ -524,7 +539,7 @@ func (fs *FileSystem) WriteFile(path string, data []byte, mode uint16) error {
 		inode.Blocks += fs.blockSize / 512
 	}
 
-	if err := fs.WriteInode(inum, inode); err != nil {
+	if err := fs.writeInodeLocked(inum, inode); err != nil {
 		return err
 	}
 
@@ -536,13 +551,15 @@ func (fs *FileSystem) Mkdir(path string, mode uint16) error {
 	if !fs.writable {
 		return ErrReadOnly
 	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 
 	parentInum, name, err := fs.resolvePath(path)
 	if err != nil {
 		return err
 	}
 
-	if _, err := fs.LookupDir(parentInum, name); err == nil {
+	if _, err := fs.lookupDirLocked(parentInum, name); err == nil {
 		return ErrExists
 	}
 
@@ -575,7 +592,7 @@ func (fs *FileSystem) Mkdir(path string, mode uint16) error {
 	if err := fs.writeBlock(dataBlock, dirData); err != nil {
 		return err
 	}
-	if err := fs.WriteInode(inum, inode); err != nil {
+	if err := fs.writeInodeLocked(inum, inode); err != nil {
 		return err
 	}
 	if err := fs.addDirEntry(parentInum, name, inum, FTDir); err != nil {
@@ -583,12 +600,12 @@ func (fs *FileSystem) Mkdir(path string, mode uint16) error {
 	}
 
 	// Increment parent's link count (for ..)
-	parent, err := fs.ReadInode(parentInum)
+	parent, err := fs.readInodeLocked(parentInum)
 	if err != nil {
 		return err
 	}
 	parent.LinksCount++
-	if err := fs.WriteInode(parentInum, parent); err != nil {
+	if err := fs.writeInodeLocked(parentInum, parent); err != nil {
 		return err
 	}
 
@@ -604,25 +621,27 @@ func (fs *FileSystem) Remove(path string) error {
 	if !fs.writable {
 		return ErrReadOnly
 	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 
 	parentInum, name, err := fs.resolvePath(path)
 	if err != nil {
 		return err
 	}
 
-	de, err := fs.LookupDir(parentInum, name)
+	de, err := fs.lookupDirLocked(parentInum, name)
 	if err != nil {
 		return err
 	}
 
-	inode, err := fs.ReadInode(de.Inode)
+	inode, err := fs.readInodeLocked(de.Inode)
 	if err != nil {
 		return err
 	}
 
 	if inode.IsDir() {
 		// Check directory is empty (only . and ..)
-		entries, err := fs.ReadDir(de.Inode)
+		entries, err := fs.readDirLocked(de.Inode)
 		if err != nil {
 			return err
 		}
@@ -633,12 +652,12 @@ func (fs *FileSystem) Remove(path string) error {
 		}
 
 		// Decrement parent's link count
-		parent, err := fs.ReadInode(parentInum)
+		parent, err := fs.readInodeLocked(parentInum)
 		if err != nil {
 			return err
 		}
 		parent.LinksCount--
-		if err := fs.WriteInode(parentInum, parent); err != nil {
+		if err := fs.writeInodeLocked(parentInum, parent); err != nil {
 			return err
 		}
 
@@ -672,7 +691,7 @@ func (fs *FileSystem) Remove(path string) error {
 
 	// Zero out the inode on disk so e2fsck doesn't see stale data
 	var zeroInode Inode
-	if err := fs.WriteInode(de.Inode, &zeroInode); err != nil {
+	if err := fs.writeInodeLocked(de.Inode, &zeroInode); err != nil {
 		return err
 	}
 
@@ -685,6 +704,8 @@ func (fs *FileSystem) Rename(oldPath, newPath string) error {
 	if !fs.writable {
 		return ErrReadOnly
 	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 
 	oldParent, oldName, err := fs.resolvePath(oldPath)
 	if err != nil {
@@ -696,15 +717,15 @@ func (fs *FileSystem) Rename(oldPath, newPath string) error {
 	}
 
 	// Find source entry
-	de, err := fs.LookupDir(oldParent, oldName)
+	de, err := fs.lookupDirLocked(oldParent, oldName)
 	if err != nil {
 		return err
 	}
 
 	// If target exists, remove it first. Dirent goes first; defer
 	// bitmap/blocks reclaim if the inum is pinned by an open handle.
-	if existDe, err := fs.LookupDir(newParent, newName); err == nil {
-		existInode, err := fs.ReadInode(existDe.Inode)
+	if existDe, err := fs.lookupDirLocked(newParent, newName); err == nil {
+		existInode, err := fs.readInodeLocked(existDe.Inode)
 		if err != nil {
 			return err
 		}
@@ -743,7 +764,7 @@ func (fs *FileSystem) Rename(oldPath, newPath string) error {
 
 	// If moving a directory, update its .. entry
 	if de.FileType == FTDir && oldParent != newParent {
-		inode, err := fs.ReadInode(de.Inode)
+		inode, err := fs.readInodeLocked(de.Inode)
 		if err != nil {
 			return err
 		}
@@ -771,13 +792,13 @@ func (fs *FileSystem) Rename(oldPath, newPath string) error {
 		}
 
 		// Update link counts
-		oldP, _ := fs.ReadInode(oldParent)
+		oldP, _ := fs.readInodeLocked(oldParent)
 		oldP.LinksCount--
-		fs.WriteInode(oldParent, oldP)
+		fs.writeInodeLocked(oldParent, oldP)
 
-		newP, _ := fs.ReadInode(newParent)
+		newP, _ := fs.readInodeLocked(newParent)
 		newP.LinksCount++
-		fs.WriteInode(newParent, newP)
+		fs.writeInodeLocked(newParent, newP)
 	}
 
 	return nil
@@ -788,20 +809,22 @@ func (fs *FileSystem) SetTimes(path string, atime, mtime uint32) error {
 	if !fs.writable {
 		return ErrReadOnly
 	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 
-	inum, err := fs.ResolveInode(path)
+	inum, err := fs.resolveInodeLocked(path)
 	if err != nil {
 		return err
 	}
 
-	inode, err := fs.ReadInode(inum)
+	inode, err := fs.readInodeLocked(inum)
 	if err != nil {
 		return err
 	}
 
 	inode.ATime = atime
 	inode.MTime = mtime
-	return fs.WriteInode(inum, inode)
+	return fs.writeInodeLocked(inum, inode)
 }
 
 // SetMode updates the permission bits on a file or directory.
@@ -809,19 +832,21 @@ func (fs *FileSystem) SetMode(path string, mode uint16) error {
 	if !fs.writable {
 		return ErrReadOnly
 	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 
-	inum, err := fs.ResolveInode(path)
+	inum, err := fs.resolveInodeLocked(path)
 	if err != nil {
 		return err
 	}
 
-	inode, err := fs.ReadInode(inum)
+	inode, err := fs.readInodeLocked(inum)
 	if err != nil {
 		return err
 	}
 
 	inode.Mode = (inode.Mode & TypeMask) | (mode & 0x0FFF)
-	return fs.WriteInode(inum, inode)
+	return fs.writeInodeLocked(inum, inode)
 }
 
 // Truncate sets the size of the inode to newSize.
@@ -831,12 +856,14 @@ func (fs *FileSystem) Truncate(inum uint32, newSize uint32) error {
 	if !fs.writable {
 		return ErrReadOnly
 	}
-	inode, err := fs.ReadInode(inum)
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	inode, err := fs.readInodeLocked(inum)
 	if err != nil {
 		return err
 	}
 	inode.Size = newSize
-	return fs.WriteInode(inum, inode)
+	return fs.writeInodeLocked(inum, inode)
 }
 
 // Sync flushes all in-memory metadata (bitmaps, group descriptors, superblock) to disk.
@@ -844,6 +871,8 @@ func (fs *FileSystem) Sync() error {
 	if !fs.writable {
 		return nil // nothing to sync on read-only mount
 	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 
 	// Write bitmaps
 	for g := uint32(0); g < fs.numGroups; g++ {
@@ -872,6 +901,7 @@ func (fs *FileSystem) Sync() error {
 }
 
 // resolvePath splits "/a/b/name" into (parent_inode_of_/a/b, "name", nil).
+// Caller must hold fs.mu (RLock or Lock).
 func (fs *FileSystem) resolvePath(path string) (uint32, string, error) {
 	if len(path) == 0 || path[0] != '/' {
 		return 0, "", ErrInvalidPath
@@ -885,7 +915,7 @@ func (fs *FileSystem) resolvePath(path string) (uint32, string, error) {
 	parentInum := uint32(InodeRoot)
 
 	for _, component := range components[:len(components)-1] {
-		de, err := fs.LookupDir(parentInum, component)
+		de, err := fs.lookupDirLocked(parentInum, component)
 		if err != nil {
 			return 0, "", err
 		}
@@ -900,6 +930,14 @@ func (fs *FileSystem) resolvePath(path string) (uint32, string, error) {
 
 // ResolveInode resolves a path to its inode number.
 func (fs *FileSystem) ResolveInode(path string) (uint32, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.resolveInodeLocked(path)
+}
+
+// resolveInodeLocked is the implementation of ResolveInode. Caller must
+// hold fs.mu (RLock or Lock).
+func (fs *FileSystem) resolveInodeLocked(path string) (uint32, error) {
 	if path == "/" {
 		return InodeRoot, nil
 	}
@@ -907,7 +945,7 @@ func (fs *FileSystem) ResolveInode(path string) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	de, err := fs.LookupDir(parentInum, name)
+	de, err := fs.lookupDirLocked(parentInum, name)
 	if err != nil {
 		return 0, err
 	}
@@ -929,7 +967,7 @@ func (fs *FileSystem) ResolveInode(path string) (uint32, error) {
 // identify the bad block / offset. Designed for diagnostic use only —
 // gated behind DirVerifyHook so it's a no-op when the hook is unset.
 func (fs *FileSystem) verifyDirInvariants(parentInum uint32) error {
-	parent, err := fs.ReadInode(parentInum)
+	parent, err := fs.readInodeLocked(parentInum)
 	if err != nil {
 		return fmt.Errorf("ReadInode parent=%d: %w", parentInum, err)
 	}
@@ -985,7 +1023,7 @@ func (fs *FileSystem) verifyDirInvariants(parentInum uint32) error {
 						i, offset, de.Name, de.Inode, fs.sb.InodesCount)
 				}
 				if de.FileType != 0 {
-					childInode, ierr := fs.ReadInode(de.Inode)
+					childInode, ierr := fs.readInodeLocked(de.Inode)
 					if ierr != nil {
 						return fmt.Errorf("block=%d offset=%d: name=%q ReadInode(%d): %w",
 							i, offset, de.Name, de.Inode, ierr)

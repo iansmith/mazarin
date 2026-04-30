@@ -55,8 +55,14 @@ func (fs *FileSystem) markPendingFreeLocked(inum uint32) {
 // reclaimInode performs the actual on-disk free: data blocks, then zero
 // the inode, then clear the bitmap bit. Mirrors what Remove /
 // WriteFile-overwrite / Rename-overwrite did inline before deferred-free.
+// Acquires fs.mu.Lock() because it mutates bitmaps + writes inode.
 func (fs *FileSystem) reclaimInode(inum uint32) error {
-	inode, err := fs.ReadInode(inum)
+	if !fs.writable {
+		return nil
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	inode, err := fs.readInodeLocked(inum)
 	if err != nil {
 		return err
 	}
@@ -64,7 +70,7 @@ func (fs *FileSystem) reclaimInode(inum uint32) error {
 		return err
 	}
 	var zeroInode Inode
-	if err := fs.WriteInode(inum, &zeroInode); err != nil {
+	if err := fs.writeInodeLocked(inum, &zeroInode); err != nil {
 		return err
 	}
 	return fs.freeInode(inum)

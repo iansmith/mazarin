@@ -39,6 +39,8 @@ type File struct {
 
 // Read reads up to len(buf) bytes from the file at the current position.
 func (f *File) Read(buf []byte) (int, error) {
+	f.fs.mu.RLock()
+	defer f.fs.mu.RUnlock()
 	if f.inode.IsDir() {
 		return 0, ErrNotFile
 	}
@@ -118,6 +120,8 @@ func (f *File) ReadAll() ([]byte, error) {
 // ReadInto reads the entire file into the provided buffer using batched I/O.
 // dst must be at least file.Size() bytes. Returns the number of bytes read.
 func (f *File) ReadInto(dst []byte) (int, error) {
+	f.fs.mu.RLock()
+	defer f.fs.mu.RUnlock()
 	if f.inode.IsDir() {
 		return 0, ErrNotFile
 	}
@@ -135,7 +139,7 @@ func (f *File) ReadInto(dst []byte) (int, error) {
 	totalBlocks := uint32((fileSize + blockSize - 1) / blockSize)
 
 	// Resolve all block numbers upfront.
-	blockNums, err := f.fs.ResolveBlockList(&f.inode, 0, totalBlocks)
+	blockNums, err := f.fs.resolveBlockListLocked(&f.inode, 0, totalBlocks)
 	if err != nil {
 		return 0, err
 	}
@@ -218,6 +222,8 @@ func (f *File) Write(data []byte) (int, error) {
 	if !f.fs.writable {
 		return 0, ErrReadOnly
 	}
+	f.fs.mu.Lock()
+	defer f.fs.mu.Unlock()
 	if f.inode.IsDir() {
 		return 0, ErrNotFile
 	}
@@ -301,7 +307,7 @@ func (f *File) Write(data []byte) (int, error) {
 	}
 
 	// Write updated inode
-	if err := f.fs.WriteInode(f.inum, &f.inode); err != nil {
+	if err := f.fs.writeInodeLocked(f.inum, &f.inode); err != nil {
 		return totalWritten, err
 	}
 

@@ -13,6 +13,18 @@ var ErrEndOfFile = &Ext2Error{"end of file"}
 
 // FileSystem represents a mounted ext2 filesystem.
 type FileSystem struct {
+	// mu coordinates concurrent access to FileSystem state. Public read
+	// methods (ReadInode, ReadDir, LookupDir, ResolveBlockList, Open,
+	// OpenInum, ResolveInode, File.Read*) take RLock; public write
+	// methods (Create, WriteFile, Mkdir, Remove, Rename, SetMode,
+	// SetTimes, Truncate, Sync, WriteInode, File.Write) take Lock.
+	// Internal helpers (allocBlock/freeBlock/allocInode/freeInode/
+	// setInodeBlock/inodeBlockNum/readBytes/readBlock/readBlocks/
+	// writeBytes/writeBlock) do NOT lock — caller must hold mu in
+	// the appropriate mode. pinMu remains independent (different
+	// concern: inodeRefs / pendingFreeSet only).
+	mu sync.RWMutex
+
 	device    blockdev.BlockDevice
 	sb        Superblock
 	groups    []GroupDesc
@@ -278,6 +290,14 @@ func (fs *FileSystem) writeBlock(blockNum uint32, buf []byte) error {
 
 // ReadInode reads an inode by its 1-based inode number.
 func (fs *FileSystem) ReadInode(inum uint32) (*Inode, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.readInodeLocked(inum)
+}
+
+// readInodeLocked is the implementation of ReadInode. Caller must hold
+// fs.mu (RLock or Lock). Used by writer methods that already hold Lock.
+func (fs *FileSystem) readInodeLocked(inum uint32) (*Inode, error) {
 	if inum == 0 || inum > fs.sb.InodesCount {
 		return nil, ErrInvalidInode
 	}
@@ -294,7 +314,15 @@ func (fs *FileSystem) ReadInode(inum uint32) (*Inode, error) {
 
 // ReadDir reads all directory entries from a directory inode.
 func (fs *FileSystem) ReadDir(inum uint32) ([]DirEntry, error) {
-	inode, err := fs.ReadInode(inum)
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.readDirLocked(inum)
+}
+
+// readDirLocked is the implementation of ReadDir. Caller must hold fs.mu
+// (RLock or Lock).
+func (fs *FileSystem) readDirLocked(inum uint32) ([]DirEntry, error) {
+	inode, err := fs.readInodeLocked(inum)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +336,7 @@ func (fs *FileSystem) ReadDir(inum uint32) ([]DirEntry, error) {
 	}
 
 	// Resolve all block numbers, then batch-read.
-	blockNums, err := fs.ResolveBlockList(inode, 0, blocksUsed)
+	blockNums, err := fs.resolveBlockListLocked(inode, 0, blocksUsed)
 	if err != nil {
 		return nil, err
 	}
@@ -351,7 +379,15 @@ func (fs *FileSystem) ReadDir(inum uint32) ([]DirEntry, error) {
 
 // LookupDir finds a directory entry by name within a directory inode.
 func (fs *FileSystem) LookupDir(inum uint32, name string) (*DirEntry, error) {
-	entries, err := fs.ReadDir(inum)
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.lookupDirLocked(inum, name)
+}
+
+// lookupDirLocked is the implementation of LookupDir. Caller must hold fs.mu
+// (RLock or Lock).
+func (fs *FileSystem) lookupDirLocked(inum uint32, name string) (*DirEntry, error) {
+	entries, err := fs.readDirLocked(inum)
 	if err != nil {
 		return nil, err
 	}
@@ -408,6 +444,14 @@ func (fs *FileSystem) inodeBlockNum(inode *Inode, n uint32) (uint32, error) {
 // pointer tables internally so that a contiguous range of blocks reads
 // each metadata block at most once (vs. once per pointer via inodeBlockNum).
 func (fs *FileSystem) ResolveBlockList(inode *Inode, startBlock, count uint32) ([]uint32, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.resolveBlockListLocked(inode, startBlock, count)
+}
+
+// resolveBlockListLocked is the implementation of ResolveBlockList. Caller
+// must hold fs.mu (RLock or Lock).
+func (fs *FileSystem) resolveBlockListLocked(inode *Inode, startBlock, count uint32) ([]uint32, error) {
 	ptrsPerBlock := fs.blockSize / 4
 	blocks := make([]uint32, 0, count)
 
@@ -500,7 +544,15 @@ func (fs *FileSystem) readBlockPtr(blockNum uint32, idx uint32) (uint32, error) 
 // position set to 0. Unlike Open, this works for both files and directories
 // (the caller is responsible for type-checking).
 func (fs *FileSystem) OpenInum(inum uint32) (*File, error) {
-	inode, err := fs.ReadInode(inum)
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.openInumLocked(inum)
+}
+
+// openInumLocked is the implementation of OpenInum. Caller must hold fs.mu
+// (RLock or Lock).
+func (fs *FileSystem) openInumLocked(inum uint32) (*File, error) {
+	inode, err := fs.readInodeLocked(inum)
 	if err != nil {
 		return nil, err
 	}
@@ -514,6 +566,14 @@ func (fs *FileSystem) OpenInum(inum uint32) (*File, error) {
 
 // Open opens a file by path (e.g., "/fonts/sans.ttf").
 func (fs *FileSystem) Open(path string) (*File, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.openLocked(path)
+}
+
+// openLocked is the implementation of Open. Caller must hold fs.mu
+// (RLock or Lock).
+func (fs *FileSystem) openLocked(path string) (*File, error) {
 	if len(path) == 0 || path[0] != '/' {
 		return nil, ErrInvalidPath
 	}
@@ -525,14 +585,14 @@ func (fs *FileSystem) Open(path string) (*File, error) {
 
 	currentInum := uint32(InodeRoot)
 	for i, component := range components {
-		de, err := fs.LookupDir(currentInum, component)
+		de, err := fs.lookupDirLocked(currentInum, component)
 		if err != nil {
 			return nil, err
 		}
 
 		isLast := i == len(components)-1
 		if isLast {
-			inode, err := fs.ReadInode(de.Inode)
+			inode, err := fs.readInodeLocked(de.Inode)
 			if err != nil {
 				return nil, err
 			}
