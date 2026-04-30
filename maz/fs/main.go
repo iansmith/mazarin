@@ -525,8 +525,25 @@ func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 	return nil
 }
 
+// dmaTripMagic is written into the first 16 bytes of each scratch slot
+// before submitting the DMA, then verified to have been overwritten after
+// the CQEs are drained. If it's still present, the kernel didn't actually
+// write data into that slot — return EIO instead of copying stale data
+// into dst. Catches: DMA targeting wrong PA, IRQ wake-without-DMA, or
+// missing cache invalidation.
+const (
+	dmaTripMagic0 uint64 = 0xDEADBEEFCAFEBABE
+	dmaTripMagic1 uint64 = 0xC0DEC0DEC0DEC0DE
+)
+
 // doReadBatch reads multiple 4KB blocks in batches of scratchPages.
-// Only called from dmaWorker.
+//
+// The mutex (d.mu) is acquired and released ONCE PER CHUNK rather than
+// across the whole call. This lets a different goroutine's chunk fit
+// cleanly between two of ours: each chunk submits N SQEs, drains N CQEs,
+// copies scratch→dst, then unlocks — leaving zero in-flight requests
+// before another goroutine's chunk runs. The scratch buffer (cap 8 pages)
+// is fully consumed before unlock, so no cross-chunk aliasing.
 func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 	total := uint32(len(blocks))
 
@@ -535,86 +552,120 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 		if batch > scratchPages {
 			batch = scratchPages
 		}
-		batchBlocks := blocks[blockIdx : blockIdx+batch]
-
-		submitted := uint32(0)
-		sqTail := atomic.LoadUint32(&d.ioRing.SQTail)
-		for i, bn := range batchBlocks {
-			if bn == 0 {
-				// Sparse block — zero-fill.
-				off := uintptr(i) * asyncBlockSize
-				scratch := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+off)), asyncBlockSize)
-				for k := range scratch {
-					scratch[k] = 0
-				}
-				continue
-			}
-			sectorLBA := uint64(bn) * sectorsPerBlock
-			off := uintptr(i) * asyncBlockSize
-			dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+off)), asyncBlockSize)
-
-			idx := sqTail & iouring.SQMask
-			d.ioRing.SQEntries[idx] = iouring.SQEntry{
-				Opcode:   iouring.IOUringOpRead,
-				FD:       0,
-				Off:      sectorLBA,
-				Addr:     uint64(uintptr(unsafe.Pointer(&dmaBuf[0]))),
-				Len:      sectorsPerBlock,
-				UserData: uint64(i),
-			}
-			sqTail++
-			submitted++
-		}
-		atomic.StoreUint32(&d.ioRing.SQTail, sqTail)
-
-		if submitted > 0 {
-			// Submit SQEs and wait for all completions (P held throughout).
-			cqH0b := atomic.LoadUint32(&d.ioRing.CQHead)
-			cqT0b := atomic.LoadUint32(&d.ioRing.CQTail)
-			nret, serr := sys.IOUringEnter(d.ringID, submitted, submitted, 0)
-			if serr != nil {
-				sys.UartWriteString(fmt.Sprintf("[dma:batch] blockIdx=%d submitted=%d IOUringEnter err=%v cqH=%d cqT=%d\n",
-					blockIdx, submitted, serr, cqH0b, cqT0b))
-				return serr
-			}
-
-			// Verify completions actually arrived.
-			cqHead := atomic.LoadUint32(&d.ioRing.CQHead)
-			cqTail := atomic.LoadUint32(&d.ioRing.CQTail)
-			actual := cqTail - cqHead
-			if actual < submitted {
-				sys.UartWriteString(fmt.Sprintf("[dma:UNDERFLOW] ret=%d submitted=%d cqH=%d cqT=%d actual=%d\n",
-					nret, submitted, cqHead, cqTail, actual))
-				// Don't drain non-existent CQEs — return EIO.
-				return syscall.EIO
-			}
-
-			// Drain all CQEs.
-			for i := uint32(0); i < submitted; i++ {
-				cqe := &d.ioRing.CQEntries[(cqHead+i)&iouring.CQMask]
-				if cqe.Res < 0 {
-					atomic.StoreUint32(&d.ioRing.CQHead, cqHead+submitted)
-					return syscall.EIO
-				}
-			}
-			atomic.StoreUint32(&d.ioRing.CQHead, cqHead+submitted)
-		}
-
-		for i := range batchBlocks {
-			srcOff := uintptr(i) * asyncBlockSize
-			dstOff := int(blockIdx+uint32(i)) * asyncBlockSize
-			dstEnd := dstOff + asyncBlockSize
-			if dstEnd > len(dst) {
-				dstEnd = len(dst)
-			}
-			if dstOff < len(dst) {
-				src := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+srcOff)), dstEnd-dstOff)
-				copy(dst[dstOff:dstEnd], src)
-			}
+		if err := d.doReadBatchChunk(blocks[blockIdx:blockIdx+batch], dst, blockIdx); err != nil {
+			return err
 		}
 		blockIdx += batch
 	}
+	return nil
+}
 
+// doReadBatchChunk processes a single chunk under d.mu. Returns EIO on any
+// SQE/CQE inconsistency or trip-magic sanity check failure.
+func (d *asyncBlockDev) doReadBatchChunk(batchBlocks []uint32, dst []byte, blockIdx uint32) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	submitted := uint32(0)
+	sqTail := atomic.LoadUint32(&d.ioRing.SQTail)
+	for i, bn := range batchBlocks {
+		if bn == 0 {
+			// Sparse block — zero-fill.
+			off := uintptr(i) * asyncBlockSize
+			scratch := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+off)), asyncBlockSize)
+			for k := range scratch {
+				scratch[k] = 0
+			}
+			continue
+		}
+		sectorLBA := uint64(bn) * sectorsPerBlock
+		off := uintptr(i) * asyncBlockSize
+		dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+off)), asyncBlockSize)
+
+		// Trip-magic: stamp the first 16 bytes of this slot so we can detect
+		// silent DMA failures. Kernel-side DMA will overwrite these as
+		// part of the read; if they survive, we know the read didn't deliver.
+		*(*uint64)(unsafe.Pointer(d.scratchVA + off)) = dmaTripMagic0
+		*(*uint64)(unsafe.Pointer(d.scratchVA + off + 8)) = dmaTripMagic1 ^ sectorLBA
+
+		idx := sqTail & iouring.SQMask
+		d.ioRing.SQEntries[idx] = iouring.SQEntry{
+			Opcode:   iouring.IOUringOpRead,
+			FD:       0,
+			Off:      sectorLBA,
+			Addr:     uint64(uintptr(unsafe.Pointer(&dmaBuf[0]))),
+			Len:      sectorsPerBlock,
+			UserData: uint64(i),
+		}
+		sqTail++
+		submitted++
+	}
+	atomic.StoreUint32(&d.ioRing.SQTail, sqTail)
+
+	if submitted > 0 {
+		// Submit SQEs and wait for all completions (P held throughout).
+		cqH0b := atomic.LoadUint32(&d.ioRing.CQHead)
+		cqT0b := atomic.LoadUint32(&d.ioRing.CQTail)
+		nret, serr := sys.IOUringEnter(d.ringID, submitted, submitted, 0)
+		if serr != nil {
+			sys.UartWriteString(fmt.Sprintf("[dma:batch] blockIdx=%d submitted=%d IOUringEnter err=%v cqH=%d cqT=%d\n",
+				blockIdx, submitted, serr, cqH0b, cqT0b))
+			return serr
+		}
+
+		// Verify completions actually arrived.
+		cqHead := atomic.LoadUint32(&d.ioRing.CQHead)
+		cqTail := atomic.LoadUint32(&d.ioRing.CQTail)
+		actual := cqTail - cqHead
+		if actual < submitted {
+			sys.UartWriteString(fmt.Sprintf("[dma:UNDERFLOW] ret=%d submitted=%d cqH=%d cqT=%d actual=%d\n",
+				nret, submitted, cqHead, cqTail, actual))
+			// Don't drain non-existent CQEs — return EIO.
+			return syscall.EIO
+		}
+
+		// Drain all CQEs.
+		for i := uint32(0); i < submitted; i++ {
+			cqe := &d.ioRing.CQEntries[(cqHead+i)&iouring.CQMask]
+			if cqe.Res < 0 {
+				atomic.StoreUint32(&d.ioRing.CQHead, cqHead+submitted)
+				return syscall.EIO
+			}
+		}
+		atomic.StoreUint32(&d.ioRing.CQHead, cqHead+submitted)
+	}
+
+	// Trip-magic verification: each non-sparse slot should have been
+	// overwritten by DMA. If the magic is still present, the kernel didn't
+	// actually write to that slot — return EIO rather than corrupt dst.
+	for i, bn := range batchBlocks {
+		if bn == 0 {
+			continue
+		}
+		off := uintptr(i) * asyncBlockSize
+		got0 := *(*uint64)(unsafe.Pointer(d.scratchVA + off))
+		got1 := *(*uint64)(unsafe.Pointer(d.scratchVA + off + 8))
+		expectMagic1 := dmaTripMagic1 ^ (uint64(bn) * sectorsPerBlock)
+		if got0 == dmaTripMagic0 && got1 == expectMagic1 {
+			sys.UartWriteString(fmt.Sprintf(
+				"[dma:TRIP] slot=%d bn=%d lba=%d magic still present after drain — DMA didn't fire\n",
+				i, bn, uint64(bn)*sectorsPerBlock))
+			return syscall.EIO
+		}
+	}
+
+	for i := range batchBlocks {
+		srcOff := uintptr(i) * asyncBlockSize
+		dstOff := int(blockIdx+uint32(i)) * asyncBlockSize
+		dstEnd := dstOff + asyncBlockSize
+		if dstEnd > len(dst) {
+			dstEnd = len(dst)
+		}
+		if dstOff < len(dst) {
+			src := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+srcOff)), dstEnd-dstOff)
+			copy(dst[dstOff:dstEnd], src)
+		}
+	}
 	return nil
 }
 
@@ -637,15 +688,15 @@ func (d *asyncBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	return err
 }
 
-// ReadBlocks reads multiple 4KB blocks in batches. Thread-safe via mutex.
+// ReadBlocks reads multiple 4KB blocks. Thread-safe at chunk granularity:
+// d.mu is taken inside doReadBatch for each chunk so concurrent callers
+// can interleave between chunks (a small fsIPCCh op fits between two
+// chunks of a large LoadFile).
 func (d *asyncBlockDev) ReadBlocks(lbas []uint64, dst []byte) error {
 	blocks := make([]uint32, len(lbas))
 	for i, lba := range lbas {
 		blocks[i] = uint32(lba)
 	}
-	d.mu.Lock()
-	err := d.doReadBatch(blocks, dst)
-	d.mu.Unlock()
-	return err
+	return d.doReadBatch(blocks, dst)
 }
 
