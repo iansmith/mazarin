@@ -1,5 +1,49 @@
 # Progress Log
 
+## Session: 2026-04-30 (Opus, evening) — wedge eliminated: fs worker pool + linux pool right-sized
+
+### Final FF-sweep result
+
+| Sweep | Stage | Wedge rate |
+|-------|-------|------------|
+| Z, BB | unmodified baseline | 3/10 |
+| DD | + ext2 RWMutex | 5/10 (within noise) |
+| EE | + asyncBlockDev per-chunk | 1/10 |
+| **FF** | **+ fs worker pool (16)** | **0/10** ✓ |
+
+10×60s ARM64 HVF, fully clean: 0 stuck delegates, 0 trip-magic fires, 9/10 reached `cache ready` (the 10th was a bug-B-family `missing deferreturn` kernel crash, separate and pre-existing).
+
+### Final commits this session
+
+- `90be746` fs: spawn worker pool for fsDelegateCh (LoadFile / ReadFilePages)
+- `f5c09f8` linux: reduce fileLaneWorkers from 1024 to 32
+
+### What was wrong with linux's 1024
+
+Original sizing was "definitely enough" before we measured. Per-shepherd `shep.mu` caps in-flight to 1 per shepherd; fsclient's `c.mu` further serializes the cross-shepherd path. Realistic peak concurrent demand is ~30. 32 gives 2× headroom over fs's 16. Same protection against the `traceback.resolveInternal` race (pool reuses goroutines, no spawn churn).
+
+### What's now properly understood
+
+- **fs's serve loop** is fully concurrent for delegated reads, single-threaded for IPC. fsIPCCh small ops can drain at sub-millisecond latency even while 16 workers are mid-LoadFile.
+- **asyncBlockDev's d.mu** releases per-chunk (32KB chunks ≈ 2-3ms each), letting independent readers interleave their I/O.
+- **ext2's RWMutex** is correctness defense — explicit reader/writer coordination — and enables future concurrent-writer support.
+- **Pool sizes**: linux=32 (syscall traffic, low per-worker memory cost), fs=16 (LoadFile traffic, ~35MB per worker memory cost). Both = 2-4× peak concurrent demand. Both reuse goroutines (no spawn-rate crash risk).
+
+### Sessional summary — concurrent-boot-wedge resolved
+
+Three months of intermittent wedge across multiple sessions, traced through:
+- Initial misdiagnosis: "missing memory barrier on emptyIRQ" → disproved (barriers were already present, emptyIRQ was benign re-IRQ).
+- Localized to "between kernel ring 1 and linux's file-lane case branch" via Z2 first-occurrence diagnostics.
+- Refuted the case-branch-handler hypothesis via BB-sweep (all enter/exit matched).
+- CC-sweep's SLOW timing localized to fs's single-goroutine serve loop blocking on disk I/O.
+- ext2 audit showed reads were already thread-safe (per-call buffers); writes weren't.
+- asyncBlockDev's d.mu was the real per-call serializer.
+- Per-chunk lock release + worker pool spawn = fix.
+
+Eight commits across the day. Tracking files include investigation arc + final summary.
+
+---
+
 ## Session: 2026-04-30 (Opus, late afternoon) — wedge fix landed: ext2 RWMutex + asyncBlockDev per-chunk lock
 
 ### Implementation results

@@ -1,6 +1,29 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: spawn LoadFile goroutine in fs (deferred follow-up) — 2026-04-30 evening
+## TOP OF STACK: (open — wedge resolved, ready for next direction) — 2026-04-30 evening
+
+The concurrent-boot-wedge that's been the recurring TOP OF STACK across multiple sessions is **resolved**. FF-sweep (10×60s ARM64 HVF) shows 0/10 wedges with the full fix: ext2 RWMutex + asyncBlockDev per-chunk lock + fs delegate worker pool. linux's worker pool was right-sized 1024→32 in the same session.
+
+Suggested next directions (open for the user to pick):
+
+1. **Bug-B-family kernel crashes** — `missing deferreturn` panic from `internal/godebug.(*Setting).Value` in .maz init paths, plus `KERNEL EXIT GROUP at cache ready` mspan/GC corruption. Fired in EE1, EE10, FF10. Many hypotheses ruled out (see ARCHIVED bug-B section below); next concrete step there is the boot-only run with `vaCollisionProbeEnabled=true`.
+2. **Click-test sweeps** — the user originally said "we'll do some runs that will be testing what happens with input." With the wedge fixed, this is a clean baseline to start from.
+3. **A2 NEGATIVE diagnostic** — `[localRect] NEGATIVE` one-shot stack trace landed in `da8c035`; hasn't fired since. If it fires in click runs, the trace tells us the upstream caller.
+4. **Memory file cleanup** — many memory files now reference outcomes documented in this session's `progress.md`; could collapse some.
+
+---
+
+## ARCHIVED: spawn LoadFile goroutine in fs (deferred follow-up) — 2026-04-30 evening — DONE
+
+**Status**: shipped. Two commits:
+- `90be746` fs: spawn worker pool for fsDelegateCh (LoadFile / ReadFilePages)
+- `f5c09f8` linux: reduce fileLaneWorkers from 1024 to 32
+
+FF-sweep (10×60s) result: **0/10 wedges**. Trip-magic 0/10. The deferred follow-up that was "expected to drop the 1/10 remaining wedge to near zero" actually drove it to zero.
+
+Pool sized at 16 workers (matches fsDelegateCh cap with 1× headroom). No deadlock concern: LoadFile workers don't recurse through fs.
+
+Original plan retained below for reference.
 
 **Status**: ready to start. Two prerequisite commits landed in the previous task (`a1a4ef8`, `082b164`); remaining wedge (1/10 in EE-sweep) is the case this addresses.
 
