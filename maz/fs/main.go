@@ -225,9 +225,25 @@ func main() {
 	// requests during shepherd boot (e.g., rachel loading fontsvc.maz).
 	go bootSequence(fsys)
 
-	// 7. Serve delegate requests + shepherd IPC requests.
-	// Both are processed in the main goroutine to avoid concurrent
-	// filesystem access (ext2 is not thread-safe).
+	// 7. Spawn the delegate worker pool. LoadFile/ReadFilePages reads
+	// can hold the ext2 read lock for hundreds of ms (35MB of mail.maz
+	// at ~10MB/s), so processing them on the main serve loop blocks
+	// fsIPCCh (Open/Stat/etc.) requests for the same duration. With
+	// ext2's RWMutex now coordinating reader/writer access, multiple
+	// LoadFile workers can run concurrently and interleave at the
+	// asyncBlockDev per-chunk lock.
+	//
+	// Pool size 16: matches `fsDelegateCh` cap (8) with 1× headroom so
+	// no request ever queues at the channel. Bounded so peak in-flight
+	// memory (workers × ~35MB pages) stays under ~560MB.
+	delegateWorkCh := make(chan sys.SyscallRequest, fsDelegateWorkers)
+	for i := 0; i < fsDelegateWorkers; i++ {
+		go fsDelegateWorker(delegateWorkCh, mt)
+	}
+
+	// 8. Serve loop. fsDelegateCh forwards to the worker pool;
+	// fsIPCCh is processed inline on the main goroutine (single-
+	// goroutine ext2 IPC is fine — handlers are short).
 	fmt.Println("[fs] entering serve loop")
 	for {
 		select {
@@ -236,18 +252,35 @@ func main() {
 			if !ok {
 				continue
 			}
-			switch req.SysID {
-			case sysid.LoadFile:
-				handleLoadFile(mt, &req)
-			case sysid.ReadFilePages:
-				handleReadFilePages(&req)
-			}
+			delegateWorkCh <- req
 		case raw := <-fsIPCCh:
 			req, ok := raw.(fsIPCRequest)
 			if !ok {
 				continue
 			}
 			ipcSrv.processRequest(req, mt)
+		}
+	}
+}
+
+// fsDelegateWorkers is the size of the worker pool draining fsDelegateCh.
+// See the comment above the pool spawn for sizing rationale.
+const fsDelegateWorkers = 16
+
+// fsDelegateWorker pulls SyscallRequests from delegateWorkCh and processes
+// each (LoadFile or ReadFilePages). Workers are persistent — they exit
+// only when delegateWorkCh is closed (i.e. shepherd shutdown — never in
+// normal operation). The worker pool pattern matches linux's fileLane —
+// reusing goroutines avoids the high-rate-spawn traceback.resolveInternal
+// crash that affected linux's earlier unbounded-go design (see
+// progress.md "Linux dispatcher concurrent" 2026-04-29).
+func fsDelegateWorker(workCh <-chan sys.SyscallRequest, mt *mountTable) {
+	for req := range workCh {
+		switch req.SysID {
+		case sysid.LoadFile:
+			handleLoadFile(mt, &req)
+		case sysid.ReadFilePages:
+			handleReadFilePages(&req)
 		}
 	}
 }
