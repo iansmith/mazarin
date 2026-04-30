@@ -1416,6 +1416,9 @@ func printEpochStatus() {
 	blkCQEW := atomic.LoadUint32(&dbgBlockCQEWritten)
 	blkCQEM := atomic.LoadUint32(&dbgBlockCQEMissed)
 	blkEmpty := atomic.LoadUint32(&dbgBlockEmptyIRQ)
+	blkEmptySnapped := atomic.LoadUint32(&dbgBlockEmptySnapped)
+	blkEmptyRawIdx := atomic.LoadUint32(&dbgBlockEmptyRawUsedIdx)
+	blkEmptyLastIdx := atomic.LoadUint32(&dbgBlockEmptyLastUsedIdx)
 	wakeOK := atomic.LoadUint32(&dbgWakeURWoke)
 	wakeLow := atomic.LoadUint32(&dbgWakeURNotEnough)
 	wakeNW := atomic.LoadUint32(&dbgWakeURNoWaiter)
@@ -1431,7 +1434,7 @@ func printEpochStatus() {
 			"  threads: running=%d ready=%d futex=%d sleep=%d softirq=%d uring=%d blk_io=%d delegate=%d\n"+
 			"  yield: calls=%d switched=%d futex: wait=%d wake=%d pid_mismatch=%d\n"+
 			"  memory: kernel_heap=%d_pages(%dMB) page_faults=%d\n"+
-			"  blk: irqs=%d drained=%d emptyIRQ=%d cqe=%d missed=%d wakeOK=%d wakeLow=%d wakeNW=%d tmoBlkNE=%d\n"+
+			"  blk: irqs=%d drained=%d emptyIRQ=%d cqe=%d missed=%d wakeOK=%d wakeLow=%d wakeNW=%d tmoBlkNE=%d emptySnap=%d/raw=%d/last=%d\n"+
 			"  svc/shepherd:%s\n"+
 			"  svc/sysid:%s\n"+
 			"  svc/delegated:%s\n"+
@@ -1445,7 +1448,7 @@ func printEpochStatus() {
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nIOUring, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
 		khPages, khMB, pageFaults,
-		blkIRQs, blkDrained, blkEmpty, blkCQEW, blkCQEM, wakeOK, wakeLow, wakeNW, tmoBlkNE,
+		blkIRQs, blkDrained, blkEmpty, blkCQEW, blkCQEM, wakeOK, wakeLow, wakeNW, tmoBlkNE, blkEmptySnapped, blkEmptyRawIdx, blkEmptyLastIdx,
 		svcDelta,
 		sysIDDelta,
 		sysIDDelegDelta,
