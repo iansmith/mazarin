@@ -260,8 +260,19 @@ func fileLaneWorker(workCh <-chan fileLaneWorkItem, handler *syscallHandler) {
 			fmt.Printf("[linux:wkr] first-enter sid=%d sysid=%d tid=%d busy=%d\n",
 				w.req.CallerPID, w.req.SysID, w.req.CallerTID, busy)
 		}
+		t0 := time.Now()
 		handler.handle(w.req)
+		elapsed := time.Since(t0)
 		busy = atomic.AddInt32(&numWorkingWorkers, -1)
+		// Log slow handler.handle() calls — anything >500ms is anomalous
+		// for a single syscall. The wedge investigation needs to see which
+		// (sid, sysid, tid) tuples block inside handle, since worker enter
+		// is logged only first-time-per-pair (firstSeenStage) and a slow
+		// re-invocation by the same pair would otherwise be invisible.
+		if elapsed > 500*time.Millisecond {
+			fmt.Printf("[linux:wkr] SLOW sid=%d sysid=%d tid=%d elapsed=%dms\n",
+				w.req.CallerPID, w.req.SysID, w.req.CallerTID, elapsed.Milliseconds())
+		}
 		if firstSeenStage(w.req.CallerPID, w.req.SysID, 4) {
 			fmt.Printf("[linux:wkr] first-exit  sid=%d sysid=%d tid=%d busy=%d\n",
 				w.req.CallerPID, w.req.SysID, w.req.CallerTID, busy)
@@ -327,13 +338,20 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 		for raw := range delegateCh {
 			switch v := raw.(type) {
 			case deathNotification:
+				fmt.Printf("[linux:flr-death] enter sid=%d delegateCh=%d/%d\n",
+					v.deadSID, len(delegateCh), cap(delegateCh))
 				handleDeathNotification(v.deadSID)
+				fmt.Printf("[linux:flr-death] exit  sid=%d\n", v.deadSID)
 
 			case stdinDecRefNotification:
+				fmt.Printf("[linux:flr-decref] enter sid=%d\n", v.sid)
 				sidDecRef(v.sid)
+				fmt.Printf("[linux:flr-decref] exit  sid=%d\n", v.sid)
 
 			case idleFlushNotification:
+				fmt.Printf("[linux:flr-idle] enter\n")
 				handler.flushOneBuffer()
+				fmt.Printf("[linux:flr-idle] exit\n")
 
 			case sys.SyscallRequest:
 				req := v // capture by value for the worker
