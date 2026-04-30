@@ -340,20 +340,13 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 		for raw := range delegateCh {
 			switch v := raw.(type) {
 			case deathNotification:
-				fmt.Printf("[linux:flr-death] enter sid=%d delegateCh=%d/%d\n",
-					v.deadSID, len(delegateCh), cap(delegateCh))
 				handleDeathNotification(v.deadSID)
-				fmt.Printf("[linux:flr-death] exit  sid=%d\n", v.deadSID)
 
 			case stdinDecRefNotification:
-				fmt.Printf("[linux:flr-decref] enter sid=%d\n", v.sid)
 				sidDecRef(v.sid)
-				fmt.Printf("[linux:flr-decref] exit  sid=%d\n", v.sid)
 
 			case idleFlushNotification:
-				fmt.Printf("[linux:flr-idle] enter\n")
 				handler.flushOneBuffer()
-				fmt.Printf("[linux:flr-idle] exit\n")
 
 			case sys.SyscallRequest:
 				req := v // capture by value for the worker
