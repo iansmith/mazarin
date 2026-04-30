@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -21,45 +20,6 @@ import (
 	"mazzy/shared/queue"
 	"mazzy/shared/sysid"
 )
-
-// numWorkingWorkers tracks how many fileLaneWorker goroutines are currently
-// inside handler.handle(). Diagnostic for the concurrent-boot-wedge: when
-// the wedge fires we expect to see this stuck near 1024 (or near 0 with no
-// progress despite stuck delegate requests).
-var numWorkingWorkers int32
-
-// firstSeenPairs records (sid, sysid) tuples we've already logged at file-
-// lane reader / worker enter / worker exit, to keep diagnostic logging to
-// one line per pair per stage. Without this, instrumenting every delegated
-// syscall produces ~390 log lines/sec — each a synchronous UART write that
-// masks IRQs ~7ms — enough to perturb the wedge timing window we're trying
-// to capture.
-//
-// Key encoding: uint32(sid) << 16 | uint32(sysid). Stage bits:
-//
-//	1 = file-lane reader saw it
-//	2 = worker entered handle()
-//	4 = worker returned from handle()
-var firstSeenPairs sync.Map // map[uint32]uint32 (bitmap of stage bits)
-
-// firstSeenStage atomically sets the given stage bit in firstSeenPairs[key]
-// and returns true iff this is the first time the bit was set. Caller logs
-// only when this returns true.
-func firstSeenStage(sid int16, sysID sysid.ID, stage uint32) bool {
-	key := uint32(uint16(sid))<<16 | uint32(sysID)
-	for {
-		v, _ := firstSeenPairs.LoadOrStore(key, uint32(0))
-		cur := v.(uint32)
-		if cur&stage != 0 {
-			return false
-		}
-		// Best-effort: race-y replace; we don't need exact-once, just rare.
-		if firstSeenPairs.CompareAndSwap(key, cur, cur|stage) {
-			return true
-		}
-	}
-}
-
 
 // suppressSerialCopy is set via SUPPRESS_SERIAL_STDIO_COPY env var.
 var suppressSerialCopy bool
@@ -257,27 +217,15 @@ type fileLaneWorkItem struct {
 // shepherd shutdown — never in normal operation).
 func fileLaneWorker(workCh <-chan fileLaneWorkItem, handler *syscallHandler) {
 	for w := range workCh {
-		busy := atomic.AddInt32(&numWorkingWorkers, 1)
-		if firstSeenStage(w.req.CallerPID, w.req.SysID, 2) {
-			fmt.Printf("[linux:wkr] first-enter sid=%d sysid=%d tid=%d busy=%d\n",
-				w.req.CallerPID, w.req.SysID, w.req.CallerTID, busy)
-		}
 		t0 := time.Now()
 		handler.handle(w.req)
-		elapsed := time.Since(t0)
-		busy = atomic.AddInt32(&numWorkingWorkers, -1)
 		// Log slow handler.handle() calls — anything >500ms is anomalous
-		// for a single syscall. The wedge investigation needs to see which
-		// (sid, sysid, tid) tuples block inside handle, since worker enter
-		// is logged only first-time-per-pair (firstSeenStage) and a slow
-		// re-invocation by the same pair would otherwise be invisible.
-		if elapsed > 500*time.Millisecond {
+		// for a single syscall and indicates downstream contention worth
+		// investigating. Low-rate canary; left in place after the
+		// concurrent-boot-wedge fix.
+		if elapsed := time.Since(t0); elapsed > 500*time.Millisecond {
 			fmt.Printf("[linux:wkr] SLOW sid=%d sysid=%d tid=%d elapsed=%dms\n",
 				w.req.CallerPID, w.req.SysID, w.req.CallerTID, elapsed.Milliseconds())
-		}
-		if firstSeenStage(w.req.CallerPID, w.req.SysID, 4) {
-			fmt.Printf("[linux:wkr] first-exit  sid=%d sysid=%d tid=%d busy=%d\n",
-				w.req.CallerPID, w.req.SysID, w.req.CallerTID, busy)
 		}
 		if !w.isStdinRead {
 			sidDecRef(w.req.CallerPID)
@@ -359,13 +307,6 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 				isStdinRead := req.SysID == sysid.Read && handler.isStdinRead(req)
 				if !isStdinRead {
 					sidIncRef(sid)
-				}
-				if firstSeenStage(sid, req.SysID, 1) {
-					fmt.Printf("[linux:flr] first sid=%d sysid=%d tid=%d delegateCh=%d/%d workCh=%d/%d busy=%d\n",
-						sid, req.SysID, req.CallerTID,
-						len(delegateCh), cap(delegateCh),
-						len(workCh), cap(workCh),
-						atomic.LoadInt32(&numWorkingWorkers))
 				}
 				workCh <- fileLaneWorkItem{req: req, isStdinRead: isStdinRead}
 			}

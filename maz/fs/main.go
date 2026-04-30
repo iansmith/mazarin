@@ -331,7 +331,6 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 	if numPages == 0 {
 		numPages = 1
 	}
-	fmt.Printf("[fs] read: post-Open %s size=%d numPages=%d\n", path, fileSize, numPages)
 
 	totalSize := uintptr(numPages) * 4096
 
@@ -357,7 +356,6 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(va)), totalSize)
 
-	fmt.Printf("[fs] read: pre-ReadInto %s size=%d\n", path, fileSize)
 	n, rerr := file.ReadInto(dst[:fileSize])
 
 	// noise: per-LoadFile trace disabled during scorch ENOENT investigation

@@ -149,12 +149,7 @@ func (kw *KernelSVCWorker[R]) run(req *R, tid int32) {
 	kw.setup()
 	defer kw.tearDown()
 
-	// Criticalf bypasses the stdout/stderr soft-IRQ ring, which can drop
-	// messages when thread 0 is monopolised by a long-running Do() — the
-	// exact case we're trying to diagnose. Direct UART writes always land.
-	klog.Criticalf("[kw]", "[kw:%s] Do start tid=0x%x\n", kw.name, tid)
 	result := kw.worker.Do(req)
-	klog.Criticalf("[kw]", "[kw:%s] Do done  tid=0x%x result=%d\n", kw.name, tid, result)
 
 	wakeBlockedThread(tid, result)
 }

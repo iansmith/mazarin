@@ -24,7 +24,11 @@ func StartMemStatsLogger(tag string, interval time.Duration) {
 
 func memStatsLoop(tag string, interval time.Duration) {
 	if interval <= 0 {
-		interval = 5 * time.Second
+		// Default 30s — frequent enough to catch slow leaks, infrequent
+		// enough that 4 shepherds × ~30 lines/run isn't a meaningful
+		// fraction of UART output (vs the prior 5s default which produced
+		// ~37 lines/run on its own).
+		interval = 30 * time.Second
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()

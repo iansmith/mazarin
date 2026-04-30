@@ -573,9 +573,6 @@ func InitVirtIOInput() {
 					continue
 				}
 
-				klog.Logf("[VirtIO Input] PCI %d:%d.%d vendor=0x%x device=0x%x\n",
-					bus, slot, funcNum, vendorID, deviceID)
-
 				if vendorID != pci.VIRTIO_VENDOR_ID || deviceID != VIRTIO_INPUT_DEVICE_ID {
 					continue
 				}
