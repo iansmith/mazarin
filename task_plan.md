@@ -1,6 +1,193 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: concurrent-boot-wedge localized to linux file-lane (2026-04-30 late morning)
+## TOP OF STACK: spawn LoadFile goroutine in fs (deferred follow-up) — 2026-04-30 evening
+
+**Status**: ready to start. Two prerequisite commits landed in the previous task (`a1a4ef8`, `082b164`); remaining wedge (1/10 in EE-sweep) is the case this addresses.
+
+### Plan (small scope, ext2 RWMutex makes it safe)
+
+`maz/fs/main.go:232-251` serve loop processes `fsDelegateCh` (LoadFile/ReadFilePages — large reads) and `fsIPCCh` (Open/Stat/etc — small reads) on the same single goroutine. While `handleLoadFile` runs (~3s for mail.maz), no fsIPCCh request is served.
+
+**Change**: when fsDelegateCh receives a SyscallRequest, spawn a goroutine to handle it:
+
+```go
+case raw := <-fsDelegateCh:
+    req, ok := raw.(sys.SyscallRequest)
+    if !ok { continue }
+    go func() {
+        switch req.SysID {
+        case sysid.LoadFile:
+            handleLoadFile(mt, &req)
+        case sysid.ReadFilePages:
+            handleReadFilePages(&req)
+        }
+    }()
+```
+
+The fs serve loop returns to its select{} immediately, ready to drain fsIPCCh. Each LoadFile worker holds ext2 RLock during the read; multiple concurrent readers OK. Disk I/O serializes via asyncBlockDev's per-chunk d.mu (already in place).
+
+**No worker pool yet** — LoadFile rate is bounded by shepherd-launch traffic (a handful per boot). Unbounded `go` is fine for this scale. Add a pool only if we observe >100 concurrent LoadFile goroutines.
+
+### Risks
+
+1. **Concurrent LoadFile goroutines all use the SAME mt and fsys.** `mt` is a mountTable read after init. `fsys` is the ext2.FileSystem pointer; we now have RWMutex protection. Both safe under concurrent reads.
+2. **TransferAndUnmap** (called from handleLoadFile after the read) is a kernel syscall taking the caller's PID + page list. Multiple goroutines transferring to different callers in parallel: each transfer is independent. Should be safe but worth confirming with the kernel.
+3. **req.Reply / req.LoadFileReply** are kernel syscalls. Multiple in flight from different goroutines: kernel SyscallReply handles per-callerTID lookup. No shared state. Safe.
+4. **scratchPages = 8 in asyncBlockDev** — only 8 DMA pages shared across all readers. With per-chunk lock, slots are reused per chunk. Concurrent goroutines serialize at d.mu, each chunk uses all 8 slots, releases. No conflict.
+
+### Test plan
+
+EE-cadence again (10×60s) after the change. Expect:
+- realStuck → 0/10 or 1/10
+- cacheReady → ~10/10 (modulo bug-B kernel crashes which are separate)
+- No new error log lines from fs
+
+If a regression appears, revert easily — it's a single `go` keyword wrap in fs/main.go.
+
+---
+
+## ARCHIVED: ext2 RWMutex + asyncBlockDev per-chunk lock (2026-04-30 afternoon, COMPLETED)
+
+**Status**: shipped. Three commits landed:
+- `c7d73e8` diag(linux): case-branch enter/exit + SLOW handle() timing
+- `a1a4ef8` ext2: add sync.RWMutex to FileSystem; lock readers/writers correctly
+- `082b164` fs(asyncBlockDev): per-chunk d.mu release + DMA trip-magic sanity check
+
+EE-sweep result: wedge rate dropped from 5/10 (DD-sweep, RWMutex only) to **1/10** (EE-sweep, full fix). Trip-magic fired 0/10 — per-chunk lock release is operationally correct.
+
+The remaining 1/10 wedge is the case where fs's serve loop is mid-handleLoadFile and fsIPCCh requests queue at the userspace level. The new TOP OF STACK (above) addresses this.
+
+Original plan retained below for reference.
+
+### Why this fixes the wedge
+
+The wedge is fs's single-goroutine serve loop blocking ALL IPC requests while `handleLoadFile` reads 6-35MB plugins. The asyncBlockDev mutex held across the entire 600ms read amplifies it: even if fs were multi-goroutine, every read would still serialize on `d.mu`.
+
+Two changes that together unblock small ops:
+1. **ext2 `sync.RWMutex`**: makes concurrent readers safe at the FS-state layer. (Reads are already safe per-buffer; this is correctness for future writes.)
+2. **asyncBlockDev per-chunk lock release**: a small fsIPCCh op (1-3 blocks) waits at most one chunk-time (~3ms) before squeezing in between a LoadFile's chunks.
+
+A separate follow-up will spawn a goroutine for LoadFile/ReadFilePages so the fs main loop can keep serving fsIPCCh while a big read is in flight.
+
+### Implementation order
+
+**Step 1 — ext2 `mu sync.RWMutex` field**
+- Add `mu sync.RWMutex` to `FileSystem` struct in `shared/fs/ext2/reader.go`.
+- One line. No behavior change yet.
+
+**Step 2 — wrap write methods with `Lock()`**
+File: `shared/fs/ext2/writer.go`. Wrap entry of:
+- `WriteInode`
+- `Create`
+- `WriteFile`
+- `Mkdir`
+- `Remove`
+- `Rename`
+- `SetTimes`
+- `SetMode`
+- `Truncate`
+- `Sync`
+
+File: `shared/fs/ext2/pin.go`:
+- `reclaimInode` (called from `UnpinInode`)
+
+Internal helpers (`allocBlock`/`freeBlock`/`allocInode`/`freeInode`/`setInodeBlock`) are **not** wrapped — they're only called under a held write lock. Add a comment noting "caller must hold fs.mu" on each.
+
+**Step 3 — wrap read methods with `RLock()`**
+File: `shared/fs/ext2/reader.go`:
+- `ReadInode`
+- `ReadDir`
+- `LookupDir`
+- `ResolveBlockList`
+- `OpenInum`
+- `Open`
+
+File: `shared/fs/ext2/writer.go`:
+- `ResolveInode` (read-only, lives in writer.go for historical reasons)
+
+File: `shared/fs/ext2/file.go`:
+- `File.Read`
+- `File.ReadInto`
+- `File.Seek` (touches f.pos only; safe but lock for consistency? Actually no — f.pos is per-File state; lock is unnecessary. Skip.)
+
+Internal helpers (`readBytes`/`readBlock`/`readBlocks`) are **not** wrapped.
+
+**Step 4 — verification sweep (no asyncBlockDev change yet)**
+Build and run 10×60s ARM64 HVF. Expected outcome: wedge rate similar to baseline (Z-sweep had ~30%). RWMutex alone shouldn't change wedge rate; we're verifying no regression.
+
+**Step 5 — asyncBlockDev per-chunk lock + scratch sanity check**
+File: `maz/fs/main.go`.
+
+(a) Move `d.mu.Lock()`/`Unlock()` from `ReadBlocks` (line 646-648) into `doReadBatch`'s chunk loop:
+
+```go
+func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
+    total := uint32(len(blocks))
+    for blockIdx := uint32(0); blockIdx < total; {
+        d.mu.Lock()
+        // existing chunk body (lines 534-614, inclusive of the SQE-fill /
+        // IOUringEnter / CQE-drain / copy-from-scratch)
+        d.mu.Unlock()
+        blockIdx += batch
+    }
+    return nil
+}
+```
+
+`ReadBlocks` then no longer wraps `doReadBatch` with mu — pass through directly.
+
+(b) Add scratch-buffer trip-magic sanity check inside the chunk-locked region. For each non-sparse SQE submitted: write 16-byte magic to first 16 bytes of the scratch slot BEFORE `IOUringEnter`. After the drain succeeds, verify those 16 bytes WERE overwritten (not equal to the magic). If they're still the magic, the kernel didn't actually write data into that slot → log + return EIO.
+
+```go
+const dmaTripMagic uint64 = 0xDEADBEEFCAFEBABE
+// ...inside the per-SQE submit loop (after writing the SQE and before mu unlock):
+*(*uint64)(unsafe.Pointer(d.scratchVA + off)) = dmaTripMagic
+*(*uint64)(unsafe.Pointer(d.scratchVA + off + 8)) = uint64(sectorLBA)
+// ...after the CQE drain succeeds, before the copy-out:
+got := *(*uint64)(unsafe.Pointer(d.scratchVA + off))
+if got == dmaTripMagic {
+    sys.UartWriteString(fmt.Sprintf(
+      "[dma:TRIP] slot=%d lba=%d magic still present after drain — DMA didn't fire\n",
+      i, sectorLBA))
+    d.mu.Unlock()
+    return syscall.EIO
+}
+```
+
+This catches: DMA targeting wrong PA, IRQ-wake-without-DMA, cache-invalidate misses. Cost is 16 bytes per slot per chunk, negligible.
+
+**Step 6 — final sweep**
+10×60s ARM64 HVF. Expected outcomes:
+- `realStuck=N` (count of `delegate stuck:` ≥100ms entries) drops to near zero
+- `[linux:wkr] SLOW` count drops or disappears
+- `[dma:TRIP]` lines do NOT appear (confirming the per-chunk lock is correct)
+- No new error log lines from ext2
+
+**Step 7 — commit each step**
+- Commit 1: Step 1 + Step 2 + Step 3 (ext2 RWMutex, all together — they don't make sense individually)
+- Commit 2: Step 5 (asyncBlockDev per-chunk + trip magic)
+
+**Step 8 — defer follow-up**
+A separate commit (next session): spawn a goroutine pool for LoadFile/ReadFilePages on `fsDelegateCh` so fs serve loop can keep serving fsIPCCh while a big read is in flight.
+
+### Risks (flagged from audit + plan review)
+
+1. **`fs.sb` mutable fields**: writers mutate `FreeBlocksCount`, `FreeInodesCount` while readers might read them. Today readers don't touch those specific fields; RWMutex makes this future-proof.
+2. **Cross-chunk cache coherency**: each chunk's pre-DMA invalidate (kernel side) covers its own region; scratch buffer fully consumed-then-released within one chunk's lock window. Verified safe.
+3. **SQ/CQ ring state across chunks**: each chunk leaves zero in-flight (drains N after submitting N). Verified by reading kernel `SyscallIOUringEnter`.
+4. **`File` per-handle state**: not lock-protected. If callers pass same `*File` to two goroutines, races already exist; we don't fix or break them. All current callers open fresh `*File` per request — safe.
+5. **DMA delivery silent-fail**: trip-magic detects this in Steps 5/6.
+
+### Success criteria
+
+- 10/10 runs without `realStuck≥100ms` delegates
+- `[dma:TRIP]` count = 0 across all sweeps
+- No new ext2 error log lines (`ErrCorrupted`, `ErrReadFailed`)
+- No new kernel crashes unrelated to bug-B family
+
+---
+
+## ARCHIVED: concurrent-boot-wedge localized to linux file-lane (2026-04-30 late morning)
 
 After M-cadence sweep + A1 misdiagnosis (below), pivoted to investigate the N5 wedge (3 shepherds parked on Readlinkat ~48s). 5 follow-up sweeps (W/X/Y/Z/AA, ~50 runs total) localized the wedge to **between kernel ring 1 send and linux's file-lane reader's `case sys.SyscallRequest` branch**.
 

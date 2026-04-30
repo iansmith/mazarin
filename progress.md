@@ -1,5 +1,104 @@
 # Progress Log
 
+## Session: 2026-04-30 (Opus, late afternoon) — wedge fix landed: ext2 RWMutex + asyncBlockDev per-chunk lock
+
+### Implementation results
+
+Two commits per the plan. Pre-existing diagnostic instrumentation kept (linux file-lane case-branch logging from BB-sweep, SLOW handle() timing from CC-sweep — committed first as a separate diag commit so the actual fix is bisectable on its own).
+
+**Commit 1: `ext2: add sync.RWMutex to FileSystem; lock readers/writers correctly`**
+
+Read paths take RLock(); writers take Lock(). Public methods are thin wrappers; package-internal helpers go through `xxxLocked` variants (so writer methods like Create can call lookupDirLocked under their write lock without re-acquiring). Critical detail discovered during smoke: writers must check `fs.writable` BEFORE taking Lock() — without the fast-path, every shepherd's Mkdirat-on-RO-fs briefly takes Lock and starves readers until the wedge bites within ~30s of boot. Found via a hung 90s smoke at `[fs] read: pre-ReadInto /mail.maz` with `[waitready] maildb sid=21 not ready yet (poll 160)`.
+
+DD-sweep (10×60s) wedge rate: 5/10. Same as baseline within N=10 noise. RWMutex is correctness, not throughput.
+
+**Commit 2: `fs(asyncBlockDev): per-chunk d.mu release + DMA trip-magic sanity check`**
+
+Moved `d.mu.Lock()` from the outer ReadBlocks into per-chunk inside doReadBatch. Each chunk: submit N SQEs → IOUringEnter(N, N) → drain N CQEs → copy scratch→dst → unlock. Zero in-flight at unlock. Trip-magic stamping (`dmaTripMagic0` + `dmaTripMagic1 ^ sectorLBA` in first 16 bytes of each scratch slot) verifies that the kernel's DMA actually wrote into the slot — silent DMA failures get caught and return EIO instead of corrupting dst.
+
+EE-sweep results (10×60s ARM64 HVF):
+
+| Metric | DD (RWMutex only) | EE (full fix) |
+|--------|--------------------|---------------|
+| Wedge rate (realStuck>100ms) | 5/10 | **1/10** |
+| Trip-magic fires | n/a | **0/10** ✓ |
+| SLOW near-misses | 4 | 1 |
+| cacheReady=0 (didn't reach mail) | 3 | 3 (mostly bug-B kernel crashes) |
+
+**5× improvement vs DD, 3× vs unaltered baseline.** The remaining 1/10 wedge (EE4) is the case where fs's serve loop is mid-handleLoadFile — small fsIPCCh requests still queue at the userspace level inside fs. The deferred follow-up (spawn a goroutine for LoadFile/ReadFilePages on fsDelegateCh) addresses that. EE1 / EE10 cacheReady=0 are bug-B kernel crashes (separate issue).
+
+### Trip-magic 0/10 confirms correctness
+
+The per-chunk lock release is operationally correct. No DMA delivery failure detected across the entire EE-sweep. The reasoning in the plan (zero in-flight at unlock; SQ/CQ ring drained per chunk; scratch fully copied before unlock) holds in practice.
+
+### What's deferred (next session)
+
+Per task_plan.md Step 8: spawn a worker goroutine pool for LoadFile/ReadFilePages on fsDelegateCh, leaving fs's main serve loop free to drain fsIPCCh. With ext2 RWMutex now in place, multiple LoadFile workers can proceed concurrently (RLock allows multiple readers); the per-chunk asyncBlockDev lock makes them interleave at the I/O layer. Estimated to drop the 1/10 remaining wedge to near zero.
+
+### Stopping point of this session
+
+Three commits:
+- `c7d73e8` diag(linux): case-branch enter/exit + SLOW handle() timing
+- `a1a4ef8` ext2: add sync.RWMutex to FileSystem; lock readers/writers correctly
+- `082b164` fs(asyncBlockDev): per-chunk d.mu release + DMA trip-magic sanity check
+
+Plus this session's tracking updates (about to commit).
+
+---
+
+## Session: 2026-04-30 (Opus, afternoon) — wedge cause localized to fs single-goroutine + asyncBlockDev coarse mutex; plan to fix
+
+### Investigation arc since the morning (case-branch hypothesis disproven)
+
+| Sweep | Runs | Result | Evidence |
+|-------|------|--------|----------|
+| BB (10×60s) | death/idle/decref enter/exit logs in linux file-lane reader | 3/10 wedges, **all case-branches matched** (no enter-without-exit) | Notification handlers do NOT block; file-lane reader IS pumping `delegateCh` |
+| CC (10×60s) | `time.Now()` SLOW timing on `handler.handle()` | 0/10 wedges (random), 4 SLOW logs | All slow handles are sysid=7 **Openat**, 558-646ms |
+
+The CC SLOW logs proved the wedge is in `handler.handle()`'s downstream — Openat goes through `fsclient.callLocked` → `<-c.RespCh`, which blocks waiting for fs to respond. fs takes 558-646ms because it's busy with another (large) read.
+
+### Root cause (confirmed by reading `maz/fs/main.go`)
+
+`maz/fs/main.go:230` comment: "Both are processed in the main goroutine to avoid concurrent filesystem access (ext2 is not thread-safe)." The fs serve loop is intentionally single-goroutine. While `handleLoadFile` runs (reading 6-35MB plugin binaries from disk), no `fsIPCCh` request — Openat, Fstatat, Stat, etc. — can be served. **The wedge is the cascading-LoadFile case** of this design.
+
+### ext2 thread-safety audit (option 4 from earlier discussion)
+
+**Read paths are already thread-safe.** Comments throughout `shared/fs/ext2/reader.go` explicitly anticipate "boot sequence + IPC serve loop" concurrency:
+
+```go
+// (sectorBuf removed — per-call stack allocation in readBytes/writeBytes
+// to avoid data races when multiple goroutines read concurrently.)
+// Allocate per-call to avoid data races when multiple goroutines read
+// concurrently (e.g. boot sequence + IPC serve loop).
+```
+
+Verified for `readBytes`/`readBlock`/`readBlocks`/`ReadInode`/`ReadDir`/`LookupDir`/`ResolveBlockList`/`OpenInum`/`Open`/`ResolveInode`. `*File` carries per-handle state (`f.pos`, `f.blockBuf`, `f.blockIdx`); different `*File` instances are independent.
+
+**Write paths are NOT thread-safe** (`writer.go`): `allocBlock`/`freeBlock`/`allocInode`/`freeInode`/`WriteInode` mutate `fs.sb.FreeBlocksCount`, `fs.groups[g].FreeBlocksCount`, `fs.groups[g].UsedDirsCount`, `fs.blockBitmaps[g]`, `fs.inodeBitmaps[g]` — all without locks. A `sync.RWMutex` at `FileSystem` level is the natural fit.
+
+### Surprise: the actual serializer is the block device, not ext2
+
+`maz/fs/main.go:629-650` — `asyncBlockDev.ReadBlock`/`ReadBlocks` take `d.mu.Lock()` for the **entire duration** of the call. `doReadBatch` chunks reads into 8-block (32KB) batches internally but holds `d.mu` across all chunks. A 35MB `LoadFile` holds the mutex for ~600ms.
+
+`scratchPages = 8` (fixed, kernel-tracked DMA-capable contiguous pages). All reads share this scratch buffer. With per-chunk lock release, the chunk-level safety is preserved (each chunk submits N SQEs, drains N CQEs, copies scratch→dst, releases mu — leaves zero in-flight before unlock). A different goroutine's chunk can fit cleanly between two of ours.
+
+**Kernel side (`kmazarin/ksyscall/iouring.go:142`)**: `SyscallIOUringEnter` reads `SQHead..min(SQHead+toSubmit, SQTail)`. The kernel's `toSubmit` cap protects each goroutine from accidentally processing another's SQEs.
+
+### The plan (deferred-LoadFile-goroutine NOT in this change)
+
+See `task_plan.md` "TOP OF STACK" for the full implementation plan. Two changes, in two commits:
+
+1. **ext2 `sync.RWMutex`** (defense in depth + correctness). Read methods `RLock()`, write methods `Lock()`. Internal helpers don't lock (caller holds).
+2. **asyncBlockDev per-chunk mu** (the actual concurrency win). Move `d.mu.Lock()` from outer `ReadBlocks` into the `doReadBatch` chunk loop. Add a scratch-buffer trip-magic sanity check for the first few sweeps to detect any I/O delivery bug we might have missed in the audit.
+
+The fs goroutine-spawn change (option 3 from earlier discussion) is **deferred** to a follow-up commit. Without it, this plan only partially fixes the wedge — fsIPCCh requests can squeeze in between LoadFile chunks at the asyncBlockDev level, but the fs main goroutine is still blocked in `handleLoadFile`. The follow-up will add a goroutine pool for `fsDelegateCh` so the main loop can keep serving fsIPCCh.
+
+### Stopping point of this session
+
+Plan written. Tracking files updated. About to start Step 1-3 (ext2 RWMutex).
+
+---
+
 ## Session: 2026-04-30 (Opus, late morning) — concurrent-boot-wedge localized to linux file-lane upstream
 
 ### Goal
