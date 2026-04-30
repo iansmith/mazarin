@@ -42,13 +42,28 @@ Three months of intermittent wedge across multiple sessions, traced through:
 
 Eight commits across the day. Tracking files include investigation arc + final summary.
 
-### Followup: log cleanup (2026-04-30 night)
+### Followup: log cleanup — two passes (2026-04-30 night)
 
-Removed `[linux:flr-idle]` enter/exit case-branch logs (also death/decref for symmetry). The flr-idle pair was the heaviest log line in the system: ~32 lines/sec in clean FF runs (974 enter + 974 exit per 60s in FF7). At ~7ms per synchronous UART write blocking IRQs, that's ~23% of CPU spent in masked-IRQ output. The hypothesis they were testing (notification handler blocks during delegateCh iteration) was settled negative by BB-sweep — no diagnostic value remaining.
+**Pass 1** (commit `40a00bf`): removed `[linux:flr-idle]` / `[linux:flr-death]` / `[linux:flr-decref]` enter/exit case-branch logs. flr-idle was the heaviest line in the system: ~32 lines/sec in clean FF runs. ~23% CPU spent in masked-IRQ UART output. Hypothesis these were testing was settled negative by BB-sweep. Result: 75KB → 34KB.
 
-Kept: `[linux:flr] first` / `[linux:wkr] first-enter/first-exit` / `[linux:wkr] SLOW` (all bounded ~50 lines/run total, useful boot fingerprints for future regressions).
+**Pass 2** (commit `d325410`): user requested more aggressive cleanup of non-bug-B-related logging. Audit of cleanlog2 (34KB) showed top remaining offenders were wedge-investigation cruft and unrelated boot-progress traces. Removed:
 
-Smoke after cleanup: 60s clean run, log size 75KB → 34KB. Cache-ready=1, no behavior change. Commit `40a00bf`.
+- `[linux:flr] first` / `[linux:wkr] first-enter` / `[linux:wkr] first-exit` (135 lines/run, plus `firstSeenStage` / `firstSeenPairs` / `numWorkingWorkers` infrastructure)
+- `[mem:*]` interval bumped 5s → 30s default (37 lines → 8 lines)
+- `[fs] read: post-Open` / `[fs] read: pre-ReadInto` (10 lines/run)
+- `[kw][kw:RunShepherd] Do start/done` (10 lines/run, was for thread-0-monopoly diagnosis, unrelated to bug-B)
+- `[VirtIO Input] PCI N:N.N vendor=...` per-device (5 lines/run; kept scan-start/done and "Found input device" bookends)
+
+Result: 34KB → 20KB / 562 → 343 lines/60s. Steady-state ~1 line/sec post-boot (status epoch + occasional bug-B instrumentation). UART CPU cost ~6.7% (was ~11% post-pass-1, ~23% pre-pass-1, much higher pre-pass-1 with full wedge instrumentation).
+
+Kept (bug-B related or low-volume operational telemetry):
+- `[linux:wkr] SLOW` — low-rate canary, valuable regression detector
+- `[unmapLoop] enter/progress/exit` — explicit bug-B instrumentation
+- `[munmap:FREED]` — bug-B
+- `[provider] populateSlot` — bug-B trigger location
+- `[status]` block (stale-pte / free-canary / va-probe / blk emptySnap / delegate stuck / gc cycles / etc.)
+- `[fs] launching X from Y`, `[fs] read done /shepherd.elf`, boot-phase markers
+- One-time announcement lines (rachel AppStart, status block headers)
 
 ### Continuation
 
