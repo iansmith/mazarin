@@ -1,15 +1,14 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: (open — wedge resolved, ready for next direction) — 2026-04-30 evening
+## TOP OF STACK: Bug-B family (kernel runtime panic at/after `[mail] cache ready`) — 2026-04-30 night
 
-The concurrent-boot-wedge that's been the recurring TOP OF STACK across multiple sessions is **resolved**. FF-sweep (10×60s ARM64 HVF) shows 0/10 wedges with the full fix: ext2 RWMutex + asyncBlockDev per-chunk lock + fs delegate worker pool. linux's worker pool was right-sized 1024→32 in the same session.
+See **`next_session_prompt.md`** for the self-contained continuation prompt with reproduction steps, ruled-out hypotheses, current best lead (VA-collision in SharePages target picker), decision tree for next-step probes, and pointers to all relevant files.
 
-Suggested next directions (open for the user to pick):
+Brief: with the wedge resolved, bug-B is the only consistent ARM64 HVF failure mode (~1-3/10 in 60s sweeps). It blocks click-test sweeps (which the user has queued as the next phase) — clicks would amplify whatever's corrupting memory.
 
-1. **Bug-B-family kernel crashes** — `missing deferreturn` panic from `internal/godebug.(*Setting).Value` in .maz init paths, plus `KERNEL EXIT GROUP at cache ready` mspan/GC corruption. Fired in EE1, EE10, FF10. Many hypotheses ruled out (see ARCHIVED bug-B section below); next concrete step there is the boot-only run with `vaCollisionProbeEnabled=true`.
-2. **Click-test sweeps** — the user originally said "we'll do some runs that will be testing what happens with input." With the wedge fixed, this is a clean baseline to start from.
-3. **A2 NEGATIVE diagnostic** — `[localRect] NEGATIVE` one-shot stack trace landed in `da8c035`; hasn't fired since. If it fires in click runs, the trace tells us the upstream caller.
-4. **Memory file cleanup** — many memory files now reference outcomes documented in this session's `progress.md`; could collapse some.
+Recent fires across EE/FF/cleanup sweeps showed three signatures: `missing deferreturn`, `mheap.alloc` MemStat overflow, and (historically) mspan corruption signatures. All kernel-side runtime panics from a shepherd's goroutine 1, all firing during/after the `[mail] cache ready, initial rebalance` event. May or may not be the same root cause.
+
+Concrete first step: re-enable `vaCollisionProbeEnabled = true` in `kmazarin/ksyscall/mailbox.go` and run a 10×180s boot-only sweep. If a crash run shows any `[fontslot:VA] va=` outside `0x500000xxxxxx` → VA-collision confirmed and fixable. If all VAs stay in IPC region → VA-collision ruled out, pivot to VirtIO DMA target-PA audit or heap-corruption forensics. Detailed in next_session_prompt.md.
 
 ---
 

@@ -42,6 +42,18 @@ Three months of intermittent wedge across multiple sessions, traced through:
 
 Eight commits across the day. Tracking files include investigation arc + final summary.
 
+### Followup: log cleanup (2026-04-30 night)
+
+Removed `[linux:flr-idle]` enter/exit case-branch logs (also death/decref for symmetry). The flr-idle pair was the heaviest log line in the system: ~32 lines/sec in clean FF runs (974 enter + 974 exit per 60s in FF7). At ~7ms per synchronous UART write blocking IRQs, that's ~23% of CPU spent in masked-IRQ output. The hypothesis they were testing (notification handler blocks during delegateCh iteration) was settled negative by BB-sweep — no diagnostic value remaining.
+
+Kept: `[linux:flr] first` / `[linux:wkr] first-enter/first-exit` / `[linux:wkr] SLOW` (all bounded ~50 lines/run total, useful boot fingerprints for future regressions).
+
+Smoke after cleanup: 60s clean run, log size 75KB → 34KB. Cache-ready=1, no behavior change. Commit `40a00bf`.
+
+### Continuation
+
+Bug-B family is the next TOP OF STACK. Self-contained continuation prompt in `next_session_prompt.md` — includes reproduction setup, ruled-out hypotheses, current best lead (VA-collision), decision tree, and pointers.
+
 ---
 
 ## Session: 2026-04-30 (Opus, late afternoon) — wedge fix landed: ext2 RWMutex + asyncBlockDev per-chunk lock
