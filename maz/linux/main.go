@@ -235,11 +235,13 @@ func handleDeathNotification(deadSID int16) {
 // delegating; we just reply and forward to the line accumulator).
 
 // fileLaneWorkers is the number of persistent goroutines that serve
-// delegated SyscallRequests in parallel. 1024 is generous — effectively
-// unbounded for any realistic workload — while still giving us a fixed
-// count of long-lived goroutines instead of churning a fresh goroutine
-// per request.
-const fileLaneWorkers = 1024
+// delegated SyscallRequests in parallel. Per-shepherd serialization at
+// shep.mu caps in-flight to 1 per shepherd, and concurrent fsclient
+// calls serialize at fsclient's c.mu — so realistic peak concurrent
+// demand is ~30 (one per active shepherd). 32 gives modest headroom
+// without the memory waste of the previous 1024 (which was sized as
+// "definitely enough" before we measured what's actually needed).
+const fileLaneWorkers = 32
 
 // fileLaneWorkItem is what the reader hands to the worker pool. We carry
 // the stdin-read flag explicitly so workers know whether to sidDecRef on
