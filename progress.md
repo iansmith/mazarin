@@ -1,5 +1,53 @@
 # Progress Log
 
+## Session: 2026-05-01 (Opus 4.7) — mazlink worktree code review + cleanup pass + rebase
+
+### What shipped (3 worktree commits on top of Gap 1+2)
+
+- `101fdde` mazlink: tighten host/plugin gate, doc cleanup (Gap 2 follow-up)
+- `a9cace0` maz/fs: switch to userspace-overlay (Gap 2 follow-up — fix broken merged-shepherd-overlay refs)
+- (rebase) all 8 worktree commits replayed onto master HEAD `4842c90`
+
+### What the review found
+
+The Gap 2 agent's work was substantively correct but had four cleanup items:
+
+1. **Over-broad host/plugin gate** in `arm64/asm.go` and `amd64/asm.go` GOTPCREL handler. Original `if IsElf() && Packages != ""` made the else-branch fire for host AND for non-host non-plugin ELF, changing PIE+internal from stock GLOB_DAT to static R_ADDR. Mazlink isn't used for PIE today so it wasn't reachable, but it was an unintended side effect. Tightened to a 3-way switch.
+
+2. **Doc rot**: `data.go` third-hook comment referenced the original incorrect plan prescription (`AddGotSym(...,0)`); the actual implementation uses `AddGotSymStatic`. Updated. `mazarin/mazhost/doc.go` "and the shepherd overlay" reference dropped (overlay is gone). Empty `# Overlay Generation` section header in root Taskfile removed.
+
+3. **Real bug uncovered**: `bea6115` deleted shepherd-overlay tasks from root Taskfile but missed `maz/fs/Taskfile.yml`, which still depended on `:merged-shepherd-overlay` and `MERGED_SHEPHERD_OVERLAY_*` variables. Without this fix, **any build path through `fs:arm64`/`fs:x86_64`** hung indefinitely with `task` burning ~28GB of memory. fs is not a mazdl host so it doesn't need dynlink — switched to `:mazarin:userspace-overlay` (matching `clocks`/`calc`).
+
+4. **Branch hygiene**: worktree was branched from `9cced8b`, missing 14 master commits including the wedge fixes (`a1a4ef8`/`082b164`/`90be746`/`f5c09f8`). Rebased onto `4842c90`. Conflicts in `task_plan.md`/`progress.md`/`next_session_prompt.md` resolved by keeping master's structure and prepending Gap 1/2 entries.
+
+### Verification
+
+- **ARM64 HVF post-rebase**: reaches `[mail] cache ready` cleanly, no panics. (Worktree was missing user-local `data/mail/mbox/current.mbox` — copied from master.)
+- **Plugin reloc byte-identity**: `rachel.maz .rela` (arm64) and `rachel-amd64.maz .rela` (amd64) both byte-identical between pre-Gap-2 (`9cced8b` mazlink) and post-tightening (current). Confirms the gate change is plugin-neutral on both arches.
+- **mazlink builds clean** post-tightening (`bin/mazlink` rebuilds without errors).
+
+### What was found but NOT shipped: x86_64 kmazarin nosplit failure
+
+`$GO tool task kmazarin:x86_64` fails at link time with:
+```
+main.syscallEntry: nosplit stack over 792 byte limit (56 bytes over)
+main.isrDev46: nosplit stack over 792 byte limit (152 bytes over)
+... grows 160 bytes, calls runtime.panicBounds64<1>
+... grows 8 bytes, calls runtime.morestack<0>
+```
+
+**Confirmed at master HEAD too** — not introduced by Gap 1/Gap 2/cleanup. Build was working as recently as 2026-04-24 (stale `build/kmazarin-amd64.elf` from then in master). Likely caused by a recent Go runtime change inlining `panicBounds64` into NOSPLIT chains reachable from `kmazarin/kmazarin/exceptions_amd64.s`'s `syscallEntry` and `isrDev*` stubs.
+
+This blocks any x86_64 verification (boot smoke, plugin runtime test, wedge-fix validation on amd64). Promoted to **TOP OF STACK** in `task_plan.md`.
+
+### What's next
+
+x86_64 kmazarin nosplit fix. See `task_plan.md` TOP OF STACK and `next_session_prompt.md` for investigation steps and Option A/B/C fix shapes.
+
+Bug-B family is paused until x86_64 builds and `runtime-patches/` is wired into the shepherd build (a small, separate prerequisite).
+
+---
+
 ## Session: 2026-05-01 (Sonnet 4.6, agent worktree) — mazlink Gap 2: replace 370-file shepherd overlay with -dynlink
 
 ### What shipped

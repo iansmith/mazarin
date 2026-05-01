@@ -1,14 +1,83 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: Bug-B family (kernel runtime panic at/after `[mail] cache ready`) — resumed 2026-05-01
+## TOP OF STACK: kmazarin x86_64 won't build — `nosplit stack over 792 byte limit` — 2026-05-01
 
-See **`next_session_prompt.md`** for the self-contained continuation prompt.
+**Symptom**: `$GO tool task kmazarin:x86_64` fails at link time with the Go linker rejecting NOSPLIT functions whose worst-case stack chains exceed 792 bytes.
 
-Brief: with the wedge resolved AND the mazlink overlay diversion complete (Gap 1 + Gap 2 both shipped), bug-B is the only consistent ARM64 HVF failure mode (~1-3/10 in 60s sweeps). It blocks click-test sweeps (which the user has queued as the next phase) — clicks would amplify whatever's corrupting memory.
+```
+main.syscallEntry: nosplit stack over 792 byte limit
+                                                    56 bytes over limit
+[...]
+main.isrDev46: nosplit stack over 792 byte limit
+                                                    152 bytes over limit
+                                                    grows 8 bytes, calls runtime.morestack<0>
+                                                    grows 160 bytes, calls runtime.panicBounds64<1>
+                                                    grows 40 bytes, calls runtime.panicBounds<1>
+```
+
+**Why this is now top priority**: x86_64 boot smoke is needed to fully verify the Gap 2 mazlink work on amd64, and it's required for any cross-architecture work going forward. Click-test sweeps (next planned phase) need both arches working to make the data trustworthy. Bug-B is paused until x86_64 boots.
+
+**Confirmed at master HEAD** (`4842c90`): the same error reproduces on master, NOT introduced by Gap 1/Gap 2/cleanup. There's a stale `build/kmazarin-amd64.elf` from 2026-04-24 in master suggesting a regression between then and now. Likely cause: a recent Go runtime change (Go 1.26.x?) inlined `runtime.panicBounds64` / `runtime.panicBounds` into the NOSPLIT chain reachable from `syscallEntry` and `isrDev*`, pushing the chain over 792 bytes.
+
+### What's affected
+
+ARM64 builds fine (different ISR/syscall entry layout — see `kmazarin/kmazarin/exceptions_arm64.s` vs `exceptions_amd64.s`). The error is purely on x86_64 NOSPLIT entry stubs:
+- `main.syscallEntry` — x86_64 SYSCALL instruction handler.
+- `main.isrDev32..isrDev47` — IOAPIC device interrupt entry stubs in `kmazarin/kmazarin/exceptions_amd64.s`. All 16 are NOSPLIT|NOFRAME, jump to `common_exception_entry`.
+
+`isrDev46` blew up by 152 bytes; `syscallEntry` by 56 bytes. The chain is `entry stub → common_exception_entry → eventually a Go function → runtime.panicBounds64` somewhere downstream.
+
+### Investigation steps
+
+1. **Identify the offending Go runtime change**. Check `git log /opt/homebrew/Cellar/go/1.26.2/libexec/src/runtime/panic.go` (or wherever `panicBounds64` lives) for a recent change that increased its stack footprint or made it cheaper to inline. Compare against an older Go where the build worked (Apr-24 era).
+
+2. **Trace the call chain**. Use `bin/target-objdump -d build/kmazarin-amd64.elf.prereloc` (if a partial build artifact exists) or build with `-gcflags=-m=2 -ldflags="-N"` and inspect what gets pulled into the NOSPLIT chain from `common_exception_entry`. The link error itself shows the chain — capture full output, not just the summary lines.
+
+3. **Pick a fix**:
+   - **Option A (preferred): runtime-patches overlay** that revert the panicBounds inlining for the kmazarin build. Add `runtime-patches/runtime/panic_amd64.go` (or wherever) that overrides the offending function with a NOSPLIT-friendly version. Lowest risk, scoped to kmazarin x86_64.
+   - **Option B**: refactor `kmazarin/kmazarin/exceptions_amd64.s` so the entry stubs do less work in NOSPLIT mode and call into a regular (split-able) Go function for dispatch. Higher cost — touches assembly that already works on ARM64.
+   - **Option C**: bump the NOSPLIT stack limit in mazlink. Risky — the limit is a real safety bound for IST/exception stacks.
+
+### Test plan
+
+```bash
+export GOTOOLCHAIN=auto GO=/opt/homebrew/bin/go QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64 LOUIS14_DIR=/Users/iansmith/louis14 FONTS_DIR=/Users/iansmith/louis14/fonts
+$GO tool task kmazarin:x86_64        # must succeed
+$GO tool task run-x86_64 TIMEOUT=600 # x86_64 TCG is ~10x slower than ARM64 HVF; give it real time
+$GO tool safe-serial-read /tmp/diplomat-serial.log | grep -E "\[mail\] cache ready|panic|fatal"
+```
+
+Done when: kmazarin x86_64 builds clean, x86_64 boots through `[mail] cache ready`, no new panics introduced.
+
+---
+
+## PAUSED: Bug-B family (kernel runtime panic at/after `[mail] cache ready`) — paused 2026-05-01 by x86_64 work
+
+The mazlink Gap 1 + Gap 2 work shipped — shepherd overlay deletion + GOTPCREL host-mode support. Shepherd-side forensics are structurally unblocked (no auto-overwrite to fight) but `runtime-patches/` is currently only consumed by the kmazarin build; wiring it through to the shepherd build is a small follow-up.
 
 VA-collision hypothesis was refuted by the GG-sweep (10×180s, all `inIPC=132 outIPC=0`). Forensic from GG9 GC SIGSEGV: `X8 = " failed "` ASCII — text data overwrote a register-sized field, points at heap corruption with log-string payload.
 
-Shepherd-side forensics are now unblocked: the 370-file overlay is gone (Gap 2 commits `647c67a` + `e8514ca` + `bea6115`). Add `runtime-patches/runtime/traceback.go` guards to capture the GG9-class SIGSEGV unwinder NIL deref.
+Detailed continuation prompt was previously in `next_session_prompt.md` — that's now repurposed for x86_64 work. The bug-B context still lives in `memory/MEMORY.md` Active Bugs section and `task_plan.md` archived sections below.
+
+Resume bug-B once x86_64 builds and boots, AND once `runtime-patches/runtime/traceback.go` is wired into the shepherd build.
+
+---
+
+## ARCHIVED: Mazlink worktree cleanup pass (2026-05-01) ✅
+
+Code review of the Gap 1 + Gap 2 worktree surfaced four follow-up items, all now landed:
+
+- **Gate tightening** (commit `101fdde`): `arm64/asm.go` and `amd64/asm.go` GOTPCREL adddynrel now use a 3-way switch — host gets `AddGotSymStatic`, other ELF (plugin/PIE/dynlink) gets `AddGotSym + GLOB_DAT` (stock-equivalent), non-ELF gets the stock fallback. Original gate was over-broad and would have changed PIE+internal behavior. Plugin path verified byte-identical: `rachel.maz .rela` and `rachel-amd64.maz .rela` both match pre-Gap-2 baseline byte-for-byte.
+
+- **Doc rot** (in same commit `101fdde`): `data.go` third-hook comment updated to reference `AddGotSymStatic` instead of the original incorrect plan prescription. `mazarin/mazhost/doc.go` "and the shepherd overlay" reference dropped (overlay is gone). Empty `# Overlay Generation` section header in root Taskfile removed.
+
+- **Bug fix uncovered** (commit `a9cace0`): Gap 2's `bea6115` deleted the shepherd-overlay tasks but missed `maz/fs/Taskfile.yml`, which still depended on `:merged-shepherd-overlay` and the deleted `MERGED_SHEPHERD_OVERLAY_*` variables. Without this fix, **any build path through `fs:arm64`/`fs:x86_64`** (i.e., anything depending on `disk-arm64`/`disk-x86_64`, including kmazarin staging) hung indefinitely with `task` burning ~28GB of memory. fs is not a mazdl host so it doesn't need dynlink — switched to `mazarin:userspace-overlay` (matching `clocks`/`calc`).
+
+- **Rebase onto master** (8 commits replayed): worktree was branched from `9cced8b`, missing 14 master commits (wedge fixes `a1a4ef8`/`082b164`/`90be746`/`f5c09f8`, log cleanup, bug-B continuation prompt, etc.). Rebased clean; conflicts in `task_plan.md`/`progress.md`/`next_session_prompt.md` resolved by keeping master's structure and prepending Gap 1/2 entries.
+
+ARM64 HVF post-rebase smoke confirmed: reaches `[mail] cache ready` cleanly, no panics. (Worktree was missing user-local `data/mail/mbox/current.mbox` — copied from master to enable smoke.)
+
+x86_64 boot smoke blocked by the kmazarin nosplit build error (now TOP OF STACK above).
 
 ---
 
@@ -54,15 +123,9 @@ Full investigation history in `memory/shepherd_overlay_dynlink_experiment.md` (n
 
 ---
 
-## TOP OF STACK: Bug-B family (kernel runtime panic at/after `[mail] cache ready`) — 2026-04-30 night
+## ARCHIVED: bug-B continuation pre-mazlink (2026-04-30 night) — see PAUSED section above
 
-See **`next_session_prompt.md`** for the self-contained continuation prompt with reproduction steps, ruled-out hypotheses, current best lead (VA-collision in SharePages target picker), decision tree for next-step probes, and pointers to all relevant files.
-
-Brief: with the wedge resolved, bug-B is the only consistent ARM64 HVF failure mode (~1-3/10 in 60s sweeps). It blocks click-test sweeps (which the user has queued as the next phase) — clicks would amplify whatever's corrupting memory.
-
-Recent fires across EE/FF/cleanup sweeps showed three signatures: `missing deferreturn`, `mheap.alloc` MemStat overflow, and (historically) mspan corruption signatures. All kernel-side runtime panics from a shepherd's goroutine 1, all firing during/after the `[mail] cache ready, initial rebalance` event. May or may not be the same root cause.
-
-Concrete first step: re-enable `vaCollisionProbeEnabled = true` in `kmazarin/ksyscall/mailbox.go` and run a 10×180s boot-only sweep. If a crash run shows any `[fontslot:VA] va=` outside `0x500000xxxxxx` → VA-collision confirmed and fixable. If all VAs stay in IPC region → VA-collision ruled out, pivot to VirtIO DMA target-PA audit or heap-corruption forensics. Detailed in next_session_prompt.md.
+The bug-B continuation that was TOP OF STACK on 2026-04-30 night is preserved in the PAUSED section above. Concrete first step (kept here for reference): re-enable `vaCollisionProbeEnabled = true` in `kmazarin/ksyscall/mailbox.go` and run a 10×180s boot-only sweep. VA-collision was subsequently refuted; current best lead is heap-corruption forensics via shepherd-side `runtime/traceback.go` overlay (which requires runtime-patches → shepherd wiring as a prerequisite).
 
 ---
 

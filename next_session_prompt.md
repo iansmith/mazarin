@@ -1,139 +1,173 @@
-# Continuation prompt — Bug-B family (kernel runtime panic at/after `[mail] cache ready`)
+# Continuation prompt — kmazarin x86_64 nosplit stack overflow
+
+> **NOTE 2026-05-01**: bug-B work is paused; the prior bug-B continuation prompt is preserved at the bottom of this file under "PAUSED BUG-B CONTEXT" so it can be resumed once x86_64 builds again. Resume bug-B by promoting this prompt back to the top once the linker error below is fixed.
 
 ## Status
 
-The concurrent-boot-wedge that occupied the previous TOP-OF-STACK is **resolved** as of 2026-04-30 (FF-sweep 0/10). With it fixed, the only remaining intermittent failure on ARM64 HVF is the bug-B family of kernel runtime panics. **This is the next thing to chase.**
+`$GO tool task kmazarin:x86_64` fails at link time. ARM64 builds and boots cleanly through `[mail] cache ready` (post-Gap-2 + cleanup). x86_64 has been silently broken since some time after 2026-04-24 (the date on the stale `build/kmazarin-amd64.elf` in master). The agent that landed Gap 2 only smoke-tested ARM64; the regression has been hiding in plain sight.
 
-## What you should know going in
+This blocks x86_64 boot smoke verification, which in turn blocks click-test sweeps and any cross-architecture validation of the mazlink work.
 
-### Symptom (multiple signatures, all kernel-side runtime panics from a shepherd's goroutine 1)
+## Symptom
 
-Recent fires across EE / FF / cleanup-smoke sweeps showed three distinct panic strings:
+```
+$ $GO tool task kmazarin:x86_64
+... (compile completes successfully) ...
+main.syscallEntry: nosplit stack over 792 byte limit
+                                                    56 bytes over limit
+[...]
+main.isrDev46: nosplit stack over 792 byte limit
+                                                    152 bytes over limit
+                                                    grows 8 bytes, calls runtime.morestack<0>
+                                                    grows 160 bytes, calls runtime.panicBounds64<1>
+                                                    grows 40 bytes, calls runtime.panicBounds<1>
+/opt/homebrew/Cellar/go/1.26.2/libexec/pkg/tool/darwin_arm64/link: too many errors
+task: Failed to run task "kmazarin:x86_64": exit status 1
+```
 
-1. **`fatal error: missing deferreturn`** (EE1, EE10, FF10 — most common in current sweeps)
-   - Stack: `runtime.(*_panic).initOpenCodedDefers` → `runtime.(*_panic).nextFrame.func1` → `runtime.systemstack_switch` → `runtime.(*_panic).start`
-   - Fires on the main goroutine of a launched shepherd
-   - String "missing deferreturn" is the panic-during-panic message; the **original** panic cause is hidden under it
+The link error reports the call chain: `isrDev46` (NOSPLIT entry stub) → ... → `runtime.panicBounds64` and `runtime.morestack` are pulling 160 + 40 + 8 bytes into the chain. ARM64 builds fine because its entry stubs in `kmazarin/kmazarin/exceptions_arm64.s` have a different layout that doesn't pull these in.
 
-2. **`runtime.(*mheap).alloc` MemStat overflow** (cleanup-smoke 2026-04-30)
-   - Stack: `runtime.(*mheap).alloc.func1` → `runtime.systemstack`
-   - Decoded stack bytes: "MemStat overflow" — internal Go runtime invariant violation in heap accounting
-   - Different shepherd / different goroutine each time
+## What's affected
 
-3. **mspan corruption signatures** (historical, pre-wedge-fix sessions): `freeIndex is not valid`, `sweep increased allocation count`, `nelems=341 nalloc=4024` — all from the GC sweep walking corrupted mspan structs in mail-app's Go heap
+x86_64-only NOSPLIT entry stubs:
+- `main.syscallEntry` — x86_64 SYSCALL instruction handler.
+- `main.isrDev32..isrDev47` — IOAPIC device interrupt entry stubs (16 of them) in `kmazarin/kmazarin/exceptions_amd64.s`. Each is `NOSPLIT|NOFRAME, $0`, pushes a vector number, jumps to `common_exception_entry`.
 
-### Common feature
+The chain from there reaches Go code that calls a function which panics on bounds — `runtime.panicBounds64` materialised by recent Go runtime versions inside the NOSPLIT chain.
 
-All three signatures fire after the kernel boot reaches `[mail] cache ready, initial rebalance first=-1 last=-1 vis=0` (the moment mail-app finishes loading its initial collection). Sometimes the crash is during the very next GC cycle on mail-app. Sometimes it's later. Sometimes it's in a different shepherd entirely.
+ARM64's `exceptions_arm64.s` uses a different dispatch (`vector_table` macro-driven) and doesn't trip the limit.
 
-The mspan signatures showed up consistently in mail-app's heap. The newer signatures (`missing deferreturn`, mheap overflow) appear in different shepherds. **It's plausible these are all the same underlying memory corruption manifesting in different goroutine state.** Or they might be separate. We don't know yet.
+## Confirmed pre-existing at master
 
-### Reproduction rate
+Reproduced both in worktree (post-rebase) and at master HEAD `/Users/iansmith/mazzy@4842c90`. Same error. Stale `build/kmazarin-amd64.elf` in master is dated **Apr 24 12:00** — that's when x86_64 last built successfully. Something in Go's runtime or in the kernel sources changed between then and now.
 
-In recent 60s ARM64 HVF sweeps (EE, FF, cleanup):
-- ~1-3 in 10 runs hit one of these signatures
-- The wedge fix may have *increased* observable bug-B rate by removing the wedge that previously masked it (some runs that used to wedge now reach the bug-B trigger point)
+## Suspected root cause
 
-## What's been ruled out (don't redo this work)
+A recent Go 1.26.x update made `runtime.panicBounds64` (and probably `runtime.panicBounds`) reachable through the NOSPLIT chain from `common_exception_entry` with larger stack footprints than before. The Go linker's NOSPLIT computation walks the call graph and sums max stack usage; a small change in `panicBounds64` can cascade.
 
-Documented in detail in `task_plan.md` ARCHIVED section "bug B family":
+This is likely a reversion of older Go behavior, or a new `// go:nosplit` annotation somewhere that pulled functions into the chain.
 
-- **Buddy double-free / RefCount underflow / unmapLoop hang** — `ca7f5f6` guards silent across all sweeps.
-- **H-T2 stale PTE in another shepherd's PT memory** — `612ed58` Option B verifier, 5×180s, 184K-203K scans/run, 0 hits.
-- **H-T1 (missing trailing TLB flush at SyscallMunmap)** — Option A reverted as a no-op.
-- **H-T3a kernel write between BuddyFreeTyped and reuse** — `c4684ad` free-canary, 5×180s with crash repro confirmed, 0 canary hits.
-- **Page-cache audit Stage 2 (read-only)** — protocol invariants I1-I5 hold in mainline.
-- **Page-cache Suspect 5 (`sysMmapPageFlush !inumKnown` over-flush)** — Stage 3 probe, 0 fires across crash-eligible runs.
-- **Page-cache Suspect 1 (`[pageCache:OVERWRITE]` same-VA gap)** — Stage 3 probe, 0 fires.
-
-## Current best lead
-
-**Hypothesis**: kernel maps font-cache pages (or other shared pages) at a VA that **collides with mail-app's Go heap region**. When mail-app's GC sweeps the span at that VA, it reads font-file bytes (or other shared content) instead of mspan struct data → wild `nelems`/`nalloc`/etc. → crash.
-
-This was provisionally weakened by one boot-time data point: `va-probe: inIPC=132 outIPC=0 minVA=500000f9a000 maxVA=50000220b000` — all 132 SharePages target VAs landed in the IPC region (0x500000xxxxxx), none overlapping mail-app's Go heap (~0xC000000000+).
-
-**But that data was from a CLEAN run.** We need probe data from a CRASH run to know whether the VA distribution differs. The probe is gated by `vaCollisionProbeEnabled` in `kmazarin/ksyscall/mailbox.go` (default false because the heavy SharePages traffic during click→body-render regresses the system to kernel exit_group).
-
-## Next concrete step (read this first)
-
-### Setup
+## Setup
 
 ```bash
 export GOTOOLCHAIN=auto
 export GO=/opt/homebrew/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 export QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
+export LOUIS14_DIR=/Users/iansmith/louis14
+export FONTS_DIR=/Users/iansmith/louis14/fonts
 ```
 
-### Step 1: enable the VA-collision probe (boot-only)
+## Investigation steps
 
-Flip `vaCollisionProbeEnabled` to `true` in `kmazarin/ksyscall/mailbox.go`. This logs `[fontslot:VA] caller=N target=M va=X type=T` per `SyscallSharePages` call.
+### Step 1: capture the full call chain
 
-**Critical: do NOT click in the probe-enabled run.** Heavy click→body-render SharePages traffic regresses the system to kernel exit_group. Boot-only is safe.
-
-### Step 2: run a crash-eligible boot-only sweep
+The link error lists the chain in a tree-like format (deepest indent = leaf). Capture the full output:
 
 ```bash
-$GO tool task
-for i in $(seq 1 10); do
-  $GO tool task run-arm64-hvf TIMEOUT=180 > /tmp/GG${i}.out 2>&1
-  cp /tmp/diplomat-arm64-serial.log /tmp/GG${i}-180s.log
-  $GO tool task stop-arm64
-  sleep 2
-done
+$GO tool task kmazarin:x86_64 2>&1 | tee /tmp/kmazarin-x86_64-link-error.log
+$GO tool safe-serial-read /tmp/kmazarin-x86_64-link-error.log | head -200
 ```
 
-(180s gives time to reach the post-cache-ready window where mspan-class crashes fire. 60s sweeps have lower bug-B rate because some don't reach the trigger.)
+Walk the chain for `isrDev46` and `syscallEntry` — note every function on the path and its stack-growth contribution. The chain probably looks like:
 
-### Step 3: filter for crash runs and probe data
+```
+isrDev46 (NOSPLIT, 0 bytes, JMP)
+  → common_exception_entry (NOSPLIT, X bytes)
+    → some Go dispatch function (must also be NOSPLIT to be in this chain)
+      → runtime.panicBounds64 (NOSPLIT, 160 bytes — the new offender)
+```
+
+### Step 2: identify the Go runtime change
+
+`runtime.panicBounds64` is in `runtime/panic.go` (or similar). Check:
 
 ```bash
-for i in $(seq 1 10); do
-  hit=$($GO tool safe-serial-read /tmp/GG${i}-180s.log 2>/dev/null \
-        | grep -cE "missing deferreturn|MemStat overflow|freeIndex|sweep increased|KERNEL EXIT GROUP")
-  echo "GG${i} crash-hits=${hit}"
-done
+ls /opt/homebrew/Cellar/go/1.26.2/libexec/src/runtime/panic*.go
+grep -n "panicBounds64\|panicBounds\b" /opt/homebrew/Cellar/go/1.26.2/libexec/src/runtime/panic*.go | head -20
 ```
 
-For each crash run (`hit > 0`):
+Compare against an older Go installation if available (e.g., `/Users/iansmith/sdk/go1.25.5/` or wherever the user's older Go lives — see `bin/old.go.1.25.5/` mentioned in memory). Diff `panic*.go` between the two and find what grew.
+
+If the offending function is bigger because it calls something else, follow that thread.
+
+### Step 3: pick the fix
+
+**Option A (preferred): runtime-patches overlay**. Add `runtime-patches/runtime/<file>.go` that overrides the offending function with a NOSPLIT-friendly version. The kmazarin Taskfile already wires `runtime-patches/` into the kmazarin build (see `RUNTIME_PATCHES_DIR` in `Taskfile.yml`). Lowest risk, scoped to kmazarin x86_64.
+
+Concretely, the override would be `//go:nosplit`-tagged versions of the panic helpers that call out to a regular (split-able) function for the actual panic, keeping the NOSPLIT chain small.
+
+**Option B: refactor the entry stubs**. In `kmazarin/kmazarin/exceptions_amd64.s`, change the NOSPLIT chain to do less work — push to a queue, raise a soft IRQ, and let the actual dispatch happen on a normal goroutine stack. Higher cost — touches assembly that already works on ARM64.
+
+**Option C: bump the NOSPLIT stack limit in mazlink**. Add a flag (or hardcoded patch) to `cmd/link/internal/ld/stkcheck.go` raising the limit from 792. Risky — the limit exists because IST/exception stacks have a finite size and growing them silently is not safe.
+
+### Step 4: test
 
 ```bash
-$GO tool safe-serial-read /tmp/GGN-180s.log | grep "\[fontslot:VA\]" | head -20
-$GO tool safe-serial-read /tmp/GGN-180s.log | tail -30   # crash signature
+$GO tool task kmazarin:x86_64                # must succeed
+$GO tool task run-x86_64 TIMEOUT=600         # x86_64 TCG is ~10x slower than ARM64 HVF; give it 10 minutes
+$GO tool safe-serial-read /tmp/diplomat-serial.log | grep -E "\[mail\] cache ready|panic|fatal|EXIT_GROUP"
 ```
 
-### Step 4: decision tree
+Look for `[mail] cache ready` and absence of new panics.
 
-- **If a crash run shows ≥1 `[fontslot:VA] va=` outside `0x500000xxxxxx`** (i.e. inside Go heap range or anywhere unexpected) → **VA-collision is the bug**. Fix: change `SyscallSharePages` target VA picker to never pick from a range that overlaps Go's heap. Audit `pickShareTargetVA` (or equivalent) in `kmazarin/ksyscall/mailbox.go`.
-
-- **If a crash run shows all VAs in `0x500000xxxxxx`** → VA-collision is fully ruled out. Move to:
-  - **Option B (VirtIO DMA target-PA audit)**: maildb reads BBolt pages from disk via VirtIO block. If the block driver's DMA descriptor references a PA that was freed and reissued to mail-app as heap, the DMA write would corrupt it. Audit `kmazarin/kvirtio/block*.go` for DMA target buffer lifecycle. Question: is the DMA target PA derived from a user-mapped VA (which could be freed mid-request), or from a stable kernel-allocated buffer?
-  - **Option C (heap-corruption forensics)**: add a small patch to `runtime.(*sweepLocked).sweep` (or a pre-sweep hook) that dumps the raw mspan bytes when corruption is detected. The byte values should identify the source — font-file magic? PTE values? IPC header fields? maildb badger pages? Add overlay in `runtime-patches/` not in-place GOROOT edits (per CLAUDE.md). Note: the 370-file gen-ast-stubs shepherd overlay was removed in Gap 2 (commits `647c67a`+`e8514ca`+`bea6115`), so the shepherd's runtime files are no longer auto-overwritten — but `runtime-patches/` is currently only consumed by the kmazarin (kernel) build, so wiring it through to the shepherd build is a small follow-up before this option is operationally usable for shepherd-side traceback.go.
+Then a 5×TIMEOUT=600 sweep to compare bug-B rate against ARM64 baseline.
 
 ## Reminders / non-negotiables
 
-- **NEVER set `asyncpreemptoff=1`** (CLAUDE.md mandatory rule). The previous "freeIndex is not valid" → "sweep increased allocation count" history involved wrong fixes that turned this off; do not repeat.
-- **NEVER set `GOGC=off`** or use `runtime.GC()` to "fix" symptoms.
-- **GODEBUG=gccheckmark=1** must stay set on both kernel and shepherds.
-- **Bug-B can fire before `[status]`** prints, so some kernel telemetry may be missing in crash logs. The pre-existing instrumentation (free-canary, stale-pte-check) can be re-enabled if needed; both default off.
-- **Don't depend on bug-B being fixed for unrelated work** until the VA-collision question is settled.
-- **The wedge is fixed** — don't roll back ext2 RWMutex, asyncBlockDev per-chunk lock, or fs delegate worker pool. Commits: `a1a4ef8`, `082b164`, `90be746`, `f5c09f8`.
-
-## Pointers
-
-- **Investigation history**: `task_plan.md` ARCHIVED "bug B family" section — full audit log of all hypotheses tested. Read this before starting.
-- **Kernel-side instrumentation toggles**: `kmazarin/kmem/stale_pte_check.go`, `kmazarin/kmem/free_canary.go`, `kmazarin/ksyscall/mailbox.go` (VA probe).
-- **Bug memory**: `memory/MEMORY.md` Active Bugs section + `bug_attr_init_crash.md` (FIXED, kept for context).
-- **The `time.NewTicker` / `time.After` SIGSEGV** in .maz init (memory file `maz_time_ticker_bug.md`) is a SEPARATE pitfall that masks as `internal/godebug.(*Setting).Value` SIGSEGV. The `missing deferreturn` panic looks similar but isn't from that — it has a different stack signature (panic.start vs time.syncTimer). Don't confuse them.
-
-## Why this is worth solving now
-
-- It's the only consistent failure mode left on ARM64 HVF.
-- It blocks any meaningful click-test sweep (which the user has queued as the next phase) — clicks would amplify whatever's corrupting memory.
-- The wedge fix may have made bug-B more reproducible by removing the prior masking effect.
+- Use `$GO tool task <target>`; never `go build`/`go vet`/`go test` directly.
+- Use `$GO tool safe-serial-read` for `/tmp/diplomat-*.log` — never `cat` or `Read` raw.
+- **NEVER set `asyncpreemptoff=1`**, **NEVER set `GOGC=off`**, **always keep `GODEBUG=gccheckmark=1`** (CLAUDE.md mandatory rules).
+- Worktree work happens in this branch; don't touch `/Users/iansmith/mazzy` (master) or `/Users/iansmith/louis14` directly.
+- Always `git push origin <branch>` explicitly when pushing.
 
 ## Done when
 
-- 30 boots in a row (e.g. 3×10 sweeps at 180s each) without ANY of the bug-B signatures.
-- Mechanism understood and documented in `memory/`.
-- The fix is targeted (e.g., specific VA range exclusion or DMA buffer lifecycle change), not a workaround that disables a feature.
+- `$GO tool task kmazarin:x86_64` builds clean.
+- `$GO tool task run-x86_64 TIMEOUT=600` reaches `[mail] cache ready`.
+- A 5×600s x86_64 sweep shows no new failures vs ARM64 baseline.
+- The fix is committed via `runtime-patches/` (Option A) or via a focused mazlink/kmazarin asm change (Option B/C), with tracking-file updates.
+
+After this lands: bug-B work resumes (see PAUSED BUG-B CONTEXT below).
+
+---
+
+# PAUSED BUG-B CONTEXT (resume after x86_64 fixed)
+
+The bug-B family of kernel runtime panics fires at/after `[mail] cache ready` on ARM64 HVF (~1-3 in 10 60s sweeps). Three known signatures:
+
+1. **`fatal error: missing deferreturn`** — most common. Stack: `runtime.(*_panic).initOpenCodedDefers` → `runtime.(*_panic).nextFrame.func1` → `runtime.systemstack_switch` → `runtime.(*_panic).start`. Fires on the main goroutine of a launched shepherd. The string is the panic-during-panic message; the original cause is hidden under it.
+2. **`runtime.(*mheap).alloc` MemStat overflow** — internal Go runtime heap-accounting invariant violation. Decoded stack bytes contained "MemStat overflow".
+3. **mspan corruption signatures** (historical): `freeIndex is not valid`, `sweep increased allocation count`, `nelems=341 nalloc=4024` — GC sweep walking corrupted mspan structs in mail-app's Go heap.
+
+All fire after `[mail] cache ready, initial rebalance first=-1 last=-1 vis=0`. May be a single underlying memory corruption manifesting in different goroutine state, or separate bugs.
+
+### Ruled out
+
+- Buddy double-free / RefCount underflow / unmapLoop hang (commit `ca7f5f6`).
+- H-T2 stale PTE in another shepherd's PT memory (`612ed58` Option B, 5×180s, 0 hits).
+- H-T1 missing trailing TLB flush at SyscallMunmap (Option A, no-op revert).
+- H-T3a kernel write between BuddyFreeTyped and reuse (`c4684ad` free-canary, 5×180s with crash, 0 hits).
+- Page-cache audit Stage 2 protocol invariants I1-I5 hold in mainline.
+- Page-cache Suspect 5 sysMmapPageFlush over-flush (Stage 3 probe, 0 fires).
+- Page-cache Suspect 1 same-VA OVERWRITE gap (Stage 3 probe, 0 fires).
+- VA-collision (GG-sweep 10×180s: all `inIPC=132 outIPC=0`, no out-of-IPC SharePages targets).
+
+### Best lead
+
+GG9 GC SIGSEGV had `X8 = " failed "` ASCII in a register-sized field — text overwrote a pointer. Points at heap corruption with a log-string payload.
+
+### Next step (when resuming)
+
+Add `runtime-patches/runtime/traceback.go` guards (KMAZARIN-style) to capture the GG9-class SIGSEGV (`unwinder.resolveInternal` NIL deref). **Prerequisite**: wire `runtime-patches/` into the shepherd build. Today it's only consumed by the kmazarin (kernel) build — add a new `gen-overlay -type shepherd-runtime-patches` target plus an `-overlay=` flag in `maz/shepherd/Taskfile.yml`. Maybe 30 lines of plumbing.
+
+If shepherd overlays show that bug-B is pure heap corruption, switch to:
+- **Option B (VirtIO DMA target-PA audit)**: maildb reads BBolt pages from disk via VirtIO block. Audit `kmazarin/kvirtio/block*.go` for DMA target buffer lifecycle.
+- **Option C (heap-corruption forensics)**: patch `runtime.(*sweepLocked).sweep` to dump raw mspan bytes when corruption is detected; the byte values should identify the source.
+
+### Pointers
+
+- Investigation history: `task_plan.md` ARCHIVED bug-B sections (extensive).
+- Memory: `memory/MEMORY.md` Active Bugs + `memory/bug_b_va_collision_refuted.md`.
+- Mazlink Gap 1+Gap 2 unblocking: see `memory/shepherd_overlay_dynlink_experiment.md` (RESOLVED).
+- Kernel-side instrumentation toggles: `kmazarin/kmem/stale_pte_check.go`, `kmazarin/kmem/free_canary.go`, `kmazarin/ksyscall/mailbox.go` (VA probe).
