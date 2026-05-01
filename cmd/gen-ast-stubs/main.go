@@ -36,7 +36,6 @@ type TransformResult struct {
 	FileSet     *token.FileSet
 	StubFuncs   []FuncStub      // Functions that were stubbed
 	UsedImports map[string]bool // Imports actually used outside function bodies
-	shepherdSrc   []byte          // In shepherd mode: text-modified source (nil = use AST printer)
 }
 
 // packageInfo holds source and output directories for one package being processed.
@@ -55,7 +54,7 @@ var (
 	flagGo            = flag.String("go", "", "Path to Go binary (used with -runtime-from-go)")
 	flagRuntimeFromGo = flag.Bool("runtime-from-go", false, "Discover runtime dir via 'go env GOROOT' using the -go binary")
 	flagPackages      = flag.String("packages", "runtime", "Comma-separated list of packages to stub (e.g., runtime,syscall)")
-	flagMode          = flag.String("mode", "thin", "Mode: 'thin' generates stub bodies for .maz, 'shepherd' adds //go:noinline + keep-alive for shepherd builds")
+	flagMode          = flag.String("mode", "thin", "Mode: 'thin' generates stub bodies for .maz plugin builds")
 )
 
 func main() {
@@ -101,10 +100,8 @@ func main() {
 	switch *flagMode {
 	case "thin":
 		runThinMode(packages)
-	case "shepherd":
-		runShepherdMode(packages)
 	default:
-		fmt.Fprintf(os.Stderr, "Error: unknown mode %q (use 'thin' or 'shepherd')\n", *flagMode)
+		fmt.Fprintf(os.Stderr, "Error: unknown mode %q (use 'thin')\n", *flagMode)
 		os.Exit(1)
 	}
 }
@@ -146,203 +143,6 @@ func runThinMode(packages []packageInfo) {
 	fmt.Printf("Generated %d stub files with %d stubbed functions across %d packages\n",
 		totalFiles, len(allStubs), len(packages))
 	fmt.Printf("Overlay written to: %s\n", *flagOverlayOut)
-}
-
-// runShepherdMode generates overlay files for shepherd (host) builds.
-// Each stubbable function gets //go:noinline added (body unchanged).
-// The dynexp+deadcode-roots mechanism (emitHostExportsDynsym + stock deadcode)
-// keeps all policy-matched symbols alive; no explicit keepalive function needed.
-func runShepherdMode(packages []packageInfo) {
-	totalFiles := 0
-	totalNoinline := 0
-	overlayReplace := make(map[string]string)
-
-	for _, pkg := range packages {
-		if *flagVerbose {
-			fmt.Printf("Processing package (shepherd): %s (source: %s)\n", pkg.name, pkg.sourceDir)
-		}
-
-		noinlineCount, fileCount, err := processPackageForShepherd(pkg, overlayReplace)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error processing package %s: %v\n", pkg.name, err)
-			os.Exit(1)
-		}
-
-		totalNoinline += noinlineCount
-		totalFiles += fileCount
-	}
-
-	if err := writeOverlayJSON(*flagOverlayOut, overlayReplace); err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating overlay: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("Generated %d shepherd overlay files with %d //go:noinline functions across %d packages\n",
-		totalFiles, totalNoinline, len(packages))
-	fmt.Printf("Overlay written to: %s\n", *flagOverlayOut)
-}
-
-// processPackageForShepherd processes a package in shepherd mode: adds //go:noinline
-// to stubbable functions. The dynexp+deadcode-roots mechanism keeps all
-// policy-matched symbols alive; no MazKeepAliveSymbols injection needed.
-func processPackageForShepherd(pkg packageInfo, overlayReplace map[string]string) (int, int, error) {
-	files, err := findSourceFiles(pkg.sourceDir)
-	if err != nil {
-		return 0, 0, fmt.Errorf("finding source files: %w", err)
-	}
-
-	noinlineCount := 0
-	fileCount := 0
-
-	for _, path := range files {
-		if strings.HasSuffix(path, ".s") {
-			rel, _ := filepath.Rel(pkg.sourceDir, path)
-			outputPath := filepath.Join(pkg.outputDir, rel)
-			if err := copyFile(path, outputPath); err != nil {
-				return 0, 0, fmt.Errorf("copying %s: %w", path, err)
-			}
-			absOrig, _ := filepath.Abs(path)
-			absStub, _ := filepath.Abs(outputPath)
-			overlayReplace[absOrig] = absStub
-			fileCount++
-			continue
-		}
-
-		result, count, err := transformFileForShepherd(path)
-		if err != nil {
-			return 0, 0, fmt.Errorf("transforming %s: %w", path, err)
-		}
-
-		rel, _ := filepath.Rel(pkg.sourceDir, path)
-		outputPath := filepath.Join(pkg.outputDir, rel)
-
-		if result.shepherdSrc != nil {
-			if err := writeStubFile(result, outputPath); err != nil {
-				return 0, 0, fmt.Errorf("writing %s: %w", outputPath, err)
-			}
-		} else {
-			if err := copyFile(path, outputPath); err != nil {
-				return 0, 0, fmt.Errorf("copying %s: %w", path, err)
-			}
-		}
-
-		absOrig, _ := filepath.Abs(path)
-		absStub, _ := filepath.Abs(outputPath)
-		overlayReplace[absOrig] = absStub
-
-		noinlineCount += count
-		fileCount++
-
-		if *flagVerbose {
-			fmt.Printf("  %s/%s: %d noinline\n", pkg.name, rel, count)
-		}
-	}
-
-	fmt.Printf("  %s: %d files, %d //go:noinline functions\n",
-		pkg.name, fileCount, noinlineCount)
-	return noinlineCount, fileCount, nil
-}
-
-// shepherdPostCallInjections maps a call expression (as it appears in source)
-// to a line of code to insert immediately after it. This replaces fragile sed
-// post-processing in Taskfile.yml with a versioned, greppable table.
-var shepherdPostCallInjections = map[string]string{
-	"worldStarted()": "\tsyncMazWriteBarriers()",
-}
-
-// shepherdFuncInfo holds info about a function that needs //go:noinline in shepherd mode.
-type shepherdFuncInfo struct {
-	line int // 1-based line number of the func keyword
-}
-
-// transformFileForShepherd parses a file to find stubbable functions, then does
-// text-based insertion of //go:noinline before each one. This avoids go/ast
-// comment positioning issues that cause "misplaced compiler directive" errors.
-// Returns a TransformResult and the noinline count.
-func transformFileForShepherd(path string) (*TransformResult, int, error) {
-	fset := token.NewFileSet()
-
-	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-	if err != nil {
-		return nil, 0, fmt.Errorf("parse %s: %w", path, err)
-	}
-
-	result := &TransformResult{
-		File:        file,
-		FileSet:     fset,
-		UsedImports: make(map[string]bool),
-	}
-
-	// Collect functions that need //go:noinline
-	var funcs []shepherdFuncInfo
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || !shouldStub(fn) {
-			continue
-		}
-
-		// Check if already has //go:noinline
-		alreadyHas := false
-		if fn.Doc != nil {
-			for _, c := range fn.Doc.List {
-				if strings.TrimSpace(c.Text) == "//go:noinline" {
-					alreadyHas = true
-					break
-				}
-			}
-		}
-
-		if !alreadyHas {
-			// Use the line of the func keyword for insertion
-			pos := fset.Position(fn.Pos())
-			funcs = append(funcs, shepherdFuncInfo{
-				line: pos.Line,
-			})
-		}
-	}
-
-	if len(funcs) == 0 {
-		// No modifications needed — just copy the file
-		return result, 0, nil
-	}
-
-	// Read original file and insert //go:noinline directives
-	srcBytes, err := os.ReadFile(path)
-	if err != nil {
-		return nil, 0, fmt.Errorf("reading %s: %w", path, err)
-	}
-
-	lines := strings.Split(string(srcBytes), "\n")
-
-	// Build set of lines that need //go:noinline inserted before them
-	insertBefore := make(map[int]bool) // 1-based line numbers
-	for _, fi := range funcs {
-		insertBefore[fi.line] = true
-	}
-
-	// Rebuild the file with insertions
-	var out strings.Builder
-	for i, line := range lines {
-		lineNum := i + 1 // 1-based
-		if insertBefore[lineNum] {
-			out.WriteString("//go:noinline\n")
-		}
-		out.WriteString(line)
-		if i < len(lines)-1 {
-			out.WriteString("\n")
-		}
-		// Post-call injections: insert extra line after matching call sites
-		trimmed := strings.TrimSpace(line)
-		if inject, ok := shepherdPostCallInjections[trimmed]; ok {
-			out.WriteString(inject)
-			out.WriteString("\n")
-		}
-	}
-
-	// Store the modified source for writing
-	result.shepherdSrc = []byte(out.String())
-
-	return result, len(funcs), nil
 }
 
 // copyFile copies a file from src to dst, creating parent directories as needed.
@@ -988,11 +788,6 @@ func writeStubFile(result *TransformResult, outputPath string) error {
 	// Create directory
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		return err
-	}
-
-	// In shepherd mode, use pre-built text source if available
-	if result.shepherdSrc != nil {
-		return os.WriteFile(outputPath, result.shepherdSrc, 0644)
 	}
 
 	// Write AST to buffer first, then post-process to insert //go:noinline.

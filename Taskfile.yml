@@ -207,15 +207,6 @@ vars:
   MAZ_EXIT_OVERLAY_DIR: mazarin/overlay/maz
   MAZ_EXIT_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-exit-overlay.json'
 
-  # Shepherd overlay — adds //go:noinline to runtime functions (prevents inlining that would
-  # make symbols unavailable to .maz plugins). Per-architecture because sigctxt methods
-  # differ (ARM64: r0-r29, x86_64: rax/rbx). DCE is handled by dynexp+deadcode-roots.
-  SHEPHERD_OVERLAY_DIR: '{{.BUILD_DIR}}/shepherd-overlay'
-  SHEPHERD_OVERLAY_JSON: '{{.BUILD_DIR}}/shepherd-overlay.json'
-  MERGED_SHEPHERD_OVERLAY_JSON: '{{.BUILD_DIR}}/merged-shepherd-overlay.json'
-  SHEPHERD_OVERLAY_AMD64_DIR: '{{.BUILD_DIR}}/shepherd-overlay-amd64'
-  SHEPHERD_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/shepherd-overlay-amd64.json'
-  MERGED_SHEPHERD_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/merged-shepherd-overlay-amd64.json'
 
 tasks:
   # ===========================================================================
@@ -243,10 +234,10 @@ tasks:
 
   check:
     desc: Type-check all shepherds and userspace packages (ARM64)
-    deps: [merged-shepherd-overlay, mazarin:userspace-overlay]
+    deps: [mazarin:userspace-overlay]
     cmds:
       - '{{.GO}} tool go-echo "Type-checking shepherds (ARM64)..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.MERGED_SHEPHERD_OVERLAY_JSON}} -o /dev/null ./maz/rachel ./maz/linux ./maz/fs'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -o /dev/null ./maz/rachel ./maz/linux ./maz/fs'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.USERSPACE_OVERLAY_JSON}} -o /dev/null ./maz/clocks'
       - '{{.GO}} tool go-echo "Type-check passed"'
 
@@ -450,60 +441,6 @@ tasks:
   # ===========================================================================
   # Overlay Generation
   # ===========================================================================
-
-  shepherd-overlay:
-    run: once
-    method: checksum
-    desc: Generate shepherd overlay for ARM64 (//go:noinline for all stubbable runtime functions)
-    deps: [build-dir]
-    sources:
-      - 'cmd/gen-ast-stubs/**/*.go'
-    generates:
-      - '{{.SHEPHERD_OVERLAY_JSON}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Generating shepherd overlay for ARM64 (//go:noinline)..."'
-      - 'TARGET_GOARCH=arm64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.SHEPHERD_OVERLAY_DIR}} -overlay={{.SHEPHERD_OVERLAY_JSON}} -mode=shepherd'
-
-  shepherd-overlay-amd64:
-    run: once
-    method: checksum
-    desc: Generate shepherd overlay for x86_64 (//go:noinline for all stubbable runtime functions)
-    deps: [build-dir]
-    sources:
-      - 'cmd/gen-ast-stubs/**/*.go'
-    generates:
-      - '{{.SHEPHERD_OVERLAY_AMD64_JSON}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Generating shepherd overlay for x86_64 (//go:noinline)..."'
-      - 'TARGET_GOARCH=amd64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.SHEPHERD_OVERLAY_AMD64_DIR}} -overlay={{.SHEPHERD_OVERLAY_AMD64_JSON}} -mode=shepherd'
-
-  merged-shepherd-overlay:
-    run: once
-    method: checksum
-    desc: Merge shepherd + userspace overlays for ARM64 disk shepherd builds
-    deps: [shepherd-overlay, mazarin:userspace-overlay]
-    sources:
-      - '{{.SHEPHERD_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-    generates:
-      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Merging shepherd + userspace overlays (ARM64)..."'
-      - '{{.GO}} tool gen-overlay -type merge -base {{.SHEPHERD_OVERLAY_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_SHEPHERD_OVERLAY_JSON}}'
-
-  merged-shepherd-overlay-amd64:
-    run: once
-    method: checksum
-    desc: Merge shepherd + userspace overlays for x86_64 disk shepherd builds
-    deps: [shepherd-overlay-amd64, mazarin:userspace-overlay]
-    sources:
-      - '{{.SHEPHERD_OVERLAY_AMD64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-    generates:
-      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Merging shepherd + userspace overlays (x86_64)..."'
-      - '{{.GO}} tool gen-overlay -type merge -base {{.SHEPHERD_OVERLAY_AMD64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
 
   # ===========================================================================
   # Boot Image Conversion
