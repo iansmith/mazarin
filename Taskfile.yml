@@ -207,8 +207,9 @@ vars:
   MAZ_EXIT_OVERLAY_DIR: mazarin/overlay/maz
   MAZ_EXIT_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-exit-overlay.json'
 
-  # Shepherd overlay — adds //go:noinline + keep-alive to prevent DCE of runtime functions
-  # Per-architecture because sigctxt methods differ (ARM64: r0-r29, x86_64: rax/rbx)
+  # Shepherd overlay — adds //go:noinline to runtime functions (prevents inlining that would
+  # make symbols unavailable to .maz plugins). Per-architecture because sigctxt methods
+  # differ (ARM64: r0-r29, x86_64: rax/rbx). DCE is handled by dynexp+deadcode-roots.
   SHEPHERD_OVERLAY_DIR: '{{.BUILD_DIR}}/shepherd-overlay'
   SHEPHERD_OVERLAY_JSON: '{{.BUILD_DIR}}/shepherd-overlay.json'
   MERGED_SHEPHERD_OVERLAY_JSON: '{{.BUILD_DIR}}/merged-shepherd-overlay.json'
@@ -453,27 +454,27 @@ tasks:
   shepherd-overlay:
     run: once
     method: checksum
-    desc: Generate shepherd overlay for ARM64 (//go:noinline + keep-alive for all stubbable runtime functions)
+    desc: Generate shepherd overlay for ARM64 (//go:noinline for all stubbable runtime functions)
     deps: [build-dir]
     sources:
       - 'cmd/gen-ast-stubs/**/*.go'
     generates:
       - '{{.SHEPHERD_OVERLAY_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Generating shepherd overlay for ARM64 (//go:noinline + keep-alive)..."'
+      - '{{.GO}} tool go-echo "Generating shepherd overlay for ARM64 (//go:noinline)..."'
       - 'TARGET_GOARCH=arm64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.SHEPHERD_OVERLAY_DIR}} -overlay={{.SHEPHERD_OVERLAY_JSON}} -mode=shepherd'
 
   shepherd-overlay-amd64:
     run: once
     method: checksum
-    desc: Generate shepherd overlay for x86_64 (//go:noinline + keep-alive for all stubbable runtime functions)
+    desc: Generate shepherd overlay for x86_64 (//go:noinline for all stubbable runtime functions)
     deps: [build-dir]
     sources:
       - 'cmd/gen-ast-stubs/**/*.go'
     generates:
       - '{{.SHEPHERD_OVERLAY_AMD64_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Generating shepherd overlay for x86_64 (//go:noinline + keep-alive)..."'
+      - '{{.GO}} tool go-echo "Generating shepherd overlay for x86_64 (//go:noinline)..."'
       - 'TARGET_GOARCH=amd64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.SHEPHERD_OVERLAY_AMD64_DIR}} -overlay={{.SHEPHERD_OVERLAY_AMD64_JSON}} -mode=shepherd'
 
   merged-shepherd-overlay:

@@ -148,15 +148,10 @@ func runThinMode(packages []packageInfo) {
 	fmt.Printf("Overlay written to: %s\n", *flagOverlayOut)
 }
 
-// keepAliveEntry tracks a function that needs to be referenced in _keepForMaz.
-type keepAliveEntry struct {
-	receiverExpr string // "" for functions, "(*Type)" or "Type" for methods
-	funcName     string // function or method name
-}
-
 // runShepherdMode generates overlay files for shepherd (host) builds.
 // Each stubbable function gets //go:noinline added (body unchanged).
-// A _keepForMaz() function is appended per sub-package to prevent DCE.
+// The dynexp+deadcode-roots mechanism (emitHostExportsDynsym + stock deadcode)
+// keeps all policy-matched symbols alive; no explicit keepalive function needed.
 func runShepherdMode(packages []packageInfo) {
 	totalFiles := 0
 	totalNoinline := 0
@@ -188,49 +183,13 @@ func runShepherdMode(packages []packageInfo) {
 }
 
 // processPackageForShepherd processes a package in shepherd mode: adds //go:noinline
-// to stubbable functions and generates MazKeepAliveSymbols() per sub-package.
+// to stubbable functions. The dynexp+deadcode-roots mechanism keeps all
+// policy-matched symbols alive; no MazKeepAliveSymbols injection needed.
 func processPackageForShepherd(pkg packageInfo, overlayReplace map[string]string) (int, int, error) {
 	files, err := findSourceFiles(pkg.sourceDir)
 	if err != nil {
 		return 0, 0, fmt.Errorf("finding source files: %w", err)
 	}
-
-	// Use `go list` to get the authoritative set of files the compiler
-	// would include for each sub-package. This handles all build constraints
-	// (goexperiment, asan, race, etc.) correctly.
-	compiledFileCache := make(map[string]map[string]bool) // subPkgDir → set of basenames
-	getCompiled := func(filePath string) bool {
-		// Determine sub-package directory relative to pkg.sourceDir
-		dir := filepath.Dir(filePath)
-		if cached, ok := compiledFileCache[dir]; ok {
-			return cached[filepath.Base(filePath)]
-		}
-
-		// Compute import path from directory
-		rel, _ := filepath.Rel(filepath.Dir(pkg.sourceDir), dir)
-		importPath := strings.ReplaceAll(rel, string(filepath.Separator), "/")
-		if importPath == "" {
-			importPath = pkg.name
-		}
-
-		compiled, err := getCompiledFiles(*flagGo, importPath)
-		if err != nil {
-			if *flagVerbose {
-				fmt.Printf("  WARNING: go list %s failed: %v (skipping keep-alive for this sub-package)\n", importPath, err)
-			}
-			compiledFileCache[dir] = nil
-			return false
-		}
-		compiledFileCache[dir] = compiled
-		return compiled[filepath.Base(filePath)]
-	}
-
-	// Collect keep-alive entries per sub-package.
-	type subPkgInfo struct {
-		entries   []keepAliveEntry
-		firstFile string // first output file (for appending MazKeepAliveSymbols)
-	}
-	subPackages := make(map[string]*subPkgInfo)
 
 	noinlineCount := 0
 	fileCount := 0
@@ -267,29 +226,6 @@ func processPackageForShepherd(pkg packageInfo, overlayReplace map[string]string
 			}
 		}
 
-		// Track entries for keep-alive, grouped by sub-package
-		pkgName := result.File.Name.Name
-		if subPackages[pkgName] == nil {
-			subPackages[pkgName] = &subPkgInfo{}
-		}
-		sp := subPackages[pkgName]
-		if sp.firstFile == "" {
-			sp.firstFile = outputPath
-		}
-
-		// Only include functions from files that `go list` confirms will be
-		// compiled for the target platform. This correctly handles all build
-		// constraints including goexperiment flags.
-		if len(result.StubFuncs) > 0 && getCompiled(path) {
-			for _, stub := range result.StubFuncs {
-				entry := keepAliveEntry{funcName: stub.Name}
-				if stub.Receiver != "" {
-					entry.receiverExpr = stub.Receiver
-				}
-				sp.entries = append(sp.entries, entry)
-			}
-		}
-
 		absOrig, _ := filepath.Abs(path)
 		absStub, _ := filepath.Abs(outputPath)
 		overlayReplace[absOrig] = absStub
@@ -299,21 +235,6 @@ func processPackageForShepherd(pkg packageInfo, overlayReplace map[string]string
 
 		if *flagVerbose {
 			fmt.Printf("  %s/%s: %d noinline\n", pkg.name, rel, count)
-		}
-	}
-
-	// Append MazKeepAliveSymbols() to first file of each sub-package.
-	// This exported function references all stubbable functions from
-	// unconditionally-compiled files, preventing the linker from DCE'ing them.
-	for pkgName, sp := range subPackages {
-		if len(sp.entries) == 0 || sp.firstFile == "" {
-			continue
-		}
-		if err := appendMazKeepAliveSymbolsFunc(sp.firstFile, sp.entries); err != nil {
-			return 0, 0, fmt.Errorf("appending MazKeepAliveSymbols for %s: %w", pkgName, err)
-		}
-		if *flagVerbose {
-			fmt.Printf("  %s: MazKeepAliveSymbols with %d entries\n", pkgName, len(sp.entries))
 		}
 	}
 
@@ -331,14 +252,13 @@ var shepherdPostCallInjections = map[string]string{
 
 // shepherdFuncInfo holds info about a function that needs //go:noinline in shepherd mode.
 type shepherdFuncInfo struct {
-	line int      // 1-based line number of the func keyword
-	stub FuncStub // stub info for keep-alive generation
+	line int // 1-based line number of the func keyword
 }
 
 // transformFileForShepherd parses a file to find stubbable functions, then does
 // text-based insertion of //go:noinline before each one. This avoids go/ast
 // comment positioning issues that cause "misplaced compiler directive" errors.
-// Returns a TransformResult (for keep-alive tracking) and the noinline count.
+// Returns a TransformResult and the noinline count.
 func transformFileForShepherd(path string) (*TransformResult, int, error) {
 	fset := token.NewFileSet()
 
@@ -372,15 +292,11 @@ func transformFileForShepherd(path string) (*TransformResult, int, error) {
 			}
 		}
 
-		stub := createStub(fn, file.Name.Name)
-		result.StubFuncs = append(result.StubFuncs, stub)
-
 		if !alreadyHas {
 			// Use the line of the func keyword for insertion
 			pos := fset.Position(fn.Pos())
 			funcs = append(funcs, shepherdFuncInfo{
 				line: pos.Line,
-				stub: stub,
 			})
 		}
 	}
@@ -427,79 +343,6 @@ func transformFileForShepherd(path string) (*TransformResult, int, error) {
 	result.shepherdSrc = []byte(out.String())
 
 	return result, len(funcs), nil
-}
-
-// getCompiledFiles uses `go list` to get the authoritative list of Go files
-// that the compiler would include for a package on the target platform.
-// This handles all build constraints correctly, including goexperiment flags.
-func getCompiledFiles(goBinary, pkgPath string) (map[string]bool, error) {
-	goos := os.Getenv("TARGET_GOOS")
-	if goos == "" {
-		goos = "linux"
-	}
-	goarch := os.Getenv("TARGET_GOARCH")
-	if goarch == "" {
-		goarch = "arm64"
-	}
-
-	cmd := exec.Command(goBinary, "list", "-f", `{{join .GoFiles "\n"}}`, pkgPath)
-	cmd.Env = append(os.Environ(),
-		"GOOS="+goos,
-		"GOARCH="+goarch,
-		"CGO_ENABLED=0",
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("go list %s: %w", pkgPath, err)
-	}
-
-	files := make(map[string]bool)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			files[line] = true
-		}
-	}
-	return files, nil
-}
-
-// appendMazKeepAliveSymbolsFunc appends the exported MazKeepAliveSymbols()
-// function and its backing array to the given file. Each function reference
-// is stored to a unique slot in an exported global array, which the compiler
-// cannot eliminate (stores to exported globals are observable side effects).
-func appendMazKeepAliveSymbolsFunc(path string, entries []keepAliveEntry) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	var buf strings.Builder
-
-	// Exported global array — stores to exported globals are observable
-	// side effects that the compiler cannot eliminate.
-	buf.WriteString(fmt.Sprintf("\n\n// MazKeptSymbols holds references to all stubbable functions.\n"))
-	buf.WriteString(fmt.Sprintf("// Exported so the compiler cannot prove no one reads it.\n"))
-	buf.WriteString(fmt.Sprintf("var MazKeptSymbols [%d]interface{}\n", len(entries)))
-
-	buf.WriteString("\n// MazKeepAliveSymbols stores function references into MazKeptSymbols,\n")
-	buf.WriteString("// preventing the linker from eliminating runtime functions that\n")
-	buf.WriteString("// .maz modules may need via thin stub imports.\n")
-	buf.WriteString("//\n//go:noinline\n")
-	buf.WriteString("func MazKeepAliveSymbols() {\n")
-
-	for i, e := range entries {
-		if e.receiverExpr != "" {
-			buf.WriteString(fmt.Sprintf("\tMazKeptSymbols[%d] = %s.%s\n", i, e.receiverExpr, e.funcName))
-		} else {
-			buf.WriteString(fmt.Sprintf("\tMazKeptSymbols[%d] = %s\n", i, e.funcName))
-		}
-	}
-
-	buf.WriteString("}\n")
-
-	_, err = f.WriteString(buf.String())
-	return err
 }
 
 // copyFile copies a file from src to dst, creating parent directories as needed.
