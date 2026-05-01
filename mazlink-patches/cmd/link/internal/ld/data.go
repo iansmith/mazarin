@@ -1009,9 +1009,10 @@ func dynrelocsym(ctxt *Link, s loader.Sym) {
 		// linker at runtime, so we still route through Adddynrel to give the
 		// arch-specific handler a chance to allocate static GOT slots and rewrite
 		// the relocs into R_ARM64_GOT / R_PCREL form. The GOT slots themselves
-		// will be filled at link time with the target's static address (see the
-		// arch Adddynrel changes — host mode requests AddGotSym(...,0), not
-		// AddGotSym(..., R_*_GLOB_DAT)).
+		// are filled at link time with the target's static address via
+		// AddGotSymStatic (R_ADDR), which the linker's relocsym pass resolves.
+		// See the arch Adddynrel changes — host gets AddGotSymStatic, plugin
+		// gets AddGotSym + R_*_GLOB_DAT.
 		if *flagDlopenHostExports != "" && ctxt.LinkMode == LinkInternal {
 			thearch.Adddynrel(target, ldr, syms, s, r, ri)
 			continue

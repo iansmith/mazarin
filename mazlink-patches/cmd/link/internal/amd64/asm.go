@@ -497,12 +497,20 @@ func adddynrel(target *ld.Target, ldr *loader.Loader, syms *ld.ArchSyms, s loade
 		// dynamic linker at runtime, so fill the GOT slot statically (0).
 		su := ldr.MakeSymbolUpdater(s)
 		// Pick the right GOT-slot relocation policy:
-		//   - Plugin (-dlopen-host-packages): GLOB_DAT, mazdl fills the slot at load time.
-		//   - Host (-dlopen-host-exports): static fill via R_ADDR, no dynamic linker at runtime.
-		if target.IsElf() && *ld.FlagDlopenHostPackages != "" {
-			ld.AddGotSym(target, ldr, syms, targ, uint32(elf.R_X86_64_GLOB_DAT))
-		} else {
+		//   - Host (-dlopen-host-exports): static R_ADDR fill — the shepherd
+		//     binary has no dynamic linker at runtime, so the linker writes
+		//     the absolute address into the slot.
+		//   - Other ELF (plugin / PIE / -dynlink): GLOB_DAT — a dynamic linker
+		//     resolves the slot at load time. Same as stock Go and unchanged
+		//     from mazlink pre-Gap-2.
+		//   - Non-ELF: stock fallback (reloc type 0).
+		switch {
+		case target.IsElf() && *ld.FlagDlopenHostExports != "":
 			ld.AddGotSymStatic(target, ldr, syms, targ)
+		case target.IsElf():
+			ld.AddGotSym(target, ldr, syms, targ, uint32(elf.R_X86_64_GLOB_DAT))
+		default:
+			ld.AddGotSym(target, ldr, syms, targ, 0)
 		}
 		su.SetRelocSym(rIdx, syms.GOT)
 		su.SetRelocAdd(rIdx, r.Add()+int64(ldr.SymGot(targ)))
