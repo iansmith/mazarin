@@ -543,13 +543,19 @@ func adddynrel(target *ld.Target, ldr *loader.Loader, syms *ld.ArchSyms, s loade
 		// handles plugin mode. Let the AddGotSym → Adddynsym → elfadddynsym
 		// flow handle both cases: SDYNIMPORT → SHN_UNDEF dynsym entry,
 		// defined local → shndx=1 dynsym entry with the local address.
+		// mazlink: host mode (-dlopen-host-exports, BuildModeExe) also emits
+		// GOTPCREL when built with -gcflags=-dynlink. The host has no dynamic
+		// linker at runtime, so fill the GOT slot statically (reloc type 0).
 		if r.Add() != 0 {
 			ldr.Errorf(s, "R_ARM64_GOTPCREL with non-zero addend (%v)", r.Add())
 		}
-		if target.IsElf() {
+		// Pick the right GOT-slot relocation policy:
+		//   - Plugin (-dlopen-host-packages): GLOB_DAT, mazdl fills the slot at load time.
+		//   - Host (-dlopen-host-exports): static fill via R_ADDR, no dynamic linker at runtime.
+		if target.IsElf() && *ld.FlagDlopenHostPackages != "" {
 			ld.AddGotSym(target, ldr, syms, targ, uint32(elf.R_AARCH64_GLOB_DAT))
 		} else {
-			ld.AddGotSym(target, ldr, syms, targ, 0)
+			ld.AddGotSymStatic(target, ldr, syms, targ)
 		}
 		// turn into two relocations, one for each instruction.
 		//
@@ -1050,7 +1056,10 @@ func archreloc(target *ld.Target, ldr *loader.Loader, syms *ld.ArchSyms, r loade
 		return val | (v << 5), noExtReloc, true
 
 	case objabi.R_ARM64_TLS_IE:
-		if target.IsPIE() && target.IsElf() {
+		// mazlink: host-mode shepherd (BuildModeExe + -dlopen-host-exports)
+		// also needs IE→LE: it IS the main executable, so TLS layout is fixed
+		// at link time — the IE→LE rewrite is valid, same as for PIE.
+		if (target.IsPIE() || *ld.FlagDlopenHostExports != "") && target.IsElf() {
 			// We are linking the final executable, so we
 			// can optimize any TLS IE relocation to LE.
 
