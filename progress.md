@@ -1,5 +1,46 @@
 # Progress Log
 
+## Session: 2026-05-01 (Sonnet 4.6, agent worktree) — mazlink Gap 2: replace 370-file shepherd overlay with -dynlink
+
+### What shipped
+
+Three commits in worktree branch `worktree-agent-a7038135c55f4f577`:
+- `647c67a` mazlink: route -dynlink GOTPCREL through Adddynrel for host builds (Gap 2 linker)
+- `e8514ca` shepherd: build with -gcflags=-dynlink, drop overlay (Gap 2 build)
+- `bea6115` cmd/gen-ast-stubs: drop -mode=shepherd; delete shepherd-overlay tasks (Gap 2)
+
+### What changed
+
+**`mazlink-patches/cmd/link/internal/ld/lib.go`** — new `AddGotSymStatic` function. For host (`-dlopen-host-exports`) builds the GOT slot must be filled by the linker's own relocsym pass (no dynamic linker present). `got.AddAddrPlus(target.Arch, s, 0)` emits `R_ADDR` which relocsym resolves to `addr(s)`. For plugin builds, `AddGotSym` + `R_AARCH64_GLOB_DAT` is unchanged.
+
+**`mazlink-patches/cmd/link/internal/ld/data.go`** — third `dynrelocsym` hook (after PIE+internal and plugin+internal) routes `-dlopen-host-exports` + `-dynlink` GOTPCREL relocs through `thearch.Adddynrel`. Also extended `R_TLS_IE` IE→LE rewrite condition to include `*flagDlopenHostExports != ""`.
+
+**`mazlink-patches/cmd/link/internal/ld/mazdl.go`** — exported `FlagDlopenHostPackages` and `FlagDlopenHostExports` aliases so arch packages can check them.
+
+**`mazlink-patches/cmd/link/internal/arm64/asm.go`** — `R_ARM64_GOTPCREL` adddynrel case: `AddGotSymStatic` for host, `AddGotSym+GLOB_DAT` for plugin. `R_ARM64_TLS_IE` archreloc guard extended for host.
+
+**`mazlink-patches/cmd/link/internal/amd64/asm.go`** — same shape as arm64 for `R_GOTPCREL`.
+
+**`maz/shepherd/Taskfile.yml`** — both arm64 and x86_64 tasks drop `-overlay=` and add `-gcflags=all=-dynlink -asmflags=all=-dynlink`. Overlay deps removed.
+
+**`cmd/gen-ast-stubs/main.go`** — removed `runShepherdMode`, `processPackageForShepherd`, `transformFileForShepherd`, `shepherdPostCallInjections`, `shepherdFuncInfo`, and `shepherdSrc` field from `TransformResult`. Mode switch no longer accepts 'shepherd'.
+
+**`Taskfile.yml`** — deleted `shepherd-overlay`, `shepherd-overlay-amd64`, `merged-shepherd-overlay`, `merged-shepherd-overlay-amd64` tasks; deleted 6 overlay variables; updated `check:` task.
+
+### Verification
+
+ARM64 HVF smoke (5×60s): all 5 reached `[mail] cache ready`. Plugins loading: rachel.maz, linux.maz, fti.maz, maildb.maz, mail.maz. rachel.maz `.rela` section byte-identical before/after — plugin path unaffected.
+
+### Key insight that unblocked this
+
+The plan's `AddGotSym(..., 0)` was wrong: type 0 = `R_AARCH64_NONE`, slot stays zero, SIGSEGV at runtime. The correct approach for a statically-linked host ELF is `AddGotSymStatic` using `AddAddrPlus` which emits `R_ADDR`, resolved by the linker's own pass. Plugin builds continue through the existing `AddGotSym+GLOB_DAT` path gated by `*ld.FlagDlopenHostPackages != ""`.
+
+### What this unblocks
+
+The 370-file gen-ast-stubs shepherd overlay no longer exists. `runtime-patches/runtime/traceback.go` can now be added to the shepherd build for bug-B forensics. Bug-B is next TOP OF STACK.
+
+---
+
 ## Session: 2026-05-01 (Sonnet 4.6, worktree) — Mazlink Gap 1: drop MazKeepAliveSymbols
 
 ### What was done

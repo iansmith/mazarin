@@ -1,5 +1,40 @@
 # Task Plan — Mazarin / Mazzy
 
+## TOP OF STACK: Bug-B family (kernel runtime panic at/after `[mail] cache ready`) — resumed 2026-05-01
+
+See **`next_session_prompt.md`** for the self-contained continuation prompt.
+
+Brief: with the wedge resolved AND the mazlink overlay diversion complete (Gap 1 + Gap 2 both shipped), bug-B is the only consistent ARM64 HVF failure mode (~1-3/10 in 60s sweeps). It blocks click-test sweeps (which the user has queued as the next phase) — clicks would amplify whatever's corrupting memory.
+
+VA-collision hypothesis was refuted by the GG-sweep (10×180s, all `inIPC=132 outIPC=0`). Forensic from GG9 GC SIGSEGV: `X8 = " failed "` ASCII — text data overwrote a register-sized field, points at heap corruption with log-string payload.
+
+Shepherd-side forensics are now unblocked: the 370-file overlay is gone (Gap 2 commits `647c67a` + `e8514ca` + `bea6115`). Add `runtime-patches/runtime/traceback.go` guards to capture the GG9-class SIGSEGV unwinder NIL deref.
+
+---
+
+## ARCHIVED: Mazlink Gap 2 — replace shepherd-overlay with -dynlink (2026-05-01) ✅
+
+**Branch:** `worktree-agent-a7038135c55f4f577` (worktree). Three commits:
+- `647c67a` mazlink: route -dynlink GOTPCREL through Adddynrel for host builds (Gap 2 linker)
+- `e8514ca` shepherd: build with -gcflags=-dynlink, drop overlay (Gap 2 build)
+- `bea6115` cmd/gen-ast-stubs: drop -mode=shepherd; delete shepherd-overlay tasks (Gap 2)
+
+ARM64 HVF smoke verified: 5/5 reached `[mail] cache ready`. Plugins loading (rachel.maz, linux.maz, fti.maz, maildb.maz, mail.maz). rachel.maz `.rela` section byte-identical before/after — plugin path unaffected.
+
+### What the linker actually needed
+
+The plan's `AddGotSym(..., 0)` prescription was wrong: type 0 = `R_AARCH64_NONE`, leaves the GOT slot zeroed at runtime → SIGSEGV. The actual fix needed a new `AddGotSymStatic` in `lib.go` calling `got.AddAddrPlus(target.Arch, s, 0)`, which emits `R_ADDR` that the linker's own relocsym pass fills with the symbol's static VA.
+
+Additionally, `-dynlink` causes the compiler to emit `R_TLS_IE` / `R_ARM64_TLS_IE` for TLS accesses. Stock guards admit only PIE/plugin; extended both `data.go` and `arm64/asm.go` guards to also admit `*flagDlopenHostExports != ""`.
+
+The host-vs-plugin distinction is gated in `arm64/asm.go` and `amd64/asm.go` by `*ld.FlagDlopenHostPackages != ""` (plugin) vs absence (host → static fill). Exported aliases `FlagDlopenHostPackages` / `FlagDlopenHostExports` added to `mazdl.go` for cross-package access.
+
+### Prior context
+
+Full investigation history in `memory/shepherd_overlay_dynlink_experiment.md` (now RESOLVED).
+
+---
+
 ## ARCHIVED: Mazlink Gap 1 — drop MazKeepAliveSymbols force-reference (2026-05-01) ✅
 
 **Branch:** `worktree-agent-a7038135c55f4f577` (worktree), commit `b3029f7`.
