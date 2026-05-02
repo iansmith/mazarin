@@ -115,9 +115,14 @@ func (e *Engine) Submit(chain *DescChain) IOTag {
 		} else {
 			desc.Next = 0xFFFF
 		}
+		// Clean each descriptor's cache line so the device sees the PA/len/flags
+		// we just wrote. Without this, on non-cache-coherent DMA the device may
+		// read a stale descriptor containing a PA that was freed and reused as
+		// Go heap, causing the " failed " heap corruption pattern (Bug-B/MAZ-5).
+		asm.CleanDCacheRange(uintptr(unsafe.Pointer(desc)), descStride)
 	}
 
-	// Barrier: ensure descriptor writes are visible before avail ring update
+	// Barrier: ensure descriptor clean and writes are visible before avail ring update
 	asm.Dsb()
 
 	// Add head descriptor to available ring

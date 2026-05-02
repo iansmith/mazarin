@@ -484,6 +484,12 @@ func VirtqueueAddToAvailable(vq *VirtQueue, descIdx uint16) bool {
 	ringElem := VirtqueueGetRingElement(vq, availIdx%vq.QueueSize)
 	*ringElem = descIdx
 
+	// Clean available ring entry so DMA device sees it.
+	// On non-cache-coherent platforms the ring sits in Normal Cacheable memory
+	// alongside the descriptor table; without this the device may read a stale
+	// avail ring and miss the submitted chain (Bug-B/MAZ-5).
+	asm.CleanDCacheRange(PointerToUintptr(unsafe.Pointer(ringElem)), 2) // uint16
+
 	// Memory barrier to ensure descriptor is written before index
 	asm.Dsb()
 
@@ -492,8 +498,13 @@ func VirtqueueAddToAvailable(vq *VirtQueue, descIdx uint16) bool {
 	idxAddr := availVirtAddr + 2
 	newIdx := availIdx + 1
 
-	// Use volatile MMIO write to ensure the write is visible to hardware
+	// Use volatile store to write the new idx.
+	// MmioWrite16 is a plain MOVH to Normal Cacheable memory (not a true
+	// Device-memory MMIO write), so the new value may only be in the cache.
 	asm.MmioWrite16(idxAddr, newIdx)
+
+	// Clean the idx field so the DMA device sees the new avail index.
+	asm.CleanDCacheRange(idxAddr, 2) // uint16
 
 	// Also update Go's view of the struct for consistency
 	vq.Available.Idx = newIdx

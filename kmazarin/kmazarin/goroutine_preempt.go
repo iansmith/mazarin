@@ -32,3 +32,11 @@ func tryKernelAsyncPreempt(pc, sp, lr uintptr) (shouldPreempt bool, targetPC, re
 //
 //go:linkname getKGPCounters runtime.GetKGPCounters
 func getKGPCounters() (seen, notWanted, unsafe_, injected uint64)
+
+// scanCurrentGStackForFailed scans the current goroutine's stack for the
+// Bug-B " failed " corruption pattern. Returns the number of hits found
+// (capped at 16). Only writes to UART when hits are detected.
+// Safe to call from any context.
+//
+//go:linkname scanCurrentGStackForFailed runtime.ScanCurrentGStackForFailed
+func scanCurrentGStackForFailed() uintptr

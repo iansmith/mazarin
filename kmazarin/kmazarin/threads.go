@@ -1429,6 +1429,9 @@ func printEpochStatus() {
 	probeInIPC, probeOutIPC, probeMin, probeMax := ksyscall.ProbeShareCounts()
 	uartDropped := atomic.LoadUint64(&softIRQDroppedBytes)
 
+	// Bug-B: scan current goroutine's stack for " failed " corruption pattern.
+	stackFailedHits := scanCurrentGStackForFailed()
+
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
 			"  threads: running=%d ready=%d futex=%d sleep=%d softirq=%d uring=%d blk_io=%d delegate=%d\n"+
@@ -1443,7 +1446,8 @@ func printEpochStatus() {
 			"  stale-pte: enabled=%v scans=%d hits=%d\n"+
 			"  free-canary: enabled=%v fills=%d verifies=%d hits=%d\n"+
 			"  va-probe: inIPC=%d outIPC=%d minVA=%x maxVA=%x\n"+
-			"  uart-ring: dropped=%d\n",
+			"  uart-ring: dropped=%d\n"+
+				"  bug-b-stack-scan: hits=%d\n",
 		uptimeSec, totalSVC, actualHz, tcs,
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nIOUring, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
@@ -1458,6 +1462,7 @@ func printEpochStatus() {
 		kmem.FreeCanaryEnabled(), canaryFills, canaryVerifies, canaryHits,
 		probeInIPC, probeOutIPC, probeMin, probeMax,
 		uartDropped,
+		stackFailedHits,
 	)
 }
 

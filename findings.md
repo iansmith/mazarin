@@ -1,5 +1,64 @@
 # Findings
 
+## VirtIO DMA target-PA audit — Bug-B/MAZ-5 (2026-05-02)
+
+**Status:** Audit complete. Descriptor cache-coherency gap identified as strong Bug-B candidate. Fix already on branch (uncommitted). Ready for test sweeps.
+
+### DMA data sources
+
+Three PA sources go into block I/O descriptor chains:
+
+| # | Source | Lifetime | Risk |
+|---|--------|----------|------|
+| 1 | Sidecar pool (Device-nGnRnE) | Permanent (Init) | None — never freed |
+| 2 | Kernel DMA page (`DmaPagePA`) | Permanent (Init) | None — never freed |
+| 3 | Userspace DMA clump (`extDataPA`) | Dynamic (mmap/munmap) | Protected by `InFlight` TOCTOU fix |
+
+### Finding 1: Descriptor cache coherency (PRIMARY BUG-B CANDIDATE)
+
+The block device's PCI Engine path (`Engine.Submit`) writes new PA/len/flags into reused virtqueue descriptors on a Normal Cacheable DMA page. **Without cache clean, the device may read a stale cached descriptor containing an old PA that was freed and reused as Go heap.**
+
+**Mechanism (fits all observed symptoms):**
+
+1. Descriptor slot N used for I/O to DMA clump page at PA=0x90000000
+2. I/O completes, descriptors freed to free list (used-ring handshake ensures device is done)
+3. DMA clump is munmapped — PA=0x90000000 freed via `BuddyFreeTyped`
+4. Go heap allocator gets PA=0x90000000 for an mspan struct
+5. Descriptor slot N reused for new I/O to different PA=0xA0000000
+6. **Without cache clean**: device reads stale cached descriptor → `Addr=0x90000000`
+7. Device DMA-writes block data to PA=0x90000000 → **corrupts mspan struct**
+8. Next GC sweep reads corrupted mspan → `sweep increased allocation count` or `" failed "` in pointer field
+
+**Evidence fit:**
+- The `" failed "` ASCII string in GG9's X8 register: block data could contain log output, font bytes, or email text that happens to include that substring
+- Timing lock to `populateSlot server=4` + rebalance: font cache reads from block device → heavy descriptor reuse → window for stale descriptor to be read
+- Intermittency (1-3/10): depends on cache state, descriptor reuse pattern, and timing
+- Multiple crash signatures (mspan `nelems`/`nalloc`, `freeIndex`, EL1 abort): different fields hit depending on which mspan gets the corrupted PA
+
+**Fix status:** `CleanDCacheRange` added per-descriptor in `Engine.Submit` (uncommitted, `engine.go:119-122`). Avail ring cleaned in `VirtqueueAddToAvailable` (uncommitted, `virtqueue.go:487-507`). Used ring invalidated in `VirtqueueHasUsed`/`VirtqueueGetUsed` (already committed).
+
+**GPU/input drivers independently fixed this** — they clean the entire descriptor table + available ring after building chains. The block driver's `Engine.Submit` path was the only DMA submit path missing descriptor cache maintenance.
+
+### Finding 2: Legacy MMIO path not cache-cleaned
+
+`submitLegacy` (block MMIO fallback) writes descriptor `Next`/`Flags` fields directly on the DMA page without cache clean. Benign — MMIO path only used on RISC-V (removed), and `d.MMIOBase` is always 0 on ARM64 PCI.
+
+### Finding 3: InFlight TOCTOU closed
+
+`SyscallBlockSubmit` bumped `InFlight` AFTER `LookupPA`, leaving a window where concurrent munmap could free pages between PA resolution and I/O submission. Fixed on branch (moved `AddInt32(&clump.InFlight, 1)` before `LookupPA`).
+
+### Finding 4: No other DMA PA lifetime issues
+
+- `DmaPagePA` (kernel DMA page): allocated once in `Init()`, never freed
+- Sidecar pool: allocated once via `kmem.AllocDriverPage()`, never freed
+- Engine queue page: allocated once in `virtioBlockInit()`, never freed
+- DMA clump completion path: `NonTimerIRQTopHalf` properly decrements `InFlight`, defers `BuddyFreeTyped` via `buddyFreeHook` when `ShepherdDead || PendingRelease`
+- Data cache coherency: `CleanDCacheRange`+`DmaWmb` for writes, `InvalidateDCacheRange` for reads — both in place
+
+### Next action
+
+Commit the descriptor cache-coherency fix and run 5+ × 180s ARM64 HVF sweeps to confirm Bug-B resolved.
+
 ## fti bleve panic — `index out of range [0] with length 0` in `handleIndexDocument` (2026-04-28)
 
 ### Surfaced

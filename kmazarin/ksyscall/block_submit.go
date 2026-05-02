@@ -102,13 +102,17 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 		klog.Errf("[BlockSubmit] EFAULT: bufVA not in any DMA clump\n")
 		return -14 // EFAULT
 	}
+	// Bump InFlight BEFORE resolving the PA so concurrent munmap sees I/O in
+	// flight and defers the free rather than freeing pages out from under us
+	// (Bug-B/MAZ-5 TOCTOU).
+	atomic.AddInt32(&clump.InFlight, 1)
 	pa := clump.LookupPA(bufVA)
 	endPA := clump.LookupPA(bufVA + uintptr(totalBytes) - 1)
 	if pa == 0 || endPA == 0 {
+		atomic.AddInt32(&clump.InFlight, -1)
 		klog.Errf("[BlockSubmit] EFAULT: buffer extends beyond clump\n")
 		return -14 // EFAULT
 	}
-	atomic.AddInt32(&clump.InFlight, 1)
 
 	// Enable async mode on first call
 	if atomic.LoadUint32(&blockAsyncEnabled) == 0 {
@@ -127,6 +131,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	// extDataPA = page-aligned PA from DMA pool
 	tag, err := dev.DoBlockIOSubmit(requestType, startLBA, nil, 0, pa, uint32(totalBytes))
 	if err != nil {
+		atomic.AddInt32(&clump.InFlight, -1)
 		klog.Errf("[BlockSubmit] submit failed: %v\n", err)
 		return -5 // EIO
 	}
