@@ -73,9 +73,9 @@ includes:
 
 vars:
   # Environment variables (shell-free using Go templates)
-  GO: '{{env "GO" | default "go"}}'
-  QEMU: '{{env "QEMU" | default "qemu-system-aarch64"}}'
-  QEMU_X86_64: '{{env "QEMU_X86_64" | default "qemu-system-x86_64"}}'
+  GO: '{{env "GO" | default "/opt/homebrew/bin/go"}}'
+  QEMU: '{{env "QEMU" | default "/opt/homebrew/bin/qemu-system-aarch64"}}'
+  QEMU_X86_64: '{{env "QEMU_X86_64" | default "/opt/homebrew/bin/qemu-system-x86_64"}}'
   OVMF: '{{env "OVMF" | default ""}}'
   DEBUG: '{{env "DEBUG" | default ""}}'
 

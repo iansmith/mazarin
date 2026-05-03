@@ -40,3 +40,10 @@ func getKGPCounters() (seen, notWanted, unsafe_, injected uint64)
 //
 //go:linkname scanCurrentGStackForFailed runtime.ScanCurrentGStackForFailed
 func scanCurrentGStackForFailed() uintptr
+
+// scanAllGStacksForFailed scans ALL goroutine stacks for the
+// Bug-B " failed " corruption pattern. Returns the number of goroutines
+// with at least one hit. Only writes to UART when hits are detected.
+//
+//go:linkname scanAllGStacksForFailed runtime.ScanAllGStacksForFailed
+func scanAllGStacksForFailed() uintptr

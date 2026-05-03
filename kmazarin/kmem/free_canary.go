@@ -43,7 +43,7 @@ import (
 // verifies; H-T3a "kernel write between free and reuse" ruled out).
 // Re-enable by flipping to true if a future hypothesis again implicates
 // the free→reuse window.
-var freeCanaryEnabled = false
+var freeCanaryEnabled = true
 
 // SetFreeCanaryEnabled toggles the diagnostic at runtime.
 func SetFreeCanaryEnabled(v bool) { freeCanaryEnabled = v }

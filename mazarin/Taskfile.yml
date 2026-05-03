@@ -5,10 +5,11 @@ tasks:
     run: once
     method: checksum
     desc: Generate runtime overlay JSON for userspace programs
-    deps: [':build-dir']
+    deps: [':build-dir', ':gen-overlay:build']
     sources:
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*.go'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*.s'
+      - '{{.BUILD_DIR}}/gen-overlay'
     generates:
       - '{{.USERSPACE_OVERLAY_JSON}}'
     cmds:

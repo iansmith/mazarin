@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -201,24 +200,24 @@ type ThreadState int8
 
 // Thread states enumeration
 const (
-	ThreadFree            ThreadState = 0 // Slot available
-	ThreadRunning         ThreadState = 1 // Currently executing
-	ThreadReady           ThreadState = 2 // Runnable, waiting to be scheduled
-	ThreadBlockedFutex    ThreadState = 3 // Blocked on futex_wait
-	ThreadSleeping        ThreadState = 4 // Blocked on nanosleep
-	ThreadExited          ThreadState = 5 // Thread has exited (being cleaned up)
-	ThreadBlockedSoftIRQ  ThreadState = 6 // Blocked waiting for soft IRQ
-	ThreadBlockedKernelWork ThreadState = 7 // Blocked waiting for KernelSVCWorker to complete
-	ThreadBlockedDelegate     ThreadState = 10 // Caller blocked waiting for delegated syscall reply
+	ThreadFree              ThreadState = 0  // Slot available
+	ThreadRunning           ThreadState = 1  // Currently executing
+	ThreadReady             ThreadState = 2  // Runnable, waiting to be scheduled
+	ThreadBlockedFutex      ThreadState = 3  // Blocked on futex_wait
+	ThreadSleeping          ThreadState = 4  // Blocked on nanosleep
+	ThreadExited            ThreadState = 5  // Thread has exited (being cleaned up)
+	ThreadBlockedSoftIRQ    ThreadState = 6  // Blocked waiting for soft IRQ
+	ThreadBlockedKernelWork ThreadState = 7  // Blocked waiting for KernelSVCWorker to complete
+	ThreadBlockedDelegate   ThreadState = 10 // Caller blocked waiting for delegated syscall reply
 	// ThreadBlockedDelegateRecv (11) — removed, handlers now receive via uring
-	ThreadBlockedDirtyNotify  ThreadState = 12 // Blocked waiting for constraint dirty notification
-	ThreadBlockedInputEvent   ThreadState = 13 // Blocked waiting for input focus event
+	ThreadBlockedDirtyNotify ThreadState = 12 // Blocked waiting for constraint dirty notification
+	ThreadBlockedInputEvent  ThreadState = 13 // Blocked waiting for input focus event
 	// ThreadBlockedMailbox (14) — removed, all IPC uses uring now
 	// ThreadBlockedEpoll (15) — removed, unified into ThreadBlockedKernelWork (7)
-	ThreadBlockedIOUring      ThreadState = 16 // Blocked waiting for io_uring completions
-	ThreadBlockedUringRecv    ThreadState = 17 // Blocked waiting for IPC uring message
-	ThreadBlockedWaitingIO    ThreadState = 18 // Blocked waiting for TX ring space (write fd 1/2)
-	ThreadBlockedUringSend    ThreadState = 19 // Blocked in SyscallUringSend (target ring full); woken by drainer or 10ms deadline
+	ThreadBlockedIOUring        ThreadState = 16 // Blocked waiting for io_uring completions
+	ThreadBlockedUringRecv      ThreadState = 17 // Blocked waiting for IPC uring message
+	ThreadBlockedWaitingIO      ThreadState = 18 // Blocked waiting for TX ring space (write fd 1/2)
+	ThreadBlockedUringSend      ThreadState = 19 // Blocked in SyscallUringSend (target ring full); woken by drainer or 10ms deadline
 	ThreadBlockedKernelRingPush ThreadState = 20 // Thread 0 blocked in pushStringFull (topHalfUartRing full); woken by consumer pop or 10ms deadline
 )
 
@@ -250,7 +249,6 @@ var startingTicksProgram uint64
 // shutdownTicksThreshold is 60 seconds in raw counter ticks.
 // Set once startingTicksProgram is established (needs SystemTimerFrequency).
 var shutdownTicksThreshold uint64
-
 
 // ResetTickAccounting zeroes all thread and shepherd tick accumulators and sets
 // TicksStartedRunning to startTime for any currently-running thread/shepherd.
@@ -322,7 +320,7 @@ type ThreadId int16
 type Thread struct {
 	State         ThreadState // ThreadRunning, ThreadReady, etc.
 	TID           ThreadId    // Unique thread ID from threadIdAllocator (0-31)
-	PID           ShepherdId    // Shepherd (process) ID for ASID (-1 = kernel thread)
+	PID           ShepherdId  // Shepherd (process) ID for ASID (-1 = kernel thread)
 	FutexAddr     uint64      // Address being waited on (for ThreadBlockedFutex)
 	MPtr          uint64      // Pointer to Go M struct
 	GPtr          uint64      // Pointer to Go g struct (g0 for this M)
@@ -331,13 +329,13 @@ type Thread struct {
 	Context       ThreadContext
 
 	// Preemption tracking - deadline-based (raw tick counts, no division in timer handler)
-	LastSeenG              uint64 // g pointer seen at last timer tick
-	StartTick              uint64 // timer tick when this THREAD started running
-	GoroutineStart         uint64 // timer tick when this GOROUTINE started running
-	ThreadPreemptDeadline  uint64 // timer tick when thread preemption should occur
+	LastSeenG                uint64 // g pointer seen at last timer tick
+	StartTick                uint64 // timer tick when this THREAD started running
+	GoroutineStart           uint64 // timer tick when this GOROUTINE started running
+	ThreadPreemptDeadline    uint64 // timer tick when thread preemption should occur
 	GoroutinePreemptDeadline uint64 // timer tick when goroutine preemption should occur
-	PreemptElapsed         uint64 // elapsed ticks saved when thread switched away
-	GoroutineElapsed       uint64 // elapsed goroutine ticks saved when thread switched away
+	PreemptElapsed           uint64 // elapsed ticks saved when thread switched away
+	GoroutineElapsed         uint64 // elapsed goroutine ticks saved when thread switched away
 	// Runtime accounting
 	TotalTicksRunning   uint64 // Cumulative timer ticks this thread has been running
 	TicksStartedRunning uint64 // Timer tick count when this thread started its current run (0 = not running)
@@ -436,14 +434,14 @@ type Thread struct {
 	WaitingIOFd        byte   // fd (1 or 2), saved for delegation after wake
 
 	// Signal delivery state
-	PendingSignals  uint64 // Bitmask of pending signals (bit N = signal N+1)
-	SignalSP        uint64 // gsignal stack top (stack grows down from here)
-	SignalStackBase uint64 // gsignal stack bottom
-	SignalStackSize uint64 // gsignal stack size in bytes
-	SignalUctxAddr  uint64 // Address of ucontext in current signal frame
-	SignalFaultAddr uint64 // Fault address for hardware signal (SIGSEGV, etc.)
-	SignalSiCode    int32  // si_code for siginfo (e.g., SEGV_MAPERR)
-	InSignalHandler uint32 // 1 = executing signal handler, 0 = normal
+	PendingSignals   uint64 // Bitmask of pending signals (bit N = signal N+1)
+	SignalSP         uint64 // gsignal stack top (stack grows down from here)
+	SignalStackBase  uint64 // gsignal stack bottom
+	SignalStackSize  uint64 // gsignal stack size in bytes
+	SignalUctxAddr   uint64 // Address of ucontext in current signal frame
+	SignalFaultAddr  uint64 // Fault address for hardware signal (SIGSEGV, etc.)
+	SignalSiCode     int32  // si_code for siginfo (e.g., SEGV_MAPERR)
+	InSignalHandler  uint32 // 1 = executing signal handler, 0 = normal
 	SigreturnPending uint32 // 1 = rt_sigreturn called, load Context for ERET
 
 	// PriorityWoken: set when this thread is woken from a blocking IPC state
@@ -458,12 +456,12 @@ type Thread struct {
 // These are computed from unsafe.Offsetof() in initThreadOffsets() and MUST be
 // initialized before any assembly code reads them (before timer IRQ is enabled).
 var (
-	ThreadContextOffset         uintptr // Offset of Context field within Thread struct
-	ThreadStartTickOffset       uintptr
-	ThreadPreemptDeadlineOffset uintptr
-	ThreadInCloneSetupOffset    uintptr
-	ThreadSigreturnPendingOffset  uintptr
-	ThreadInSignalHandlerOffset   uintptr
+	ThreadContextOffset          uintptr // Offset of Context field within Thread struct
+	ThreadStartTickOffset        uintptr
+	ThreadPreemptDeadlineOffset  uintptr
+	ThreadInCloneSetupOffset     uintptr
+	ThreadSigreturnPendingOffset uintptr
+	ThreadInSignalHandlerOffset  uintptr
 )
 
 // initThreadOffsets computes Thread struct field offsets using unsafe.Offsetof().
@@ -621,12 +619,12 @@ func clearSoftIRQSlotForTID(tid ThreadId) {
 var threadListData [threadArraySize]Thread // Stores Thread VALUES (not pointers)
 var threadListInUse [threadArraySize]bool  // false = available (zero value)
 // shepherdListData and shepherdListInUse are now proc.ShepherdListData and proc.ShepherdListInUse.
-var readyQueueData [threadArraySize]ThreadId  // Stores TIDs (unique thread IDs)
-var readyQueueInUse [threadArraySize]bool     // Tracks holes in ready queue
-var blockedQueueData [threadArraySize]ThreadId // Stores TIDs (unique thread IDs)
-var blockedQueueInUse [threadArraySize]bool   // Tracks holes in blocked queue
+var readyQueueData [threadArraySize]ThreadId    // Stores TIDs (unique thread IDs)
+var readyQueueInUse [threadArraySize]bool       // Tracks holes in ready queue
+var blockedQueueData [threadArraySize]ThreadId  // Stores TIDs (unique thread IDs)
+var blockedQueueInUse [threadArraySize]bool     // Tracks holes in blocked queue
 var sleepingQueueData [threadArraySize]ThreadId // Stores TIDs (unique thread IDs)
-var sleepingQueueInUse [threadArraySize]bool  // Tracks holes in sleeping queue
+var sleepingQueueInUse [threadArraySize]bool    // Tracks holes in sleeping queue
 
 // Static deadline queue backing arrays - used by timer top-half (nosplit path)
 var staticDeadlineData [threadArraySize]int16
@@ -634,7 +632,7 @@ var staticDeadlineOrderBy [threadArraySize]uint64
 var staticDeadlineQueue ds.StaticOrderedList
 
 // ID allocator backing arrays - statically allocated
-var threadIdStackData [threadArraySize]ThreadId // Backing array for thread ID allocator
+var threadIdStackData [threadArraySize]ThreadId            // Backing array for thread ID allocator
 var shepherdIdStackData [proc.MaxShepherds]proc.ShepherdId // Backing array for shepherd ID allocator
 
 // nextKernelThreadId is a counter for allocating kernel thread IDs (0 to ReservedKernelThreads-1).
@@ -645,7 +643,7 @@ var nextKernelThreadId ThreadId = 0
 
 // Data structures - will be initialized in InitThreads()
 // DO NOT initialize slices here - Go's initialization order causes them to be length 0!
-var threadList ds.StaticList[*Thread, Thread] // StaticList stores Thread VALUES, returns pointers
+var threadList ds.StaticList[*Thread, Thread]                 // StaticList stores Thread VALUES, returns pointers
 var shepherdList ds.StaticList[*proc.Shepherd, proc.Shepherd] // StaticList stores Shepherd VALUES, returns pointers
 
 var readyQueue ds.StaticQueue[ThreadId]
@@ -670,7 +668,7 @@ var thread0PendingDeadline uint64
 var pendingYieldBlockState ThreadState
 
 // ID allocators - initialized in InitIdAllocators()
-var threadIdAllocator ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
+var threadIdAllocator ds.StaticAllocator[ThreadId]          // Manages unique thread IDs (0..MaxThreads-1)
 var shepherdIdAllocator ds.StaticAllocator[proc.ShepherdId] // Manages unique shepherd IDs (0..MaxShepherds-1)
 
 // ========== Scheduler Lock ==========
@@ -915,7 +913,6 @@ func IsKernelThread(t *Thread) bool {
 	return t != nil && t.PID == 0
 }
 
-
 // InitThreads initializes the thread management system
 // Creates M0's thread as the current running thread
 //
@@ -991,8 +988,8 @@ func InitThreads() {
 	t0 := threadList.ReservedGet(0)
 	initThread0Context(&t0.Context)
 	t0.State = ThreadRunning
-	t0.TID = firstThreadId              // Should be 0
-	t0.PID = 0             // Belongs to kernel shepherd (slot 0)
+	t0.TID = firstThreadId                    // Should be 0
+	t0.PID = 0                                // Belongs to kernel shepherd (slot 0)
 	t0.PageTableL0PA = initThread0PageTable() // Arch-specific: kernel page table PA
 	currentTick := ds.CurrentTime(0)
 	t0.StartTick = currentTick
@@ -1429,8 +1426,9 @@ func printEpochStatus() {
 	probeInIPC, probeOutIPC, probeMin, probeMax := ksyscall.ProbeShareCounts()
 	uartDropped := atomic.LoadUint64(&softIRQDroppedBytes)
 
-	// Bug-B: scan current goroutine's stack for " failed " corruption pattern.
+	// Bug-B: scan all goroutine's stack for " failed " corruption pattern.
 	stackFailedHits := scanCurrentGStackForFailed()
+	allStackFailedHits := scanAllGStacksForFailed()
 
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
@@ -1447,7 +1445,7 @@ func printEpochStatus() {
 			"  free-canary: enabled=%v fills=%d verifies=%d hits=%d\n"+
 			"  va-probe: inIPC=%d outIPC=%d minVA=%x maxVA=%x\n"+
 			"  uart-ring: dropped=%d\n"+
-				"  bug-b-stack-scan: hits=%d\n",
+			"  bug-b-stack-scan: cur=%d allg=%d\n",
 		uptimeSec, totalSVC, actualHz, tcs,
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nIOUring, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
@@ -1463,11 +1461,9 @@ func printEpochStatus() {
 		probeInIPC, probeOutIPC, probeMin, probeMax,
 		uartDropped,
 		stackFailedHits,
+		allStackFailedHits,
 	)
 }
-
-
-
 
 // IdleLoop is called when no threads are ready to run.
 // It processes deadlines and uses WFI to wait for the next interrupt.
@@ -1512,7 +1508,6 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 // next interrupt.
 //
 // LOCK DISCIPLINE: save DAIF → mask IRQs → acquire lock → process → release → restore → WFI
-//
 var dbgIdleCount uint64
 var DbgFutexPIDMismatch uint64 // futex_wake: address matched but PID didn't
 var wfiCount uint64
@@ -1524,9 +1519,9 @@ var dbgZPLastPC uint64            // PC of last non-TID0 zero-progress thread
 var dbgZPLastPS uint64            // Processor state of last non-TID0 zero-progress thread
 var dbgBadPC uint64               // DEBUG: kernel PC saved for userspace thread
 // Timer preemption path diagnostics (written by exceptions_{arm64,riscv64}.s)
-var dbgTimerEL0 uint64          // timer IRQ interrupted EL0 (userspace)
-var dbgTimerSkipEL1h uint64     // skipped: EL1h (exception handler mode)
-var dbgTimerSkipSVC uint64      // skipped: svcDepth > 0
+var dbgTimerEL0 uint64           // timer IRQ interrupted EL0 (userspace)
+var dbgTimerSkipEL1h uint64      // skipped: EL1h (exception handler mode)
+var dbgTimerSkipSVC uint64       // skipped: svcDepth > 0
 var dbgTimerPreemptNotSet uint64 // reached check but NeedsThreadPreempt was 0
 var dbgBadPS uint64
 var dbgBadTID uint64
@@ -1539,13 +1534,13 @@ var prevSVCCountBySID [32]uint64
 var prevSID0Syscalls [256]uint64
 var prevSysIDCounts [ksyscall.NumSyscallIDs]uint64
 var prevSysIDDelegated [ksyscall.NumSyscallIDs]uint64
-var dbgBoostAttempt uint64        // times boostThread0ForPendingWork was called
-var dbgBoostSuccess uint64        // times boost succeeded (thread 0 was Ready)
-var dbgBoostFailState uint64      // thread 0 state when boost failed (last value)
-var dbgYieldMlocksSkip uint64     // SaveThread0AndYield skipped due to m.locks
-var dbgYieldSleepPath uint64      // SaveThread0AndYield took deadline sleep path
-var dbgYieldYieldPath uint64      // SaveThread0AndYield took normal yield path
-var dbgYieldNoNext uint64         // SaveThread0AndYield found no ready thread
+var dbgBoostAttempt uint64    // times boostThread0ForPendingWork was called
+var dbgBoostSuccess uint64    // times boost succeeded (thread 0 was Ready)
+var dbgBoostFailState uint64  // thread 0 state when boost failed (last value)
+var dbgYieldMlocksSkip uint64 // SaveThread0AndYield skipped due to m.locks
+var dbgYieldSleepPath uint64  // SaveThread0AndYield took deadline sleep path
+var dbgYieldYieldPath uint64  // SaveThread0AndYield took normal yield path
+var dbgYieldNoNext uint64     // SaveThread0AndYield found no ready thread
 
 //go:noinline
 func KernelIdleLoop() {
@@ -1993,8 +1988,8 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	}
 	t.StartTick = currentTick
 	t.ThreadPreemptDeadline = currentTick + kirq.ThreadPreemptTicks
-	t.PreemptElapsed = 0 // Fresh thread, no elapsed time yet
-	t.TotalTicksRunning = 0 // Fresh thread, no accumulated runtime yet
+	t.PreemptElapsed = 0                // Fresh thread, no elapsed time yet
+	t.TotalTicksRunning = 0             // Fresh thread, no accumulated runtime yet
 	t.TicksStartedRunning = currentTick // Thread runs immediately (State = Running)
 
 	// CRITICAL: Set InCloneSetup to protect the clone child during setup.
@@ -2031,7 +2026,7 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 			stackHiVal, ok1 := kmem.ReadUserUint64(gsignalPtr + kirq.PreemptStackHiOffset)
 			stackLoVal, ok2 := kmem.ReadUserUint64(gsignalPtr + kirq.PreemptStackLoOffset)
 			if ok1 && ok2 {
-				t.SignalSP = stackHiVal       // Stack grows down
+				t.SignalSP = stackHiVal // Stack grows down
 				t.SignalStackBase = stackLoVal
 				t.SignalStackSize = stackHiVal - stackLoVal
 			}
@@ -2510,8 +2505,8 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	tid := threadIdAllocator.Acquire()
 
 	// Fill in thread state
-	t.TID = tid // Unique ID from allocator
-	t.PID = shepherdId // Shepherd (process) ID for ASID
+	t.TID = tid           // Unique ID from allocator
+	t.PID = shepherdId    // Shepherd (process) ID for ASID
 	t.State = ThreadReady // Not running yet - deadlines set when scheduled
 	t.PageTableL0PA = pageTableL0PA
 	t.StartTick = 0             // Set when scheduled
@@ -3024,9 +3019,9 @@ func ThreadFindReady() uintptr {
 //
 // CRITICAL: The expectedVal parameter is used to re-check the futex value under
 // the scheduler lock. This prevents the classic futex missed-wakeup race where:
-//   1. Thread A checks value, sees it matches expected
-//   2. Thread B wakes the futex (but A isn't blocked yet)
-//   3. Thread A marks itself blocked (will never be woken)
+//  1. Thread A checks value, sees it matches expected
+//  2. Thread B wakes the futex (but A isn't blocked yet)
+//  3. Thread A marks itself blocked (will never be woken)
 //
 // By re-checking under the lock, we ensure the check and block are atomic.
 // Returns 0 if value changed (caller should return EAGAIN).
@@ -3284,7 +3279,6 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 		}
 	}
 
-
 	if sf.StateCheck != nil {
 		sf.StateCheck("futex-wake-complete")
 	}
@@ -3360,7 +3354,6 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 		}
 		next, savedDAIF = idleWaitForReadyThread(sf, savedDAIF, t.PID)
 	}
-
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("sleep-block-complete")
@@ -3724,7 +3717,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	next.State = ThreadRunning
 	next.StartTick = currentTime
 	next.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
-	next.PreemptElapsed = 0 // Fresh time slice
+	next.PreemptElapsed = 0                // Fresh time slice
 	next.TicksStartedRunning = currentTime // Mark when started running for accounting
 
 	// CRITICAL: Switch TTBR0 if switching to a userspace thread with different page table
@@ -3806,9 +3799,9 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// child code uses inherited callee-saved registers (e.g., X20 for memclr).
 	if newThread != nil && newThread.CloneNeedsParentRegs != 0 && oldThread != nil {
 		// Save the clone-specific overrides that SetupForCloneChild already set
-		childRetVal := newThread.Context.GetReturnValue() // 0 (child TID)
-		childSP := newThread.Context.GetSP()              // new stack
-		childGReg := newThread.Context.GetGRegister()     // new g pointer
+		childRetVal := newThread.Context.GetReturnValue()    // 0 (child TID)
+		childSP := newThread.Context.GetSP()                 // new stack
+		childGReg := newThread.Context.GetGRegister()        // new g pointer
 		childPState := newThread.Context.GetProcessorState() // parent state with IRQs enabled
 		// Copy ALL registers from parent (just saved by SaveContextFromFrame)
 		newThread.Context = oldThread.Context
@@ -3869,7 +3862,7 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 			oldThread.PreemptElapsed = currentTime - oldThread.StartTick
 
 			oldThread.State = ThreadReady
-					// Pluck first in case oldThread is already in queue
+			// Pluck first in case oldThread is already in queue
 			pluckFromAllQueues(oldThread.TID)
 			enqueueReadySchedLockHeld(oldThread)
 		}

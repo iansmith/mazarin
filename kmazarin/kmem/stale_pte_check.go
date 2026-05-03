@@ -33,7 +33,7 @@ import (
 // diagnostic run already completed and was silent across 5 × 180s; H-T2
 // ruled out). Re-enable by flipping to true if a future hypothesis
 // implicates stale PTEs in PT memory again.
-var stalePTECheckEnabled = false
+var stalePTECheckEnabled = true
 
 // SetStalePTECheckEnabled toggles the diagnostic at runtime.
 func SetStalePTECheckEnabled(v bool) { stalePTECheckEnabled = v }
