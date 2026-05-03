@@ -110,3 +110,15 @@ flash/
 # rules don't untrack files, but new content like current.mbox/ or
 # .DS_Store is blocked.)
 data/mail/
+
+# Local project prefix (per-repo disambiguation)
+.project-prefix
+
+# Local API key config (never committed)
+enable-deepseek
+
+# Design documents (local only)
+design/
+
+# Local CLAUDE.md modifications
+CLAUDE.md
