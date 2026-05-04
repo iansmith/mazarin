@@ -1426,9 +1426,14 @@ func printEpochStatus() {
 	probeInIPC, probeOutIPC, probeMin, probeMax := ksyscall.ProbeShareCounts()
 	uartDropped := atomic.LoadUint64(&softIRQDroppedBytes)
 
+	// Bug-B: verify bugbDumpContext UART output path works.
+	scanTestBugbDumpContext()
+
 	// Bug-B: scan all goroutine's stack for " failed " corruption pattern.
 	stackFailedHits := scanCurrentGStackForFailed()
 	allStackFailedHits := scanAllGStacksForFailed()
+	heapMetadataHits := scanHeapMetadataForFailed()
+	validateG0Stack()
 
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
@@ -1445,7 +1450,7 @@ func printEpochStatus() {
 			"  free-canary: enabled=%v fills=%d verifies=%d hits=%d\n"+
 			"  va-probe: inIPC=%d outIPC=%d minVA=%x maxVA=%x\n"+
 			"  uart-ring: dropped=%d\n"+
-			"  bug-b-stack-scan: cur=%d allg=%d\n",
+			"  bug-b-scan: cur=%d allg=%d heap=%d\n",
 		uptimeSec, totalSVC, actualHz, tcs,
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nIOUring, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
@@ -1462,6 +1467,7 @@ func printEpochStatus() {
 		uartDropped,
 		stackFailedHits,
 		allStackFailedHits,
+		heapMetadataHits,
 	)
 }
 

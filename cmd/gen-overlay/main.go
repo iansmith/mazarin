@@ -158,6 +158,7 @@ func buildKmazarinOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/os_linux_arm64.go":  "os_linux_arm64.go",
 		"runtime/panic.go":           "panic.go",
 		"runtime/preempt.go":         "preempt.go",
+		"runtime/symtab.go":          "symtab.go",
 		"runtime/sys_linux_arm64.s":  "sys_linux_arm64.s",
 		"runtime/tagptr_64bit.go":    "tagptr_64bit.go",
 		"runtime/traceback.go":        "traceback.go",
@@ -195,6 +196,7 @@ func buildKmazarinAMD64Overlay(overlay *Overlay, goroot, patchesDir string) erro
 		"runtime/panic.go":           "panic.go",
 		"runtime/os_linux_noauxv.go":                   "os_linux_noauxv.go",
 		"runtime/preempt.go":                           "preempt.go",
+		"runtime/symtab.go":                            "symtab.go",
 		"runtime/sys_linux_amd64.s":                    "sys_linux_amd64.s",
 		"runtime/tagptr_64bit.go":                      "tagptr_64bit.go",
 		"runtime/traceback.go":                         "traceback.go",
@@ -239,6 +241,7 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		// Bug-B diagnostic overlays (throwPreDiag + checkSpanBeforeSweep)
 		"runtime/panic.go":    "runtime/panic.go",
 		"runtime/mcentral.go": "runtime/mcentral.go",
+		"runtime/symtab.go":   "runtime/symtab.go",
 	}
 
 	for goFile, patchFile := range patches {

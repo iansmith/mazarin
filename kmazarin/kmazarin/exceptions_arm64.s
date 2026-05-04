@@ -709,6 +709,9 @@ print_fault_x8_char:
 
 	// Stack dump: read 16 words from SP_EL0 (the Go stack)
 	// Note: this may data abort if the page isn't mapped, which would double-fault.
+	// Pattern A: if SP_EL0 points to g0's scheduler stack and g0's stack has
+	// been unmapped, this read WILL fault. The double-fault is itself diagnostic
+	// evidence of the unmapped-g0-stack theory.
 	// Print "STK:" header
 	MOVD	$'S', R11; MOVB	R11, (R12)
 	MOVD	$'T', R11; MOVB	R11, (R12)

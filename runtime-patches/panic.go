@@ -1047,52 +1047,105 @@ func (p *_panic) initOpenCodedDefers(fn funcInfo, varp unsafe.Pointer) bool {
 	}
 
 	if fn.deferreturn == 0 {
-		// Bug-B: dump fn metadata before throwing — funcInfo corruption
-		// may reveal the source of " failed " in X8.
-		bugbPuts("BUG-B: initOpenCodedDefers: fn.deferreturn==0\n")
-		print("  fn.entry=0x")
-		printhex(uint64(fn.entry()))
-		bugbPuts("[FNDUMP]\\n"); bugbDumpContext(uintptr(unsafe.Pointer(&fn)), "funcInfo"); bugbPuts("[FNDUMP-DONE]\\n")
-		// Dump key fields before the throw destroys evidence
-		gp := getg()
-		if gp != nil {
-			bugbPuts(" g=0x")
-			bugbPutHex64(uint64(uintptr(unsafe.Pointer(gp))))
-			bugbPuts(" stack=[0x")
-			bugbPutHex64(uint64(gp.stack.lo))
-			bugbPuts(",0x")
-			bugbPutHex64(uint64(gp.stack.hi))
-			bugbPuts("]\n")
-		}
+			// Phase 5b.1: trace the corrupted-pointer path into pclntable.
+			// " failed " is a legitimate string constant in kmazarin noptrdata.
+			// fn.deferreturn==0 means findfunc → pclntable lookup resolved
+			// into noptrdata, or the pclntable bytes at the correct offset are wrong.
+			entry := fn.entry()
+			fnPtr := uintptr(unsafe.Pointer(fn._func))
+			bugbPuts("  fn.entry=0x")
+			bugbPutHex64(uint64(entry))
+			bugbPuts(" fn._func=0x")
+			bugbPutHex64(uint64(fnPtr))
+			bugbPuts("\n")
 
-		if gp != nil {
-			for addr := gp.stack.lo; addr < gp.stack.hi; addr += 8 {
-				v := *(*uint64)(unsafe.Pointer(addr))
-				if v == 0x2064656C69616620 {
-					bugbPuts("  FOUND ' failed ' on stack at offset 0x")
-					bugbPutHex64(uint64(addr - gp.stack.lo))
+			datap := fn.datap
+			if datap != nil {
+				bugbPuts("  module=")
+				bugbPuts(datap.modulename)
+				bugbPuts(" datap=0x")
+				bugbPutHex64(uint64(uintptr(unsafe.Pointer(datap))))
+				bugbPuts("\n")
+
+				if len(datap.pclntable) > 0 {
+					pclnBase := uintptr(unsafe.Pointer(&datap.pclntable[0]))
+					pclnEnd := pclnBase + uintptr(len(datap.pclntable))
+					bugbPuts("  pclntable=[0x")
+					bugbPutHex64(uint64(pclnBase))
+					bugbPuts(",0x")
+					bugbPutHex64(uint64(pclnEnd))
+					bugbPuts("]\n")
+					inPcln := pclnBase <= fnPtr && fnPtr < pclnEnd
+					bugbPuts("  fn._func in pclntable: ")
+					bugbPuts(boolstr(inPcln))
+					bugbPuts(" funcoff=0x")
+					bugbPutHex64(uint64(fnPtr - pclnBase))
 					bugbPuts("\n")
-					bugbDumpContext(addr, "initOpenCodedDefers")
+
+					bugbPuts("  [FNDUMP _func raw bytes]\n")
+					bugbDumpContext(fnPtr, pclnEnd, "_func-raw")
+					bugbPuts("  [FNDUMP DONE]\n")
+				}
+
+				bugbPuts("  noptrdata=[0x")
+				bugbPutHex64(uint64(datap.noptrdata))
+				bugbPuts(",0x")
+				bugbPutHex64(uint64(datap.enoptrdata))
+				bugbPuts("]\n")
+				inNoptr := datap.noptrdata <= fnPtr && fnPtr < datap.enoptrdata
+				bugbPuts("  fn._func in noptrdata: ")
+				bugbPuts(boolstr(inNoptr))
+				bugbPuts("\n")
+				if inNoptr {
+					bugbPuts("  ** CORRUPTION: findfunc resolved _func into noptrdata, not pclntable! **\n")
+				}
+			} else {
+				bugbPuts("  ** fn.datap is nil — funcInfo has no moduledata **\n")
+			}
+
+			bugbPuts("  [FNDUMP funcInfo struct]\n")
+			bugbDumpContext(uintptr(unsafe.Pointer(&fn)), uintptr(unsafe.Pointer(&fn))+unsafe.Sizeof(fn), "funcInfo")
+			bugbPuts("  [FNDUMP DONE]\n")
+
+			// Dump goroutine info before the throw
+			gp := getg()
+			if gp != nil {
+				bugbPuts("  g=0x")
+				bugbPutHex64(uint64(uintptr(unsafe.Pointer(gp))))
+				bugbPuts(" stack=[0x")
+				bugbPutHex64(uint64(gp.stack.lo))
+				bugbPuts(",0x")
+				bugbPutHex64(uint64(gp.stack.hi))
+				bugbPuts("]\n")
+			}
+
+			if gp != nil {
+				for addr := gp.stack.lo; addr < gp.stack.hi; addr += 8 {
+					v := *(*uint64)(unsafe.Pointer(addr))
+					if v == 0x2064656C69616620 {
+						bugbPuts("  FOUND ' failed ' on stack at offset 0x")
+						bugbPutHex64(uint64(addr - gp.stack.lo))
+						bugbPuts("\n")
+						bugbDumpContext(addr, gp.stack.hi, "initOpenCodedDefers")
+					}
 				}
 			}
-		}
-		// Unconditional stack hexdump: dump head and tail of stack for forensics.
-		if gp != nil {
-			bugbPuts("  stack head dump (first 128 bytes):\n")
-			for i := uintptr(0); i < 128 && gp.stack.lo+i < gp.stack.hi; i += 32 {
-				bugbDumpContext(gp.stack.lo+i, "stack-head")
+			if gp != nil {
+				bugbPuts("  stack head dump (first 128 bytes):\n")
+				for i := uintptr(0); i < 128 && gp.stack.lo+i < gp.stack.hi; i += 32 {
+					bugbDumpContext(gp.stack.lo+i, gp.stack.hi, "stack-head")
+				}
+				bugbPuts("  stack tail dump (last 128 bytes):\n")
+				tail := gp.stack.hi
+				if tail > 128 {
+					tail = gp.stack.hi - 128
+				} else {
+					tail = gp.stack.lo
+				}
+				for i := uintptr(0); i < 128 && tail+i < gp.stack.hi; i += 32 {
+					bugbDumpContext(tail+i, gp.stack.hi, "stack-tail")
+				}
 			}
-			bugbPuts("  stack tail dump (last 128 bytes):\n")
-			tail := gp.stack.hi
-			if tail > 128 {
-				tail = gp.stack.hi - 128
-			} else {
-				tail = gp.stack.lo
-			}
-			for i := uintptr(0); i < 128 && tail+i < gp.stack.hi; i += 32 {
-				bugbDumpContext(tail+i, "stack-tail")
-			}
-		}
 		throw("missing deferreturn")
 	}
 
@@ -1322,10 +1375,13 @@ func throwPreDiag(s string) {
 			bugbPuts(" addr=0x")
 			bugbPutHex64(uint64(addr))
 			bugbPuts("\n")
-			bugbDumpContext(addr, "throwPreDiag")
+			bugbDumpContext(addr, hi, "throwPreDiag")
 			found++
 		}
 	}
+
+	bugbPuts("  HEAP-METADATA-SCAN:\n")
+	ScanHeapMetadataForFailed()
 }
 
 // ScanCurrentGStackForFailed scans the current goroutine's stack for the
@@ -1420,12 +1476,160 @@ func ScanAllGStacksForFailed() uintptr {
 				bugbPuts(" addr=0x")
 				bugbPutHex64(uint64(addr))
 				bugbPuts("\n")
-				bugbDumpContext(addr, "allg-scan")
+				bugbDumpContext(addr, hi, "allg-scan")
 				hitsInThisG++
 			}
 		}
 	}
 	return goroutinesWithHits
+}
+
+// ScanHeapMetadataForFailed scans non-stack memory for the
+// " failed " pattern (0x2064656C69616620). Targets moduledata ranges
+// (pclntable, ftab, findfunctab, text, data) and mspan headers.
+// Returns the total number of hits found (capped at 64).
+// Only writes to UART when hits are detected.
+//
+//go:nosplit
+func ScanHeapMetadataForFailed() uintptr {
+	target := uint64(0x2064656C69616620)
+	totalHits := uintptr(0)
+
+	// Helper: scan a raw byte range for the 8-byte pattern.
+	// pclntable stores _func structs including the deferreturn field —
+	// corruption here explains fn.deferreturn==0.
+	scanBytes := func(base unsafe.Pointer, byteLen uintptr, maxAddr uintptr, region string, modName string) {
+		if totalHits >= 64 {
+			return
+		}
+		end := uintptr(base) + byteLen
+		if end > maxAddr && maxAddr != 0 {
+			end = maxAddr
+		}
+		for a := uintptr(base); a+8 <= end && totalHits < 64; a += 8 {
+			if *(*uint64)(unsafe.Pointer(a)) == target {
+				if totalHits == 0 {
+					bugbPuts("BUG-B: HEAP-SCAN found ' failed ' in ")
+					bugbPuts(region)
+					bugbPuts(" module=")
+					bugbPuts(modName)
+					bugbPuts(" addr=0x")
+					bugbPutHex64(uint64(a))
+					bugbPuts("\n")
+				} else {
+					bugbPuts("  also at 0x")
+					bugbPutHex64(uint64(a))
+					bugbPuts("\n")
+				}
+				bugbDumpContext(a, end, "heap-scan")
+				totalHits++
+			}
+		}
+	}
+
+	// Scan all moduledata ranges
+	for datap := &firstmoduledata; datap != nil && totalHits < 64; datap = datap.next {
+		modName := datap.modulename
+		if modName == "" {
+			modName = "kmazarin"
+		}
+
+		// pclntable: _func structs (including deferreturn field) live here
+		if len(datap.pclntable) > 0 {
+			end := uintptr(unsafe.Pointer(&datap.pclntable[0])) + uintptr(len(datap.pclntable))
+			scanBytes(unsafe.Pointer(&datap.pclntable[0]), uintptr(len(datap.pclntable)), end, "pclntable", modName)
+		}
+
+		// funcnametab: function name strings
+		if len(datap.funcnametab) > 0 {
+			end := uintptr(unsafe.Pointer(&datap.funcnametab[0])) + uintptr(len(datap.funcnametab))
+			scanBytes(unsafe.Pointer(&datap.funcnametab[0]), uintptr(len(datap.funcnametab)), end, "funcnametab", modName)
+		}
+
+		// pctab: PC-data tables
+		if len(datap.pctab) > 0 {
+			end := uintptr(unsafe.Pointer(&datap.pctab[0])) + uintptr(len(datap.pctab))
+			scanBytes(unsafe.Pointer(&datap.pctab[0]), uintptr(len(datap.pctab)), end, "pctab", modName)
+		}
+
+		// filetab: file name table
+		if len(datap.filetab) > 0 {
+			end := uintptr(unsafe.Pointer(&datap.filetab[0])) + uintptr(len(datap.filetab))
+			scanBytes(unsafe.Pointer(&datap.filetab[0]), uintptr(len(datap.filetab)), end, "filetab", modName)
+		}
+
+		// ftab: functab entries (entryoff, funcoff pairs)
+		if len(datap.ftab) > 0 {
+			n := uintptr(len(datap.ftab)) * unsafe.Sizeof(datap.ftab[0])
+			end := uintptr(unsafe.Pointer(&datap.ftab[0])) + n
+			scanBytes(unsafe.Pointer(&datap.ftab[0]), n, end, "ftab", modName)
+		}
+
+		// findfunctab: binary-search lookup table
+		if datap.findfunctab != 0 && datap.pcHeader != nil && datap.pcHeader.nfunc > 0 {
+			nfunc := uintptr(datap.pcHeader.nfunc)
+			bucketSize := uintptr(abi.FuncTabBucketSize)
+			nbuckets := (nfunc + bucketSize - 1) / bucketSize
+			extent := nbuckets * unsafe.Sizeof(findfuncbucket{})
+			end := datap.findfunctab + extent
+			scanBytes(unsafe.Pointer(datap.findfunctab), extent, end, "findfunctab", modName)
+		}
+
+		// text section: executable code (unlikely but cheap)
+		if datap.text < datap.etext && datap.etext-datap.text <= 128<<20 {
+			scanBytes(unsafe.Pointer(datap.text), datap.etext-datap.text, datap.etext, "text", modName)
+		}
+
+		// data section: initialized data
+		if datap.data < datap.edata && datap.edata-datap.data <= 128<<20 {
+			scanBytes(unsafe.Pointer(datap.data), datap.edata-datap.data, datap.edata, "data", modName)
+		}
+
+		// noptrdata section
+		if datap.noptrdata < datap.enoptrdata && datap.enoptrdata-datap.noptrdata <= 128<<20 {
+			scanBytes(unsafe.Pointer(datap.noptrdata), datap.enoptrdata-datap.noptrdata, datap.enoptrdata, "noptrdata", modName)
+		}
+	}
+
+	// Scan mspan headers via allspans
+	allspans := mheap_.allspans
+	spanStructSize := unsafe.Sizeof(mspan{})
+	for _, s := range allspans {
+		if totalHits >= 64 {
+			break
+		}
+		if s == nil {
+			continue
+		}
+		spanAddr := uintptr(unsafe.Pointer(s))
+		end := spanAddr + spanStructSize
+		for a := spanAddr; a+8 <= end && totalHits < 64; a += 8 {
+			if *(*uint64)(unsafe.Pointer(a)) == target {
+				if totalHits == 0 {
+					bugbPuts("BUG-B: HEAP-SCAN found ' failed ' in mspan addr=0x")
+				} else {
+					bugbPuts("  also in mspan at 0x")
+				}
+				bugbPutHex64(uint64(a))
+				bugbPuts("\n")
+				bugbDumpContext(a, end, "heap-scan")
+				totalHits++
+			}
+		}
+	}
+
+	return totalHits
+}
+
+// boolstr returns "true" or "false" as a string.
+// nosplit — called from crash-path diagnostics.
+//
+//go:nosplit
+func boolstr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 // bugbPuts writes a string directly to UART via kmazarinUART, bypassing
@@ -1452,14 +1656,13 @@ func bugbPutHex64(v uint64) {
 	}
 }
 
-// bugbDumpContext dumps 32 bytes of context around addr: 16 bytes before
-// and 16 bytes after. Prints as raw bytes (hex + ASCII). Used to identify
-// the full source string containing " failed " (0x2064656C69616620).
+// bugbDumpContext dumps 32 bytes of context starting at addr.
+// maxAddr is the upper bound for safe reads — bytes at or beyond maxAddr
+// are displayed as ??/* rather than read. Used to identify the full source
+// string containing " failed " (0x2064656C69616620).
 //
 //go:nosplit
-func bugbDumpContext(addr uintptr, label string) {
-	// Don't subtract from addr — the caller knows where the interesting
-	// bytes are. Subtracting could fault if addr is near a guard page.
+func bugbDumpContext(addr uintptr, maxAddr uintptr, label string) {
 	start := addr
 	bugbPuts("  context ")
 	bugbPuts(label)
@@ -1477,33 +1680,100 @@ func bugbDumpContext(addr uintptr, label string) {
 		bugbPuts(": ")
 		// Hex
 		for col := uintptr(0); col < 8; col++ {
-			b := *(*byte)(unsafe.Pointer(rowStart + col))
-			hi := b >> 4
-			lo := b & 0xF
-			if hi < 10 {
-				kmazarinUART('0' + hi)
+			readAddr := rowStart + col
+			if readAddr < maxAddr {
+				b := *(*byte)(unsafe.Pointer(readAddr))
+				hi := b >> 4
+				lo := b & 0xF
+				if hi < 10 {
+					kmazarinUART('0' + hi)
+				} else {
+					kmazarinUART('a' - 10 + hi)
+				}
+				if lo < 10 {
+					kmazarinUART('0' + lo)
+				} else {
+					kmazarinUART('a' - 10 + lo)
+				}
 			} else {
-				kmazarinUART('a' - 10 + hi)
-			}
-			if lo < 10 {
-				kmazarinUART('0' + lo)
-			} else {
-				kmazarinUART('a' - 10 + lo)
+				bugbPuts("??")
 			}
 			kmazarinUART(' ')
 		}
 		// ASCII
 		bugbPuts(" |")
 		for col := uintptr(0); col < 8; col++ {
-			b := *(*byte)(unsafe.Pointer(rowStart + col))
-			if b >= 32 && b < 127 {
-				kmazarinUART(b)
+			readAddr := rowStart + col
+			if readAddr < maxAddr {
+				b := *(*byte)(unsafe.Pointer(readAddr))
+				if b >= 32 && b < 127 {
+					kmazarinUART(b)
+				} else {
+					kmazarinUART('.')
+				}
 			} else {
-				kmazarinUART('.')
+				kmazarinUART('*')
 			}
 		}
 		bugbPuts("|\n")
 	}
+}
+
+// TestBugbDumpContext unconditionally calls bugbDumpContext on the
+// current goroutine's stack to verify the UART output path works.
+// Called from the kernel epoch status path.
+//
+//go:nosplit
+func TestBugbDumpContext() {
+	gp := getg()
+	if gp == nil {
+		return
+	}
+	bugbPuts("BUG-B: bugbDumpContext test -- first 32 bytes of stack\n")
+	bugbDumpContext(gp.stack.lo, gp.stack.hi, "test-call")
+	bugbPuts("BUG-B: bugbDumpContext test done\n")
+}
+
+// ValidateG0Stack reports g0's stack bounds and probes the first byte
+// of each page to detect unmapped pages (Pattern A hypothesis).
+// Returns number of pages probed (0 if g0 is inaccessible).
+//
+//go:nosplit
+func ValidateG0Stack() uintptr {
+	mp := getm()
+	if mp == 0 {
+		return 0
+	}
+	// m.g0 is at offset MG0Offset (0)
+	g0Ptr := *(*uintptr)(unsafe.Pointer(mp + 0))
+	if g0Ptr == 0 {
+		return 0
+	}
+	g0 := (*g)(unsafe.Pointer(g0Ptr))
+	lo := uintptr(g0.stack.lo)
+	hi := uintptr(g0.stack.hi)
+	if hi <= lo || hi-lo > 1<<30 {
+		return 0
+	}
+	bugbPuts("BUG-B: g0 stack validation: lo=0x")
+	bugbPutHex64(uint64(lo))
+	bugbPuts(" hi=0x")
+	bugbPutHex64(uint64(hi))
+	bugbPuts(" guard=0x")
+	bugbPutHex64(uint64(g0.stackguard0))
+	bugbPuts(" pages=")
+	pages := (hi - lo) / 4096
+	bugbPutHex64(uint64(pages))
+	bugbPuts(" curg=0x")
+	gp := getg()
+	bugbPutHex64(uint64(uintptr(unsafe.Pointer(gp))))
+	bugbPuts("\n")
+	// NOTE: do NOT probe g0's stack pages. The first crash above proved
+	// that pages beyond the guard region are unmapped (FAR at lo+0x4AB8
+	// caused a level-3 translation fault). This may be Pattern A — g0's
+	// scheduler stack partially unmapped — or lazy page allocation for
+	// kernel stacks. Either way, probing it crashes the diagnostic.
+	return pages
 }
 
 // fatal triggers a fatal error that dumps a stack trace and exits.
