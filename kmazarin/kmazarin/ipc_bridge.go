@@ -92,6 +92,11 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 		asm.Dsb()
+		// MAZ-7: clear the delegate-stuck latch so a re-block on the
+		// same TID can fire again.
+		if int(tid) < threadArraySize {
+			dbgDelegate10sLatch[tid] = 0
+		}
 	}
 
 	schedulerLock.Unlock()

@@ -362,7 +362,6 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 	ipcDispatcher := uring.NewDispatcher() // ring 0 (default)
 	ipcDispatcher.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
 	ipcDispatcher.On(ipc.ProtoFontResponse, decodeRawPayload, fontReplyCh)
-	ipcDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
 	ipcDispatcher.OnDeath(func(deadSID int16) {
 		fmt.Printf("[linux] shepherd %d died\n", deadSID)
 		// Route through delegateCh so death handling runs on the file lane.
@@ -378,7 +377,7 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 		}
 	})
 	ipcDispatcher.Start()
-	fmt.Printf("[linux] uring dispatcher ring=0 started (ipc: WM/Font/FS/Death/IdleHint)\n")
+	fmt.Printf("[linux] uring dispatcher ring=0 started (ipc: WM/Font/Death/IdleHint)\n")
 
 	// Ring 1: blocking delegated syscalls. Includes fd>2 Write (the
 	// kernel routes fd<=2 Writes to ring 2 separately).
@@ -408,6 +407,13 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 	})
 	stdioDispatcher.Start()
 	fmt.Printf("[linux] uring dispatcher ring=2 started (stdio writes)\n")
+
+	// Ring 3: fs responses only — isolated from WM/Font traffic on Ring 0
+	// so a full WM channel can never deadlock fsclient callers.
+	fsRespDispatcher := uring.NewDispatcherWithRing(3)
+	fsRespDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
+	fsRespDispatcher.Start()
+	fmt.Printf("[linux] uring dispatcher ring=3 started (fs responses)\n")
 }
 
 // decodeRawPayload copies the raw UringIPCMsg payload without interpreting it.
@@ -530,6 +536,9 @@ func MazarinMain() {
 	}
 	if err := uring.Setup(2); err != nil {
 		panic("[linux] uring.Setup(2) failed: " + err.Error())
+	}
+	if err := uring.Setup(3); err != nil {
+		panic("[linux] uring.Setup(3) failed: " + err.Error())
 	}
 	// WM and font response messages go to temp channels that will be
 	// forwarded to the .maz's channels after injection.

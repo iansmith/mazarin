@@ -15,7 +15,7 @@ const (
 	UringIPCMask       = UringIPCCapacity - 1
 	UringIPCHeaderSize = 128 // ring header padded to one slot width
 	UringIPCPagesNeeded    = 3  // 12KB: header + 64 * 128-byte slots
-	MaxRingsPerShepherd    = 3  // max uring rings per shepherd (ring 0 = default)
+	MaxRingsPerShepherd    = 4  // max uring rings per shepherd (ring 0 = default)
 )
 
 // Protocol discriminators for UringIPCMsg.Protocol.

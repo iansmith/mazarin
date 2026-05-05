@@ -1342,6 +1342,13 @@ func printEpochStatus() {
 			}
 			delegateInfo += fmt.Sprintf(" tid=%d/sid=%d/sysid=%d/for=%dms",
 				int(t.TID), int(t.PID), int(t.DelegateBlockSysID), blockedMs)
+			// MAZ-7: one-shot critical log when a delegate first crosses 10s.
+			if blockedMs > 10000 && dbgDelegate10sLatch[t.TID] == 0 {
+				dbgDelegate10sLatch[t.TID] = 1
+				klog.Criticalf("[MAZ-7]",
+					"DELEGATE-STUCK tid=%d sid=%d sysid=%d blocked=%dms\n",
+					int(t.TID), int(t.PID), int(t.DelegateBlockSysID), blockedMs)
+			}
 		}
 	}
 
@@ -1514,6 +1521,11 @@ var dbgLastEL1hELR uint64  // ELR when timer skipped due to EL1h
 var dbgLastEL1hSPSR uint64 // SPSR when timer skipped due to EL1h
 
 // prevSVCCountBySID holds the previous epoch's per-SID SVC counts for delta computation.
+// dbgDelegate10sLatch is a one-shot latch per TID for the "delegate blocked >10s"
+// critical log. Set to 1 when the log fires; cleared when the delegate unblocks so
+// a re-block on the same TID can fire again.
+var dbgDelegate10sLatch [threadArraySize]uint8
+
 var prevSVCCountBySID [32]uint64
 var prevSID0Syscalls [256]uint64
 var prevSysIDCounts [ksyscall.NumSyscallIDs]uint64
