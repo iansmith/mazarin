@@ -95,7 +95,7 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 		asm.Dsb()
 		// MAZ-7: clear the delegate-stuck latch so a re-block on the
 		// same TID can fire again.
-		if int(tid) < threadArraySize {
+		if int(tid) >= 0 && int(tid) < threadArraySize {
 			dbgDelegate10sLatch[tid] = 0
 		}
 	}
@@ -124,7 +124,7 @@ func WakeDelegateCallerThreadNoReturn(pid int16, tid int32) {
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 		asm.Dsb()
-		if int(tid) < threadArraySize {
+		if int(tid) >= 0 && int(tid) < threadArraySize {
 			dbgDelegate10sLatch[tid] = 0
 		}
 	}

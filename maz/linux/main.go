@@ -339,19 +339,24 @@ func addCRBeforeLF(data []byte) []byte {
 	return out
 }
 
-// startUringDispatchers sets up three uring Dispatchers, one per ring,
+// startUringDispatchers sets up four uring Dispatchers, one per ring,
 // each with its own reader goroutine. Splitting traffic by class avoids
 // a single-reader bottleneck where slow file-lane operations would
 // backpressure pipe-buffered stdio (and vice versa).
 //
-//   - Ring 0: shepherd IPC (fs responses, WM, fonts, death notifications,
-//     idle-flush hints). Reader feeds the relevant typed channels.
+//   - Ring 0: shepherd IPC (WM, fonts, death notifications, idle-flush
+//     hints). Reader feeds the relevant typed channels. FS responses
+//     are split out onto Ring 3 to avoid head-of-line blocking from
+//     WM/Font traffic.
 //   - Ring 1: blocking delegated syscalls (Read, Openat, Close, Mkdirat,
 //     Fstat, MmapPageFill, Pwrite64, fd>2 Write, …). Reader feeds
 //     delegateCh; the file-lane goroutine drains it via fsclient.
 //   - Ring 2: pipe-buffered Writes only (Write fd<=2). Reader feeds
 //     stdoutCh; the stdout-lane goroutine consumes the data and
 //     releases the shared page via SysReleaseDelegatePage.
+//   - Ring 3 (ipc.RingFSResp): fs IPC responses only (ProtoFSIPCResp →
+//     fsClient.RespCh). Isolated so a backed-up WM/Font channel on
+//     Ring 0 cannot deadlock fsclient callers.
 //
 // The kernel routes Write fd<=2 to ring 2 because the linux shepherd
 // calls SysRegisterStdioWriteRing(2). All other syscalls — including
