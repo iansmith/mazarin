@@ -676,42 +676,12 @@ print_fault_x8_char:
 	SUB	$1, R15
 	CBNZ	R15, print_fault_x8_loop
 
-		// Print " ESR=0x" followed by full 32-bit ESR_EL1 value (ISS field for fault diagnosis)
-		MOVD	$' ', R11; MOVB	R11, (R12)
-		MOVD	$'E', R11; MOVB	R11, (R12)
-		MOVD	$'S', R11; MOVB	R11, (R12)
-		MOVD	$'R', R11; MOVB	R11, (R12)
-		MOVD	$'=', R11; MOVB	R11, (R12)
-		MOVD	$'0', R11; MOVB	R11, (R12)
-		MOVD	$'x', R11; MOVB	R11, (R12)
-
-		MOVD	EXC_FRAME_FAR_ESR+8(RSP), R14  // Load full ESR from frame (offset 280)
-		MOVD	$8, R15  // 8 hex digits for 32-bit ESR
-	print_fault_esr_loop:
-		LSR	$28, R14, R11
-		AND	$0xF, R11
-		CMP	$10, R11
-		BLT	print_fault_esr_digit
-		ADD	$('A'-10), R11
-		B	print_fault_esr_char
-	print_fault_esr_digit:
-		ADD	$'0', R11
-	print_fault_esr_char:
-		MOVB	R11, (R12)
-		LSL	$4, R14
-		SUB	$1, R15
-		CBNZ	R15, print_fault_esr_loop
-
-
 	// Print newline, then try to dump stack words from SP_EL0
 	MOVD	$'\r', R11; MOVB	R11, (R12)
 	MOVD	$'\n', R11; MOVB	R11, (R12)
 
 	// Stack dump: read 16 words from SP_EL0 (the Go stack)
 	// Note: this may data abort if the page isn't mapped, which would double-fault.
-	// Pattern A: if SP_EL0 points to g0's scheduler stack and g0's stack has
-	// been unmapped, this read WILL fault. The double-fault is itself diagnostic
-	// evidence of the unmapped-g0-stack theory.
 	// Print "STK:" header
 	MOVD	$'S', R11; MOVB	R11, (R12)
 	MOVD	$'T', R11; MOVB	R11, (R12)

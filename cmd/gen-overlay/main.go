@@ -156,9 +156,7 @@ func buildKmazarinOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/mcache.go":          "mcache.go",
 		"runtime/mcentral.go":        "mcentral.go",
 		"runtime/os_linux_arm64.go":  "os_linux_arm64.go",
-		"runtime/panic.go":           "panic.go",
 		"runtime/preempt.go":         "preempt.go",
-		"runtime/symtab.go":          "symtab.go",
 		"runtime/sys_linux_arm64.s":  "sys_linux_arm64.s",
 		"runtime/tagptr_64bit.go":    "tagptr_64bit.go",
 		"runtime/traceback.go":        "traceback.go",
@@ -192,11 +190,9 @@ func buildKmazarinAMD64Overlay(overlay *Overlay, goroot, patchesDir string) erro
 		"runtime/fds_unix.go":                          "fds_unix.go",
 		"runtime/malloc.go":                            "malloc.go",
 		"runtime/mcache.go":                            "mcache.go",
-		"runtime/mcentral.go":        "mcentral.go",
-		"runtime/panic.go":           "panic.go",
+		"runtime/mcentral.go":                            "mcentral.go",
 		"runtime/os_linux_noauxv.go":                   "os_linux_noauxv.go",
 		"runtime/preempt.go":                           "preempt.go",
-		"runtime/symtab.go":                            "symtab.go",
 		"runtime/sys_linux_amd64.s":                    "sys_linux_amd64.s",
 		"runtime/tagptr_64bit.go":                      "tagptr_64bit.go",
 		"runtime/traceback.go":                         "traceback.go",
@@ -237,11 +233,6 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/netpoll_maz_init.go":    "runtime/netpoll_maz_init.go",
 		"runtime/walltime_mazzy.go":      "runtime/walltime_mazzy.go",
 		"runtime/timestub2.go":        "runtime/timestub2.go",
-
-		// Bug-B diagnostic overlays (throwPreDiag + checkSpanBeforeSweep)
-		"runtime/panic.go":    "runtime/panic.go",
-		"runtime/mcentral.go": "runtime/mcentral.go",
-		"runtime/symtab.go":   "runtime/symtab.go",
 	}
 
 	for goFile, patchFile := range patches {

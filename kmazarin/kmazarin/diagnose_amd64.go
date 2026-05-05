@@ -8,12 +8,6 @@ import (
 	"unsafe"
 )
 
-// scanAllgsForCorruptSP is a no-op retained for call-site compatibility.
-func scanAllgsForCorruptSP() {}
-
-// launchAllgsDiagnostic is a no-op retained for call-site compatibility.
-func launchAllgsDiagnostic() {}
-
 // dumpLAPICTimerState reads LAPIC timer registers and RFLAGS for debugging.
 func dumpLAPICTimerState() {
 	lapicBase := uintptr(0xFEE00000 + 0xFFFFFFFF00000000)

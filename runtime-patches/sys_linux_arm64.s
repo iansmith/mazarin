@@ -289,9 +289,16 @@ TEXT runtime·sysMunmap(SB),NOSPLIT|NOFRAME,$0
 TEXT runtime·callCgoMunmap(SB),NOSPLIT,$0
 	RET
 
-// madvise - no-op, return 0
+// madvise — route through kmazarin syscall dispatcher.
+// The scavenger calls this to release unused heap pages back to the OS
+// (MADV_DONTNEED).  Real reclaim + re-fault-on-next-access zeroes pages,
+// which is critical for correctness when heap pages are recycled as stacks.
 TEXT runtime·madvise(SB),NOSPLIT|NOFRAME,$0
-	MOVW	$0, R0
+	MOVD	addr+0(FP), R0		// addr
+	MOVD	n+8(FP), R1		// length
+	MOVW	advice+16(FP), R2	// advice (MADV_DONTNEED=4, MADV_FREE=8)
+	MOVD	$233, R8		// SYS_madvise on ARM64
+	SVC
 	MOVW	R0, ret+24(FP)
 	RET
 

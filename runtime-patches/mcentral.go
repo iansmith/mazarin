@@ -2,8 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// KMAZARIN OVERLAY: Adds debug for npages=0 issue, guard in grow(),
-// and pre-sweep mspan corruption detection (Bug-B forensics).
+// KMAZARIN OVERLAY: Adds debug for npages=0 issue and guard in grow().
 
 // Central free lists.
 //
@@ -19,106 +18,7 @@ import (
 	"internal/runtime/atomic"
 	"internal/runtime/gc"
 	"internal/runtime/sys"
-	"unsafe"
 )
-
-// ============================================================================
-// Bug-B: pre-sweep mspan corruption detection
-// ============================================================================
-//
-// Hypothesis: mspan metadata fields are corrupted with non-pointer data
-// (e.g. ASCII log-string bytes like " failed " from GG9) before the
-// sweeper touches the span. This check runs immediately before s.sweep()
-// and validates field invariants. A violation dumps the raw mspan bytes
-// as hex so we can identify the corrupting data source.
-
-// mspanCheckEnabled toggles the pre-sweep span validation. Off by default;
-// enable at runtime via debug.mspanchecks=1 or flip the default here.
-var mspanCheckEnabled = true
-
-// SetMspanCheckEnabled toggles the diagnostic at runtime.
-func SetMspanCheckEnabled(v bool) { mspanCheckEnabled = v }
-
-// MspanCheckEnabled reports whether the check is active.
-func MspanCheckEnabled() bool { return mspanCheckEnabled }
-
-// checkSpanBeforeSweep validates mspan field invariants before sweeping.
-// If corruption is detected, dumps the raw mspan bytes as hex and throws.
-// Controlled by mspanCheckEnabled.
-func checkSpanBeforeSweep(s *mspan, caller string) {
-	if !mspanCheckEnabled || s == nil {
-		return
-	}
-
-	np := s.npages
-	es := s.elemsize
-	nl := s.nelems
-	ac := s.allocCount
-	maxElems := uintptr(np) * pageSize / uintptr(es)
-
-	// Invariant 1: npages must be > 0 and ≤ 1M (max 4GB span)
-	if np == 0 || np > 1<<20 {
-		goto corrupted
-	}
-
-	// Invariant 2: elemsize must be > 0 and ≤ 256KB
-	if es == 0 || es > 256*1024 {
-		goto corrupted
-	}
-
-	// Invariant 3: nelems must be reasonable
-	// nelems * elemsize should fit within npages * pageSize (with small slack for
-	// the span header / alignment). If nelems is 0, the span has no objects at all.
-	if nl == 0 {
-		goto corrupted
-	}
-	if uintptr(nl) > maxElems+2 {
-		goto corrupted
-	}
-
-	// Invariant 4: allocCount must not exceed nelems
-	if ac > nl {
-		goto corrupted
-	}
-
-	return
-
-corrupted:
-	spanPtr := uintptr(unsafe.Pointer(s))
-	spanSize := unsafe.Sizeof(*s)
-	print("BUG-B: mspan corruption detected before sweep (", caller, ")\n")
-	print("  span ptr=0x")
-	printhex(uint64(spanPtr))
-	print(" size=")
-	printhex(uint64(spanSize))
-	print("\n")
-	print("  fields: npages=")
-	printhex(uint64(np))
-	print(" elemsize=")
-	printhex(uint64(es))
-	print(" nelems=")
-	printhex(uint64(nl))
-	print(" allocCount=")
-	printhex(uint64(ac))
-	print("\n")
-	print("  raw span bytes (64-bit words):\n")
-
-	// Dump the raw mspan bytes as hex 64-bit words. The " failed " string
-	// (0x2064656C69616620) would stand out in a hex dump.
-	nwords := (spanSize + 7) / 8
-	if nwords > 128 {
-		nwords = 128 // cap at 1KB to keep output manageable
-	}
-	raw := (*[128]uint64)(unsafe.Pointer(s))
-	for i := uintptr(0); i < nwords; i++ {
-		print("  [")
-		printhex(uint64(i * 8))
-		print("] 0x")
-		printhex(raw[i])
-		print("\n")
-	}
-	throw("mspan corruption detected before sweep")
-}
 
 // Central list of free objects of a given size.
 type mcentral struct {
@@ -227,7 +127,6 @@ func (c *mcentral) cacheSpan() *mspan {
 			}
 			if s, ok := sl.tryAcquire(s); ok {
 				// We got ownership of the span, so let's sweep it and use it.
-				checkSpanBeforeSweep(s.mspan, "cacheSpan-partial")
 				s.sweep(true)
 				sweep.active.end(sl)
 				goto havespan
@@ -248,7 +147,6 @@ func (c *mcentral) cacheSpan() *mspan {
 			}
 			if s, ok := sl.tryAcquire(s); ok {
 				// We got ownership of the span, so let's sweep it.
-				checkSpanBeforeSweep(s.mspan, "cacheSpan-full")
 				s.sweep(true)
 				// Check if there's any free space.
 				freeIndex := s.nextFreeIndex()
@@ -279,7 +177,6 @@ func (c *mcentral) cacheSpan() *mspan {
 
 	// At this point s is a span that should have free slots.
 havespan:
-	checkSpanBeforeSweep(s, "cacheSpan-havespan")
 	if !traceDone {
 		trace := traceAcquire()
 		if trace.ok() {
@@ -338,7 +235,6 @@ func (c *mcentral) uncacheSpan(s *mspan) {
 		// aren't in the global sweep lists, so mark termination
 		// itself holds up sweep completion until all mcaches
 		// have been swept.
-		checkSpanBeforeSweep(s, "uncacheSpan-stale")
 		ss := sweepLocked{s}
 		ss.sweep(false)
 	} else {
