@@ -78,6 +78,7 @@ func BlockForDelegatedSyscall() uintptr {
 // WakeDelegateCallerThread wakes the original caller blocked in ThreadBlockedDelegate.
 // Called from SyscallReply when the handler sends the return value.
 //
+//go:nosplit
 //go:noinline
 func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 	savedDAIF := SaveAndDisableIRQs()
@@ -108,6 +109,7 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 // blocked by a page fault — the CPU must retry the faulting instruction with
 // the original register state intact (especially RAX).
 //
+//go:nosplit
 //go:noinline
 func WakeDelegateCallerThreadNoReturn(pid int16, tid int32) {
 	savedDAIF := SaveAndDisableIRQs()
@@ -122,6 +124,9 @@ func WakeDelegateCallerThreadNoReturn(pid int16, tid int32) {
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 		asm.Dsb()
+		if int(tid) < threadArraySize {
+			dbgDelegate10sLatch[tid] = 0
+		}
 	}
 
 	schedulerLock.Unlock()

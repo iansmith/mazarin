@@ -16,6 +16,9 @@ const (
 	UringIPCHeaderSize = 128 // ring header padded to one slot width
 	UringIPCPagesNeeded    = 3  // 12KB: header + 64 * 128-byte slots
 	MaxRingsPerShepherd    = 4  // max uring rings per shepherd (ring 0 = default)
+
+	// Named ring indices for traffic-class isolation.
+	RingFSResp = 3 // fs IPC responses (dedicated ring to avoid head-of-line blocking from WM/Font on ring 0)
 )
 
 // Protocol discriminators for UringIPCMsg.Protocol.

@@ -410,7 +410,7 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 
 	// Ring 3: fs responses only — isolated from WM/Font traffic on Ring 0
 	// so a full WM channel can never deadlock fsclient callers.
-	fsRespDispatcher := uring.NewDispatcherWithRing(3)
+	fsRespDispatcher := uring.NewDispatcherWithRing(ipc.RingFSResp)
 	fsRespDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
 	fsRespDispatcher.Start()
 	fmt.Printf("[linux] uring dispatcher ring=3 started (fs responses)\n")
@@ -537,8 +537,8 @@ func MazarinMain() {
 	if err := uring.Setup(2); err != nil {
 		panic("[linux] uring.Setup(2) failed: " + err.Error())
 	}
-	if err := uring.Setup(3); err != nil {
-		panic("[linux] uring.Setup(3) failed: " + err.Error())
+	if err := uring.Setup(ipc.RingFSResp); err != nil {
+		panic("[linux] uring.Setup(ipc.RingFSResp) failed: " + err.Error())
 	}
 	// WM and font response messages go to temp channels that will be
 	// forwarded to the .maz's channels after injection.

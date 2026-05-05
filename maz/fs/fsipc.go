@@ -195,7 +195,7 @@ func (s *fsIPCServer) respond(sid int16, resp *ipc.FSIPCRespPayload) {
 	const respondMaxAttempts = 100             // 100 × 30 ms ≈ 3 s total budget
 	const respondPerAttemptMs = 30 * time.Millisecond
 	for attempt := 0; attempt < respondMaxAttempts; attempt++ {
-		err := uring.SendWithRing(int(sid), &msg, 3)
+		err := uring.SendWithRing(int(sid), &msg, ipc.RingFSResp)
 		if err == nil {
 			if attempt > 0 {
 				fmt.Printf("[fs:ipc] respond SID=%d retried, attempts=%d\n", sid, attempt+1)
