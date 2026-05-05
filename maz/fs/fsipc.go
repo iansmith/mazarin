@@ -186,9 +186,8 @@ func (s *fsIPCServer) handleConnect(sid int16, req *ipc.FSIPCReqPayload) {
 // strands the worker forever holding its per-shepherd lock and produces the
 // concurrent-boot wedge symptom.
 //
-// On EAGAIN we retry with a longer total budget (~3 s) so that brief ring-0
-// backpressure spikes from concurrent shepherd boot traffic don't cost a
-// silent drop. On any non-EAGAIN error (target dead, etc.), we log and
+// On EAGAIN we retry with a longer total budget (~3 s) so that brief
+// ring-3 (RingFSResp) backpressure spikes don't cost a silent drop. On any non-EAGAIN error (target dead, etc.), we log and
 // give up — those are terminal.
 func (s *fsIPCServer) respond(sid int16, resp *ipc.FSIPCRespPayload) {
 	msg := ipc.EncodeFSIPCResp(resp)
@@ -206,9 +205,9 @@ func (s *fsIPCServer) respond(sid int16, resp *ipc.FSIPCRespPayload) {
 			fmt.Printf("[fs:ipc] respond SID=%d failed (terminal): %v\n", sid, err)
 			return
 		}
-		// EAGAIN: the linux ring-0 dispatcher hasn't drained our prior sends
-		// fast enough. Sleep briefly and retry — the dispatcher is alive,
-		// just momentarily backpressured.
+		// EAGAIN: the linux ring-3 (RingFSResp) dispatcher hasn't drained
+		// our prior sends fast enough. Sleep briefly and retry — the
+		// dispatcher is alive, just momentarily backpressured.
 		time.Sleep(respondPerAttemptMs)
 	}
 	fmt.Printf("[fs:ipc] respond SID=%d EAGAIN exhausted after %d attempts (~%dms total) — DROPPING reply, worker will wedge\n",
