@@ -127,6 +127,15 @@ type Shepherd struct {
 	// resolution and by munmap/death for safe deferred page release.
 	// Fixed-size array (not heap-allocated) so registration is nosplit-safe
 	// inside SyscallMmap on the g0 stack.
+	//
+	// clumpSpin protects DMAClumps/NumDMAClumps against TOCTOU between
+	// FindClumpByVA (returns a pointer into the array) and the subsequent
+	// InFlight bump. RemoveClump swaps array elements, so a pointer from
+	// FindClumpByVA can point to the wrong clump if RemoveClump runs
+	// concurrently. Under cooperative scheduling this window is closed
+	// (no yield between lookup and bump), but the lock guards against
+	// future SMP or interrupt-driven reentrancy.
+	clumpSpin    int32
 	DMAClumps    [MaxDMAClumps]DMAClump
 	NumDMAClumps int32
 

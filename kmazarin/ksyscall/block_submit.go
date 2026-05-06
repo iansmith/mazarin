@@ -97,8 +97,16 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	} else {
 		clumpOwner = shepherd
 	}
+	// Hold the clump lock across FindClumpByVA→InFlight bump so a
+	// concurrent RemoveClump can't swap the clump at our index with
+	// a different one mid-lookup, which would cause us to bump the
+	// wrong clump's InFlight. Under cooperative scheduling the window
+	// is closed (no yield here), but the lock guards against future
+	// SMP or interrupt-driven reentrancy.
+	clumpOwner.LockClumps()
 	clump := clumpOwner.FindClumpByVA(bufVA)
 	if clump == nil {
+		clumpOwner.UnlockClumps()
 		klog.Errf("[BlockSubmit] EFAULT: bufVA not in any DMA clump\n")
 		return -14 // EFAULT
 	}
@@ -106,6 +114,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	// flight and defers the free rather than freeing pages out from under us
 	// (Bug-B/MAZ-5 TOCTOU).
 	atomic.AddInt32(&clump.InFlight, 1)
+	clumpOwner.UnlockClumps()
 	pa := clump.LookupPA(bufVA)
 	endPA := clump.LookupPA(bufVA + uintptr(totalBytes) - 1)
 	if pa == 0 || endPA == 0 {

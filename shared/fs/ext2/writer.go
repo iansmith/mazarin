@@ -792,13 +792,23 @@ func (fs *FileSystem) Rename(oldPath, newPath string) error {
 		}
 
 		// Update link counts
-		oldP, _ := fs.readInodeLocked(oldParent)
+		oldP, err := fs.readInodeLocked(oldParent)
+		if err != nil {
+			return err
+		}
 		oldP.LinksCount--
-		fs.writeInodeLocked(oldParent, oldP)
+		if err := fs.writeInodeLocked(oldParent, oldP); err != nil {
+			return err
+		}
 
-		newP, _ := fs.readInodeLocked(newParent)
+		newP, err := fs.readInodeLocked(newParent)
+		if err != nil {
+			return err
+		}
 		newP.LinksCount++
-		fs.writeInodeLocked(newParent, newP)
+		if err := fs.writeInodeLocked(newParent, newP); err != nil {
+			return err
+		}
 	}
 
 	return nil

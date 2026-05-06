@@ -415,6 +415,19 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 
 	buddyAlloc.lock.Lock()
 
+	// Detect double-free BEFORE merging: check the original pa/order.
+	// If we check after the merge loop, a double-free where the buddy
+	// is also free silently corrupts: buddyRemoveSpecific succeeds,
+	// the merged block passes buddyContainsPA (it was never inserted
+	// at the higher order), and buddyInsertFree puts the merged block
+	// on the free list — while the original block remains on its
+	// order's list. Double-allocation follows.
+	if buddyContainsPA(pa, order) {
+		buddyAlloc.lock.Unlock()
+		buddyDoubleFreeHalt(pa, order, pageType)
+		return
+	}
+
 	// Try to merge with buddy up to max order
 	for order < MaxOrder-1 {
 		blockSize := uintptr(PageSize) << uint(order)
@@ -436,14 +449,6 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 			pa = buddyPA
 		}
 		order++
-	}
-
-	// Detect double-free: if pa is already on the free list for this
-	// order, inserting again creates a self-cycle and the next walker hangs.
-	if buddyContainsPA(pa, order) {
-		buddyAlloc.lock.Unlock()
-		buddyDoubleFreeHalt(pa, order, pageType)
-		return
 	}
 
 	buddyInsertFree(pa, order)

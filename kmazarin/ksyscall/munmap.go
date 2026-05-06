@@ -152,7 +152,9 @@ func munmapClump(p *proc.Shepherd, idx int32) {
 	if inflight == 0 {
 		// Safe to free immediately
 		kmem.BuddyFreeTyped(c.StartPA, c.BuddyOrder, kmem.PageUserDMA)
+		p.LockClumps()
 		p.RemoveClump(idx)
+		p.UnlockClumps()
 	} else {
 		// I/O in flight — defer release to completion handler
 		c.PendingRelease = true
@@ -170,7 +172,9 @@ func CleanupShepherdDMAClumps(p *proc.Shepherd) {
 		inflight := atomic.LoadInt32(&c.InFlight)
 		if inflight == 0 {
 			kmem.BuddyFreeTyped(c.StartPA, c.BuddyOrder, kmem.PageUserDMA)
+			p.LockClumps()
 			p.RemoveClump(i)
+			p.UnlockClumps()
 		} else {
 			c.ShepherdDead = true
 		}

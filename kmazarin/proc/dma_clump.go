@@ -1,5 +1,7 @@
 package proc
 
+import "sync/atomic"
+
 // MaxDMAClumps is the maximum number of MAZARIN_CONTIGUOUS allocations per
 // shepherd. Fixed-size so registration is nosplit-safe on the g0 stack.
 const MaxDMAClumps = 16
@@ -73,7 +75,24 @@ func (s *Shepherd) AddClump(startPA, startVA uintptr, numPages, buddyOrder int) 
 	return &s.DMAClumps[idx]
 }
 
+// LockClumps acquires the per-shepherd clump spinlock.
+// Nosplit-safe; safe to call from any context since it's a simple CAS spin.
+//
+//go:nosplit
+func (s *Shepherd) LockClumps() {
+	for !atomic.CompareAndSwapInt32(&s.clumpSpin, 0, 1) {
+	}
+}
+
+// unlockClumps releases the per-shepherd clump spinlock.
+//
+//go:nosplit
+func (s *Shepherd) UnlockClumps() {
+	atomic.StoreInt32(&s.clumpSpin, 0)
+}
+
 // RemoveClump removes the clump at index idx by swapping with the last element.
+// Caller must hold s.LockClumps().
 // Nosplit-safe.
 //
 //go:nosplit
