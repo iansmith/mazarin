@@ -58,16 +58,18 @@ const (
 //	[40:44] DataLen  — bytes of data in data area (for writes)
 //	[44:48] ReqID    — request ID for response matching
 type FSIPCReqPayload struct {
-	Op      uint16
-	PathLen uint16
-	Handle  uint32
-	Flags   uint32
-	Mode    uint32
-	Arg0    uint64
-	Arg1    uint64
-	DataVA  uint64
-	DataLen uint32
-	ReqID   uint32
+	Op       uint16
+	PathLen  uint16
+	Handle   uint32
+	Flags    uint32
+	Mode     uint32
+	Arg0     uint64
+	Arg1     uint64
+	DataVA   uint64
+	DataLen  uint32
+	ReqID    uint32
+	RespRing uint8 // ring for fs to send responses on (FSOpConnect only)
+	_pad1    uint8
 }
 
 // FSIPCRespPayload is the payload for ProtoFSIPCResp messages.
@@ -94,7 +96,7 @@ type FSIPCRespPayload struct {
 var _ [1]struct{} = [1]struct{}{}              // always true
 var _ = (*FSIPCReqPayload)(nil)                // type exists
 var _ = (*FSIPCRespPayload)(nil)               // type exists
-var _ [112]byte = [unsafe.Sizeof(FSIPCReqPayload{}) + 64]byte{}  // 48 + 64 = 112
+var _ [112]byte = [unsafe.Sizeof(FSIPCReqPayload{}) + 56]byte{}  // 56 + 56 = 112 (struct padded to 8-byte alignment)
 var _ [112]byte = [unsafe.Sizeof(FSIPCRespPayload{}) + 80]byte{} // 32 + 80 = 112
 
 // EncodeFSIPCReq packs a request payload into a UringIPCMsg.

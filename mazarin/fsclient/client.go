@@ -44,6 +44,11 @@ type Client struct {
 	//   dispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.RespCh)
 	RespCh chan any
 
+	// RespRing is the uring ring index for fs to send responses on.
+	// Must be >= 1 (ring 0 is reserved for general shepherd IPC).
+	// Set before Connect — fs will panic if zero.
+	RespRing uint8
+
 	// mu serializes everything that touches the shared data area or
 	// expects a response on RespCh — i.e., effectively every public
 	// method. nextID is also mu-protected.
@@ -98,9 +103,10 @@ func (c *Client) Connect() error {
 	// Send connect handshake.
 	c.mu.Lock()
 	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
-		Op:      ipc.FSOpConnect,
-		DataVA:  uint64(c.remoteVA),
-		DataLen: uint32(c.dataLen),
+		Op:       ipc.FSOpConnect,
+		DataVA:   uint64(c.remoteVA),
+		DataLen:  uint32(c.dataLen),
+		RespRing: c.RespRing,
 	})
 	c.mu.Unlock()
 	if err != nil {

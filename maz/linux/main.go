@@ -554,6 +554,7 @@ func MazarinMain() {
 	// and can be processed while the file lane is blocked on fsclient.
 	stdoutCh := make(chan sys.SyscallRequest, 32)
 	startUringDispatchers(fsClient, delegateCh, stdoutCh, tempWMCh, tempFontReplyCh)
+	fsClient.RespRing = ipc.RingFSResp
 	if err := fsClient.Connect(); err != nil {
 		panic(fmt.Sprintf("[linux] FATAL: fsclient.Connect: %v", err))
 	}

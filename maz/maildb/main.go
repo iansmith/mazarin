@@ -47,10 +47,21 @@ func forceMailDBIOItab(v interface{}) {
 // injection channels. Mail protocol requests are dispatched to the
 // mailHandler. FTI responses are sent to ftiRespCh.
 func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh chan any, mh *mailHandler, ftiRespCh chan any, ftiSID int, tracker *ftiTracker) {
+	// Set up ring 1 for fs IPC responses, avoiding head-of-line blocking
+	// from WM/Font/Mail/FTI traffic on ring 0. The ring number is sent to
+	// fs during the connect handshake so fs knows where to respond.
+	const fsRespRing = 1
+	if err := uring.Setup(fsRespRing); err != nil {
+		panic(fmt.Sprintf("[maildb] uring.Setup(fsRespRing=%d) failed: %v", fsRespRing, err))
+	}
+	fsClient.RespRing = fsRespRing
+	d1 := uring.NewDispatcherWithRing(fsRespRing)
+	d1.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
+	d1.Start()
+
 	d := uring.NewDispatcher()
 	d.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
 	d.On(ipc.ProtoFontResponse, decodeRawPayload, fontReplyCh)
-	d.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
 	d.OnFunc(ipc.ProtoMailReq, decodeMailReqWithSID, func(v any) {
 		if tagged, ok := v.(taggedMailReq); ok {
 			mh.handleMailReq(tagged.req, tagged.senderSID)
