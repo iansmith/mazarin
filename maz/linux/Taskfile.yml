@@ -6,10 +6,10 @@ tasks:
     run: once
     deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
-      - 'maz/linux/**/*.go'
-      - 'maz/linux/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/maz/linux/**/*.go'
+      - '{{.ROOT_DIR}}/maz/linux/**/*.s'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'
@@ -32,10 +32,10 @@ tasks:
     run: once
     deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
-      - 'maz/linux/**/*.go'
-      - 'maz/linux/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/maz/linux/**/*.go'
+      - '{{.ROOT_DIR}}/maz/linux/**/*.s'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'

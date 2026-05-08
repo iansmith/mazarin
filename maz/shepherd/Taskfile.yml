@@ -6,9 +6,9 @@ tasks:
     run: once
     deps: [':check-env', ':merged-shepherd-overlay', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
-      - 'maz/shepherd/**/*.go'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/maz/shepherd/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
       - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
@@ -35,9 +35,9 @@ tasks:
     run: once
     deps: [':check-env', ':merged-shepherd-overlay-amd64', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
-      - 'maz/shepherd/**/*.go'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/maz/shepherd/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
       - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'

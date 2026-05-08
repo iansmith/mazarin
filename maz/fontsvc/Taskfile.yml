@@ -6,9 +6,9 @@ tasks:
     run: once
     deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
-      - 'maz/fontsvc/**/*.go'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/maz/fontsvc/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'
@@ -31,9 +31,9 @@ tasks:
     run: once
     deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
-      - 'maz/fontsvc/**/*.go'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/maz/fontsvc/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'

@@ -6,7 +6,7 @@ tasks:
     desc: Generate overlay JSON for diplomat runtime patches (Linux->UEFI)
     deps: [':gen-overlay:build']
     sources:
-      - 'runtime-patches/diplomat-linux/**/*'
+      - '{{.ROOT_DIR}}/runtime-patches/diplomat-linux/**/*'
     generates:
       - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
     cmds:
@@ -16,11 +16,11 @@ tasks:
     desc: Build diplomat UEFI bootloader for x86_64
     deps: [':check-env', ':build-dir', ':elf2pe:build', 'linux-overlay']
     sources:
-      - 'diplomat/**/*.go'
-      - 'diplomat/**/*.s'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/diplomat/**/*.go'
+      - '{{.ROOT_DIR}}/diplomat/**/*.s'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
-      - 'runtime-patches/diplomat-linux/**/*'
+      - '{{.ROOT_DIR}}/runtime-patches/diplomat-linux/**/*'
     generates:
       - '{{.DIPLOMAT_EFI}}'
     cmds:
@@ -35,11 +35,11 @@ tasks:
     desc: Build diplomat UEFI bootloader for ARM64
     deps: [':check-env', ':build-dir', ':elf2pe:build', 'linux-overlay']
     sources:
-      - 'diplomat/**/*.go'
-      - 'diplomat/**/*.s'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/diplomat/**/*.go'
+      - '{{.ROOT_DIR}}/diplomat/**/*.s'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
-      - 'runtime-patches/diplomat-linux/**/*'
+      - '{{.ROOT_DIR}}/runtime-patches/diplomat-linux/**/*'
     generates:
       - '{{.BUILD_DIR}}/diplomat-arm64.efi'
     cmds:

@@ -6,10 +6,10 @@ tasks:
     run: once
     deps: [':check-env', ':merged-shepherd-overlay']
     sources:
-      - 'maz/**/*.go'
-      - 'maz/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/maz/**/*.go'
+      - '{{.ROOT_DIR}}/maz/**/*.s'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
       - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
@@ -25,10 +25,10 @@ tasks:
     run: once
     deps: [':check-env', ':merged-shepherd-overlay-amd64']
     sources:
-      - 'maz/**/*.go'
-      - 'maz/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/maz/**/*.go'
+      - '{{.ROOT_DIR}}/maz/**/*.s'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
       - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'

@@ -6,9 +6,9 @@ tasks:
     run: once
     deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
     sources:
-      - 'mazarin/apps/calc/**/*'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/apps/calc/**/*'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
@@ -23,9 +23,9 @@ tasks:
     run: once
     deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
     sources:
-      - 'mazarin/apps/calc/**/*'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/apps/calc/**/*'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
