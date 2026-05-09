@@ -147,27 +147,6 @@ func DecodeFSDelegateReq(msg *ipc.UringIPCMsg) any {
 	}
 }
 
-// NewSyscallRequest creates a SyscallRequest from uring-delivered payload fields.
-// Used by the handler's uring Dispatcher to convert ProtoFSDelegateReq messages
-// into the SyscallRequest type consumed by the delegate handler goroutine.
-func NewSyscallRequest(sysID sysid.ID, callerSID, callerTID int16, args [6]uint64, dataVA uintptr, dataLen uint32) SyscallRequest {
-	return SyscallRequest{
-		SysID:     sysID,
-		CallerPID: callerSID,
-		CallerTID: callerTID,
-		Args:      args,
-		dataVA:    dataVA,
-		dataLen:   dataLen,
-	}
-}
-
-// RegisterSyscallHandlers registers the calling shepherd as the handler for
-// the given syscalls on ring 0. The handler receives delegated requests via
-// its uring Dispatcher (ProtoFSDelegateReq).
-func RegisterSyscallHandlers(ids ...sysid.ID) error {
-	return RegisterSyscallHandlersWithRing(0, ids...)
-}
-
 // RegisterSyscallHandlersWithRing registers the calling shepherd as the handler
 // for the given syscalls, specifying which ring index should receive delegate
 // requests. Ring 0 is the default; use 1 or 2 for additional rings created

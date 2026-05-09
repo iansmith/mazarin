@@ -223,13 +223,10 @@ func main() {
 }
 
 
-// readFileIntoPages reads a file from an ext2 filesystem into pages.
-// When transferable is true, uses kernel-tracked pages (AllocPages) that
-// can be passed to TransferAndUnmap. When false, uses anonymous mmap
-// for temporary use (caller must munmap).
-// The ext2 ReadInto method handles batched I/O internally — if the
-// underlying BlockDevice implements BatchBlockDevice, all data blocks
-// are read in a single batch operation.
+// readFileIntoPages reads a file from an ext2 filesystem into anonymous mmap'd
+// pages. The caller must munmap when done. The ext2 ReadInto method handles
+// batched I/O internally — if the underlying BlockDevice implements
+// BatchBlockDevice, all data blocks are read in a single batch operation.
 func readFileIntoPages(fsys *ext2.FileSystem, path string) (va uintptr, numPages int, bytesRead int, err error) {
 	file, ferr := fsys.Open(path)
 	if ferr != nil {
