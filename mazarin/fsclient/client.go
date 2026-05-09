@@ -531,3 +531,29 @@ func IsErrno(err error) (int32, bool) {
 	}
 	return 0, false
 }
+
+// ReadFile loads an entire file into a newly allocated []byte by opening the
+// file, reading it in chunks through the shared data area, and closing it.
+// For files smaller than the data area (64KB), a single Read suffices;
+// larger files are read in chunks with multiple IPC round-trips.
+func (c *Client) ReadFile(path string) ([]byte, error) {
+	handle, _, _, size, err := c.Open(path, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close(handle)
+
+	buf := make([]byte, size)
+	total := 0
+	for offset := int64(0); total < int(size); offset += int64(n) {
+		n, err := c.Read(handle, offset, buf[total:])
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			break
+		}
+		total += n
+	}
+	return buf[:total], nil
+}

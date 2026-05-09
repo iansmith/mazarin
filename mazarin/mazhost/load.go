@@ -15,30 +15,28 @@ package mazhost
 import (
 	"fmt"
 	"runtime"
-	"syscall"
 	"unsafe"
 
 	merror "mazzy/mazarin/error"
+	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/mazdl"
-	"mazzy/mazarin/sys"
 )
 
 // LoadMazBootstrap loads a .maz module and returns (MazarinMain, MazarinShepherd-addr).
-// The shepherd argument is unused (historical API); the caller is responsible for
-// invoking MazarinShepherd with its own injector by constructing a funcval from
-// the returned second return value.
+// The fc must already be connected. The shepherd argument is unused (historical API);
+// the caller is responsible for invoking MazarinShepherd with its own injector by
+// constructing a funcval from the returned second return value.
 //
 // On success, returns a func() that the caller should run as a goroutine.
-func LoadMazBootstrap(filename string, _ interface{}) (func(), uintptr, *merror.Error) {
-	return loadMazInternal(filename)
+func LoadMazBootstrap(fc *fsclient.Client, filename string, _ interface{}) (func(), uintptr, *merror.Error) {
+	return loadMazInternal(fc, filename)
 }
 
 // LaunchMaz loads a .maz module by name and runs its MazarinMain in a new
-// goroutine with a pre-grown stack.
-func LaunchMaz(name string) {
-	path := sys.LoadMazByName("/" + name)
-	// noise: LaunchMaz boot trace disabled during scorch ENOENT investigation
-	mazMain, _, err := loadMazInternal(path)
+// goroutine with a pre-grown stack. fc must already be connected.
+func LaunchMaz(fc *fsclient.Client, name string) {
+	path := "/" + name + ".maz"
+	mazMain, _, err := loadMazInternal(fc, path)
 	if err != nil {
 		panic(fmt.Sprintf("[mazhost] LaunchMaz(%q) failed: %v", name, err))
 	}
@@ -72,27 +70,29 @@ func runWithLargeStack(fn func()) {
 // LaunchMaz. Flow:
 //
 //  1. Ensure RegisterHost has been called (idempotent).
-//  2. Read plugin bytes via sys.LoadFile (fs.maz delegate).
+//  2. Read plugin bytes via fsclient.ReadFile.
 //  3. Hand them to mazdl.OpenBytes, which maps segments, applies
 //     relocations, runs DT_INIT_ARRAY (moduledata registration), and
 //     publishes DEFINED exports.
 //  4. Look up MazarinMain (required) and MazarinShepherd (optional).
 //  5. Build funcvals and return.
-func loadMazInternal(filename string) (func(), uintptr, *merror.Error) {
+func loadMazInternal(fc *fsclient.Client, filename string) (func(), uintptr, *merror.Error) {
 	if _, err := mazdl.RegisterHost(); err != nil {
 		return nil, 0, merror.ErrInvalidELF.Wrap(fmt.Sprintf("%s: RegisterHost: %v", filename, err))
 	}
 
-	data, mErr := readFileViaDelegate(filename)
-	if mErr != nil {
-		return nil, 0, mErr
+	data, err := fc.ReadFile(filename)
+	if err != nil {
+		return nil, 0, merror.ErrFileNotFound.Wrap(fmt.Sprintf("%s: %v", filename, err))
+	}
+	if len(data) == 0 {
+		return nil, 0, merror.ErrFileNotFound.Wrap(fmt.Sprintf("%s: ReadFile returned 0 bytes", filename))
 	}
 
 	h, err := mazdl.OpenBytes(filename, data)
 	if err != nil {
 		return nil, 0, merror.ErrInvalidELF.Wrap(fmt.Sprintf("%s: OpenBytes: %v", filename, err))
 	}
-	// noise: per-load trace disabled during scorch ENOENT investigation
 
 	entryAddr, err := h.Sym("MazarinMain")
 	if err != nil {
@@ -104,7 +104,6 @@ func loadMazInternal(filename string) (func(), uintptr, *merror.Error) {
 	var shepherdAddr uintptr
 	if addr, sErr := h.Sym("MazarinShepherd"); sErr == nil {
 		shepherdAddr = addr
-		// noise: MazarinShepherd address trace disabled during scorch ENOENT investigation
 	}
 
 	type funcval struct{ fn uintptr }
@@ -112,24 +111,4 @@ func loadMazInternal(filename string) (func(), uintptr, *merror.Error) {
 	mazMain := *(*func())(unsafe.Pointer(&fv))
 
 	return mazMain, shepherdAddr, nil
-}
-
-// readFileViaDelegate fetches the file's bytes through the fs.maz LoadFile
-// delegate. The returned []byte is a plain Go slice; the underlying
-// delegate-mapped pages are munmapped before we return so the caller doesn't
-// have to.
-func readFileViaDelegate(filename string) ([]byte, *merror.Error) {
-	lf, err := sys.LoadFile(filename)
-	if err != nil {
-		return nil, err.Wrap(filename)
-	}
-	if lf.BytesRead == 0 {
-		return nil, merror.ErrFileNotFound.Wrap(fmt.Sprintf("%s: LoadFile returned 0 bytes", filename))
-	}
-	src := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(lf.StartVA))), lf.BytesRead)
-	out := make([]byte, lf.BytesRead)
-	copy(out, src)
-	syscall.RawSyscall6(syscall.SYS_MUNMAP, uintptr(lf.StartVA),
-		uintptr(lf.NumPages)*4096, 0, 0, 0, 0)
-	return out, nil
 }

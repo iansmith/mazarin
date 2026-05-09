@@ -20,8 +20,11 @@ import (
 	"fmt"
 	"os"
 
+	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
+	"mazzy/shared/ipc"
 )
 
 func main() {
@@ -32,7 +35,25 @@ func main() {
 	pluginPath := os.Args[2]
 	sys.UartWriteString(fmt.Sprintf("[shepherd] loading %s (sid=%s)\n", pluginPath, os.Args[1]))
 
-	mazMain, _, err := mazhost.LoadMazBootstrap(pluginPath, nil)
+	// Set up uring ring for fs responses and connect to fs.
+	fsRespRing := ipc.RingFSResp
+	if err := uring.Setup(fsRespRing); err != nil {
+		panic(fmt.Sprintf("[shepherd] uring.Setup(%d) failed: %v", fsRespRing, err))
+	}
+
+	fsSID := sys.MustGetShepherdByName("fs")
+	fc := fsclient.New(fsSID)
+	fc.RespRing = fsRespRing
+
+	disp := uring.NewDispatcherWithRing(fsRespRing)
+	disp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.RespCh)
+	disp.Start()
+
+	if err := fc.Connect(); err != nil {
+		panic(fmt.Sprintf("[shepherd] fsclient.Connect: %v", err))
+	}
+
+	mazMain, _, err := mazhost.LoadMazBootstrap(fc, pluginPath, nil)
 	if err != nil {
 		panic(fmt.Sprintf("[shepherd] LoadMazBootstrap(%q): %v", pluginPath, err))
 	}

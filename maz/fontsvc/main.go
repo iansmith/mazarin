@@ -9,8 +9,8 @@ package main
 import (
 	"bytes"
 	"mazzy/mazarin/fontcache"
+	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/mem"
-	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
 	"mazarin/textshape"
 	"mazzy/shared/wm"
@@ -24,6 +24,9 @@ var MazEntryPoint func() = MazarinMain
 
 // MazarinShepherdAddr holds a reference to MazarinShepherd to prevent DCE.
 var MazarinShepherdAddr func(interface{}) error = MazarinShepherd
+
+// fc is the fs IPC client, set by MazarinShepherd from the injector.
+var fc *fsclient.Client
 
 func init() {
 	if MazEntryPoint == nil {
@@ -71,6 +74,14 @@ func MazarinShepherd(injected interface{}) error {
 	inj.RegisterInternalOpenFont(internalOpenFont)
 	inj.RegisterInternalGlyphByGID(internalGlyphByGID)
 
+	// Extract fs IPC client from the concrete injector struct.
+	if init, ok := injected.(*fontcache.FontSvcInit); ok {
+		fc = init.FSClient
+	}
+	if fc == nil {
+		rawPuts("[fontsvc] MazarinShepherd: no FSClient in injector\n")
+	}
+
 	rawPuts("[fontsvc] MazarinShepherd: handlers registered\n")
 	return nil
 }
@@ -84,7 +95,7 @@ type fontSlot struct {
 	size     int32
 	cache    []byte        // V2 glyph cache (kernel-allocated pages)
 	face     *goFont.Face  // go-text Face (backed by fontData)
-	fontData []byte        // raw font file bytes (from LoadFile)
+	fontData []byte        // raw font file bytes (from fs IPC)
 	scale    float32       // pointSize / upem
 }
 
@@ -270,7 +281,7 @@ func findCachedFont(path string, variant int32, size int32) int32 {
 }
 
 // findExistingFont finds an existing slot with the same path+variant (any size).
-// Returns the parsed Face and font data so we can skip LoadFile+Parse.
+// Returns the parsed Face and font data so we can skip ReadFile+Parse.
 func findExistingFont(path string, variant int32) (*goFont.Face, []byte) {
 	for i := int32(0); i < fontcache.MaxFonts; i++ {
 		if fonts[i].inUse && fonts[i].path == path &&
@@ -333,10 +344,18 @@ func ensureFontIndex() error {
 	if fontIdx != nil {
 		return nil
 	}
-	var err error
-	fontIdx, err = fontcache.LoadFontIndex("/fonts/fonts.csv")
+	if fc == nil {
+		rawPuts("[fontsvc] ensureFontIndex: no fs client\n")
+		return errors.New("no fs client")
+	}
+	data, err := fc.ReadFile("/fonts/fonts.csv")
 	if err != nil {
 		rawPuts("[fontsvc] failed to load font index: " + err.Error() + "\n")
+		return err
+	}
+	fontIdx, err = fontcache.LoadFontIndex(data)
+	if err != nil {
+		rawPuts("[fontsvc] failed to parse font index: " + err.Error() + "\n")
 		return err
 	}
 	rawPuts("[fontsvc] font index loaded\n")
@@ -376,13 +395,13 @@ func loadOrCacheFont(family string, variant, size int32) int32 {
 	// Try reusing an already-parsed font (same file, different size).
 	face, fontData := findExistingFont(path, variant)
 	if face == nil {
-		// Load font file from FAT32.
-		result, loadErr := sys.LoadFile(path)
+		// Load font file via fs IPC.
+		var loadErr error
+		fontData, loadErr = fc.ReadFile(path)
 		if loadErr != nil {
-			rawPuts("[fontsvc] LoadFile failed: " + path + "\n")
+			rawPuts("[fontsvc] ReadFile failed: " + path + "\n")
 			return -1
 		}
-		fontData = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
 
 		// Parse font using go-text.
 		var err error
@@ -584,12 +603,11 @@ func resolveFamilyPath(family string, variant, size int32) (string, bool) {
 // the live byte slice (backed by the kernel-allocated load pages) and
 // the parsed Face on success.
 func loadAndParseFont(path string) (*goFont.Face, []byte, bool) {
-	result, loadErr := sys.LoadFile(path)
-	if loadErr != nil {
-		rawPuts("[fontsvc] LoadFile failed: " + path + "\n")
+	fontData, err := fc.ReadFile(path)
+	if err != nil {
+		rawPuts("[fontsvc] ReadFile failed: " + path + "\n")
 		return nil, nil, true
 	}
-	fontData := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
 	face, err := goFont.ParseTTF(bytes.NewReader(fontData))
 	if err != nil {
 		rawPuts("[fontsvc] ParseTTF failed for " + path + ": " + err.Error() + "\n")
@@ -764,7 +782,7 @@ func handleOpenTemporaryFont(senderSID int, msg *wm.OpenTemporaryFont) {
 	//      already mapped at a known fontsvc-side VA. This is the
 	//      common case for HTML rendering.
 	//   2. filesystem — the family resolves through the font index
-	//      to a /fonts/ path; load via sys.LoadFile.
+	//      to a /fonts/ path; load via fc.ReadFile.
 	//
 	// msg.FontDataVA is reserved for an inline shared-bytes path
 	// (caller passing bytes per-open) — currently unused. Most
@@ -1014,7 +1032,7 @@ func CleanupShepherdFonts(deadSID int) {
 //     RegisterFontBuffer; fontsvc holds a reshared mapping, not
 //     ownership. Freeing here would underflow the kernel RefCount.
 //   - filesystem path (handleOpenTemporaryFont line ~798): fontsvc
-//     loaded the bytes via sys.LoadFile and owns them.
+//     loaded the bytes via fc.ReadFile and retains them.
 //
 // We don't free fontData here because we don't track which path was
 // used. Registered-bytes is the dominant case for HTML rendering, so

@@ -4,6 +4,7 @@
 package fontcache
 
 import (
+	"mazzy/mazarin/fsclient"
 	"mazzy/shared/wm"
 )
 
@@ -73,6 +74,11 @@ type FontSvcInit struct {
 	CleanupShepherdFonts       func(deadSID int)
 	InternalOpenFont           func(family string, variant, size int32) (InternalOpenFontResult, bool)
 	InternalGlyphByGID         func(fontID int32, gid uint32) (InternalGlyphResult, bool)
+
+	// FSClient is the fs IPC client (already connected). Fontsvc uses it
+	// to load font files from the filesystem instead of the removed
+	// removed sys.LoadFile delegate path.
+	FSClient *fsclient.Client
 }
 
 // RegisterOpenFontHandler implements FontSvcInjector.
