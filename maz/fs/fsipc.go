@@ -170,8 +170,8 @@ func (s *fsIPCServer) processRequest(raw fsIPCRequest, mt *mountTable) {
 // (ring 0 is reserved for general shepherd IPC); a zero value means
 // the caller didn't allocate a dedicated ring for fs responses.
 func (s *fsIPCServer) handleConnect(sid int16, req *ipc.FSIPCReqPayload) {
-	if req.RespRing == 0 {
-		panic(fmt.Sprintf("[fs] FSOpConnect from SID=%d: RespRing is zero — caller must allocate a dedicated uring ring (>=1) for fs responses", sid))
+	if req.RespRing == 0 || req.RespRing >= ipc.MaxRingsPerShepherd {
+		panic(fmt.Sprintf("[fs] FSOpConnect from SID=%d: RespRing=%d is invalid — must be 1..%d", sid, req.RespRing, ipc.MaxRingsPerShepherd-1))
 	}
 	if req.DataVA == 0 {
 		panic(fmt.Sprintf("[fs] FSOpConnect from SID=%d: DataVA is zero — caller must SharePages a data area before connecting", sid))

@@ -45,8 +45,8 @@ type Client struct {
 	RespCh chan any
 
 	// RespRing is the uring ring index for fs to send responses on.
-	// Must be >= 1 (ring 0 is reserved for general shepherd IPC).
-	// Set before Connect — fs will panic if zero.
+	// Must be 1..MaxRingsPerShepherd-1 (ring 0 is reserved for general
+	// shepherd IPC). Set before Connect — fs will panic if out of range.
 	RespRing uint8
 
 	// mu serializes everything that touches the shared data area or
@@ -71,8 +71,9 @@ type Client struct {
 // surface immediately at the dispatcher's send-side.
 func New(fsSID int) *Client {
 	return &Client{
-		fsSID:  fsSID,
-		RespCh: make(chan any, 1),
+		fsSID:    fsSID,
+		RespCh:   make(chan any, 1),
+		RespRing: ipc.RingFSResp,
 	}
 }
 
@@ -85,6 +86,9 @@ func DecodeResp(msg *ipc.UringIPCMsg) any {
 // Connect allocates the shared data area, maps it into fs, and sends the
 // handshake message. Blocks until fs confirms the connection.
 func (c *Client) Connect() error {
+	if c.RespRing == 0 || c.RespRing >= ipc.MaxRingsPerShepherd {
+		return fmt.Errorf("fsclient: RespRing=%d is invalid — must be 1..%d", c.RespRing, ipc.MaxRingsPerShepherd-1)
+	}
 	// Allocate shared data pages.
 	ptr, err := mem.AllocPages(dataPages, mem.PageIPC)
 	if err != nil {

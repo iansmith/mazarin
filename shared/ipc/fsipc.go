@@ -45,7 +45,7 @@ const (
 //   - Write operations: caller writes data at DataVA[0:DataLen]
 //   - fs reads the data area, then may overwrite it with response data
 //
-// Layout (48 bytes):
+// Layout (56 bytes, padded to 8-byte alignment):
 //
 //	[0:2]   Op       — operation code (FSOpOpen, etc.)
 //	[2:4]   PathLen  — path length in data area (0 = no path)
@@ -57,6 +57,9 @@ const (
 //	[32:40] DataVA   — shared data area VA in fs's address space
 //	[40:44] DataLen  — bytes of data in data area (for writes)
 //	[44:48] ReqID    — request ID for response matching
+//	[48:49] RespRing — ring for fs responses (FSOpConnect only, 1..3)
+//	[49:50] _pad1
+//	[50:56] (trailing alignment padding)
 type FSIPCReqPayload struct {
 	Op       uint16
 	PathLen  uint16
