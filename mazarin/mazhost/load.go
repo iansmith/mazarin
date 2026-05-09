@@ -43,6 +43,12 @@ func LaunchMaz(fc *fsclient.Client, name string) {
 	go runWithLargeStack(mazMain)
 }
 
+// HostFSClient is set by the shepherd host before the .maz plugin runs.
+// Plugins that need fs access (rachel, fontsvc) use this instead of
+// creating their own connection — the host plugin share a SID, and
+// fs only allows one connection per SID.
+var HostFSClient *fsclient.Client
+
 // RunMaz runs an already-loaded .maz func on a pre-grown stack.
 func RunMaz(fn func()) {
 	runWithLargeStack(fn)

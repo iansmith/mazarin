@@ -35,23 +35,28 @@ func main() {
 	pluginPath := os.Args[2]
 	sys.UartWriteString(fmt.Sprintf("[shepherd] loading %s (sid=%s)\n", pluginPath, os.Args[1]))
 
-	// Set up uring ring for fs responses and connect to fs.
-	fsRespRing := int(ipc.RingFSResp)
-	if err := uring.Setup(fsRespRing); err != nil {
-		panic(fmt.Sprintf("[shepherd] uring.Setup(%d) failed: %v", fsRespRing, err))
+	// Set up uring ring for fs responses. This ring is shared by all
+	// .maz plugins in this process via mazhost.HostFSClient.
+	fsRing := int(ipc.RingFSResp)
+	if err := uring.Setup(fsRing); err != nil {
+		panic(fmt.Sprintf("[shepherd] uring.Setup(%d) failed: %v", fsRing, err))
 	}
 
 	fsSID := sys.MustGetShepherdByName("fs")
 	fc := fsclient.New(fsSID)
 	fc.RespRing = ipc.RingFSResp
 
-	disp := uring.NewDispatcherWithRing(fsRespRing)
+	disp := uring.NewDispatcherWithRing(fsRing)
 	disp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.RespCh)
 	disp.Start()
 
 	if err := fc.Connect(); err != nil {
 		panic(fmt.Sprintf("[shepherd] fsclient.Connect: %v", err))
 	}
+
+	// Store so the .maz plugin (rachel) can use it. Both share the same
+	// SID, and fs only allows one connection per SID.
+	mazhost.HostFSClient = fc
 
 	mazMain, _, err := mazhost.LoadMazBootstrap(fc, pluginPath, nil)
 	if err != nil {

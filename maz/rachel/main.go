@@ -12,7 +12,6 @@ import (
 	"image/color"
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
-	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/input"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
@@ -1626,23 +1625,15 @@ func MazarinMain() {
 	}
 	go inputAcq.Run()
 
-	// Wait for fs shepherd to be ready, then connect via fsclient.
+	// Wait for fs shepherd to be ready.
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[rachel] FATAL: fs: %v", err))
 	}
 
-	// Set up uring ring for fs IPC responses and connect.
-	fsSID := sys.MustGetShepherdByName("fs")
-	rachelFS := fsclient.New(fsSID)
-	rachelFS.RespRing = ipc.RingFSResp
-	if err := uring.Setup(ipc.RingFSResp); err != nil {
-		panic(fmt.Sprintf("[rachel] uring.Setup(RingFSResp) failed: %v", err))
-	}
-	fsDisp := uring.NewDispatcherWithRing(ipc.RingFSResp)
-	fsDisp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, rachelFS.RespCh)
-	fsDisp.Start()
-	if err := rachelFS.Connect(); err != nil {
-		panic(fmt.Sprintf("[rachel] fsclient.Connect: %v", err))
+	// Use the host shepherd's fsClient (both share SID, fs allows one conn per SID).
+	rachelFS := mazhost.HostFSClient
+	if rachelFS == nil {
+		panic("[rachel] mazhost.HostFSClient is nil — host shepherd must set it before RunMaz")
 	}
 
 	// Read rachel.toml via fs IPC.
