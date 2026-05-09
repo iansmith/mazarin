@@ -8,9 +8,11 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/mem"
+	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
 	"mazarin/textshape"
 	"mazzy/shared/wm"

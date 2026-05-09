@@ -36,14 +36,14 @@ func main() {
 	sys.UartWriteString(fmt.Sprintf("[shepherd] loading %s (sid=%s)\n", pluginPath, os.Args[1]))
 
 	// Set up uring ring for fs responses and connect to fs.
-	fsRespRing := ipc.RingFSResp
+	fsRespRing := int(ipc.RingFSResp)
 	if err := uring.Setup(fsRespRing); err != nil {
 		panic(fmt.Sprintf("[shepherd] uring.Setup(%d) failed: %v", fsRespRing, err))
 	}
 
 	fsSID := sys.MustGetShepherdByName("fs")
 	fc := fsclient.New(fsSID)
-	fc.RespRing = fsRespRing
+	fc.RespRing = ipc.RingFSResp
 
 	disp := uring.NewDispatcherWithRing(fsRespRing)
 	disp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.RespCh)

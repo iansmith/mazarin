@@ -561,7 +561,7 @@ func MazarinMain() {
 	// 5. Load linux-ui.maz and inject LinuxIO.
 	uiPath := sys.LoadMazByName("/linux-ui")
 	fmt.Printf("[linux] loading linux-ui from %s...\n", uiPath)
-	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(uiPath, nil)
+	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(fsClient, uiPath, nil)
 	if uiErr != nil {
 		panic(fmt.Sprintf("[linux] LoadMazBootstrap(linux-ui) failed: %v", uiErr))
 	}
@@ -652,7 +652,7 @@ func MazarinMain() {
 	sys.StartMemStatsLogger("linux", 0) // default 30s
 
 	// 9. Launch helloworld.maz.
-	mazhost.LaunchMaz("helloworld")
+	mazhost.LaunchMaz(fsClient, "helloworld")
 
 	// 10. Line accumulator goroutine — serial + delegates -> WriteCh.
 	go lineAccumulator(serialCh, delegateDataCh, writeCh, notifyCh)

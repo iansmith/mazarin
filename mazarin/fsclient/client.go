@@ -545,7 +545,7 @@ func (c *Client) ReadFile(path string) ([]byte, error) {
 
 	buf := make([]byte, size)
 	total := 0
-	for offset := int64(0); total < int(size); offset += int64(n) {
+	for offset := int64(0); total < int(size); {
 		n, err := c.Read(handle, offset, buf[total:])
 		if err != nil {
 			return nil, err
@@ -554,6 +554,7 @@ func (c *Client) ReadFile(path string) ([]byte, error) {
 			break
 		}
 		total += n
+		offset += int64(n)
 	}
 	return buf[:total], nil
 }

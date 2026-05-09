@@ -269,7 +269,7 @@ func main() {
 	// 4. Load mail-ui.maz and inject MailDBIO.
 	uiPath := sys.LoadMazByName("/mail-ui")
 	mlogInfo("[maildb] loading mail-ui from %s...", uiPath)
-	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(uiPath, nil)
+	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(fsClient, uiPath, nil)
 	if uiErr != nil {
 		panic(fmt.Sprintf("[maildb] LoadMazBootstrap(mail-ui) failed: %v", uiErr))
 	}
