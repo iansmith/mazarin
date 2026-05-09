@@ -1,10 +1,7 @@
 // fs is a standalone shepherd that owns the block device and provides
-// filesystem services via delegated syscalls. It mounts ext2 using async
+// filesystem services via FSOpConnect IPC. It mounts ext2 using async
 // DMA block I/O, reads the boot config to launch application shepherds,
-// then enters a delegate serve loop handling LoadFile and ReadFilePages.
-//
-// Both the root filesystem (VirtIO block device, read-only) and the /tmp
-// ramdisk (MemBlockDevice, read-write) are ext2.
+// then enters a serve loop handling file operation requests.
 package main
 
 import (
@@ -18,7 +15,6 @@ import (
 	"mazzy/shared/hid"
 	"mazzy/shared/iouring"
 	uringipc "mazzy/shared/ipc"
-	"mazzy/shared/sysid"
 	"os"
 	"strconv"
 	"strings"
@@ -195,121 +191,37 @@ func main() {
 	}
 	mt := &mountTable{root: fsys, tmpFS: tmpFS}
 
-	// 5. Register as delegate handler for LoadFile and ReadFilePages.
-	// Requests arrive via uring Dispatcher (ProtoFSDelegateReq).
-	// Shepherd file operations arrive via ProtoFSIPCReq.
-	err = sys.RegisterSyscallHandlers(sysid.LoadFile, sysid.ReadFilePages)
-	if err != nil {
-		fmt.Printf("[fs] RegisterSyscallHandlers failed: %v\n", err)
-		os.Exit(1)
-	}
-	fsDelegateCh := make(chan any, 8)
+	// 5. Set up uring dispatcher for shepherd file operations.
 	fsIPCCh := make(chan any, 8)
 	fsDisp := uring.NewDispatcher()
-	fsDisp.On(uringipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, fsDelegateCh)
 	fsDisp.On(uringipc.ProtoFSIPCReq, DecodeReq, fsIPCCh)
 	fsDisp.OnDeath(func(deadSID int16) {
 		fmt.Printf("[fs] shepherd %d died\n", deadSID)
 	})
 	fsDisp.Start()
-	fmt.Println("[fs] registered as LoadFile + ReadFilePages delegate (uring)")
+	fmt.Println("[fs] uring dispatcher started (FSOpConnect IPC)")
 
-	// 5. Signal readiness — delegate handler is running, serve loop
-	// will start momentarily. Shepherds waiting on fs can proceed.
+	// 5. Signal readiness — IPC dispatcher is running. Shepherds waiting on fs can proceed.
 	sys.SetReady(true)
 	fmt.Println("[fs] SetReady(true)")
 
 	// 6. Boot sequence goroutine: launch linux → rachel (with ready
 	// waits) → then read startup.toml and launch remaining shepherds.
-	// Runs as a goroutine so the serve loop can process LoadFile
+	// Runs as a goroutine so the serve loop can process file IPC
 	// requests during shepherd boot (e.g., rachel loading fontsvc.maz).
 	go bootSequence(fsys)
 
-	// 7. Spawn the delegate worker pool. LoadFile/ReadFilePages reads
-	// can hold the ext2 read lock for hundreds of ms (35MB of mail.maz
-	// at ~10MB/s), so processing them on the main serve loop blocks
-	// fsIPCCh (Open/Stat/etc.) requests for the same duration. With
-	// ext2's RWMutex now coordinating reader/writer access, multiple
-	// LoadFile workers can run concurrently and interleave at the
-	// asyncBlockDev per-chunk lock.
-	//
-	// Pool size 16: matches `fsDelegateCh` cap (8) with 1× headroom so
-	// no request ever queues at the channel. Bounded so peak in-flight
-	// memory (workers × ~35MB pages) stays under ~560MB.
-	delegateWorkCh := make(chan sys.SyscallRequest, fsDelegateWorkers)
-	for i := 0; i < fsDelegateWorkers; i++ {
-		go fsDelegateWorker(delegateWorkCh, mt)
-	}
-
-	// 8. Serve loop. fsDelegateCh forwards to the worker pool;
-	// fsIPCCh is processed inline on the main goroutine (single-
-	// goroutine ext2 IPC is fine — handlers are short).
+	// 7. Serve loop — process FSOpConnect IPC requests.
 	fmt.Println("[fs] entering serve loop")
-	for {
-		select {
-		case raw := <-fsDelegateCh:
-			req, ok := raw.(sys.SyscallRequest)
-			if !ok {
-				continue
-			}
-			delegateWorkCh <- req
-		case raw := <-fsIPCCh:
-			req, ok := raw.(fsIPCRequest)
-			if !ok {
-				continue
-			}
-			ipcSrv.processRequest(req, mt)
+	for raw := range fsIPCCh {
+		req, ok := raw.(fsIPCRequest)
+		if !ok {
+			continue
 		}
+		ipcSrv.processRequest(req, mt)
 	}
 }
 
-// fsDelegateWorkers is the size of the worker pool draining fsDelegateCh.
-// See the comment above the pool spawn for sizing rationale.
-const fsDelegateWorkers = 16
-
-// fsDelegateWorker pulls SyscallRequests from delegateWorkCh and processes
-// each (LoadFile or ReadFilePages). Workers are persistent — they exit
-// only when delegateWorkCh is closed (i.e. shepherd shutdown — never in
-// normal operation). The worker pool pattern matches linux's fileLane —
-// reusing goroutines avoids the high-rate-spawn traceback.resolveInternal
-// crash that affected linux's earlier unbounded-go design (see
-// progress.md "Linux dispatcher concurrent" 2026-04-29).
-func fsDelegateWorker(workCh <-chan sys.SyscallRequest, mt *mountTable) {
-	for req := range workCh {
-		switch req.SysID {
-		case sysid.LoadFile:
-			handleLoadFile(mt, &req)
-		case sysid.ReadFilePages:
-			handleReadFilePages(&req)
-		}
-	}
-}
-
-// handleLoadFile processes a delegated LoadFile request: reads the file
-// into mmap'd pages, transfers them to the caller, and replies.
-// Routes through the mount table to select the correct filesystem.
-func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
-	path := req.PathString()
-	kind, relPath := mt.resolve(path)
-	fsys := mt.getFS(kind)
-
-	va, numPages, bytesRead, err := readFileIntoPages(fsys, relPath, true)
-	if err != nil {
-		fmt.Printf("[fs] LoadFile %q: error=%v\n", path, err)
-		req.Reply(-2) // ENOENT
-		return
-	}
-	targetVA, terr := sys.TransferAndUnmap(int(req.CallerPID), va, numPages)
-	if terr != nil {
-		fmt.Printf("[fs] LoadFile %q: TransferAndUnmap failed (%d pages, va=0x%x, targetPID=%d): %v\n",
-			path, numPages, va, req.CallerPID, terr)
-		// TransferAndUnmap failed — pages are still mapped in our address space.
-		syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
-		req.Reply(-5) // EIO
-		return
-	}
-	req.LoadFileReply(0, uint64(targetVA), uint64(numPages), uint64(bytesRead))
-}
 
 // readFileIntoPages reads a file from an ext2 filesystem into pages.
 // When transferable is true, uses kernel-tracked pages (AllocPages) that
@@ -318,8 +230,7 @@ func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 // The ext2 ReadInto method handles batched I/O internally — if the
 // underlying BlockDevice implements BatchBlockDevice, all data blocks
 // are read in a single batch operation.
-func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (va uintptr, numPages int, bytesRead int, err error) {
-	t0 := time.Now()
+func readFileIntoPages(fsys *ext2.FileSystem, path string) (va uintptr, numPages int, bytesRead int, err error) {
 	file, ferr := fsys.Open(path)
 	if ferr != nil {
 		return 0, 0, 0, ferr
@@ -334,48 +245,25 @@ func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (v
 
 	totalSize := uintptr(numPages) * 4096
 
-	if transferable {
-		// Kernel-tracked pages so TransferAndUnmap can validate ownership.
-		ptr, allocErr := mem.AllocPages(numPages, mem.PageShared)
-		if allocErr != nil {
-			return 0, 0, 0, allocErr
-		}
-		va = uintptr(ptr)
-	} else {
-		// Anonymous mmap for temporary use (caller munmaps after).
-		var errno syscall.Errno
-		va, _, errno = syscall.RawSyscall6(
-			syscall.SYS_MMAP, 0, totalSize,
-			syscall.PROT_READ|syscall.PROT_WRITE,
-			syscall.MAP_PRIVATE|0x20, // MAP_ANONYMOUS
-			^uintptr(0), 0)
-		if errno != 0 || int64(va) < 0 {
-			return 0, 0, 0, errno
-		}
+	var errno syscall.Errno
+	va, _, errno = syscall.RawSyscall6(
+		syscall.SYS_MMAP, 0, totalSize,
+		syscall.PROT_READ|syscall.PROT_WRITE,
+		syscall.MAP_PRIVATE|0x20,
+		^uintptr(0), 0)
+	if errno != 0 || int64(va) < 0 {
+		return 0, 0, 0, errno
 	}
 
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(va)), totalSize)
 
 	n, rerr := file.ReadInto(dst[:fileSize])
-
-	// noise: per-LoadFile trace disabled during scorch ENOENT investigation
-	_ = t0
-
 	if rerr != nil {
-		// Free allocated pages on read failure to avoid leaking memory.
 		syscall.RawSyscall6(syscall.SYS_MUNMAP, va, totalSize, 0, 0, 0, 0)
 		return 0, 0, 0, rerr
 	}
 	return va, numPages, n, nil
 }
-
-// handleReadFilePages returns ENOSYS — ext2 does not support direct DMA
-// sector-run reads. Callers should use LoadFile instead.
-func handleReadFilePages(req *sys.SyscallRequest) {
-	req.Reply(-38) // ENOSYS
-}
-
-
 
 // readStartupConfig reads and parses /startup.toml from the ext2 filesystem.
 func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {
@@ -400,18 +288,17 @@ func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {
 	return &cfg
 }
 
-// launchShepherd loads the generic /shepherd.elf host and hands it the
-// requested plugin path (a .maz file) as its sole argument. shepherd.elf's
-// main() reads os.Args[2] and calls mazdl.OpenBytes on that path via fs's
-// own LoadFile delegate — which is already serving by the time shepherds
-// launch, since fs IS this process.
+// launchShepherd loads the generic /shepherd.elf host from the ext2
+// filesystem and hands it the requested plugin path (a .maz file) as its
+// sole argument. shepherd.elf's main() reads os.Args[2] and loads the
+// .maz via its own fsclient IPC connection.
 //
 // All shepherds are .maz plugins now; the legacy ET_EXEC path is gone.
 // memlimitMB > 0 overrides the system-wide GOMEMLIMIT for this shepherd.
 // gcPercent > 0 overrides the system-wide GOGC for this shepherd.
 func launchShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB, gcPercent int) {
 	fmt.Printf("[fs] reading /shepherd.elf (for %s → %s)...\n", name, pluginPath)
-	va, numPages, bytesRead, err := readFileIntoPages(fsys, "/shepherd.elf", false)
+	va, numPages, bytesRead, err := readFileIntoPages(fsys, "/shepherd.elf")
 	if err != nil {
 		fmt.Printf("[fs] failed to read /shepherd.elf\n")
 		return
@@ -435,10 +322,10 @@ func launchShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB, 
 
 // bootSequence launches the core shepherds in dependency order, then reads
 // startup.toml and launches any remaining application shepherds. Runs as a
-// goroutine so the main goroutine's serve loop can process LoadFile requests
+// goroutine so the main goroutine's serve loop can process file IPC requests
 // during shepherd boot (e.g., rachel loading fontsvc.maz).
 //
-// Order: rachel first (only needs fs for LoadFile), then linux (needs both
+// Order: rachel first (only needs fs for file loading), then linux (needs both
 // fs for IPC and rachel for fonts/WM). TOML shepherds launch last since
 // they may need linux's syscall delegation active.
 func bootSequence(fsys *ext2.FileSystem) {
@@ -722,7 +609,7 @@ func (d *asyncBlockDev) ReadBlock(lba uint64, buf []byte) error {
 // ReadBlocks reads multiple 4KB blocks. Thread-safe at chunk granularity:
 // d.mu is taken inside doReadBatch for each chunk so concurrent callers
 // can interleave between chunks (a small fsIPCCh op fits between two
-// chunks of a large LoadFile).
+// chunks of a large file read).
 func (d *asyncBlockDev) ReadBlocks(lbas []uint64, dst []byte) error {
 	blocks := make([]uint32, len(lbas))
 	for i, lba := range lbas {

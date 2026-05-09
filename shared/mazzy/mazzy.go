@@ -38,7 +38,7 @@ const (
 	// slot 27 freed (was SysUartWriteDirect)
 	SysShepherdInfo           = MazzySyscallBase + 28 // 0x101C - Get info about running shepherds
 	SysSetReady               = MazzySyscallBase + 29 // 0x101D - Signal shepherd is ready
-	SysLoadFile               = MazzySyscallBase + 30 // 0x101E - Load file via fs delegate
+	// slot 30 freed (was SysLoadFile — retired 2026-05-09, all file I/O now via fsclient IPC)
 	// slot 31 freed (was SysRunMaz — retired with mazdl/Phase 5)
 	SysRunShepherd            = MazzySyscallBase + 32 // 0x1020 - Create new shepherd from caller's pages
 	SysAttrCreate             = MazzySyscallBase + 33 // 0x1021 - Create attribute with URI
@@ -62,7 +62,7 @@ const (
 	SysGetReady               = MazzySyscallBase + 52 // 0x1034 - Check if named shepherd is ready
 	// slots 53-54 freed (were RegisterDMAPool/UnregisterDMAPool)
 	SysBlockSubmit     = MazzySyscallBase + 55 // 0x1037 - Async block I/O submit (returns IOTag)
-	SysReadFilePages          = MazzySyscallBase + 56 // 0x1038 - Read file data into caller's DMA pages
+	// slot 56 freed (was SysReadFilePages — retired 2026-05-09, all file I/O now via fsclient IPC)
 	SysRegisterCompletionRing = MazzySyscallBase + 57 // 0x1039 - Register shared completion ring page
 	SysIOUringSetup           = MazzySyscallBase + 58 // 0x103A - Create io_uring instance (pin ring page)
 	SysIOUringEnter           = MazzySyscallBase + 59 // 0x103B - Submit SQEs + wait for CQEs

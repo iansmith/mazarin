@@ -1,6 +1,6 @@
 // runshepherd.go - SysRunShepherd syscall: create a new shepherd from ELF pages.
 //
-// The caller has pages containing an ELF binary (loaded via LoadFile).
+// The caller has pages containing an ELF binary (loaded via fsclient IPC).
 // RunShepherd creates a new shepherd with its own address space, loads the ELF
 // into it, and starts the shepherd's main thread.
 // The raw ELF pages are implicitly unmapped from the caller.

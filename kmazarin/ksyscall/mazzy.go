@@ -38,8 +38,8 @@ var mazzySyscallTable = [67]SyscallHandler{
 	// slot 27 freed (was SyscallUartWriteDirect)
 	28: SyscallShepherdInfo,                // ShepherdInfo = 0x101C
 	29: SyscallSetReady,                  // SetReady = 0x101D
-	30: SyscallLoadFile,                  // LoadFile = 0x101E
-	// slot 31 freed (was SyscallRunMaz = 0x101F — retired with mazdl/Phase 5)
+	// slot 30 freed (was SyscallLoadFile — retired 2026-05-09, all file I/O now via fsclient IPC)
+	// slot 31 freed (was SyscallRunMaz — retired with mazdl/Phase 5)
 	32: SyscallRunShepherd,                 // RunShepherd = 0x1020
 	33: SyscallAttrCreate,                // AttrCreate = 0x1021
 	34: SyscallAttrWrite,                 // AttrWrite = 0x1022
@@ -62,7 +62,7 @@ var mazzySyscallTable = [67]SyscallHandler{
 	52: SyscallGetReady,               // GetReady = 0x1034
 	// slots 53-54 freed (were RegisterDMAPool/UnregisterDMAPool)
 	55: SyscallBlockSubmit,            // BlockSubmit = 0x1037
-	56: SyscallReadFilePages,          // ReadFilePages = 0x1038
+	// slot 56 freed (was SyscallReadFilePages — retired 2026-05-09, all file I/O now via fsclient IPC)
 	57: SyscallRegisterCompletionRing, // RegisterCompletionRing = 0x1039
 	58: SyscallIOUringSetup,           // IOUringSetup = 0x103A
 	59: SyscallIOUringEnter,           // IOUringEnter = 0x103B

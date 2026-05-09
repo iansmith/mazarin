@@ -132,19 +132,6 @@ func RegisterStdioWriteRing(ringIdx int) error {
 	return nil
 }
 
-// LoadFileReply sends the return value and file result back to the blocked caller.
-// For LoadFile: the kernel writes (targetVA, numPages, bytesRead) to the caller's
-// LoadFileResult struct before waking the caller.
-func (r *SyscallRequest) LoadFileReply(returnVal int64, targetVA, numPages, bytesRead uint64) {
-	RawSyscall(mazzy.SysSyscallReply,
-		uintptr(r.CallerPID),
-		uintptr(r.CallerTID),
-		uintptr(uint64(returnVal)),
-		uintptr(targetVA),
-		uintptr(numPages),
-		uintptr(bytesRead))
-}
-
 // DecodeFSDelegateReq is a uring Dispatcher decoder for ProtoFSDelegateReq messages.
 // Returns a SyscallRequest that the handler can process identically to the old
 // delegate recv loop.

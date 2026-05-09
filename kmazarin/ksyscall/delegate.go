@@ -206,32 +206,6 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataLen = uint32(n)
 		}
 
-	case sysid.LoadFile:
-		// LoadFile: copy pathname string into data page (path is in arg0).
-		// arg0 = pathname pointer, arg1 = result struct pointer (stashed in CallerBufVA)
-		if arg0 != 0 {
-			pa, va, n := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg0))
-			if pa == 0 {
-				return -12 // ENOMEM
-			}
-			dataPagePA = pa
-			handlerDataVA = va
-			dataLen = uint32(n)
-		}
-
-	case sysid.ReadFilePages:
-		// ReadFilePages: copy pathname string into data page (path is in arg0).
-		// arg0 = pathname, arg1 = destVA, arg2 = destSize, arg3 = fileOffset, arg4 = readLen
-		// CallerSID is available from DelegateQueueEntry.CallerSID for cross-shepherd DMA.
-		if arg0 != 0 {
-			pa, va, n := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg0))
-			if pa == 0 {
-				return -12 // ENOMEM
-			}
-			dataPagePA = pa
-			handlerDataVA = va
-			dataLen = uint32(n)
-		}
 
 	// --- File syscalls delegated to the linux shepherd ---
 
@@ -421,9 +395,9 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	// returns near-instantly once the bytes land in the pipe buffer — the
 	// reader consumes asynchronously. Mazzy's synchronous delegate-and-block
 	// pattern would turn the same call into a cross-process IPC round-trip
-	// that can close deadlock cycles (fs fmt.Printf inside a LoadFile handler
-	// → linux Write delegate → linux waiting on the handler that's waiting
-	// for fs). For stdio Write we therefore:
+	// that can close deadlock cycles (handler fmt.Printf inside a delegate
+	// handler → linux Write delegate → linux waiting on the handler that's
+	// waiting for the original delegate). For stdio Write we therefore:
 	//   - Skip delegateCallInfos InUse tracking (no Reply expected; the
 	//     handler will free the data page via SysReleaseDelegatePage).
 	//   - Skip blockForDelegatedSyscall; return the byte count immediately.
@@ -889,16 +863,6 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 				}
 			}
 
-			// For LoadFile: write result struct to caller's address space.
-			// arg3 = targetVA, arg4 = numPages, arg5 = bytesRead.
-			// CallerBufVA stores the result struct pointer for LoadFile.
-			if info.SysID == sysid.LoadFile && returnVal >= 0 && info.CallerBufVA != 0 {
-				if !writeU64ToUserChecked(info.CallerBufVA, arg3, info.CallerL0PA) ||
-					!writeU64ToUserChecked(info.CallerBufVA+8, arg4, info.CallerL0PA) ||
-					!writeU64ToUserChecked(info.CallerBufVA+16, arg5, info.CallerL0PA) {
-					returnVal = -14 // EFAULT
-				}
-			}
 
 			// Reclaim the data page
 			if info.DataPagePA != 0 {
@@ -991,23 +955,6 @@ func writeU16ToUser(addr uintptr, val uint16, l0PA uintptr) bool {
 // writeI16ToUser writes an int16 to userspace memory via scratch mapping.
 func writeI16ToUser(addr uintptr, val int16, l0PA uintptr) bool {
 	return writeU16ToUser(addr, uint16(val), l0PA)
-}
-
-// writeU64ToUserChecked writes a uint64 to userspace memory via scratch mapping.
-// Returns false if the page is not mapped. Used by writeDelegateRecvResult
-// where error propagation is needed.
-func writeU64ToUserChecked(userVA uintptr, val uint64, l0PA uintptr) bool {
-	pa := kmem.WalkUserPageTableWithL0(userVA, l0PA)
-	if pa == 0 {
-		return false
-	}
-	kernelVA := kmem.MapPAToKernelScratch(pa)
-	if kernelVA == 0 {
-		return false
-	}
-	*(*uint64)(unsafe.Pointer(kernelVA)) = val
-	kmem.CleanCacheLine(kernelVA)
-	return true
 }
 
 // Linkname bridge functions — implemented in kmazarin/kmazarin/ipc_bridge.go

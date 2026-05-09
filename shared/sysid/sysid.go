@@ -49,8 +49,8 @@ const (
 	Getrandom                  // getrandom
 	RtSigreturn                // rt_sigreturn
 	Getitimer                  // getitimer
-	LoadFile                   // LoadFile (Mazzy delegated file load)
-	ReadFilePages              // ReadFilePages (Mazzy delegated file read into DMA pages)
+	_ // reserved (was LoadFile — retired 2026-05-09, all file I/O via fsclient IPC)
+	_ // reserved (was ReadFilePages — same)
 
 	// File-related syscalls delegated to the linux shepherd.
 	Lseek      // lseek
