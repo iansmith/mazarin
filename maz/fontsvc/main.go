@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"mazarin/textshape"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/mem"
@@ -341,27 +342,17 @@ func handleUnregisterFontBufferCallback(senderSID int, msg wm.UnregisterFontBuff
 	handleUnregisterFontBuffer(senderSID, &msg)
 }
 
-// ensureFontIndex loads the font index lazily.
+// ensureFontIndex loads the font index lazily via the injected file reader.
 func ensureFontIndex() error {
 	if fontIdx != nil {
 		return nil
 	}
-	var err error
-	reader := loadFile
-	if reader == nil {
-		reader = func(path string) ([]byte, error) {
-			result, e := sys.LoadFile(path)
-			if e != nil {
-				return nil, e
-			}
-			data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
-			// Must copy: the returned slice is live but LoadFile may free the pages on error paths.
-			out := make([]byte, len(data))
-			copy(out, data)
-			return out, nil
-		}
+	if loadFile == nil {
+		rawPuts("[fontsvc] FATAL: ensureFontIndex called before MazarinShepherd injection\n")
+		return errors.New("fontsvc: no file reader")
 	}
-	fontIdx, err = fontcache.LoadFontIndex("/fonts/fonts.csv", reader)
+	var err error
+	fontIdx, err = fontcache.LoadFontIndex("/fonts/fonts.csv", loadFile)
 	if err != nil {
 		rawPuts("[fontsvc] failed to load font index: " + err.Error() + "\n")
 		return err
@@ -403,17 +394,13 @@ func loadOrCacheFont(family string, variant, size int32) int32 {
 	// Try reusing an already-parsed font (same file, different size).
 	face, fontData := findExistingFont(path, variant)
 	if face == nil {
-		// Load font file from disk.
-		var loadErr error
-		if loadFile != nil {
-			fontData, loadErr = loadFile(path)
-		} else {
-			var result *sys.LoadFileResult
-			result, loadErr = sys.LoadFile(path)
-			if loadErr == nil {
-				fontData = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
-			}
+		// Load font file from disk via injected file reader.
+		if loadFile == nil {
+			rawPuts("[fontsvc] FATAL: loadFile not injected\n")
+			return -1
 		}
+		var loadErr error
+		fontData, loadErr = loadFile(path)
 		if loadErr != nil {
 			rawPuts("[fontsvc] LoadFile failed: " + path + ": " + loadErr.Error() + "\n")
 			return -1
@@ -619,18 +606,11 @@ func resolveFamilyPath(family string, variant, size int32) (string, bool) {
 // the live byte slice (backed by the kernel-allocated load pages) and
 // the parsed Face on success.
 func loadAndParseFont(path string) (*goFont.Face, []byte, bool) {
-	var fontData []byte
-	var parseErr error
-	if loadFile != nil {
-		fontData, parseErr = loadFile(path)
-	} else {
-		result, loadErr := sys.LoadFile(path)
-		if loadErr != nil {
-			rawPuts("[fontsvc] LoadFile failed: " + path + ": " + loadErr.Error() + "\n")
-			return nil, nil, true
-		}
-		fontData = unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
+	if loadFile == nil {
+		rawPuts("[fontsvc] FATAL: loadAndParseFont called before injection\n")
+		return nil, nil, true
 	}
+	fontData, parseErr := loadFile(path)
 	if parseErr != nil {
 		rawPuts("[fontsvc] LoadFile failed: " + path + ": " + parseErr.Error() + "\n")
 		return nil, nil, true

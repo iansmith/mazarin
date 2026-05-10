@@ -11,7 +11,6 @@ import (
 	"image"
 	"image/color"
 	"mazzy/mazarin/attr"
-	"mazzy/mazarin/file"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/input"
@@ -31,7 +30,6 @@ import (
 	"mazzy/shared/wm"
 	"os"
 	"strconv"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -244,16 +242,15 @@ func processRawEvent(ev hid.HIDEvent, keyHeld *[256]bool, modState *input.Modifi
 // Cursor state — set by initCursors, used by mouseMovementLoop.
 var standardCursorID = -1
 var inverseCursorID = -1
-var hResizeCursorID = -1  // horizontal resize (↔)
-var vResizeCursorID = -1  // vertical resize (↕)
-var cursorIsInverse bool  // current cursor state
-var cursorIsResize int    // 0=normal, 1=hResize, 2=vResize
+var hResizeCursorID = -1 // horizontal resize (↔)
+var vResizeCursorID = -1 // vertical resize (↕)
+var cursorIsInverse bool // current cursor state
+var cursorIsResize int   // 0=normal, 1=hResize, 2=vResize
 
 // Mouse position — accumulated from relative events. Clamped to display.
 // Initialized to center of screen in main() after reading kernel dimensions.
 var mouseX int32
 var mouseY int32
-
 
 // displayWidth and displayHeight are set at startup from kernel's screen
 // dimension attributes. Mouse clamping and tablet mapping use these values.
@@ -266,21 +263,21 @@ var blitRateStart time.Time
 // Framebuffer state — rachel owns the GPU framebuffer and is the only
 // writer. Shepherds draw to their backing stores; rachel blits to here.
 var fbCtx *mancini.FramebufferContext
-var fbPix []byte  // raw pixel data of the GPU framebuffer
-var fbStride int  // bytes per scanline of the GPU framebuffer
+var fbPix []byte // raw pixel data of the GPU framebuffer
+var fbStride int // bytes per scanline of the GPU framebuffer
 
 // Drag compositing state — pre-rendered background for fast window dragging.
-var dragBG []byte            // screen-sized buffer, allocated lazily on first drag
-var dragBGStride int         // = int(displayWidth) * 4
-var dragActive bool          // true during a titlebar drag
-var dragSID int              // SID of the window being dragged
+var dragBG []byte                // screen-sized buffer, allocated lazily on first drag
+var dragBGStride int             // = int(displayWidth) * 4
+var dragActive bool              // true during a titlebar drag
+var dragSID int                  // SID of the window being dragged
 var dragPrevRect image.Rectangle // previous screen rect of the dragged window
 
 // Content-driven resize state — set by startDragResize, read by Blit handler.
-var dragIsResize bool        // true during a resize drag (not titlebar drag)
+var dragIsResize bool         // true during a resize drag (not titlebar drag)
 var dragResizeEdge ResizeEdge // which edge is being resized
-var dragResizeOrigX int32    // window X at drag start (for left-edge X computation)
-var dragResizeOrigW int32    // app width at drag start (for left-edge X computation)
+var dragResizeOrigX int32     // window X at drag start (for left-edge X computation)
+var dragResizeOrigW int32     // app width at drag start (for left-edge X computation)
 
 // flushRect tells the GPU to update a rectangular region of the framebuffer.
 // Coordinates are clamped to the display bounds.
@@ -319,10 +316,10 @@ func generateStandardCursor() []byte {
 			v := cursorBitmap[y][x]
 			switch v {
 			case 0: // transparent
-				img[off+0] = 0   // R
-				img[off+1] = 0   // G
-				img[off+2] = 0   // B
-				img[off+3] = 0   // A
+				img[off+0] = 0 // R
+				img[off+1] = 0 // G
+				img[off+2] = 0 // B
+				img[off+3] = 0 // A
 			case 1: // white outline
 				img[off+0] = 255 // R
 				img[off+1] = 255 // G
@@ -348,10 +345,10 @@ func generateInverseCursor() []byte {
 			v := cursorBitmap[y][x]
 			switch v {
 			case 0: // transparent
-				img[off+0] = 0   // R
-				img[off+1] = 0   // G
-				img[off+2] = 0   // B
-				img[off+3] = 0   // A
+				img[off+0] = 0 // R
+				img[off+1] = 0 // G
+				img[off+2] = 0 // B
+				img[off+3] = 0 // A
 			case 1: // black outline (inverted from white)
 				img[off+0] = 0   // R
 				img[off+1] = 0   // G
@@ -772,24 +769,24 @@ var desktopBG color.NRGBA
 
 // trackedApp holds rachel's state for a managed shepherd window.
 type trackedApp struct {
-	sid          int
-	title        string                     // window title from AppWindow.Title attribute
-	bounds       *attr.Attribute[vm.Value] // tracks shepherd's AppWindow/layout/Bounds
-	titleAttr    *attr.Attribute[string]    // constrained to track shepherd's AppWindow/Title
-	bgColorAttr  *attr.Attribute[int64]     // constrained to track shepherd's Palette/Surface
-	backingStore []byte                     // full buffer including borders (RGBA)
-	decorFocused []byte                     // pre-rendered border pixels (Raised)
-	decorUnfocused []byte                   // pre-rendered border pixels (Flush)
-	x, y         int32                      // screen position of app area
-	bsWidth      int32                      // total buffer width (app + borders)
-	bsHeight     int32                      // total buffer height (app + borders)
-	bsStride     int32                      // bytes per scanline (bsWidth * 4)
-	appWidth     int32                      // client drawing area width
-	appHeight    int32                      // client drawing area height
-	lastBlitAppW int32                      // app width from most recent Blit (0 = not yet received)
-	lastBlitAppH int32                      // app height from most recent Blit (0 = not yet received)
-	zOrder       int                        // higher = on top; assigned at AppStart
-	interactor   *WindowInteractor          // dispatch target for this window
+	sid            int
+	title          string                    // window title from AppWindow.Title attribute
+	bounds         *attr.Attribute[vm.Value] // tracks shepherd's AppWindow/layout/Bounds
+	titleAttr      *attr.Attribute[string]   // constrained to track shepherd's AppWindow/Title
+	bgColorAttr    *attr.Attribute[int64]    // constrained to track shepherd's Palette/Surface
+	backingStore   []byte                    // full buffer including borders (RGBA)
+	decorFocused   []byte                    // pre-rendered border pixels (Raised)
+	decorUnfocused []byte                    // pre-rendered border pixels (Flush)
+	x, y           int32                     // screen position of app area
+	bsWidth        int32                     // total buffer width (app + borders)
+	bsHeight       int32                     // total buffer height (app + borders)
+	bsStride       int32                     // bytes per scanline (bsWidth * 4)
+	appWidth       int32                     // client drawing area width
+	appHeight      int32                     // client drawing area height
+	lastBlitAppW   int32                     // app width from most recent Blit (0 = not yet received)
+	lastBlitAppH   int32                     // app height from most recent Blit (0 = not yet received)
+	zOrder         int                       // higher = on top; assigned at AppStart
+	interactor     *WindowInteractor         // dispatch target for this window
 
 	// Overlay state — shepherd-owned popup drawn outside window bounds.
 	overlayActive  bool
@@ -1648,21 +1645,17 @@ func MazarinMain() {
 	}
 	fmt.Printf("[rachel] fsclient connected on ring %d\n", sharedFS.inner.RespRing)
 
-	// Read rachel.toml from the ext2 filesystem.
+	// Read rachel.toml via shared fsclient.
 	var rachelCfg constants.RachelConfig
-	lf, lfErr := file.LoadFile("/rachel.toml")
-	if lfErr != nil {
+	tomlData, tomlErr := sharedFS.rachelPart.LoadFile("/rachel.toml")
+	if tomlErr != nil {
 		fmt.Printf("[rachel] rachel.toml not found, using defaults\n")
 	} else {
-		tomlData := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(lf.StartVA))), lf.BytesRead)
 		if err := toml.Unmarshal(tomlData, &rachelCfg); err != nil {
 			sys.UartWriteString("[rachel] rachel.toml parse error: " + err.Error() + "\n")
 		} else {
 			fmt.Printf("[rachel] rachel.toml loaded: keymap=%s\n", rachelCfg.Keymap)
 		}
-		// Free the loaded pages.
-		syscall.RawSyscall6(syscall.SYS_MUNMAP, uintptr(lf.StartVA),
-			uintptr(lf.NumPages)*4096, 0, 0, 0, 0)
 	}
 
 	// Apply config: update default font size if specified.
@@ -1676,7 +1669,7 @@ func MazarinMain() {
 	kmInit := &mancini.KeyMapperInit{KeymapName: rachelCfg.Keymap}
 	forceKeyMapperItab(kmInit)
 	kmPath := sys.LoadMazByName("/keymapper")
-	kmMain, kmInitAddr, kmErr := mazhost.LoadMazBootstrap(kmPath, nil)
+	kmMain, kmInitAddr, kmErr := mazhost.LoadMazBootstrap(sharedFS.inner, kmPath, nil)
 	if kmErr != nil {
 		sys.UartWriteString("[rachel] LoadMazBootstrap(keymapper) failed: " + kmErr.Error() + "\n")
 	} else {
@@ -1707,7 +1700,7 @@ func MazarinMain() {
 
 	// Load fontsvc.maz — it registers a handler callback for font requests.
 	fontSvcPath := sys.LoadMazByName("/fontsvc")
-	fontSvcMain, fontSvcInitAddr, fontSvcErr := mazhost.LoadMazBootstrap(fontSvcPath, nil)
+	fontSvcMain, fontSvcInitAddr, fontSvcErr := mazhost.LoadMazBootstrap(sharedFS.inner, fontSvcPath, nil)
 	if fontSvcErr != nil {
 		fmt.Printf("[rachel] LoadMazBootstrap(fontsvc) failed: %v\n", fontSvcErr)
 	} else {
@@ -1851,7 +1844,7 @@ func MazarinMain() {
 	blitRateStart = time.Now()
 
 	// Load and launch prefs.maz (after ready, since this uses FS/stdio delegation).
-	mazhost.LaunchMaz("prefs")
+	mazhost.LaunchMaz(sharedFS.inner, "prefs")
 
 	// Block main goroutine forever
 	select {}

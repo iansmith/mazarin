@@ -543,3 +543,29 @@ func IsErrno(err error) (int32, bool) {
 	}
 	return 0, false
 }
+
+// ReadFile reads an entire file into memory via fsclient (Open + chunked
+// Read + Close). It is a convenience wrapper used by callers that previously
+// used sys.LoadFile and have been migrated to fsclient IPC.
+func (c *Client) ReadFile(path string) ([]byte, error) {
+	handle, _, _, size, err := c.Open(path, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close(handle)
+
+	buf := make([]byte, size)
+	total := 0
+	for offset := int64(0); total < int(size); {
+		n, err := c.Read(handle, offset, buf[total:])
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			break
+		}
+		total += n
+		offset += int64(n)
+	}
+	return buf[:total], nil
+}
