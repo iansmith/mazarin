@@ -287,25 +287,31 @@ tasks:
     run: once
     desc: Build bin/mazlink — stock cmd/link with mazlink-patches/ overlayed
     deps: [bin-dir, mazlink-overlay]
+    method: timestamp
     env:
       GOEXPERIMENT: ''
+    sources:
+      - '{{.MAZLINK_OVERLAY_JSON}}'
+    generates:
+      - '{{.MAZLINK_BIN}}'
     cmds:
       - '{{.GO}} tool go-echo "Building bin/mazlink (stock cmd/link + mazlink-patches overlay)..."'
       - '{{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZLINK_BIN}} cmd/link'
-    status:
-      - test -f {{.MAZLINK_BIN}}
 
   mazgo-build:
     run: once
     desc: Build bin/mazgo — stock cmd/go with mazlink-patches/ overlayed (plugin mode no longer forces cgo)
     deps: [bin-dir, mazlink-overlay]
+    method: timestamp
     env:
       GOEXPERIMENT: ''
+    sources:
+      - '{{.MAZLINK_OVERLAY_JSON}}'
+    generates:
+      - '{{.MAZGO_BIN}}'
     cmds:
       - '{{.GO}} tool go-echo "Building bin/mazgo (stock cmd/go + mazlink-patches overlay)..."'
       - '{{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZGO_BIN}} cmd/go'
-    status:
-      - test -f {{.MAZGO_BIN}}
 
   mazgo-toolexec-build:
     run: once
@@ -325,49 +331,61 @@ tasks:
     run: once
     desc: Cross-compile bin/mazlink.linux-amd64 (used inside container smoke test)
     deps: [bin-dir, mazlink-overlay]
+    method: timestamp
     env:
       GOEXPERIMENT: ''
+    sources:
+      - '{{.MAZLINK_OVERLAY_JSON}}'
+    generates:
+      - '{{.MAZLINK_BIN_LINUX_AMD64}}'
     cmds:
       - '{{.GO}} tool go-echo "Cross-compiling mazlink for linux/amd64..."'
       - 'GOOS=linux GOARCH=amd64 {{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZLINK_BIN_LINUX_AMD64}} cmd/link'
-    status:
-      - test -f {{.MAZLINK_BIN_LINUX_AMD64}}
 
   mazgo-linux-amd64:
     run: once
     desc: Cross-compile bin/mazgo.linux-amd64 (used inside container smoke test)
     deps: [bin-dir, mazlink-overlay]
+    method: timestamp
     env:
       GOEXPERIMENT: ''
+    sources:
+      - '{{.MAZLINK_OVERLAY_JSON}}'
+    generates:
+      - '{{.MAZGO_BIN_LINUX_AMD64}}'
     cmds:
       - '{{.GO}} tool go-echo "Cross-compiling mazgo for linux/amd64..."'
       - 'GOOS=linux GOARCH=amd64 {{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZGO_BIN_LINUX_AMD64}} cmd/go'
-    status:
-      - test -f {{.MAZGO_BIN_LINUX_AMD64}}
 
   mazlink-linux-arm64:
     run: once
     desc: Cross-compile bin/mazlink.linux-arm64 (priority target — matches Apple Silicon docker default)
     deps: [bin-dir, mazlink-overlay]
+    method: timestamp
     env:
       GOEXPERIMENT: ''
+    sources:
+      - '{{.MAZLINK_OVERLAY_JSON}}'
+    generates:
+      - '{{.MAZLINK_BIN_LINUX_ARM64}}'
     cmds:
       - '{{.GO}} tool go-echo "Cross-compiling mazlink for linux/arm64..."'
       - 'GOOS=linux GOARCH=arm64 {{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZLINK_BIN_LINUX_ARM64}} cmd/link'
-    status:
-      - test -f {{.MAZLINK_BIN_LINUX_ARM64}}
 
   mazgo-linux-arm64:
     run: once
     desc: Cross-compile bin/mazgo.linux-arm64 (priority target — matches Apple Silicon docker default)
     deps: [bin-dir, mazlink-overlay]
+    method: timestamp
     env:
       GOEXPERIMENT: ''
+    sources:
+      - '{{.MAZLINK_OVERLAY_JSON}}'
+    generates:
+      - '{{.MAZGO_BIN_LINUX_ARM64}}'
     cmds:
       - '{{.GO}} tool go-echo "Cross-compiling mazgo for linux/arm64..."'
       - 'GOOS=linux GOARCH=arm64 {{.GO}} build -overlay={{.MAZLINK_OVERLAY_JSON}} -o {{.MAZGO_BIN_LINUX_ARM64}} cmd/go'
-    status:
-      - test -f {{.MAZGO_BIN_LINUX_ARM64}}
 
   mazlink-clean:
     desc: Remove all mazlink/mazgo binaries and overlay (forces rebuild on next build)
