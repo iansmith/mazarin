@@ -12,6 +12,7 @@ import (
 
 	badger "github.com/dgraph-io/badger/v4"
 
+	"mazzy/maz/maildb/shared"
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/maildbio"
 	"mazzy/mazarin/mazhost"
@@ -20,7 +21,6 @@ import (
 	"mazzy/shared/fti"
 	"mazzy/shared/ipc"
 	"mazzy/shared/mailproto"
-	"mazzy/maz/maildb/shared"
 )
 
 // forceMailDBIOItab ensures the linker includes the MailDBIO interface type
@@ -42,23 +42,14 @@ func forceMailDBIOItab(v interface{}) {
 	_ = io.GetRachelSID()
 }
 
-// startUringDispatcher sets up the uring Dispatcher for shared.
-// WM and font response messages are forwarded to mail-ui via the
-// injection channels. Mail protocol requests are dispatched to the
-// mailHandler. FTI responses are sent to ftiRespCh.
+// startUringDispatcher sets up uring Dispatchers across two rings:
+//
+//   - Ring 0: shepherd IPC (WM, Font, Mail, FTI, Death)
+//   - Ring 1: fs IPC responses (ProtoFSIPCResp → fsClient.RespCh).
+//     Isolated so a backed-up WM/Font channel on Ring 0 cannot
+//     deadlock fsclient callers.
 func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh chan any, mh *mailHandler, ftiRespCh chan any, ftiSID int, tracker *ftiTracker) {
-	// Set up ring 1 for fs IPC responses, avoiding head-of-line blocking
-	// from WM/Font/Mail/FTI traffic on ring 0. The ring number is sent to
-	// fs during the connect handshake so fs knows where to respond.
-	const fsRespRing = 1
-	if err := uring.Setup(fsRespRing); err != nil {
-		panic(fmt.Sprintf("[maildb] uring.Setup(fsRespRing=%d) failed: %v", fsRespRing, err))
-	}
-	fsClient.RespRing = fsRespRing
-	d1 := uring.NewDispatcherWithRing(fsRespRing)
-	d1.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
-	d1.Start()
-
+	// Ring 0: shepherd IPC
 	d := uring.NewDispatcher()
 	d.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
 	d.On(ipc.ProtoFontResponse, decodeRawPayload, fontReplyCh)
@@ -75,6 +66,11 @@ func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh 
 		}
 	})
 	d.Start()
+
+	// Ring 1: fs responses only — isolated from WM/Font/Mail on Ring 0.
+	fsRespDispatcher := uring.NewDispatcherWithRing(1)
+	fsRespDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
+	fsRespDispatcher.Start()
 }
 
 // taggedMailReq wraps a decoded mail request with the sender's SID.
@@ -215,7 +211,13 @@ func main() {
 	}
 	importDone := make(chan importResult, 1)
 
-	// 3. Set up uring dispatcher BEFORE loading .maz.
+	// 3. Set up uring dispatchers BEFORE loading .maz.
+	// Ring 1 carries fs IPC responses, isolated from Ring 0
+	// WM/Font/Mail/FTI traffic so backpressure can't deadlock fsclient.
+	if err := uring.Setup(1); err != nil {
+		panic("[maildb] uring.Setup(1) failed: " + err.Error())
+	}
+	fsClient.RespRing = 1
 	mh := newMailHandler(nil)
 	tempWMCh := make(chan any, 8)
 	tempFontReplyCh := make(chan any, 8)
@@ -269,7 +271,7 @@ func main() {
 	// 4. Load mail-ui.maz and inject MailDBIO.
 	uiPath := sys.LoadMazByName("/mail-ui")
 	mlogInfo("[maildb] loading mail-ui from %s...", uiPath)
-	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(fsClient, uiPath, nil)
+	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(uiPath, nil)
 	if uiErr != nil {
 		panic(fmt.Sprintf("[maildb] LoadMazBootstrap(mail-ui) failed: %v", uiErr))
 	}

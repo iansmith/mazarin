@@ -412,7 +412,14 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 	})
 	stdioDispatcher.Start()
 	fmt.Printf("[linux] uring dispatcher ring=2 started (stdio writes)\n")
-	}
+
+	// Ring 3: fs responses only — isolated from WM/Font traffic on Ring 0
+	// so a full WM channel can never deadlock fsclient callers.
+	fsRespDispatcher := uring.NewDispatcherWithRing(ipc.RingFSResp)
+	fsRespDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
+	fsRespDispatcher.Start()
+	fmt.Printf("[linux] uring dispatcher ring=3 started (fs responses)\n")
+}
 
 // decodeRawPayload copies the raw UringIPCMsg payload without interpreting it.
 // The .maz decodes the font response in its own address space so concrete
@@ -512,10 +519,8 @@ func MazarinMain() {
 		panic(fmt.Sprintf("[linux] FATAL: rachel: %v", err))
 	}
 	rachelSID := sys.MustGetShepherdByName("rachel")
-	fsClient := mazhost.HostFSClient
-	if fsClient == nil {
-		panic("[linux] mazhost.HostFSClient is nil — host shepherd must set it before RunMaz")
-	}
+	fsSID := sys.MustGetShepherdByName("fs")
+	fsClient := fsclient.New(fsSID)
 
 	// 3. Prepare LinuxIO injection struct — shepherd only provides rachelSID.
 	// All font/glyph infrastructure lives in the .maz.
@@ -537,8 +542,10 @@ func MazarinMain() {
 	if err := uring.Setup(2); err != nil {
 		panic("[linux] uring.Setup(2) failed: " + err.Error())
 	}
-	// Ring 3 (ipc.RingFSResp) is already set up by the host shepherd;
-	// mazhost.HostFSClient shares it across all .maz plugins.
+	if err := uring.Setup(ipc.RingFSResp); err != nil {
+		panic("[linux] uring.Setup(ipc.RingFSResp) failed: " + err.Error())
+	}
+	fsClient.RespRing = ipc.RingFSResp
 	// WM and font response messages go to temp channels that will be
 	// forwarded to the .maz's channels after injection.
 	tempWMCh := make(chan any, 8)
@@ -548,10 +555,13 @@ func MazarinMain() {
 	// and can be processed while the file lane is blocked on fsclient.
 	stdoutCh := make(chan sys.SyscallRequest, 32)
 	startUringDispatchers(fsClient, delegateCh, stdoutCh, tempWMCh, tempFontReplyCh)
+	if err := fsClient.Connect(); err != nil {
+		panic(fmt.Sprintf("[linux] FATAL: fsclient.Connect: %v", err))
+	}
 	// 5. Load linux-ui.maz and inject LinuxIO.
 	uiPath := sys.LoadMazByName("/linux-ui")
 	fmt.Printf("[linux] loading linux-ui from %s...\n", uiPath)
-	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(fsClient, uiPath, nil)
+	uiMain, uiInitAddr, uiErr := mazhost.LoadMazBootstrap(uiPath, nil)
 	if uiErr != nil {
 		panic(fmt.Sprintf("[linux] LoadMazBootstrap(linux-ui) failed: %v", uiErr))
 	}
@@ -642,7 +652,7 @@ func MazarinMain() {
 	sys.StartMemStatsLogger("linux", 0) // default 30s
 
 	// 9. Launch helloworld.maz.
-	mazhost.LaunchMaz(fsClient, "helloworld")
+	mazhost.LaunchMaz("helloworld")
 
 	// 10. Line accumulator goroutine — serial + delegates -> WriteCh.
 	go lineAccumulator(serialCh, delegateDataCh, writeCh, notifyCh)

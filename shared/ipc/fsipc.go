@@ -45,7 +45,7 @@ const (
 //   - Write operations: caller writes data at DataVA[0:DataLen]
 //   - fs reads the data area, then may overwrite it with response data
 //
-// Layout (56 bytes, padded to 8-byte alignment):
+// Layout (56 bytes + 2 pad = 58, rounds to 64 with alignment):
 //
 //	[0:2]   Op       — operation code (FSOpOpen, etc.)
 //	[2:4]   PathLen  — path length in data area (0 = no path)
@@ -57,9 +57,8 @@ const (
 //	[32:40] DataVA   — shared data area VA in fs's address space
 //	[40:44] DataLen  — bytes of data in data area (for writes)
 //	[44:48] ReqID    — request ID for response matching
-//	[48:49] RespRing — ring for fs responses (FSOpConnect only, 1..3)
-//	[49:50] _pad1
-//	[50:56] (trailing alignment padding)
+//	[48:49] RespRing — uring ring for fs to send responses on (OpConnect only)
+//	[49:50] _pad
 type FSIPCReqPayload struct {
 	Op       uint16
 	PathLen  uint16
@@ -71,8 +70,8 @@ type FSIPCReqPayload struct {
 	DataVA   uint64
 	DataLen  uint32
 	ReqID    uint32
-	RespRing uint8 // ring for fs to send responses on (FSOpConnect only)
-	_pad1    uint8
+	RespRing uint8 // ring for fs to send responses on (FSOpConnect only; zero means caller hasn't set it)
+	_pad     uint8
 }
 
 // FSIPCRespPayload is the payload for ProtoFSIPCResp messages.

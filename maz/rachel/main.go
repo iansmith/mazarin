@@ -11,7 +11,9 @@ import (
 	"image"
 	"image/color"
 	"mazzy/mazarin/attr"
+	"mazzy/mazarin/file"
 	"mazzy/mazarin/fontcache"
+	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/input"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
@@ -29,6 +31,7 @@ import (
 	"mazzy/shared/wm"
 	"os"
 	"strconv"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -1625,28 +1628,41 @@ func MazarinMain() {
 	}
 	go inputAcq.Run()
 
-	// Wait for fs shepherd to be ready.
+	// Wait for fs shepherd to be ready before loading .maz files.
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[rachel] FATAL: fs: %v", err))
 	}
 
-	// Use the host shepherd's fsClient (both share SID, fs allows one conn per SID).
-	rachelFS := mazhost.HostFSClient
-	if rachelFS == nil {
-		panic("[rachel] mazhost.HostFSClient is nil — host shepherd must set it before RunMaz")
+	// Set up shared fsclient for rachel + fontsvc on ring 1.
+	fsSID := sys.MustGetShepherdByName("fs")
+	sharedFS := newSharedFSClient(fsSID)
+	if err := uring.Setup(1); err != nil {
+		panic(fmt.Sprintf("[rachel] FATAL: uring.Setup(1) for fs responses: %v", err))
 	}
+	fsRespDispatcher := uring.NewDispatcherWithRing(1)
+	fsRespDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, sharedFS.inner.RespCh)
+	fsRespDispatcher.Start()
+	fmt.Printf("[rachel] uring dispatcher ring=1 started (fs responses)\n")
+	if err := sharedFS.Connect(1); err != nil {
+		panic(fmt.Sprintf("[rachel] FATAL: fsclient.Connect: %v", err))
+	}
+	fmt.Printf("[rachel] fsclient connected on ring %d\n", sharedFS.inner.RespRing)
 
-	// Read rachel.toml via fs IPC.
+	// Read rachel.toml from the ext2 filesystem.
 	var rachelCfg constants.RachelConfig
-	tomlData, tomlErr := rachelFS.ReadFile("/rachel.toml")
-	if tomlErr != nil {
+	lf, lfErr := file.LoadFile("/rachel.toml")
+	if lfErr != nil {
 		fmt.Printf("[rachel] rachel.toml not found, using defaults\n")
 	} else {
+		tomlData := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(lf.StartVA))), lf.BytesRead)
 		if err := toml.Unmarshal(tomlData, &rachelCfg); err != nil {
 			sys.UartWriteString("[rachel] rachel.toml parse error: " + err.Error() + "\n")
 		} else {
 			fmt.Printf("[rachel] rachel.toml loaded: keymap=%s\n", rachelCfg.Keymap)
 		}
+		// Free the loaded pages.
+		syscall.RawSyscall6(syscall.SYS_MUNMAP, uintptr(lf.StartVA),
+			uintptr(lf.NumPages)*4096, 0, 0, 0, 0)
 	}
 
 	// Apply config: update default font size if specified.
@@ -1660,7 +1676,7 @@ func MazarinMain() {
 	kmInit := &mancini.KeyMapperInit{KeymapName: rachelCfg.Keymap}
 	forceKeyMapperItab(kmInit)
 	kmPath := sys.LoadMazByName("/keymapper")
-	kmMain, kmInitAddr, kmErr := mazhost.LoadMazBootstrap(rachelFS, kmPath, nil)
+	kmMain, kmInitAddr, kmErr := mazhost.LoadMazBootstrap(kmPath, nil)
 	if kmErr != nil {
 		sys.UartWriteString("[rachel] LoadMazBootstrap(keymapper) failed: " + kmErr.Error() + "\n")
 	} else {
@@ -1680,12 +1696,18 @@ func MazarinMain() {
 	}
 
 	// Force linker to include FontSvcInjector itab for cross-module type assertions.
-	initData := &fontcache.FontSvcInit{FSClient: rachelFS}
+	initData := &fontcache.FontSvcInit{}
 	forceFontSvcItab(initData)
+
+	// Give fontsvc access to the shared fsclient for file reads.
+	fontsvcPart := sharedFS.FontSvcPartition()
+	initData.FileReader = func(path string) ([]byte, error) {
+		return fontsvcPart.LoadFile(path)
+	}
 
 	// Load fontsvc.maz — it registers a handler callback for font requests.
 	fontSvcPath := sys.LoadMazByName("/fontsvc")
-	fontSvcMain, fontSvcInitAddr, fontSvcErr := mazhost.LoadMazBootstrap(rachelFS, fontSvcPath, nil)
+	fontSvcMain, fontSvcInitAddr, fontSvcErr := mazhost.LoadMazBootstrap(fontSvcPath, nil)
 	if fontSvcErr != nil {
 		fmt.Printf("[rachel] LoadMazBootstrap(fontsvc) failed: %v\n", fontSvcErr)
 	} else {
@@ -1829,7 +1851,7 @@ func MazarinMain() {
 	blitRateStart = time.Now()
 
 	// Load and launch prefs.maz (after ready, since this uses FS/stdio delegation).
-	mazhost.LaunchMaz(rachelFS, "prefs")
+	mazhost.LaunchMaz("prefs")
 
 	// Block main goroutine forever
 	select {}

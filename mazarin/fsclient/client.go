@@ -45,9 +45,20 @@ type Client struct {
 	RespCh chan any
 
 	// RespRing is the uring ring index for fs to send responses on.
-	// Must be 1..MaxRingsPerShepherd-1 (ring 0 is reserved for general
-	// shepherd IPC). Set before Connect — fs will panic if out of range.
+	// Must be >= 1 (ring 0 is reserved for general shepherd IPC).
+	// Set before Connect.
 	RespRing uint8
+
+	// RespChOverride, when non-nil, is used by callLocked instead of
+	// RespCh for the next blocking receive. callLocked resets it to nil
+	// after use. Set while holding mu to route one response to an
+	// alternate channel (used by sharedFSClient for reqID partitioning).
+	RespChOverride chan any
+
+	// ReqIDOffset is added to nextID in callLocked to form the outgoing
+	// ReqID. Default 0. Set to 0x80000000 for the fontsvc partition to
+	// split the 32-bit reqID space into two halves.
+	ReqIDOffset uint32
 
 	// mu serializes everything that touches the shared data area or
 	// expects a response on RespCh — i.e., effectively every public
@@ -71,9 +82,8 @@ type Client struct {
 // surface immediately at the dispatcher's send-side.
 func New(fsSID int) *Client {
 	return &Client{
-		fsSID:    fsSID,
-		RespCh:   make(chan any, 1),
-		RespRing: ipc.RingFSResp,
+		fsSID:  fsSID,
+		RespCh: make(chan any, 1),
 	}
 }
 
@@ -86,9 +96,6 @@ func DecodeResp(msg *ipc.UringIPCMsg) any {
 // Connect allocates the shared data area, maps it into fs, and sends the
 // handshake message. Blocks until fs confirms the connection.
 func (c *Client) Connect() error {
-	if c.RespRing == 0 || c.RespRing >= ipc.MaxRingsPerShepherd {
-		return fmt.Errorf("fsclient: RespRing=%d is invalid — must be 1..%d", c.RespRing, ipc.MaxRingsPerShepherd-1)
-	}
 	// Allocate shared data pages.
 	ptr, err := mem.AllocPages(dataPages, mem.PageIPC)
 	if err != nil {
@@ -127,7 +134,7 @@ func (c *Client) Connect() error {
 // each consuming the other's RespCh value.
 func (c *Client) callLocked(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, error) {
 	c.nextID++
-	req.ReqID = c.nextID
+	req.ReqID = c.nextID + c.ReqIDOffset
 	if req.DataVA == 0 {
 		req.DataVA = uint64(c.remoteVA)
 	}
@@ -137,7 +144,12 @@ func (c *Client) callLocked(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, err
 		return ipc.FSIPCRespPayload{}, fmt.Errorf("fsclient: Send: %w", err)
 	}
 
-	raw := <-c.RespCh
+	respCh := c.RespCh
+	if c.RespChOverride != nil {
+		respCh = c.RespChOverride
+		c.RespChOverride = nil
+	}
+	raw := <-respCh
 	resp, ok := raw.(ipc.FSIPCRespPayload)
 	if !ok {
 		return ipc.FSIPCRespPayload{}, errors.New("fsclient: unexpected response type")
@@ -530,31 +542,4 @@ func IsErrno(err error) (int32, bool) {
 		return e.Errno(), true
 	}
 	return 0, false
-}
-
-// ReadFile loads an entire file into a newly allocated []byte by opening the
-// file, reading it in chunks through the shared data area, and closing it.
-// For files smaller than the data area (64KB), a single Read suffices;
-// larger files are read in chunks with multiple IPC round-trips.
-func (c *Client) ReadFile(path string) ([]byte, error) {
-	handle, _, _, size, err := c.Open(path, 0, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close(handle)
-
-	buf := make([]byte, size)
-	total := 0
-	for offset := int64(0); total < int(size); {
-		n, err := c.Read(handle, offset, buf[total:])
-		if err != nil {
-			return nil, err
-		}
-		if n == 0 {
-			break
-		}
-		total += n
-		offset += int64(n)
-	}
-	return buf[:total], nil
 }

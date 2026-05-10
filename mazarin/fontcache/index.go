@@ -1,10 +1,18 @@
 package fontcache
 
-import "mazarin/textshape"
+import (
+	"mazarin/textshape"
+)
 
-// LoadFontIndex parses a CSV font index from raw bytes.
+// LoadFontIndex reads and parses a CSV font index from the filesystem.
 // The CSV format is: family,style,filename (one entry per line).
 // Lines starting with '#' are comments.
-func LoadFontIndex(data []byte) (*textshape.FontIndex, error) {
+// loadFile is the file-read function (e.g., fsclient via injection, or
+// sys.LoadFile as fallback).
+func LoadFontIndex(path string, loadFile func(string) ([]byte, error)) (*textshape.FontIndex, error) {
+	data, loadErr := loadFile(path)
+	if loadErr != nil {
+		return nil, loadErr
+	}
 	return textshape.ParseFontIndex(data), nil
 }
