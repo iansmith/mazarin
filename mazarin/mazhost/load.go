@@ -43,6 +43,50 @@ func LaunchMaz(fc *fsclient.Client, name string) {
 	go runWithLargeStack(mazMain)
 }
 
+// RingInfo describes a uring ring passed from the generic shepherd to the
+// replacement shepherd (.maz plugin) via injection.
+type RingInfo struct {
+	Number int     // ring index (0 = kernel-allocated inbound, 1 = fs)
+	VA     uintptr // userspace VA of the ring's mapped pages
+	Len    int     // number of 4KB pages
+}
+
+// ShepherdInjector is the interface the generic shepherd uses to pass
+// ring and fsclient info to the replacement shepherd. Using an interface
+// (not a concrete struct) works across .maz module boundaries.
+type ShepherdInjector interface {
+	GetRing0() RingInfo
+	GetRing1() RingInfo
+	GetFSClient() *fsclient.Client
+	GetSID() int
+	GetArgs() []string
+}
+
+// ShepherdInit implements ShepherdInjector. The generic shepherd creates
+// this and passes it to MazarinShepherd before calling MazarinMain.
+type ShepherdInit struct {
+	Ring0    RingInfo
+	Ring1    RingInfo
+	FSClient *fsclient.Client
+	SID      int
+	Args     []string
+}
+
+// GetRing0 implements ShepherdInjector.
+func (s *ShepherdInit) GetRing0() RingInfo { return s.Ring0 }
+
+// GetRing1 implements ShepherdInjector.
+func (s *ShepherdInit) GetRing1() RingInfo { return s.Ring1 }
+
+// GetFSClient implements ShepherdInjector.
+func (s *ShepherdInit) GetFSClient() *fsclient.Client { return s.FSClient }
+
+// GetSID implements ShepherdInjector.
+func (s *ShepherdInit) GetSID() int { return s.SID }
+
+// GetArgs implements ShepherdInjector.
+func (s *ShepherdInit) GetArgs() []string { return s.Args }
+
 // HostFSClient is set by the shepherd host before the .maz plugin runs.
 // Plugins that need fs access (rachel, fontsvc) use this instead of
 // creating their own connection — the host plugin share a SID, and

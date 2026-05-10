@@ -354,7 +354,7 @@ func addCRBeforeLF(data []byte) []byte {
 //   - Ring 2: pipe-buffered Writes only (Write fd<=2). Reader feeds
 //     stdoutCh; the stdout-lane goroutine consumes the data and
 //     releases the shared page via SysReleaseDelegatePage.
-//   - Ring 3 (ipc.RingFSResp): fs IPC responses only (ProtoFSIPCResp →
+//   - Ring 1 (from ShepherdInit): fs IPC responses only (ProtoFSIPCResp →
 //     fsClient.RespCh). Isolated so a backed-up WM/Font channel on
 //     Ring 0 cannot deadlock fsclient callers.
 //
@@ -384,9 +384,9 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 	ipcDispatcher.Start()
 	fmt.Printf("[linux] uring dispatcher ring=0 started (ipc: WM/Font/Death/IdleHint)\n")
 
-	// Ring 1: blocking delegated syscalls. Includes fd>2 Write (the
-	// kernel routes fd<=2 Writes to ring 2 separately).
-	delegateDispatcher := uring.NewDispatcherWithRing(1)
+	// Ring 2: blocking delegated syscalls. Includes fd>2 Write (the
+	// kernel routes fd<=2 Writes to ring 3 separately).
+	delegateDispatcher := uring.NewDispatcherWithRing(2)
 	delegateDispatcher.OnFunc(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, func(v any) {
 		req, ok := v.(sys.SyscallRequest)
 		if !ok {
@@ -395,14 +395,14 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 		delegateCh <- req
 	})
 	delegateDispatcher.Start()
-	fmt.Printf("[linux] uring dispatcher ring=1 started (delegated syscalls)\n")
+	fmt.Printf("[linux] uring dispatcher ring=2 started (delegated syscalls)\n")
 
-	// Ring 2: pipe-buffered stdio Writes only (Write fd<=2 via the
+	// Ring 3: pipe-buffered stdio Writes only (Write fd<=2 via the
 	// SysRegisterStdioWriteRing override). The reader does the minimum
 	// amount of work — hand the request to the stdout-lane goroutine
 	// over stdoutCh and return — so stdio can't be backpressured by a
 	// busy file lane on ring 1.
-	stdioDispatcher := uring.NewDispatcherWithRing(2)
+	stdioDispatcher := uring.NewDispatcherWithRing(3)
 	stdioDispatcher.OnFunc(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, func(v any) {
 		req, ok := v.(sys.SyscallRequest)
 		if !ok {
@@ -415,10 +415,8 @@ func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdou
 
 	// Ring 3: fs responses only — isolated from WM/Font traffic on Ring 0
 	// so a full WM channel can never deadlock fsclient callers.
-	fsRespDispatcher := uring.NewDispatcherWithRing(ipc.RingFSResp)
-	fsRespDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
-	fsRespDispatcher.Start()
-	fmt.Printf("[linux] uring dispatcher ring=3 started (fs responses)\n")
+	// Ring 1 fs responses are handled by the generic shepherd's dispatcher.
+	// We bridge its RespCh above in MazarinMain — no second reader needed.
 }
 
 // decodeRawPayload copies the raw UringIPCMsg payload without interpreting it.
@@ -507,8 +505,45 @@ func lineAccumulator(serialCh <-chan serial.SerialByte, delegateCh <-chan delega
 // mazdl; without this reference the linker would drop the symbol.
 var MazEntryPoint func() = MazarinMain
 
+// MazarinShepherdAddr prevents DCE of MazarinShepherd.
+var MazarinShepherdAddr func(interface{}) error = MazarinShepherd
+
+// shepherdInit holds the injection from the generic shepherd.
+var shepherdInit mazhost.ShepherdInjector
+
+// MazarinShepherd receives ring and fsclient info from the generic shepherd.
+//
+//go:noinline
+func MazarinShepherd(injected interface{}) error {
+	init, ok := injected.(mazhost.ShepherdInjector)
+	if !ok {
+		return fmt.Errorf("linux: expected mazhost.ShepherdInjector, got %T", injected)
+	}
+	shepherdInit = init
+	fmt.Printf("[linux] MazarinShepherd: ring0=%d ring1=%d sid=%d fsClient=%v\n",
+		init.GetRing0().Number, init.GetRing1().Number, init.GetSID(), init.GetFSClient() != nil)
+	return nil
+}
+
 func MazarinMain() {
 	fmt.Printf("[linux] MazarinMain() entered\n")
+
+	// Use the fsclient passed by the generic shepherd. The shepherd's
+	// ring-1 dispatcher is still running; bridge its output from the
+	// original RespCh to a new channel so we don't need a second
+	// reader on ring 1.
+	fsClient := shepherdInit.GetFSClient()
+	if fsClient == nil {
+		panic("[linux] FATAL: FSClient is nil — ShepherdInit not received")
+	}
+	oldRespCh := fsClient.RespCh
+	newRespCh := make(chan any, 1)
+	fsClient.RespCh = newRespCh
+	go func() {
+		for msg := range oldRespCh {
+			newRespCh <- msg
+		}
+	}()
 
 	// 1. Wait for fs (needed by syscallHandler for file operations).
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
@@ -519,8 +554,6 @@ func MazarinMain() {
 		panic(fmt.Sprintf("[linux] FATAL: rachel: %v", err))
 	}
 	rachelSID := sys.MustGetShepherdByName("rachel")
-	fsSID := sys.MustGetShepherdByName("fs")
-	fsClient := fsclient.New(fsSID)
 
 	// 3. Prepare LinuxIO injection struct — shepherd only provides rachelSID.
 	// All font/glyph infrastructure lives in the .maz.
@@ -532,20 +565,17 @@ func MazarinMain() {
 	forceLinuxIOItab(ioInit)
 
 	// 4. Set up uring dispatchers BEFORE loading .maz.
-	// Ring 0 is auto-created; ring 1 carries blocking delegated syscalls;
-	// ring 2 carries pipe-buffered stdio Writes (Write fd<=2). The two
-	// extra rings exist so stdio backpressure can't starve the blocking-
-	// delegate path (or vice versa).
-	if err := uring.Setup(1); err != nil {
-		panic("[linux] uring.Setup(1) failed: " + err.Error())
-	}
+	// Ring 0: kernel-allocated (already mapped).
+	// Ring 1: fs responses (from ShepherdInit, already set up by generic shepherd).
+	// Ring 2: blocking delegated syscalls (we create).
+	// Ring 3: pipe-buffered stdio Writes (we create).
 	if err := uring.Setup(2); err != nil {
 		panic("[linux] uring.Setup(2) failed: " + err.Error())
 	}
-	if err := uring.Setup(ipc.RingFSResp); err != nil {
-		panic("[linux] uring.Setup(ipc.RingFSResp) failed: " + err.Error())
+	if err := uring.Setup(3); err != nil {
+		panic("[linux] uring.Setup(3) failed: " + err.Error())
 	}
-	fsClient.RespRing = ipc.RingFSResp
+	fsClient.RespRing = uint8(shepherdInit.GetRing1().Number)
 	// WM and font response messages go to temp channels that will be
 	// forwarded to the .maz's channels after injection.
 	tempWMCh := make(chan any, 8)
@@ -555,9 +585,7 @@ func MazarinMain() {
 	// and can be processed while the file lane is blocked on fsclient.
 	stdoutCh := make(chan sys.SyscallRequest, 32)
 	startUringDispatchers(fsClient, delegateCh, stdoutCh, tempWMCh, tempFontReplyCh)
-	if err := fsClient.Connect(); err != nil {
-		panic(fmt.Sprintf("[linux] FATAL: fsclient.Connect: %v", err))
-	}
+	// fsClient is already connected by the generic shepherd (ShepherdInit).
 	// 5. Load linux-ui.maz and inject LinuxIO.
 	uiPath := sys.LoadMazByName("/linux-ui")
 	fmt.Printf("[linux] loading linux-ui from %s...\n", uiPath)
@@ -613,7 +641,7 @@ func MazarinMain() {
 	suppressSerialCopy = os.Getenv("SUPPRESS_SERIAL_STDIO_COPY") == "1"
 	globalHandler = newSyscallHandler(fsClient)
 	handler := globalHandler
-	delegateErr := sys.RegisterSyscallHandlersWithRing(1,
+	delegateErr := sys.RegisterSyscallHandlersWithRing(2,
 		sysid.Write, sysid.Read, sysid.Openat, sysid.Close,
 		sysid.Lseek, sysid.Fstat, sysid.Fstatat,
 		sysid.Mkdirat, sysid.Unlinkat, sysid.Renameat,
@@ -631,8 +659,8 @@ func MazarinMain() {
 	// Route pipe-buffered stdio Writes (Write fd<=2) to ring 2 instead
 	// of the default ring (ring 1). The kernel checks this on every
 	// Write delegate; fd>2 Writes still flow through ring 1.
-	if err := sys.RegisterStdioWriteRing(2); err != nil {
-		sys.UartWriteString(fmt.Sprintf("[linux] RegisterStdioWriteRing(2) failed: %v\n", err))
+	if err := sys.RegisterStdioWriteRing(3); err != nil {
+		sys.UartWriteString(fmt.Sprintf("[linux] RegisterStdioWriteRing(3) failed: %v\n", err))
 	}
 
 	var delegateDataCh <-chan delegateMsg

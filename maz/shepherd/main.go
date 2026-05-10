@@ -19,6 +19,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"unsafe"
 
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/mazhost"
@@ -33,18 +35,18 @@ func main() {
 		panic("[shepherd] missing plugin path")
 	}
 	pluginPath := os.Args[2]
-	sys.UartWriteString(fmt.Sprintf("[shepherd] loading %s (sid=%s)\n", pluginPath, os.Args[1]))
+	pluginSID, _ := strconv.Atoi(os.Args[1])
+	fmt.Printf("[shepherd] loading %s (sid=%d)\n", pluginPath, pluginSID)
 
-	// Set up uring ring for fs responses. This ring is shared by all
-	// .maz plugins in this process via mazhost.HostFSClient.
-	fsRing := int(ipc.RingFSResp)
+	// Ring 1: fs responses. Ring 0 is kernel-allocated and already mapped.
+	const fsRing = 1
 	if err := uring.Setup(fsRing); err != nil {
 		panic(fmt.Sprintf("[shepherd] uring.Setup(%d) failed: %v", fsRing, err))
 	}
 
 	fsSID := sys.MustGetShepherdByName("fs")
 	fc := fsclient.New(fsSID)
-	fc.RespRing = ipc.RingFSResp
+	fc.RespRing = uint8(fsRing)
 
 	disp := uring.NewDispatcherWithRing(fsRing)
 	disp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.RespCh)
@@ -53,17 +55,34 @@ func main() {
 	if err := fc.Connect(); err != nil {
 		panic(fmt.Sprintf("[shepherd] fsclient.Connect: %v", err))
 	}
+	fmt.Printf("[shepherd] fsclient connected on ring %d\n", fsRing)
 
-	// Store so the .maz plugin (rachel) can use it. Both share the same
-	// SID, and fs only allows one connection per SID.
 	mazhost.HostFSClient = fc
 
-	mazMain, _, err := mazhost.LoadMazBootstrap(fc, pluginPath, nil)
+	mazMain, mazShepherdAddr, err := mazhost.LoadMazBootstrap(fc, pluginPath, nil)
 	if err != nil {
 		panic(fmt.Sprintf("[shepherd] LoadMazBootstrap(%q): %v", pluginPath, err))
+	}
+
+	// Inject ShepherdInit before MazMain so the replacement gets rings + fsclient.
+	if mazShepherdAddr != 0 {
+		type funcval struct{ fn uintptr }
+		fv := &funcval{fn: mazShepherdAddr}
+		shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+		init := &mazhost.ShepherdInit{
+			Ring0:    mazhost.RingInfo{Number: 0},
+			Ring1:    mazhost.RingInfo{Number: fsRing},
+			FSClient: fc,
+			SID:      pluginSID,
+			Args:     os.Args,
+		}
+		if err := shepherdInit(init); err != nil {
+			fmt.Printf("[shepherd] MazarinShepherd injection failed: %v\n", err)
+		}
 	}
 
 	// Run MazarinMain synchronously on a pre-grown stack. MazarinMain
 	// is expected to enter its own event loop and never return.
 	mazhost.RunMaz(mazMain)
+	os.Exit(0)
 }
