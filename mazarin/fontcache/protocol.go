@@ -46,7 +46,7 @@ type FontSvcInjector interface {
 	RegisterInternalGlyphByGID(handler func(fontID int32, gid uint32) (InternalGlyphResult, bool))
 
 	// GetFSClient returns the host's fs IPC client.
-	GetFSClient() *fsclient.Client
+	GetFSClient() fsclient.FSClient
 }
 
 // InternalOpenFontResult is the result of an in-process OpenFont call.
@@ -81,7 +81,7 @@ type FontSvcInit struct {
 	// FSClient is the fs IPC client (already connected). Fontsvc uses it
 	// to load font files from the filesystem instead of the removed
 	// sys.LoadFile delegate path.
-	FSClient *fsclient.Client
+	FSClient fsclient.FSClient
 }
 
 // RegisterOpenFontHandler implements FontSvcInjector.
@@ -130,7 +130,7 @@ func (f *FontSvcInit) RegisterInternalGlyphByGID(handler func(fontID int32, gid 
 }
 
 // GetFSClient implements FontSvcInjector.
-func (f *FontSvcInit) GetFSClient() *fsclient.Client {
+func (f *FontSvcInit) GetFSClient() fsclient.FSClient {
 	return f.FSClient
 }
 

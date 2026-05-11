@@ -28,13 +28,13 @@ import (
 // constructing a funcval from the returned second return value.
 //
 // On success, returns a func() that the caller should run as a goroutine.
-func LoadMazBootstrap(fc *fsclient.Client, filename string, _ interface{}) (func(), uintptr, *merror.Error) {
+func LoadMazBootstrap(fc fsclient.FSClient, filename string, _ interface{}) (func(), uintptr, *merror.Error) {
 	return loadMazInternal(fc, filename)
 }
 
 // LaunchMaz loads a .maz module by name and runs its MazarinMain in a new
 // goroutine with a pre-grown stack. fc must already be connected.
-func LaunchMaz(fc *fsclient.Client, name string) {
+func LaunchMaz(fc fsclient.FSClient, name string) {
 	path := "/" + name + ".maz"
 	mazMain, _, err := loadMazInternal(fc, path)
 	if err != nil {
@@ -57,7 +57,7 @@ type RingInfo struct {
 type ShepherdInjector interface {
 	GetRing0() RingInfo
 	GetRing1() RingInfo
-	GetFSClient() *fsclient.Client
+	GetFSClient() fsclient.FSClient
 	GetSID() int
 	GetArgs() []string
 }
@@ -67,7 +67,7 @@ type ShepherdInjector interface {
 type ShepherdInit struct {
 	Ring0    RingInfo
 	Ring1    RingInfo
-	FSClient *fsclient.Client
+	FSClient fsclient.FSClient
 	SID      int
 	Args     []string
 }
@@ -79,7 +79,7 @@ func (s *ShepherdInit) GetRing0() RingInfo { return s.Ring0 }
 func (s *ShepherdInit) GetRing1() RingInfo { return s.Ring1 }
 
 // GetFSClient implements ShepherdInjector.
-func (s *ShepherdInit) GetFSClient() *fsclient.Client { return s.FSClient }
+func (s *ShepherdInit) GetFSClient() fsclient.FSClient { return s.FSClient }
 
 // GetSID implements ShepherdInjector.
 func (s *ShepherdInit) GetSID() int { return s.SID }
@@ -91,7 +91,7 @@ func (s *ShepherdInit) GetArgs() []string { return s.Args }
 // Plugins that need fs access (rachel, fontsvc) use this instead of
 // creating their own connection — the host plugin share a SID, and
 // fs only allows one connection per SID.
-var HostFSClient *fsclient.Client
+var HostFSClient fsclient.FSClient
 
 // RunMaz runs an already-loaded .maz func on a pre-grown stack.
 func RunMaz(fn func()) {
@@ -126,7 +126,7 @@ func runWithLargeStack(fn func()) {
 //     publishes DEFINED exports.
 //  4. Look up MazarinMain (required) and MazarinShepherd (optional).
 //  5. Build funcvals and return.
-func loadMazInternal(fc *fsclient.Client, filename string) (func(), uintptr, *merror.Error) {
+func loadMazInternal(fc fsclient.FSClient, filename string) (func(), uintptr, *merror.Error) {
 	if _, err := mazdl.RegisterHost(); err != nil {
 		return nil, 0, merror.ErrInvalidELF.Wrap(fmt.Sprintf("%s: RegisterHost: %v", filename, err))
 	}

@@ -46,10 +46,10 @@ func main() {
 
 	fsSID := sys.MustGetShepherdByName("fs")
 	fc := fsclient.New(fsSID)
-	fc.RespRing = uint8(fsRing)
+	fc.SetRespRing(uint8(fsRing))
 
 	disp := uring.NewDispatcherWithRing(fsRing)
-	disp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.RespCh)
+	disp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.GetRespCh())
 	disp.Start()
 
 	if err := fc.Connect(); err != nil {

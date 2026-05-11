@@ -29,7 +29,7 @@ var (
 	rachelSID   int
 	app         *std.AppWindow
 	wmCh        = make(chan any, 128)
-	appFSClient *fsclient.Client
+	appFSClient fsclient.FSClient
 )
 
 
@@ -70,12 +70,12 @@ func main() {
 	// Set up fs IPC client for /rf (read file) commands.
 	fsSID := sys.MustGetShepherdByName("fs")
 	appFSClient = fsclient.New(fsSID)
-	appFSClient.RespRing = ipc.RingFSResp
+	appFSClient.SetRespRing(ipc.RingFSResp)
 	if err := uring.Setup(ipc.RingFSResp); err != nil {
 		panic(fmt.Sprintf("[versai] uring.Setup(RingFSResp) failed: %v", err))
 	}
 	fsDisp := uring.NewDispatcherWithRing(ipc.RingFSResp)
-	fsDisp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, appFSClient.RespCh)
+	fsDisp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, appFSClient.GetRespCh())
 	fsDisp.Start()
 	if err := appFSClient.Connect(); err != nil {
 		panic(fmt.Sprintf("[versai] fsclient.Connect: %v", err))

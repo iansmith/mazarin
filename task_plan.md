@@ -1,6 +1,40 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: kmazarin x86_64 won't build — `nosplit stack over 792 byte limit` — 2026-05-01
+## TOP OF STACK: MAZ-10 — finish shepherd injection unification + ARM64 verification — 2026-05-10
+
+**Goal**: Complete the MAZ-10 integration work (unify ring/fsclient injection through the generic shepherd) and verify on ARM64 HVF. x86_64 confirmation is deferred — the nosplit build blocker is a pre-existing master issue unrelated to MAZ-10, and ARM64 is sufficient to validate the dynlink/injection changes.
+
+### What's done (commits on branch)
+
+- **Gap 1** (`96ef2ba`): dropped `runtime.MazKeepAliveSymbols` force-reference (redundant with dynexp+deadcode roots).
+- **Gap 2 linker** (`b3e79ff`): route `-dynlink` GOTPCREL through Adddynrel for host builds; `AddGotSymStatic` for static GOT fill.
+- **Gap 2 build** (`0da884d`): shepherd builds with `-gcflags=all=-dynlink`, no overlay.
+- **Gap 2 cleanup** (`411034d`): deleted `cmd/gen-ast-stubs -mode=shepherd` and overlay Taskfile targets.
+- **Follow-ups** (`174d98e`, `9f086d9`): gate tightening, fs overlay fix.
+- **MAZ-8 integration** (`2b6ccfe`, `5e32757`, `c49cccd`): unified ring/fsclient injection through generic shepherd via `ShepherdInit` / `MazarinShepherd()`.
+
+### What remains
+
+1. **Build verification**: ARM64 full build (`$GO tool task`) must succeed.
+2. **ARM64 HVF boot smoke**: boot through `[mail] cache ready`, confirm all plugins load (rachel, linux, fs, fontsvc, mail, etc.).
+3. **Plugin-load smoke**: verify rachel.maz, linux.maz, fontsvc.maz all load and resolve host imports correctly via the new injection path.
+4. **5×60s ARM64 HVF sweep**: confirm stability, no regressions vs pre-MAZ-10 baseline.
+5. **Final cleanup**: verify `grep -r MazKeepAlive` returns nothing; verify `objdump -R build/shepherd.elf` shows zero GLOB_DAT entries; confirm no `-overlay=` or `-tags mazhost` in shepherd build.
+6. **Update tracking**: refresh task_plan.md, progress.md, memory files to reflect MAZ-10 closed.
+
+### Done when
+
+- Shepherd builds with `-gcflags=all=-dynlink`, no overlay, no keepalive.
+- ARM64 HVF boots through `[mail] cache ready` with all plugins loaded.
+- Plugin path verified byte-identical (no regression).
+- 5×60s sweep clean.
+- All MAZ-10 tracking archived.
+
+---
+
+## DEFERRED: kmazarin x86_64 won't build — `nosplit stack over 792 byte limit` — 2026-05-01
+
+**Why deferred**: x86_64 boot smoke is not required to verify MAZ-10. The nosplit error is a pre-existing master issue (confirmed at `4842c90`) unrelated to the dynlink/injection changes. ARM64 HVF is the primary architecture and sufficient to validate MAZ-10. Resume x86_64 after MAZ-10 lands.
 
 **Symptom**: `$GO tool task kmazarin:x86_64` fails at link time with the Go linker rejecting NOSPLIT functions whose worst-case stack chains exceed 792 bytes.
 
@@ -15,43 +49,30 @@ main.isrDev46: nosplit stack over 792 byte limit
                                                     grows 40 bytes, calls runtime.panicBounds<1>
 ```
 
-**Why this is now top priority**: x86_64 boot smoke is needed to fully verify the Gap 2 mazlink work on amd64, and it's required for any cross-architecture work going forward. Click-test sweeps (next planned phase) need both arches working to make the data trustworthy. Bug-B is paused until x86_64 boots.
-
-**Confirmed at master HEAD** (`4842c90`): the same error reproduces on master, NOT introduced by Gap 1/Gap 2/cleanup. There's a stale `build/kmazarin-amd64.elf` from 2026-04-24 in master suggesting a regression between then and now. Likely cause: a recent Go runtime change (Go 1.26.x?) inlined `runtime.panicBounds64` / `runtime.panicBounds` into the NOSPLIT chain reachable from `syscallEntry` and `isrDev*`, pushing the chain over 792 bytes.
-
 ### What's affected
 
-ARM64 builds fine (different ISR/syscall entry layout — see `kmazarin/kmazarin/exceptions_arm64.s` vs `exceptions_amd64.s`). The error is purely on x86_64 NOSPLIT entry stubs:
-- `main.syscallEntry` — x86_64 SYSCALL instruction handler.
-- `main.isrDev32..isrDev47` — IOAPIC device interrupt entry stubs in `kmazarin/kmazarin/exceptions_amd64.s`. All 16 are NOSPLIT|NOFRAME, jump to `common_exception_entry`.
+ARM64 builds fine (different ISR/syscall entry layout — see `kmazarin/kmazarin/exceptions_arm64.s` vs `exceptions_amd64.s`). The error is purely on x86_64 NOSPLIT entry stubs.
 
-`isrDev46` blew up by 152 bytes; `syscallEntry` by 56 bytes. The chain is `entry stub → common_exception_entry → eventually a Go function → runtime.panicBounds64` somewhere downstream.
+### Investigation steps (when resumed)
 
-### Investigation steps
+1. Identify the offending Go runtime change (likely `panicBounds64`/`panicBounds` inlining).
+2. Trace the call chain from `common_exception_entry`.
+3. Fix via runtime-patches overlay (preferred), refactor exceptions_amd64.s, or bump mazlink NOSPLIT limit.
 
-1. **Identify the offending Go runtime change**. Check `git log /opt/homebrew/Cellar/go/1.26.2/libexec/src/runtime/panic.go` (or wherever `panicBounds64` lives) for a recent change that increased its stack footprint or made it cheaper to inline. Compare against an older Go where the build worked (Apr-24 era).
-
-2. **Trace the call chain**. Use `bin/target-objdump -d build/kmazarin-amd64.elf.prereloc` (if a partial build artifact exists) or build with `-gcflags=-m=2 -ldflags="-N"` and inspect what gets pulled into the NOSPLIT chain from `common_exception_entry`. The link error itself shows the chain — capture full output, not just the summary lines.
-
-3. **Pick a fix**:
-   - **Option A (preferred): runtime-patches overlay** that revert the panicBounds inlining for the kmazarin build. Add `runtime-patches/runtime/panic_amd64.go` (or wherever) that overrides the offending function with a NOSPLIT-friendly version. Lowest risk, scoped to kmazarin x86_64.
-   - **Option B**: refactor `kmazarin/kmazarin/exceptions_amd64.s` so the entry stubs do less work in NOSPLIT mode and call into a regular (split-able) Go function for dispatch. Higher cost — touches assembly that already works on ARM64.
-   - **Option C**: bump the NOSPLIT stack limit in mazlink. Risky — the limit is a real safety bound for IST/exception stacks.
-
-### Test plan
+### Test plan (when resumed)
 
 ```bash
-export GOTOOLCHAIN=auto GO=/opt/homebrew/bin/go QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64 LOUIS14_DIR=/Users/iansmith/louis14 FONTS_DIR=/Users/iansmith/louis14/fonts
+export GOTOOLCHAIN=auto GO=/opt/homebrew/bin/go QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
 $GO tool task kmazarin:x86_64        # must succeed
-$GO tool task run-x86_64 TIMEOUT=600 # x86_64 TCG is ~10x slower than ARM64 HVF; give it real time
+$GO tool task run-x86_64 TIMEOUT=600
 $GO tool safe-serial-read /tmp/diplomat-serial.log | grep -E "\[mail\] cache ready|panic|fatal"
 ```
 
-Done when: kmazarin x86_64 builds clean, x86_64 boots through `[mail] cache ready`, no new panics introduced.
+Done when: kmazarin x86_64 builds clean, x86_64 boots through `[mail] cache ready`, no new panics.
 
 ---
 
-## PAUSED: Bug-B family (kernel runtime panic at/after `[mail] cache ready`) — paused 2026-05-01 by x86_64 work
+## PAUSED: Bug-B family (kernel runtime panic at/after `[mail] cache ready`) — paused 2026-05-01
 
 The mazlink Gap 1 + Gap 2 work shipped — shepherd overlay deletion + GOTPCREL host-mode support. Shepherd-side forensics are structurally unblocked (no auto-overwrite to fight) but `runtime-patches/` is currently only consumed by the kmazarin build; wiring it through to the shepherd build is a small follow-up.
 

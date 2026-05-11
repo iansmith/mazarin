@@ -47,7 +47,7 @@ type VersaiEditor struct {
 	FocusParent mancini.FocusClaimer
 
 	// fc is the fs IPC client for /rf (read file) commands.
-	fc *fsclient.Client
+	fc fsclient.FSClient
 }
 
 // NewVersaiEditor creates a VersaiEditor wrapping an existing MultiLineText.

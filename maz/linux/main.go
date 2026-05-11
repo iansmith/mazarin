@@ -362,7 +362,7 @@ func addCRBeforeLF(data []byte) []byte {
 // calls SysRegisterStdioWriteRing(2). All other syscalls — including
 // Write fd>2 — flow through ring 1 per their normal RegisterSyscall-
 // Handler ringIdx (1).
-func startUringDispatchers(fsClient *fsclient.Client, delegateCh chan any, stdoutCh chan sys.SyscallRequest, wmCh chan any, fontReplyCh chan any) {
+func startUringDispatchers(fsClient fsclient.FSClient, delegateCh chan any, stdoutCh chan sys.SyscallRequest, wmCh chan any, fontReplyCh chan any) {
 	// Ring 0: shepherd IPC
 	ipcDispatcher := uring.NewDispatcher() // ring 0 (default)
 	ipcDispatcher.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
@@ -528,22 +528,12 @@ func MazarinShepherd(injected interface{}) error {
 func MazarinMain() {
 	fmt.Printf("[linux] MazarinMain() entered\n")
 
-	// Use the fsclient passed by the generic shepherd. The shepherd's
-	// ring-1 dispatcher is still running; bridge its output from the
-	// original RespCh to a new channel so we don't need a second
-	// reader on ring 1.
+	// Use the fsclient passed by the generic shepherd (already connected,
+	// dispatcher on ring 1 feeding responses).
 	fsClient := shepherdInit.GetFSClient()
 	if fsClient == nil {
 		panic("[linux] FATAL: FSClient is nil — ShepherdInit not received")
 	}
-	oldRespCh := fsClient.RespCh
-	newRespCh := make(chan any, 1)
-	fsClient.RespCh = newRespCh
-	go func() {
-		for msg := range oldRespCh {
-			newRespCh <- msg
-		}
-	}()
 
 	// 1. Wait for fs (needed by syscallHandler for file operations).
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
@@ -575,7 +565,6 @@ func MazarinMain() {
 	if err := uring.Setup(3); err != nil {
 		panic("[linux] uring.Setup(3) failed: " + err.Error())
 	}
-	fsClient.RespRing = uint8(shepherdInit.GetRing1().Number)
 	// WM and font response messages go to temp channels that will be
 	// forwarded to the .maz's channels after injection.
 	tempWMCh := make(chan any, 8)

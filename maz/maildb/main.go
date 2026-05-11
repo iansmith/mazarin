@@ -48,7 +48,7 @@ func forceMailDBIOItab(v interface{}) {
 //   - Ring 1: fs IPC responses (ProtoFSIPCResp → fsClient.RespCh).
 //     Isolated so a backed-up WM/Font channel on Ring 0 cannot
 //     deadlock fsclient callers.
-func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh chan any, mh *mailHandler, ftiRespCh chan any, ftiSID int, tracker *ftiTracker) {
+func startUringDispatcher(fsClient fsclient.FSClient, wmCh chan any, fontReplyCh chan any, mh *mailHandler, ftiRespCh chan any, ftiSID int, tracker *ftiTracker) {
 	// Ring 0: shepherd IPC
 	d := uring.NewDispatcher()
 	d.On(ipc.ProtoShepherdNotify, decodeRawPayload, wmCh)
@@ -69,7 +69,7 @@ func startUringDispatcher(fsClient *fsclient.Client, wmCh chan any, fontReplyCh 
 
 	// Ring 1: fs responses only — isolated from WM/Font/Mail on Ring 0.
 	fsRespDispatcher := uring.NewDispatcherWithRing(1)
-	fsRespDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.RespCh)
+	fsRespDispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fsClient.GetRespCh())
 	fsRespDispatcher.Start()
 }
 
@@ -217,7 +217,7 @@ func main() {
 	if err := uring.Setup(1); err != nil {
 		panic("[maildb] uring.Setup(1) failed: " + err.Error())
 	}
-	fsClient.RespRing = 1
+	fsClient.SetRespRing(1)
 	mh := newMailHandler(nil)
 	tempWMCh := make(chan any, 8)
 	tempFontReplyCh := make(chan any, 8)

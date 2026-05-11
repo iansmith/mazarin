@@ -45,7 +45,7 @@ func init() {
 // interface assertions work across .maz module boundaries via itabsinit.
 //
 // fc is the fs IPC client, set by MazarinShepherd from the injector.
-var fc *fsclient.Client
+var fc fsclient.FSClient
 
 //go:noinline
 func MazarinShepherd(injected interface{}) error {
