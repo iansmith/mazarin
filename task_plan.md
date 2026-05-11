@@ -1,34 +1,8 @@
 # Task Plan — Mazarin / Mazzy
 
-## TOP OF STACK: MAZ-10 — finish shepherd injection unification + ARM64 verification — 2026-05-10
+## TOP OF STACK: kmazarin x86_64 won't build — `nosplit stack over 792 byte limit` — 2026-05-01
 
-**Goal**: Complete the MAZ-10 integration work (unify ring/fsclient injection through the generic shepherd) and verify on ARM64 HVF. x86_64 confirmation is deferred — the nosplit build blocker is a pre-existing master issue unrelated to MAZ-10, and ARM64 is sufficient to validate the dynlink/injection changes.
-
-### What's done (commits on branch)
-
-- **Gap 1** (`96ef2ba`): dropped `runtime.MazKeepAliveSymbols` force-reference (redundant with dynexp+deadcode roots).
-- **Gap 2 linker** (`b3e79ff`): route `-dynlink` GOTPCREL through Adddynrel for host builds; `AddGotSymStatic` for static GOT fill.
-- **Gap 2 build** (`0da884d`): shepherd builds with `-gcflags=all=-dynlink`, no overlay.
-- **Gap 2 cleanup** (`411034d`): deleted `cmd/gen-ast-stubs -mode=shepherd` and overlay Taskfile targets.
-- **Follow-ups** (`174d98e`, `9f086d9`): gate tightening, fs overlay fix.
-- **MAZ-8 integration** (`2b6ccfe`, `5e32757`, `c49cccd`): unified ring/fsclient injection through generic shepherd via `ShepherdInit` / `MazarinShepherd()`.
-
-### What remains
-
-1. **Build verification**: ARM64 full build (`$GO tool task`) must succeed.
-2. **ARM64 HVF boot smoke**: boot through `[mail] cache ready`, confirm all plugins load (rachel, linux, fs, fontsvc, mail, etc.).
-3. **Plugin-load smoke**: verify rachel.maz, linux.maz, fontsvc.maz all load and resolve host imports correctly via the new injection path.
-4. **5×60s ARM64 HVF sweep**: confirm stability, no regressions vs pre-MAZ-10 baseline.
-5. **Final cleanup**: verify `grep -r MazKeepAlive` returns nothing; verify `objdump -R build/shepherd.elf` shows zero GLOB_DAT entries; confirm no `-overlay=` or `-tags mazhost` in shepherd build.
-6. **Update tracking**: refresh task_plan.md, progress.md, memory files to reflect MAZ-10 closed.
-
-### Done when
-
-- Shepherd builds with `-gcflags=all=-dynlink`, no overlay, no keepalive.
-- ARM64 HVF boots through `[mail] cache ready` with all plugins loaded.
-- Plugin path verified byte-identical (no regression).
-- 5×60s sweep clean.
-- All MAZ-10 tracking archived.
+**Why this is now top priority**: MAZ-10 shipped — ARM64 HVF is verified. x86_64 boot smoke is needed to fully verify the Gap 2 mazlink work on amd64, and it's required for any cross-architecture work going forward. Bug-B is paused until x86_64 boots.
 
 ---
 
@@ -72,7 +46,7 @@ Done when: kmazarin x86_64 builds clean, x86_64 boots through `[mail] cache read
 
 ---
 
-## PAUSED: Bug-B family (kernel runtime panic at/after `[mail] cache ready`) — paused 2026-05-01
+## PAUSED: Bug-B family (kernel runtime panic at/after `[mail] cache ready`) — paused 2026-05-01 by x86_64 work
 
 The mazlink Gap 1 + Gap 2 work shipped — shepherd overlay deletion + GOTPCREL host-mode support. Shepherd-side forensics are structurally unblocked (no auto-overwrite to fight) but `runtime-patches/` is currently only consumed by the kmazarin build; wiring it through to the shepherd build is a small follow-up.
 
@@ -99,6 +73,20 @@ Code review of the Gap 1 + Gap 2 worktree surfaced four follow-up items, all now
 ARM64 HVF post-rebase smoke confirmed: reaches `[mail] cache ready` cleanly, no panics. (Worktree was missing user-local `data/mail/mbox/current.mbox` — copied from master to enable smoke.)
 
 x86_64 boot smoke blocked by the kmazarin nosplit build error (now TOP OF STACK above).
+
+---
+
+## ARCHIVED: MAZ-10 — shepherd injection unification + FSClient interface (2026-05-10) ✅
+
+Gap 1 (drop keepalive) + Gap 2 (dynlink host GOTPCREL) already shipped on this branch. The remaining work unified ring/fsclient injection through the generic shepherd and fixed a cross-.maz type identity bug:
+
+- Replaced `*fsclient.Client` concrete type with `FSClient` interface + `clientImpl`. All plugin method calls now route through itab → host code → host type descriptors, fixing the `raw.(ipc.FSIPCRespPayload)` type assertion failure in `callLocked`.
+- Added `fsclient` to dlopen-host-packages.txt and `forceKeepMethods()` to prevent deadcode of interface methods.
+- Removed unnecessary RespCh bridging in linux/main.go.
+- ARM64 HVF: 5/5 font index loaded, 0 new error types, Bug-B at baseline rate (1/5).
+
+**Branch:** `ianster/maz-10-mazlink-gap-1-gap-2-replace-shepherd-overlay-with-dynlink`
+**Key commits:** `0e34648` (FSClient interface), `c49cccd` (ShepherdInit injection)
 
 ---
 
