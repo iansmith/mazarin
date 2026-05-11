@@ -47,8 +47,8 @@ func Open(filename string) (*Handle, error) {
 
 // OpenBytes is the in-memory variant of Open. The caller supplies the
 // plugin ELF bytes directly — useful on Mazarin where files come from
-// sys.LoadFile (fs.maz delegate) or the disk shepherd's block-device
-// layer rather than a POSIX filesystem. Behavior is otherwise identical
+// fsclient IPC or the disk shepherd's block-device layer rather than
+// a POSIX filesystem. Behavior is otherwise identical
 // to Open.
 func OpenBytes(name string, data []byte) (*Handle, error) {
 	f, err := elf.NewFile(bytes.NewReader(data))

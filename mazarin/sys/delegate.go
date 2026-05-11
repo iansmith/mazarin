@@ -132,19 +132,6 @@ func RegisterStdioWriteRing(ringIdx int) error {
 	return nil
 }
 
-// LoadFileReply sends the return value and file result back to the blocked caller.
-// For LoadFile: the kernel writes (targetVA, numPages, bytesRead) to the caller's
-// LoadFileResult struct before waking the caller.
-func (r *SyscallRequest) LoadFileReply(returnVal int64, targetVA, numPages, bytesRead uint64) {
-	RawSyscall(mazzy.SysSyscallReply,
-		uintptr(r.CallerPID),
-		uintptr(r.CallerTID),
-		uintptr(uint64(returnVal)),
-		uintptr(targetVA),
-		uintptr(numPages),
-		uintptr(bytesRead))
-}
-
 // DecodeFSDelegateReq is a uring Dispatcher decoder for ProtoFSDelegateReq messages.
 // Returns a SyscallRequest that the handler can process identically to the old
 // delegate recv loop.
@@ -158,27 +145,6 @@ func DecodeFSDelegateReq(msg *ipc.UringIPCMsg) any {
 		dataVA:    uintptr(p.DataVA),
 		dataLen:   p.DataLen,
 	}
-}
-
-// NewSyscallRequest creates a SyscallRequest from uring-delivered payload fields.
-// Used by the handler's uring Dispatcher to convert ProtoFSDelegateReq messages
-// into the SyscallRequest type consumed by the delegate handler goroutine.
-func NewSyscallRequest(sysID sysid.ID, callerSID, callerTID int16, args [6]uint64, dataVA uintptr, dataLen uint32) SyscallRequest {
-	return SyscallRequest{
-		SysID:     sysID,
-		CallerPID: callerSID,
-		CallerTID: callerTID,
-		Args:      args,
-		dataVA:    dataVA,
-		dataLen:   dataLen,
-	}
-}
-
-// RegisterSyscallHandlers registers the calling shepherd as the handler for
-// the given syscalls on ring 0. The handler receives delegated requests via
-// its uring Dispatcher (ProtoFSDelegateReq).
-func RegisterSyscallHandlers(ids ...sysid.ID) error {
-	return RegisterSyscallHandlersWithRing(0, ids...)
 }
 
 // RegisterSyscallHandlersWithRing registers the calling shepherd as the handler

@@ -35,11 +35,12 @@ type fsHandle struct {
 
 // fsIPCConn tracks one connected shepherd's IPC state.
 type fsIPCConn struct {
-	sid     int16   // sender shepherd ID
-	dataVA  uintptr // shared data area VA in our (fs's) address space
-	dataLen int
-	handles [maxFSHandles]*fsHandle
-	nextHnd uint32
+	sid      int16   // sender shepherd ID
+	dataVA   uintptr // shared data area VA in our (fs's) address space
+	dataLen  int
+	respRing uint8 // uring ring for responses (from FSOpConnect handshake)
+	handles  [maxFSHandles]*fsHandle
+	nextHnd  uint32
 }
 
 func (c *fsIPCConn) dataArea() []byte {
@@ -166,11 +167,12 @@ func (s *fsIPCServer) processRequest(raw fsIPCRequest, mt *mountTable) {
 // handleConnect registers a new shepherd connection.
 func (s *fsIPCServer) handleConnect(sid int16, req *ipc.FSIPCReqPayload) {
 	s.conns[sid] = &fsIPCConn{
-		sid:     sid,
-		dataVA:  uintptr(req.DataVA),
-		dataLen: int(req.DataLen),
+		sid:      sid,
+		dataVA:   uintptr(req.DataVA),
+		dataLen:  int(req.DataLen),
+		respRing: req.RespRing,
 	}
-	fmt.Printf("[fs] IPC connect from SID=%d dataVA=0x%x len=%d\n", sid, req.DataVA, req.DataLen)
+	fmt.Printf("[fs] IPC connect from SID=%d dataVA=0x%x len=%d respRing=%d\n", sid, req.DataVA, req.DataLen, req.RespRing)
 
 	resp := ipc.FSIPCRespPayload{ReqID: req.ReqID}
 	s.respond(sid, &resp)
@@ -190,11 +192,20 @@ func (s *fsIPCServer) handleConnect(sid int16, req *ipc.FSIPCReqPayload) {
 // ring-3 (RingFSResp) backpressure spikes don't cost a silent drop. On any non-EAGAIN error (target dead, etc.), we log and
 // give up — those are terminal.
 func (s *fsIPCServer) respond(sid int16, resp *ipc.FSIPCRespPayload) {
+	conn := s.conns[sid]
+	if conn == nil {
+		fmt.Printf("[fs:ipc] respond SID=%d: no connection — dropping reply\n", sid)
+		return
+	}
+	ring := conn.respRing
+	if ring == 0 {
+		ring = uint8(ipc.RingFSResp)
+	}
 	msg := ipc.EncodeFSIPCResp(resp)
 	const respondMaxAttempts = 100             // 100 × 30 ms ≈ 3 s total budget
 	const respondPerAttemptMs = 30 * time.Millisecond
 	for attempt := 0; attempt < respondMaxAttempts; attempt++ {
-		err := uring.SendWithRing(int(sid), &msg, ipc.RingFSResp)
+		err := uring.SendWithRing(int(sid), &msg, int(ring))
 		if err == nil {
 			if attempt > 0 {
 				fmt.Printf("[fs:ipc] respond SID=%d retried, attempts=%d\n", sid, attempt+1)
@@ -205,9 +216,6 @@ func (s *fsIPCServer) respond(sid int16, resp *ipc.FSIPCRespPayload) {
 			fmt.Printf("[fs:ipc] respond SID=%d failed (terminal): %v\n", sid, err)
 			return
 		}
-		// EAGAIN: the linux ring-3 (RingFSResp) dispatcher hasn't drained
-		// our prior sends fast enough. Sleep briefly and retry — the
-		// dispatcher is alive, just momentarily backpressured.
 		time.Sleep(respondPerAttemptMs)
 	}
 	fmt.Printf("[fs:ipc] respond SID=%d EAGAIN exhausted after %d attempts (~%dms total) — DROPPING reply, worker will wedge\n",

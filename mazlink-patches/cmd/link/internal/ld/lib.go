@@ -3059,6 +3059,24 @@ func AddGotSym(target *Target, ldr *loader.Loader, syms *ArchSyms, s loader.Sym,
 	}
 }
 
+// AddGotSymStatic allocates a GOT slot for symbol s and fills it with the
+// symbol's static virtual address (resolved at link time via R_ADDR).  No
+// .rela.dyn / .rel.dyn entry is emitted — this is for host-mode shepherd
+// builds (BuildModeExe + internal linking + -dlopen-host-exports) where there
+// is no dynamic linker to apply runtime relocations.
+func AddGotSymStatic(target *Target, ldr *loader.Loader, syms *ArchSyms, s loader.Sym) {
+	if ldr.SymGot(s) >= 0 {
+		return
+	}
+	got := ldr.MakeSymbolUpdater(syms.GOT)
+	ldr.SetGot(s, int32(got.Size()))
+	// AddAddrPlus emits an R_ADDR reloc inside the GOT symbol data, which
+	// the linker's own relocsym pass resolves to addr(s)+0.  Since this is
+	// an internal BuildModeExe link, the slot will hold the final absolute
+	// virtual address of s when the binary is written.
+	got.AddAddrPlus(target.Arch, s, 0)
+}
+
 var hostobjcounter int
 
 // captureHostObj writes out the content of a host object (pulled from

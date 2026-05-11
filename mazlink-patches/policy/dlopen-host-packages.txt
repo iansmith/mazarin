@@ -52,3 +52,14 @@ internal/goexperiment
 
 mazzy/mazarin/mazdl
 mazzy/mazarin/mazhost
+
+# ---------------------------------------------------------------------
+# fsclient — must be host-resident to keep all FSClient interface methods
+# reachable. The host binary only calls Connect/SetRespRing/GetRespCh
+# directly; plugins (linux, rachel, fontsvc) call Open/Close/Read/Write/
+# Stat/Mkdir/etc. through the FSClient interface itab. Without host
+# residency, deadcode drops the unused methods, leaving "unreachable
+# method called" stubs in the itab.
+# ---------------------------------------------------------------------
+
+mazzy/mazarin/fsclient

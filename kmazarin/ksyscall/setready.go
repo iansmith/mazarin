@@ -7,7 +7,7 @@ import (
 
 // SyscallSetReady sets or clears the calling shepherd's Ready flag.
 // The Ready flag indicates the shepherd is ready to accept delegated work
-// (e.g., fs.maz signals it's ready to handle LoadFile requests).
+// (e.g., a shepherd signals it's ready to handle delegated work).
 //
 // arg0 = 1 to set ready, 0 to clear
 // Returns: 0 on success, negative errno on error.

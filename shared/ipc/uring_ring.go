@@ -33,7 +33,7 @@ const (
 	ProtoFontResponse    uint32 = 7 // Font response (fontsvc → shepherd)
 	ProtoHIDNotify       uint32 = 8 // HID input event notification (kernel → WM)
 	ProtoFSDelegateReq   uint32 = 9  // Delegated FS syscall request (kernel → handler)
-	ProtoFSDelegateResp  uint32 = 10 // Delegated FS syscall response (handler → caller via kernel)
+	_                    uint32 = 10 // reserved (was ProtoFSDelegateResp — replies go through SyscallReply syscall)
 	ProtoFSIPCReq        uint32 = 11 // Shepherd → fs file operation request
 	ProtoFSIPCResp       uint32 = 12 // fs → shepherd file operation response
 	ProtoMailReq         uint32 = 13 // mail → maildb request (GetHeaders, GetBody, BodyConfirm)

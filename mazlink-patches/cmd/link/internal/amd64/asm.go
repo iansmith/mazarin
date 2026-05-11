@@ -492,10 +492,24 @@ func adddynrel(target *ld.Target, ldr *loader.Loader, syms *ld.ArchSyms, s loade
 		// PC-relative reference into the GOT. This is the direct parallel
 		// of the arm64 R_ARM64_GOTPCREL handler, which also lets SDYNIMPORT
 		// flow through uniformly.
+		// mazlink: host-mode shepherd (BuildModeExe + -dlopen-host-exports)
+		// also emits R_GOTPCREL with -gcflags=-dynlink. The host has no
+		// dynamic linker at runtime, so fill the GOT slot statically (0).
 		su := ldr.MakeSymbolUpdater(s)
-		if target.IsElf() {
+		// Pick the right GOT-slot relocation policy:
+		//   - Host (-dlopen-host-exports): static R_ADDR fill — the shepherd
+		//     binary has no dynamic linker at runtime, so the linker writes
+		//     the absolute address into the slot.
+		//   - Other ELF (plugin / PIE / -dynlink): GLOB_DAT — a dynamic linker
+		//     resolves the slot at load time. Same as stock Go and unchanged
+		//     from mazlink pre-Gap-2.
+		//   - Non-ELF: stock fallback (reloc type 0).
+		switch {
+		case target.IsElf() && *ld.FlagDlopenHostExports != "":
+			ld.AddGotSymStatic(target, ldr, syms, targ)
+		case target.IsElf():
 			ld.AddGotSym(target, ldr, syms, targ, uint32(elf.R_X86_64_GLOB_DAT))
-		} else {
+		default:
 			ld.AddGotSym(target, ldr, syms, targ, 0)
 		}
 		su.SetRelocSym(rIdx, syms.GOT)

@@ -14,6 +14,7 @@ import (
 
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
+	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
@@ -25,9 +26,10 @@ import (
 )
 
 var (
-	rachelSID int
-	app       *std.AppWindow
-	wmCh      = make(chan any, 128)
+	rachelSID   int
+	app         *std.AppWindow
+	wmCh        = make(chan any, 128)
+	appFSClient fsclient.FSClient
 )
 
 
@@ -64,6 +66,20 @@ func main() {
 	fmt.Printf("[versai] scratch dir: %s\n", scratch)
 	rachelSID = sys.MustGetShepherdByName("rachel")
 	fc := fontcache.New(rachelSID)
+
+	// Set up fs IPC client for /rf (read file) commands.
+	fsSID := sys.MustGetShepherdByName("fs")
+	appFSClient = fsclient.New(fsSID)
+	appFSClient.SetRespRing(ipc.RingFSResp)
+	if err := uring.Setup(ipc.RingFSResp); err != nil {
+		panic(fmt.Sprintf("[versai] uring.Setup(RingFSResp) failed: %v", err))
+	}
+	fsDisp := uring.NewDispatcherWithRing(ipc.RingFSResp)
+	fsDisp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, appFSClient.GetRespCh())
+	fsDisp.Start()
+	if err := appFSClient.Connect(); err != nil {
+		panic(fmt.Sprintf("[versai] fsclient.Connect: %v", err))
+	}
 
 	// Start uring dispatcher so font responses are processed.
 	startUringDispatcher(fc)

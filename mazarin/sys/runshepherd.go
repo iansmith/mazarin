@@ -12,17 +12,10 @@ import (
 // A new address space is created, the ELF is loaded into it, and the
 // shepherd's main thread is started.
 //
-// The raw ELF pages (from LoadFile) are implicitly unmapped from the caller.
+// The raw ELF pages are implicitly unmapped from the caller.
 //
 // Optional args are passed as command-line arguments to the new shepherd.
 // The new shepherd sees os.Args = ["/name.elf", "<shepherdNum>", args...].
-//
-// Usage:
-//
-//	lf, err := sys.LoadFile("/linux.elf")
-//	if err == nil {
-//	    err = sys.RunShepherd("linux", uintptr(lf.StartVA), int(lf.NumPages), int(lf.BytesRead))
-//	}
 //
 //	// With arguments:
 //	err = sys.RunShepherd("myapp", startVA, numPages, totalBytes, "--port", "8080")

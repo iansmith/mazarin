@@ -3,6 +3,7 @@ package mazdl
 import (
 	"strings"
 	"sync"
+	"unsafe"
 )
 
 // Handle is an opaque reference to a loaded .maz module. A Handle is
@@ -89,6 +90,19 @@ func (h *Handle) Sym(name string) (uintptr, error) {
 // which is Phase 5+ work.
 func (h *Handle) Close() error {
 	return nil
+}
+
+// Funcval converts a function pointer (resolved from a plugin's dynsym) into
+// a callable Go function. T must be a func type. Uses the standard Go funcval
+// layout (first word = entry PC), matching the compiler's ABI.
+func Funcval[T any](addr uintptr) T {
+	if addr == 0 {
+		var zero T
+		return zero
+	}
+	type funcval struct{ fn uintptr }
+	fv := &funcval{fn: addr}
+	return *(*T)(unsafe.Pointer(&fv))
 }
 
 // modulesMu guards both modules and globalSyms. Open is fully serialized

@@ -57,6 +57,16 @@ var (
 		"mazlink: path to policy file listing Go packages this binary exports to plugins (host mode)")
 )
 
+// FlagDlopenHostPackages and FlagDlopenHostExports are exported so that
+// arch-specific packages (arm64, amd64) can read the flag values from the ld
+// package.  Use *ld.FlagDlopenHostPackages and *ld.FlagDlopenHostExports.
+// These are the same *string pointers as the unexported flag variables above;
+// dereferencing them after flag.Parse() yields the effective flag value.
+var (
+	FlagDlopenHostPackages = flagDlopenHostPackages
+	FlagDlopenHostExports  = flagDlopenHostExports
+)
+
 // The soname-ish string we stamp into DT_NEEDED. mazdl.Open refuses to bind a
 // plugin whose DT_NEEDED isn't this exact token. There is no glibc "search
 // path" behavior — this is just a sanity tag that says "I expect to be loaded

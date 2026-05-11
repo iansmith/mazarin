@@ -1,12 +1,12 @@
 // Package fsclient provides a uring-based IPC client for talking to the fs
-// shepherd. Any shepherd that needs file operations (open, read, write, stat,
-// etc.) creates an fsclient.Client and registers its RespCh on their uring
-// Dispatcher:
+// shepherd. Any shepherd that needs file operations creates an FSClient
+// and registers its response channel on their uring Dispatcher:
 //
 //	fc := fsclient.New(fsSID)
-//	dispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.RespCh)
+//	dispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.GetRespCh())
 //	dispatcher.Start()
-//	fc.Connect()   // handshake with fs
+//	fc.SetRespRing(ring)
+//	fc.Connect()
 //
 // Bulk data (paths, read/write buffers, stat results) flows through a shared
 // data area — caller-owned pages mapped into fs's address space via SharePages.
@@ -35,24 +35,55 @@ import (
 
 const dataPages = 16 // shared data area size (64KB)
 
-// Client is an IPC client for the fs shepherd.
-type Client struct {
+// FSClient is the interface for IPC with the fs shepherd. Using an interface
+// (not a concrete pointer) lets the host's implementation cross .maz module
+// boundaries via itabs — method calls on the plugin side resolve through the
+// host's type descriptors, so callLocked's ipc.FSIPCRespPayload assertion
+// always sees the host's type.
+type FSClient interface {
+	Connect() error
+	SetRespRing(ring uint8)
+	GetRespCh() chan any
+	DataLen() int
+
+	Open(path string, flags, mode uint32) (handle uint32, inum uint32, ftype uint8, size uint32, err error)
+	Close(handle uint32) error
+	Read(handle uint32, offset int64, buf []byte) (int, error)
+	Write(handle uint32, offset int64, data []byte) (int, error)
+	Stat(path string, statBuf []byte) (int32, error)
+	Fstat(handle uint32, statBuf []byte) (int32, error)
+	Mkdir(path string, mode uint32) error
+	Remove(path string) error
+	Rename(oldPath, newPath string) error
+	ReadDir(handle uint32, startIdx int, buf []byte) (int, int, error)
+	Access(path string) error
+	SetMode(path string, mode uint32) error
+	SetTimes(path string) error
+	Truncate(handle uint32, size int64) error
+	Sync() error
+	Resolve(path string) (isDir bool, size uint32, err error)
+	ReadFile(path string) ([]byte, error)
+}
+
+// clientImpl is the concrete implementation of FSClient.
+type clientImpl struct {
 	fsSID int
 
-	// RespCh receives decoded FSIPCRespPayload values from the uring Dispatcher.
-	// Register on the Dispatcher before calling Connect:
-	//   dispatcher.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.RespCh)
-	RespCh chan any
+	// respCh receives decoded FSIPCRespPayload values from the uring Dispatcher.
+	respCh chan any
 
-	// mu serializes everything that touches the shared data area or
-	// expects a response on RespCh — i.e., effectively every public
-	// method. nextID is also mu-protected.
+	// respRing is the uring ring index for fs to send responses on.
+	respRing uint8
+
+	respChOverride chan any
+	reqIDOffset    uint32
+
 	mu sync.Mutex
 
-	localVA  uintptr // data area VA in our address space
-	remoteVA uintptr // data area VA in fs's address space
-	dataLen  int     // data area size in bytes
-	nextID   uint32  // protected by mu
+	localVA  uintptr
+	remoteVA uintptr
+	dataLen  int
+	nextID   uint32
 }
 
 // New creates a new fs client targeting the given shepherd ID.
@@ -64,10 +95,10 @@ type Client struct {
 // A larger buffer just hides bugs (e.g., a stale reply from a previously
 // timed-out call would silently accumulate). Cap 1 makes such anomalies
 // surface immediately at the dispatcher's send-side.
-func New(fsSID int) *Client {
-	return &Client{
+func New(fsSID int) FSClient {
+	return &clientImpl{
 		fsSID:  fsSID,
-		RespCh: make(chan any, 1),
+		respCh: make(chan any, 1),
 	}
 }
 
@@ -79,7 +110,7 @@ func DecodeResp(msg *ipc.UringIPCMsg) any {
 
 // Connect allocates the shared data area, maps it into fs, and sends the
 // handshake message. Blocks until fs confirms the connection.
-func (c *Client) Connect() error {
+func (c *clientImpl) Connect() error {
 	// Allocate shared data pages.
 	ptr, err := mem.AllocPages(dataPages, mem.PageIPC)
 	if err != nil {
@@ -98,9 +129,10 @@ func (c *Client) Connect() error {
 	// Send connect handshake.
 	c.mu.Lock()
 	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
-		Op:      ipc.FSOpConnect,
-		DataVA:  uint64(c.remoteVA),
-		DataLen: uint32(c.dataLen),
+		Op:       ipc.FSOpConnect,
+		DataVA:   uint64(c.remoteVA),
+		DataLen:  uint32(c.dataLen),
+		RespRing: c.respRing,
 	})
 	c.mu.Unlock()
 	if err != nil {
@@ -115,9 +147,9 @@ func (c *Client) Connect() error {
 // callLocked sends a request and blocks for the response. Caller must hold
 // c.mu — that's how we keep nextID consistent and stop two goroutines from
 // each consuming the other's RespCh value.
-func (c *Client) callLocked(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, error) {
+func (c *clientImpl) callLocked(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, error) {
 	c.nextID++
-	req.ReqID = c.nextID
+	req.ReqID = c.nextID + c.reqIDOffset
 	if req.DataVA == 0 {
 		req.DataVA = uint64(c.remoteVA)
 	}
@@ -127,7 +159,12 @@ func (c *Client) callLocked(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, err
 		return ipc.FSIPCRespPayload{}, fmt.Errorf("fsclient: Send: %w", err)
 	}
 
-	raw := <-c.RespCh
+	respCh := c.respCh
+	if c.respChOverride != nil {
+		respCh = c.respChOverride
+		c.respChOverride = nil
+	}
+	raw := <-respCh
 	resp, ok := raw.(ipc.FSIPCRespPayload)
 	if !ok {
 		return ipc.FSIPCRespPayload{}, errors.New("fsclient: unexpected response type")
@@ -137,18 +174,24 @@ func (c *Client) callLocked(req *ipc.FSIPCReqPayload) (ipc.FSIPCRespPayload, err
 
 // DataLen returns the shared data area size in bytes. Constant — safe to
 // call without the lock.
-func (c *Client) DataLen() int { return c.dataLen }
+func (c *clientImpl) DataLen() int { return c.dataLen }
+
+// SetRespRing sets the uring ring index for fs to send responses on.
+func (c *clientImpl) SetRespRing(ring uint8) { c.respRing = ring }
+
+// GetRespCh returns the response channel for use with uring Dispatcher.
+func (c *clientImpl) GetRespCh() chan any { return c.respCh }
 
 // dataArea returns the local shared data area as a byte slice. Caller must
 // hold c.mu while reading or writing — the returned slice is the live
 // shared region and concurrent callers will trample it.
-func (c *Client) dataArea() []byte {
+func (c *clientImpl) dataArea() []byte {
 	return unsafe.Slice((*byte)(unsafe.Pointer(c.localVA)), c.dataLen)
 }
 
 // setPathLocked writes a null-terminated path to the start of the data area
 // and returns the length including the null. Caller must hold c.mu.
-func (c *Client) setPathLocked(path string) uint16 {
+func (c *clientImpl) setPathLocked(path string) uint16 {
 	area := c.dataArea()
 	n := len(path)
 	if n >= len(area) {
@@ -166,7 +209,7 @@ func (c *Client) setPathLocked(path string) uint16 {
 // inum is the ext2 inode number, exposed so callers can key per-file
 // state by inode (matching Linux's VMA-survives-close semantic) rather
 // than by the fd-side handle.
-func (c *Client) Open(path string, flags, mode uint32) (handle uint32, inum uint32, ftype uint8, size uint32, err error) {
+func (c *clientImpl) Open(path string, flags, mode uint32) (handle uint32, inum uint32, ftype uint8, size uint32, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	pathLen := c.setPathLocked(path)
@@ -190,7 +233,7 @@ func (c *Client) Open(path string, flags, mode uint32) (handle uint32, inum uint
 }
 
 // Close closes a handle.
-func (c *Client) Close(handle uint32) error {
+func (c *clientImpl) Close(handle uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
@@ -212,7 +255,7 @@ func (c *Client) Close(handle uint32) error {
 // The shared data area copy happens under c.mu so a concurrent caller's
 // Stat/Read/ReadDir can't overwrite our response data before we've copied
 // it into the caller's buf.
-func (c *Client) Read(handle uint32, offset int64, buf []byte) (int, error) {
+func (c *clientImpl) Read(handle uint32, offset int64, buf []byte) (int, error) {
 	count := len(buf)
 	if count > c.dataLen {
 		count = c.dataLen
@@ -243,7 +286,7 @@ func (c *Client) Read(handle uint32, offset int64, buf []byte) (int, error) {
 
 // Write writes data to handle at offset. The data area copy and the IPC send
 // happen under c.mu so concurrent writers can't interleave.
-func (c *Client) Write(handle uint32, offset int64, data []byte) (int, error) {
+func (c *clientImpl) Write(handle uint32, offset int64, data []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n := len(data)
@@ -270,7 +313,7 @@ func (c *Client) Write(handle uint32, offset int64, data []byte) (int, error) {
 
 // Stat stats a path. The 128-byte stat buf is copied into statBuf under the
 // lock. statBuf must be at least 128 bytes.
-func (c *Client) Stat(path string, statBuf []byte) (int32, error) {
+func (c *clientImpl) Stat(path string, statBuf []byte) (int32, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	pathLen := c.setPathLocked(path)
@@ -289,7 +332,7 @@ func (c *Client) Stat(path string, statBuf []byte) (int32, error) {
 
 // Fstat stats a handle. The 128-byte stat buf is copied into statBuf under
 // the lock. statBuf must be at least 128 bytes.
-func (c *Client) Fstat(handle uint32, statBuf []byte) (int32, error) {
+func (c *clientImpl) Fstat(handle uint32, statBuf []byte) (int32, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
@@ -306,7 +349,7 @@ func (c *Client) Fstat(handle uint32, statBuf []byte) (int32, error) {
 }
 
 // Mkdir creates a directory.
-func (c *Client) Mkdir(path string, mode uint32) error {
+func (c *clientImpl) Mkdir(path string, mode uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	pathLen := c.setPathLocked(path)
@@ -326,7 +369,7 @@ func (c *Client) Mkdir(path string, mode uint32) error {
 
 // Rename renames oldPath to newPath. Both paths are packed into the data area
 // as "oldPath\0newPath\0". Arg0 carries the offset of newPath.
-func (c *Client) Rename(oldPath, newPath string) error {
+func (c *clientImpl) Rename(oldPath, newPath string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	area := c.dataArea()
@@ -354,7 +397,7 @@ func (c *Client) Rename(oldPath, newPath string) error {
 }
 
 // Remove removes a file or directory.
-func (c *Client) Remove(path string) error {
+func (c *clientImpl) Remove(path string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	pathLen := c.setPathLocked(path)
@@ -374,7 +417,7 @@ func (c *Client) Remove(path string) error {
 // ReadDir reads directory entries into buf. Returns (bytesCopied,
 // entryCount, err). buf is typically a per-caller scratch buffer
 // (≥4 KB; fs.maz packs as many dirents as fit in its 64 KB window).
-func (c *Client) ReadDir(handle uint32, startIdx int, buf []byte) (int, int, error) {
+func (c *clientImpl) ReadDir(handle uint32, startIdx int, buf []byte) (int, int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
@@ -399,7 +442,7 @@ func (c *Client) ReadDir(handle uint32, startIdx int, buf []byte) (int, int, err
 }
 
 // Access checks if a path exists.
-func (c *Client) Access(path string) error {
+func (c *clientImpl) Access(path string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	pathLen := c.setPathLocked(path)
@@ -417,7 +460,7 @@ func (c *Client) Access(path string) error {
 }
 
 // SetMode changes file permissions.
-func (c *Client) SetMode(path string, mode uint32) error {
+func (c *clientImpl) SetMode(path string, mode uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	pathLen := c.setPathLocked(path)
@@ -436,7 +479,7 @@ func (c *Client) SetMode(path string, mode uint32) error {
 }
 
 // SetTimes updates timestamps (no-op currently).
-func (c *Client) SetTimes(path string) error {
+func (c *clientImpl) SetTimes(path string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	pathLen := c.setPathLocked(path)
@@ -454,7 +497,7 @@ func (c *Client) SetTimes(path string) error {
 }
 
 // Truncate sets the size of an open handle.
-func (c *Client) Truncate(handle uint32, size int64) error {
+func (c *clientImpl) Truncate(handle uint32, size int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
@@ -472,7 +515,7 @@ func (c *Client) Truncate(handle uint32, size int64) error {
 }
 
 // Sync flushes filesystem metadata.
-func (c *Client) Sync() error {
+func (c *clientImpl) Sync() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	resp, err := c.callLocked(&ipc.FSIPCReqPayload{
@@ -488,7 +531,7 @@ func (c *Client) Sync() error {
 }
 
 // Resolve checks if a path exists and returns whether it's a directory + size.
-func (c *Client) Resolve(path string) (isDir bool, size uint32, err error) {
+func (c *clientImpl) Resolve(path string) (isDir bool, size uint32, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	pathLen := c.setPathLocked(path)
@@ -520,4 +563,58 @@ func IsErrno(err error) (int32, bool) {
 		return e.Errno(), true
 	}
 	return 0, false
+}
+
+// forceKeepMethods prevents the linker from deadcoding FSClient methods
+// that are only called by plugins through the itab. The host binary directly
+// calls Connect/SetRespRing/GetRespCh; everything else (Open, Close, Read,
+// Write, Stat, Fstat, Mkdir, etc.) is only reachable through the interface.
+// Method expressions force the linker to keep them alive.
+//
+//go:noinline
+func forceKeepMethods() {
+	_ = (*clientImpl).Open
+	_ = (*clientImpl).Close
+	_ = (*clientImpl).Read
+	_ = (*clientImpl).Write
+	_ = (*clientImpl).Stat
+	_ = (*clientImpl).Fstat
+	_ = (*clientImpl).Mkdir
+	_ = (*clientImpl).Remove
+	_ = (*clientImpl).Rename
+	_ = (*clientImpl).ReadDir
+	_ = (*clientImpl).Access
+	_ = (*clientImpl).SetMode
+	_ = (*clientImpl).SetTimes
+	_ = (*clientImpl).Truncate
+	_ = (*clientImpl).Sync
+	_ = (*clientImpl).Resolve
+}
+
+func init() { forceKeepMethods() }
+
+// ReadFile reads an entire file into memory via fsclient (Open + chunked
+// Read + Close). It is a convenience wrapper used by callers that previously
+// used sys.LoadFile and have been migrated to fsclient IPC.
+func (c *clientImpl) ReadFile(path string) ([]byte, error) {
+	handle, _, _, size, err := c.Open(path, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close(handle)
+
+	buf := make([]byte, size)
+	total := 0
+	for offset := int64(0); total < int(size); {
+		n, err := c.Read(handle, offset, buf[total:])
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			break
+		}
+		total += n
+		offset += int64(n)
+	}
+	return buf[:total], nil
 }

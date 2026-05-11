@@ -6,8 +6,8 @@ tasks:
     run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
-      - 'maz/attrtest/**/*.go'
-      - 'mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/maz/attrtest/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
@@ -22,8 +22,8 @@ tasks:
     run: once
     deps: [':check-env', ':mazarin:userspace-overlay']
     sources:
-      - 'maz/attrtest/**/*.go'
-      - 'mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/maz/attrtest/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:

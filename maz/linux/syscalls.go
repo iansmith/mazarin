@@ -42,7 +42,7 @@ type syscallHandler struct {
 	mu            sync.Mutex
 	shepherds     map[int16]*ShepherdFilesystemData
 	flocks        *flockTable
-	fs            *fsclient.Client
+	fs            fsclient.FSClient
 	cache         *pageCache
 
 	// orphanHandles tracks fs handles whose owning fd has been closed
@@ -53,7 +53,7 @@ type syscallHandler struct {
 	orphanHandles map[int16]map[uint32]uint32
 }
 
-func newSyscallHandler(fs *fsclient.Client) *syscallHandler {
+func newSyscallHandler(fs fsclient.FSClient) *syscallHandler {
 	return &syscallHandler{
 		shepherds:     make(map[int16]*ShepherdFilesystemData),
 		flocks:        newFlockTable(),

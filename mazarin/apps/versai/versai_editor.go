@@ -20,10 +20,9 @@ import (
 	"unsafe"
 
 	"mazzy/mazarin/attr"
-	"mazzy/mazarin/file"
+	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
-	"mazzy/mazarin/mem"
 )
 
 // PageSize is the size of the shared text page.
@@ -46,6 +45,9 @@ type VersaiEditor struct {
 	// editor is clicked, it calls FocusParent.SetFocusToSelf() before
 	// delegating to MultiLineText.Click().
 	FocusParent mancini.FocusClaimer
+
+	// fc is the fs IPC client for /rf (read file) commands.
+	fc fsclient.FSClient
 }
 
 // NewVersaiEditor creates a VersaiEditor wrapping an existing MultiLineText.
@@ -54,6 +56,7 @@ func NewVersaiEditor(myName string, mte *std.MultiLineText) *VersaiEditor {
 	ve := &VersaiEditor{
 		MultiLineText: mte,
 		textPage:      make([]byte, PageSize),
+		fc:            appFSClient,
 	}
 
 	// Publish the text length as a value attribute.
@@ -284,19 +287,16 @@ func (ve *VersaiEditor) deactivateCommand() {
 // content area (after the command block) with the file contents.
 // Returns the previously replaced text, or "" on error.
 func (ve *VersaiEditor) CommandReadFile(path string) string {
-	result, loadErr := file.LoadFile(path)
+	if ve.fc == nil {
+		fmt.Printf("[versai] /rf %s: no fs client\n", path)
+		return ""
+	}
+	data, loadErr := ve.fc.ReadFile(path)
 	if loadErr != nil {
 		fmt.Printf("[versai] /rf %s: load error: %v\n", path, loadErr)
 		return ""
 	}
-	if result.BytesRead == 0 {
-		mem.Munmap(uintptr(result.StartVA), int(result.NumPages)*4096)
-		return ""
-	}
-
-	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
 	content := string(data)
-	mem.Munmap(uintptr(result.StartVA), int(result.NumPages)*4096)
 
 	ve.Mu.Lock()
 	old := ve.commandTextEntryLineClearLocked()

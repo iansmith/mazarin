@@ -110,7 +110,7 @@ type Shepherd struct {
 	EventFdPending uint32
 
 	// Ready indicates this shepherd is ready to accept delegated work.
-	// Set by SysSetReady, checked by the kernel before delegating LoadFile.
+	// Set by SysSetReady, checked by the kernel before delegating syscalls.
 	// 0 = not ready, 1 = ready.
 	Ready int32
 

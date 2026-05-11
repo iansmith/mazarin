@@ -346,7 +346,10 @@ func (st *relocSymState) relocsym(s loader.Sym, P []byte) {
 			// to LE (direct %fs/$x0 offset) and emit the offset through the
 			// runtime's tls slot, exactly like PIE. Stock cmd/link refuses
 			// plugin mode here and falls through to log.Fatal.
-			if (target.IsPIE() || target.IsPlugin()) && target.IsElf() {
+			// mazlink: host-mode shepherd (BuildModeExe + -dlopen-host-exports)
+			// also needs IE→LE: it IS the main executable, so TLS layout is
+			// fixed at link time — the IE→LE rewrite is valid.
+			if (target.IsPIE() || target.IsPlugin() || *flagDlopenHostExports != "") && target.IsElf() {
 				// We are linking the final executable, so we
 				// can optimize any TLS IE relocation to LE.
 				if thearch.TLSIEtoLE == nil {
@@ -997,6 +1000,20 @@ func dynrelocsym(ctxt *Link, s loader.Sym) {
 		// it assumes external linking handles plugin mode; let our patched
 		// arch Adddynrel see local-target GOT relocs and rewrite them.
 		if ctxt.BuildMode == BuildModePlugin && ctxt.LinkMode == LinkInternal {
+			thearch.Adddynrel(target, ldr, syms, s, r, ri)
+			continue
+		}
+		// mazlink: host with -dlopen-host-exports compiled with -gcflags=-dynlink
+		// emits GOT-based relocs (R_ARM64_GOTPCREL / R_GOTPCREL) for cross-TU
+		// references the same way plugin builds do. The host has no dynamic
+		// linker at runtime, so we still route through Adddynrel to give the
+		// arch-specific handler a chance to allocate static GOT slots and rewrite
+		// the relocs into R_ARM64_GOT / R_PCREL form. The GOT slots themselves
+		// are filled at link time with the target's static address via
+		// AddGotSymStatic (R_ADDR), which the linker's relocsym pass resolves.
+		// See the arch Adddynrel changes — host gets AddGotSymStatic, plugin
+		// gets AddGotSym + R_*_GLOB_DAT.
+		if *flagDlopenHostExports != "" && ctxt.LinkMode == LinkInternal {
 			thearch.Adddynrel(target, ldr, syms, s, r, ri)
 			continue
 		}

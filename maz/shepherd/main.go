@@ -19,9 +19,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 
+	"mazzy/mazarin/fsclient"
+	"mazzy/mazarin/mazdl"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
+	"mazzy/shared/ipc"
 )
 
 func main() {
@@ -30,14 +35,52 @@ func main() {
 		panic("[shepherd] missing plugin path")
 	}
 	pluginPath := os.Args[2]
-	sys.UartWriteString(fmt.Sprintf("[shepherd] loading %s (sid=%s)\n", pluginPath, os.Args[1]))
+	pluginSID, _ := strconv.Atoi(os.Args[1])
+	fmt.Printf("[shepherd] loading %s (sid=%d)\n", pluginPath, pluginSID)
 
-	mazMain, _, err := mazhost.LoadMazBootstrap(pluginPath, nil)
+	// Ring 1: fs responses. Ring 0 is kernel-allocated and already mapped.
+	const fsRing = 1
+	if err := uring.Setup(fsRing); err != nil {
+		panic(fmt.Sprintf("[shepherd] uring.Setup(%d) failed: %v", fsRing, err))
+	}
+
+	fsSID := sys.MustGetShepherdByName("fs")
+	fc := fsclient.New(fsSID)
+	fc.SetRespRing(uint8(fsRing))
+
+	disp := uring.NewDispatcherWithRing(fsRing)
+	disp.On(ipc.ProtoFSIPCResp, fsclient.DecodeResp, fc.GetRespCh())
+	disp.Start()
+
+	if err := fc.Connect(); err != nil {
+		panic(fmt.Sprintf("[shepherd] fsclient.Connect: %v", err))
+	}
+	fmt.Printf("[shepherd] fsclient connected on ring %d\n", fsRing)
+
+	mazhost.HostFSClient = fc
+
+	mazMain, mazShepherdAddr, err := mazhost.LoadMazBootstrap(fc, pluginPath, nil)
 	if err != nil {
 		panic(fmt.Sprintf("[shepherd] LoadMazBootstrap(%q): %v", pluginPath, err))
+	}
+
+	// Inject ShepherdInit before MazMain so the replacement gets rings + fsclient.
+	if mazShepherdAddr != 0 {
+		shepherdInit := mazdl.Funcval[func(interface{}) error](mazShepherdAddr)
+		init := &mazhost.ShepherdInit{
+			Ring0:    mazhost.RingInfo{Number: 0},
+			Ring1:    mazhost.RingInfo{Number: fsRing},
+			FSClient: fc,
+			SID:      pluginSID,
+			Args:     os.Args,
+		}
+		if err := shepherdInit(init); err != nil {
+			fmt.Printf("[shepherd] MazarinShepherd injection failed: %v\n", err)
+		}
 	}
 
 	// Run MazarinMain synchronously on a pre-grown stack. MazarinMain
 	// is expected to enter its own event loop and never return.
 	mazhost.RunMaz(mazMain)
+	os.Exit(0)
 }

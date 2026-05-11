@@ -4,6 +4,7 @@
 package fontcache
 
 import (
+	"mazzy/mazarin/fsclient"
 	"mazzy/shared/wm"
 )
 
@@ -43,6 +44,9 @@ type FontSvcInjector interface {
 	RegisterCleanupHandler(handler func(deadSID int))
 	RegisterInternalOpenFont(handler func(family string, variant, size int32) (InternalOpenFontResult, bool))
 	RegisterInternalGlyphByGID(handler func(fontID int32, gid uint32) (InternalGlyphResult, bool))
+
+	// GetFSClient returns the host's fs IPC client.
+	GetFSClient() fsclient.FSClient
 }
 
 // InternalOpenFontResult is the result of an in-process OpenFont call.
@@ -73,6 +77,11 @@ type FontSvcInit struct {
 	CleanupShepherdFonts       func(deadSID int)
 	InternalOpenFont           func(family string, variant, size int32) (InternalOpenFontResult, bool)
 	InternalGlyphByGID         func(fontID int32, gid uint32) (InternalGlyphResult, bool)
+
+	// FSClient is the fs IPC client (already connected). Fontsvc uses it
+	// to load font files from the filesystem instead of the removed
+	// sys.LoadFile delegate path.
+	FSClient fsclient.FSClient
 }
 
 // RegisterOpenFontHandler implements FontSvcInjector.
@@ -118,6 +127,11 @@ func (f *FontSvcInit) RegisterInternalOpenFont(handler func(family string, varia
 // RegisterInternalGlyphByGID implements FontSvcInjector.
 func (f *FontSvcInit) RegisterInternalGlyphByGID(handler func(fontID int32, gid uint32) (InternalGlyphResult, bool)) {
 	f.InternalGlyphByGID = handler
+}
+
+// GetFSClient implements FontSvcInjector.
+func (f *FontSvcInit) GetFSClient() fsclient.FSClient {
+	return f.FSClient
 }
 
 // GlyphEntry is the per-glyph header stored in the cache data region,
