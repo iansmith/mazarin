@@ -15,7 +15,6 @@ package mazhost
 import (
 	"fmt"
 	"runtime"
-	"unsafe"
 
 	merror "mazzy/mazarin/error"
 	"mazzy/mazarin/fsclient"
@@ -156,9 +155,7 @@ func loadMazInternal(fc fsclient.FSClient, filename string) (func(), uintptr, *m
 		shepherdAddr = addr
 	}
 
-	type funcval struct{ fn uintptr }
-	fv := &funcval{fn: entryAddr}
-	mazMain := *(*func())(unsafe.Pointer(&fv))
+	mazMain := mazdl.Funcval[func()](entryAddr)
 
 	return mazMain, shepherdAddr, nil
 }

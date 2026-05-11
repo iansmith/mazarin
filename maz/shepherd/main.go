@@ -20,9 +20,9 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"unsafe"
 
 	"mazzy/mazarin/fsclient"
+	"mazzy/mazarin/mazdl"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
@@ -66,9 +66,7 @@ func main() {
 
 	// Inject ShepherdInit before MazMain so the replacement gets rings + fsclient.
 	if mazShepherdAddr != 0 {
-		type funcval struct{ fn uintptr }
-		fv := &funcval{fn: mazShepherdAddr}
-		shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+		shepherdInit := mazdl.Funcval[func(interface{}) error](mazShepherdAddr)
 		init := &mazhost.ShepherdInit{
 			Ring0:    mazhost.RingInfo{Number: 0},
 			Ring1:    mazhost.RingInfo{Number: fsRing},

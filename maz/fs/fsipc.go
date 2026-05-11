@@ -193,9 +193,13 @@ func (s *fsIPCServer) handleConnect(sid int16, req *ipc.FSIPCReqPayload) {
 // give up — those are terminal.
 func (s *fsIPCServer) respond(sid int16, resp *ipc.FSIPCRespPayload) {
 	conn := s.conns[sid]
-	ring := uint8(ipc.RingFSResp) // default for pre-RespRing clients
-	if conn != nil && conn.respRing != 0 {
-		ring = conn.respRing
+	if conn == nil {
+		fmt.Printf("[fs:ipc] respond SID=%d: no connection — dropping reply\n", sid)
+		return
+	}
+	ring := conn.respRing
+	if ring == 0 {
+		ring = uint8(ipc.RingFSResp)
 	}
 	msg := ipc.EncodeFSIPCResp(resp)
 	const respondMaxAttempts = 100             // 100 × 30 ms ≈ 3 s total budget

@@ -16,6 +16,7 @@ import (
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
+	"mazzy/mazarin/mazdl"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
@@ -1694,9 +1695,7 @@ func MazarinMain() {
 		sys.UartWriteString("[rachel] LoadMazBootstrap(keymapper) failed: " + kmErr.Error() + "\n")
 	} else {
 		if kmInitAddr != 0 {
-			type funcval struct{ fn uintptr }
-			fv := &funcval{fn: kmInitAddr}
-			shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+			shepherdInit := mazdl.Funcval[func(interface{}) error](kmInitAddr)
 			if err := shepherdInit(kmInit); err != nil {
 				sys.UartWriteString("[rachel] keymapper MazarinShepherd failed: " + err.Error() + "\n")
 			} else if kmInit.Mapper != nil {
@@ -1723,9 +1722,7 @@ func MazarinMain() {
 	} else {
 		// Inject the callback registration into fontsvc via MazarinShepherd.
 		if fontSvcInitAddr != 0 {
-			type funcval struct{ fn uintptr }
-			fv := &funcval{fn: fontSvcInitAddr}
-			shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+			shepherdInit := mazdl.Funcval[func(interface{}) error](fontSvcInitAddr)
 			if err := shepherdInit(initData); err != nil {
 				fmt.Printf("[rachel] fontsvc MazarinShepherd failed: %v\n", err)
 			}
