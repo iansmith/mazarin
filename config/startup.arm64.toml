@@ -7,28 +7,16 @@
 #path = "/sievetest.elf"
 
 #[[shepherd]]
-#name = "attrtest"
-#path = "/attrtest.elf"
-
-#[[shepherd]]
-#name = "handletest"
-#path = "/handletest.elf"
-
-#[[shepherd]]
-#name = "clocktest"
-#path = "/clocktest.elf"
-
-#[[shepherd]]
 #name = "versai"
-#path = "/versai.elf"
+#path = "/versai.maz"
 
 #[[shepherd]]
 #name = "clocks"
-#path = "/clocks.elf"
+#path = "/clocks.maz"
 
 #[[shepherd]]
 #name = "calc"
-#path = "/calc.elf"
+#path = "/calc.maz"
 
 [[shepherd]]
 name = "fti"

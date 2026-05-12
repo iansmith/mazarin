@@ -2,36 +2,52 @@ version: '3'
 
 tasks:
   arm64:
-    desc: Build clocks (interactor framework demo, ARM64)
+    desc: Build clocks.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
     run: once
-    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mancini:compile-constraints']
     sources:
       - '{{.ROOT_DIR}}/maz/clocks/**/*'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.CLOCKS_ELF}}'
+      - '{{.CLOCKS_MAZ}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building clocks..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKS_ELF}} ./maz/clocks'
-      - '{{.GO}} tool go-echo "Clocks built at {{.CLOCKS_ELF}}"'
+      - '{{.GO}} tool go-echo "Building clocks.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.CLOCKS_MAZ}} ./maz/clocks
+      - '{{.GO}} tool go-echo "clocks.maz ready at {{.CLOCKS_MAZ}}"'
 
-  x86_64:
-    desc: Build clocks (x86_64)
+  amd64:
+    desc: Build clocks.maz for x86_64 via mazgo
     run: once
-    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mancini:compile-constraints']
     sources:
       - '{{.ROOT_DIR}}/maz/clocks/**/*'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.CLOCKS_AMD64_ELF}}'
+      - '{{.CLOCKS_MAZ_AMD64}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building clocks for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKS_AMD64_ELF}} ./maz/clocks'
-      - '{{.GO}} tool go-echo "Clocks x86_64 built at {{.CLOCKS_AMD64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building clocks.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.CLOCKS_MAZ_AMD64}} ./maz/clocks
+      - '{{.GO}} tool go-echo "clocks.maz (x86_64) ready at {{.CLOCKS_MAZ_AMD64}}"'
 

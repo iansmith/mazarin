@@ -2,36 +2,52 @@ version: '3'
 
 tasks:
   arm64:
-    desc: Build versai (ARM64)
+    desc: Build versai.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
     run: once
-    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mancini:compile-constraints']
     sources:
-      - '{{.ROOT_DIR}}/mazarin/apps/versai/**/*'
+      - '{{.ROOT_DIR}}/mazarin/apps/versai/**/*.go'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.VERSAI_ELF}}'
+      - '{{.VERSAI_MAZ}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building versai..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.VERSAI_ELF}} ./mazarin/apps/versai'
-      - '{{.GO}} tool go-echo "Versai built at {{.VERSAI_ELF}}"'
+      - '{{.GO}} tool go-echo "Building versai.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.VERSAI_MAZ}} ./mazarin/apps/versai
+      - '{{.GO}} tool go-echo "versai.maz ready at {{.VERSAI_MAZ}}"'
 
-  x86_64:
-    desc: Build versai (x86_64)
+  amd64:
+    desc: Build versai.maz for x86_64 via mazgo
     run: once
-    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mancini:compile-constraints']
     sources:
-      - '{{.ROOT_DIR}}/mazarin/apps/versai/**/*'
+      - '{{.ROOT_DIR}}/mazarin/apps/versai/**/*.go'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.VERSAI_AMD64_ELF}}'
+      - '{{.VERSAI_MAZ_AMD64}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building versai for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.VERSAI_AMD64_ELF}} ./mazarin/apps/versai'
-      - '{{.GO}} tool go-echo "Versai x86_64 built at {{.VERSAI_AMD64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building versai.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.VERSAI_MAZ_AMD64}} ./mazarin/apps/versai
+      - '{{.GO}} tool go-echo "versai.maz (x86_64) ready at {{.VERSAI_MAZ_AMD64}}"'
 

@@ -1,8 +1,8 @@
-
 package ksyscall
 
 import (
 	"mazzy/kmazarin/kirq"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/constants"
@@ -15,6 +15,9 @@ import (
 //
 //go:linkname getCPUCountForAffinity main.GetCPUCount
 func getCPUCountForAffinity() uint64
+
+// madviseDiagCount limits madvise userspace diagnostic log volume.
+var madviseDiagCount int32
 
 // ============================================================================
 // User Buffer Address Validation
@@ -276,21 +279,26 @@ func SyscallMadvise(addr, length, advice, _, _, _ uint64) int64 {
 
 	if addr+length <= heapStart {
 		// Userspace path: look up the calling shepherd's page table explicitly.
-		// The SVC handler runs on a kernel worker goroutine, not on the shepherd's
-		// hardware thread, so we cannot rely on the hardware TTBR0 register.
 		shepherd := proc.CurrentShepherd()
 		if shepherd == nil {
 			return 0
 		}
 		l0PA := shepherd.PageTableL0PA
 		savedDAIF := saveAndDisableIRQs()
+		freed := 0
 		for va := alignedAddr; va < alignedEnd; va += pageSize {
 			pa := kmem.UnmapUserPageWithL0(uintptr(va), l0PA)
 			if pa != 0 {
 				kmem.ReleasePageByPA(pa)
+				freed++
 			}
 		}
 		restoreIRQs(savedDAIF)
+		if madviseDiagCount < 3 && freed > 0 {
+			madviseDiagCount++
+			klog.Logf("[madvise:user] sid=%d addr=0x%x len=%d freed=%d pages\n",
+				shepherd.PID, addr, length, freed)
+		}
 		return 0
 	}
 
