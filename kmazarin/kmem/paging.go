@@ -883,12 +883,8 @@ func logFileMmapWrite(faultAddr uintptr, fd int32) {
 //
 //go:noinline
 func logLowFaultDebug(faultAddr uintptr) {
-	p := proc.CurrentShepherd()
-	if p == nil {
-		klog.Errf("[pf-dbg] fault=0x%x sid=unknown\n", uint64(faultAddr))
-		return
-	}
-	klog.Errf("[pf-dbg] fault=0x%x sid=%d\n", uint64(faultAddr), int(p.PID))
+	// Quiet: per-fault diagnostic was the #2 noise source in serial logs.
+	// Left as no-op so the nosplit caller doesn't need changes.
 }
 
 // DemandMapUserPage ensures a userspace page is mapped, demand-faulting if needed.

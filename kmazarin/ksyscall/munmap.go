@@ -1,4 +1,3 @@
-
 package ksyscall
 
 import (
@@ -89,26 +88,7 @@ func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
 	for va := alignedAddr; va < alignedEnd; va += pageSize {
 		pa := kmem.UnmapUserPage(uintptr(va))
 		if pa != 0 && !fileBacked {
-			var preRefCount int16
-			var preOwner int16
-			var wasShared bool
-			ipc := va >= ipcDataVAStart
-			if ipc {
-				if desc := kmem.GetPageDescriptor(pa); desc != nil {
-					preRefCount = desc.RefCount
-					preOwner = desc.Owner
-					wasShared = desc.Flags&kmem.PD_SHARED != 0
-				}
-			}
-			freed := kmem.ReleasePageByPA(pa)
-			if ipc && freed && wasShared {
-				sidVal := int16(0)
-				if p != nil {
-					sidVal = int16(p.PID)
-				}
-				klog.Logf("[munmap:FREED] sid=%d va=%x pa=%x preRefCount=%d origOwner=%d\n",
-					sidVal, uint64(va), uint64(pa), preRefCount, preOwner)
-			}
+			kmem.ReleasePageByPA(pa)
 		}
 	}
 

@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"image"
 	"math"
-"mazzy/mazarin/mancini"
-"mazzy/mazarin/mem"
-	"mazzy/mazarin/sys"
 	"mazarin/textshape"
+	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mem"
+	"mazzy/mazarin/sys"
 	"time"
 )
 
@@ -95,25 +95,12 @@ func dumpWindowGeometry(reason string, ta *trackedApp) {
 	if ta == nil {
 		return
 	}
-	face := faceScreenRect(ta)
-	visFocused := windowVisibleRect(ta, true)
-	visUnfocused := windowVisibleRect(ta, false)
-	fmt.Printf("[rachel:geom] %s sid=%d title=%q ta.x=%d ta.y=%d bsW=%d bsH=%d "+
-		"appW=%d appH=%d lastBlitW=%d lastBlitH=%d "+
-		"face=(%d,%d)-(%d,%d) vis_focused=(%d,%d)-(%d,%d) vis_unfocused=(%d,%d)-(%d,%d) "+
-		"borders=L%d/R%d/T%d/B%d shadowTop=%d\n",
-		reason, ta.sid, ta.title, ta.x, ta.y, ta.bsWidth, ta.bsHeight,
-		ta.appWidth, ta.appHeight, ta.lastBlitAppW, ta.lastBlitAppH,
-		face.Min.X, face.Min.Y, face.Max.X, face.Max.Y,
-		visFocused.Min.X, visFocused.Min.Y, visFocused.Max.X, visFocused.Max.Y,
-		visUnfocused.Min.X, visUnfocused.Min.Y, visUnfocused.Max.X, visUnfocused.Max.Y,
-		borderLeft, borderRight, borderTop, borderBottom, shadowTop)
+	// geometry dump removed — per-event noise
 }
 
 // dumpAllWindowGeometry prints geometry for every tracked window in z-order.
 func dumpAllWindowGeometry(reason string) {
-	fmt.Printf("[rachel:geom] === BEGIN dump (%s) zOrderLen=%d focus=%d ===\n",
-		reason, len(zOrder), mouseFocusSID)
+	// all-window geometry dump removed — per-event noise
 	for i, sid := range zOrder {
 		ta, ok := trackedApps[sid]
 		if !ok {
@@ -121,7 +108,7 @@ func dumpAllWindowGeometry(reason string) {
 		}
 		dumpWindowGeometry(fmt.Sprintf("%s[z=%d]", reason, i), ta)
 	}
-	fmt.Printf("[rachel:geom] === END dump (%s) ===\n", reason)
+	// per-window geometry dump removed — per-event noise
 }
 
 // exposedRegion returns the set of non-overlapping rectangles that
@@ -175,9 +162,9 @@ func borderZoneRects(ta *trackedApp) [4]image.Rectangle {
 	ox, oy := screenOrigin(ta)
 	bsW, bsH := int(ta.bsWidth), int(ta.bsHeight)
 	return [4]image.Rectangle{
-		image.Rect(ox, oy, ox+bsW, oy+borderTop),                           // top
-		image.Rect(ox, oy+bsH-borderBottom, ox+bsW, oy+bsH),               // bottom
-		image.Rect(ox, oy+borderTop, ox+borderLeft, oy+bsH-borderBottom),   // left
+		image.Rect(ox, oy, ox+bsW, oy+borderTop),                                  // top
+		image.Rect(ox, oy+bsH-borderBottom, ox+bsW, oy+bsH),                       // bottom
+		image.Rect(ox, oy+borderTop, ox+borderLeft, oy+bsH-borderBottom),          // left
 		image.Rect(ox+bsW-borderRight, oy+borderTop, ox+bsW, oy+bsH-borderBottom), // right
 	}
 }
@@ -290,7 +277,7 @@ func fillDesktopBG(dst []byte) {
 // blitWindow copies the exposed region of sid's backing store to the
 // framebuffer. Each exposed rect is copied scanline by scanline.
 // fb is the framebuffer pixel slice, fbStride is bytes per framebuffer row.
-var blitDbgCount int
+// blit debug counter removed — per-event noise
 
 func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, focused bool) {
 	ta, ok := trackedApps[sid]
@@ -301,30 +288,10 @@ func blitWindow(sid int, regions []image.Rectangle, fb []byte, fbStride int, foc
 	bsStride := int(ta.bsStride)
 	winX, winY := screenOrigin(ta) // top-left of full buffer on screen
 
-	blitDbgCount++
+	// blit counter removed — per-event noise
 
 	// Log first 3 blits per SID for debugging.
-	if blitDbgCount <= 3 {
-		nonZero := 0
-		for i := 0; i < len(bs) && i < bsStride*4; i += 4 {
-			if bs[i] != 0 || bs[i+1] != 0 || bs[i+2] != 0 || bs[i+3] != 0 {
-				nonZero++
-			}
-		}
-		fmt.Printf("[rachel:blit] SID=%d win=(%d,%d) bs=%dx%d stride=%d regions=%d bsLen=%d bsNonZero=%d/4rows focused=%v\n",
-			sid, winX, winY, ta.bsWidth, ta.bsHeight, bsStride, len(regions), len(bs), nonZero, focused)
-		for i, r := range regions {
-			if i < 4 {
-				fmt.Printf("[rachel:blit]   region[%d]: (%d,%d)-(%d,%d)\n", i, r.Min.X, r.Min.Y, r.Max.X, r.Max.Y)
-			}
-		}
-	}
-
-	// Geometry dump every 500th blit per process — shows whether bsHeight ever
-	// drifts from lastBlitAppH+borderTop+borderBottom (the symptom we're hunting).
-	if blitDbgCount%500 == 0 {
-		dumpWindowGeometry(fmt.Sprintf("blit#%d", blitDbgCount), ta)
-	}
+	// First 3 blits + every-500th geometry dump removed — per-event noise
 
 	bsW := int(ta.bsWidth)
 	bsH := int(ta.bsHeight)
@@ -433,19 +400,19 @@ type decorPhaseStats struct {
 
 // decorPhaseAccum accumulates per-phase timing across a resize operation.
 var decorPhaseAccum struct {
-	active           bool
-	focusedCalls     int
-	unfocusedCalls   int
+	active         bool
+	focusedCalls   int
+	unfocusedCalls int
 	// Focused (Raised) phase totals.
-	fBufAlloc   time.Duration
-	fDCCreate   time.Duration
-	fNeuBox     time.Duration
-	fTitleBar   time.Duration
+	fBufAlloc time.Duration
+	fDCCreate time.Duration
+	fNeuBox   time.Duration
+	fTitleBar time.Duration
 	// Unfocused (Flush) phase totals.
-	uBufAlloc   time.Duration
-	uDCCreate   time.Duration
-	uFill       time.Duration
-	uTitleBar   time.Duration
+	uBufAlloc time.Duration
+	uDCCreate time.Duration
+	uFill     time.Duration
+	uTitleBar time.Duration
 	// drawPerf snapshots for isolating NeuBox internals.
 	fAllocNs   int64
 	fGGDrawNs  int64
@@ -458,24 +425,24 @@ var decorPhaseAccum struct {
 
 func decorPhaseReset() {
 	decorPhaseAccum = struct {
-		active           bool
-		focusedCalls     int
-		unfocusedCalls   int
-		fBufAlloc   time.Duration
-		fDCCreate   time.Duration
-		fNeuBox     time.Duration
-		fTitleBar   time.Duration
-		uBufAlloc   time.Duration
-		uDCCreate   time.Duration
-		uFill       time.Duration
-		uTitleBar   time.Duration
-		fAllocNs   int64
-		fGGDrawNs  int64
-		fConvertNs int64
-		fBlurNs    int64
-		fComposeNs int64
-		fFaceNs    int64
-		fBlurCount int64
+		active         bool
+		focusedCalls   int
+		unfocusedCalls int
+		fBufAlloc      time.Duration
+		fDCCreate      time.Duration
+		fNeuBox        time.Duration
+		fTitleBar      time.Duration
+		uBufAlloc      time.Duration
+		uDCCreate      time.Duration
+		uFill          time.Duration
+		uTitleBar      time.Duration
+		fAllocNs       int64
+		fGGDrawNs      int64
+		fConvertNs     int64
+		fBlurNs        int64
+		fComposeNs     int64
+		fFaceNs        int64
+		fBlurCount     int64
 	}{active: true}
 }
 
@@ -608,10 +575,10 @@ func renderDecorOnce(ta *trackedApp, depth mancini.NeuDepth, state mancini.Windo
 // The title bar will repaint the top segment, so only left/right/bottom show.
 func drawAppGroove(dc textshape.DrawContext, tw, th int) {
 	// Outer rectangle: 2px inside each border zone boundary.
-	ox1 := float64(borderLeft) - 2        // left outer: x ≈ borderLeft-2  (in left zone)
-	oy1 := float64(shadowTop) + 1         // top outer:  y ≈ shadowTop+1   (in top zone)
-	ox2 := float64(tw-borderRight) + 2    // right outer: x ≈ tw-borderRight+2 (in right zone)
-	oy2 := float64(th-borderBottom) + 2   // bottom outer: y ≈ th-borderBottom+2 (in bottom zone)
+	ox1 := float64(borderLeft) - 2      // left outer: x ≈ borderLeft-2  (in left zone)
+	oy1 := float64(shadowTop) + 1       // top outer:  y ≈ shadowTop+1   (in top zone)
+	ox2 := float64(tw-borderRight) + 2  // right outer: x ≈ tw-borderRight+2 (in right zone)
+	oy2 := float64(th-borderBottom) + 2 // bottom outer: y ≈ th-borderBottom+2 (in bottom zone)
 
 	// Inner rectangle: 1px further inward.
 	ix1 := ox1 + 1
@@ -624,16 +591,16 @@ func drawAppGroove(dc textshape.DrawContext, tw, th int) {
 
 	dc.SetColor(pal.Mid())
 	dc.DrawLine(ox1+hw, oy1+hw, ox2-hw, oy1+hw) // top
-	dc.DrawLine(ox2-hw, oy1, ox2-hw, oy2)        // right
-	dc.DrawLine(ox1, oy2-hw, ox2, oy2-hw)        // bottom
-	dc.DrawLine(ox1+hw, oy1, ox1+hw, oy2)        // left
+	dc.DrawLine(ox2-hw, oy1, ox2-hw, oy2)       // right
+	dc.DrawLine(ox1, oy2-hw, ox2, oy2-hw)       // bottom
+	dc.DrawLine(ox1+hw, oy1, ox1+hw, oy2)       // left
 	dc.Stroke()
 
 	dc.SetColor(pal.Midlight())
 	dc.DrawLine(ix1+hw, iy1+hw, ix2-hw, iy1+hw) // top
-	dc.DrawLine(ix2-hw, iy1, ix2-hw, iy2)        // right
-	dc.DrawLine(ix1, iy2-hw, ix2, iy2-hw)        // bottom
-	dc.DrawLine(ix1+hw, iy1, ix1+hw, iy2)        // left
+	dc.DrawLine(ix2-hw, iy1, ix2-hw, iy2)       // right
+	dc.DrawLine(ix1, iy2-hw, ix2, iy2-hw)       // bottom
+	dc.DrawLine(ix1+hw, iy1, ix1+hw, iy2)       // left
 	dc.Stroke()
 }
 

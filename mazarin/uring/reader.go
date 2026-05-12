@@ -48,20 +48,11 @@ func (r *Reader) loop() {
 	defer close(r.done)
 
 	var msg ipc.UringIPCMsg
-	var count int
 	for {
 		err := RecvWithRing(&msg, r.ringIdx)
 		if err != nil {
 			uartPuts("[uring:reader] Recv error, exiting loop\n")
 			return
-		}
-		count++
-		if r.ringIdx == 1 && count <= 5 {
-			uartPuts("[uring:reader] ring1 got msg #")
-			uartPutsInt(count)
-			uartPuts(" proto=")
-			uartPutsInt(int(msg.Protocol))
-			uartPuts("\n")
 		}
 		r.handler(&msg)
 	}

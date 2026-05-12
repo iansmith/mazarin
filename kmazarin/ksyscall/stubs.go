@@ -2,7 +2,6 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kirq"
-	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/constants"
@@ -294,11 +293,7 @@ func SyscallMadvise(addr, length, advice, _, _, _ uint64) int64 {
 			}
 		}
 		restoreIRQs(savedDAIF)
-		if madviseDiagCount < 3 && freed > 0 {
-			madviseDiagCount++
-			klog.Logf("[madvise:user] sid=%d addr=0x%x len=%d freed=%d pages\n",
-				shepherd.PID, addr, length, freed)
-		}
+		// Per-madvise log removed — per-event noise.
 		return 0
 	}
 

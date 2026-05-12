@@ -3,7 +3,6 @@ package ksyscall
 import (
 	"unsafe"
 
-	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 )
@@ -52,44 +51,15 @@ func copyPagesFromUser(startVA uintptr, totalBytes int, l0PA uintptr) []byte {
 // hangs in an iteration, the last progress log pinpoints the iteration and
 // the va/pa being processed when it stuck.
 func unmapUserPages(startVA uintptr, numPages int, l0PA uintptr, ownerSID int16) {
-	bigFree := numPages >= 64
-	if bigFree {
-		klog.Logf("[unmapLoop] enter sid=%d startVA=%x numPages=%d\n",
-			ownerSID, uint64(startVA), numPages)
-	}
 	for i := 0; i < numPages; i++ {
 		va := startVA + uintptr(i)*4096
 		pa := kmem.UnmapUserPageWithL0(va, l0PA)
-		if bigFree && i > 0 && i%256 == 0 {
-			klog.Logf("[unmapLoop] progress sid=%d i=%d/%d va=%x pa=%x\n",
-				ownerSID, i, numPages, uint64(va), uint64(pa))
-		}
 		if pa != 0 {
-			paAligned := pa &^ 0xFFF
-			var preRefCount int16
-			var preOwner int16
-			var wasShared bool
-			ipc := va >= 0x500000000000
-			if ipc {
-				if desc := kmem.GetPageDescriptor(paAligned); desc != nil {
-					preRefCount = desc.RefCount
-					preOwner = desc.Owner
-					wasShared = desc.Flags&kmem.PD_SHARED != 0
-				}
-			}
-			freed := kmem.ReleasePageByPA(paAligned)
-			if ipc && freed && wasShared {
-				klog.Logf("[munmap:FREED] sid=%d va=%x pa=%x preRefCount=%d origOwner=%d\n",
-					ownerSID, uint64(va), uint64(paAligned), preRefCount, preOwner)
-			}
+			kmem.ReleasePageByPA(pa &^ 0xFFF)
 		}
 	}
 	callerShepherd := proc.FindShepherdBySID(proc.ShepherdId(ownerSID))
 	if callerShepherd != nil {
 		callerShepherd.Spans.Remove(uint64(startVA), uint64(numPages)*4096)
-	}
-	if bigFree {
-		klog.Logf("[unmapLoop] exit sid=%d startVA=%x numPages=%d\n",
-			ownerSID, uint64(startVA), numPages)
 	}
 }
