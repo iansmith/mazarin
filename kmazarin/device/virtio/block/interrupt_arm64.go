@@ -1,6 +1,6 @@
 package block
 
-import "mazzy/kmazarin/device/virtio/input"
+import "mazzy/kmazarin/device/virtio/irq"
 
 // configureBlockInterrupt configures MSI-X for the VirtIO block device on ARM64
 // via GICv2m. Programs the MSI-X table to write to the GICv2m SETSPI doorbell,
@@ -8,7 +8,7 @@ import "mazzy/kmazarin/device/virtio/input"
 //
 // Returns the GIC IRQ number (SPI + 32) for NonTimerIRQTopHalf, or 0 on failure.
 func configureBlockInterrupt(bus, slot, funcNum uint8) uint32 {
-	return input.ConfigureMSIXForDevice(bus, slot, funcNum)
+	return irq.ConfigureMSIXForDevice(bus, slot, funcNum)
 }
 
 // blockMSIXVector returns the MSI-X vector to assign to the VirtIO config and
