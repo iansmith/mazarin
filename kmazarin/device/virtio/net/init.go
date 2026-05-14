@@ -68,6 +68,13 @@ func Init() bool {
 		return false
 	}
 
+	// Allocate the RX buffer pool and pre-post every buffer (MAZ-22). The RX
+	// Engine itself (virtqueue 0) is already up (virtioNetInit).
+	if !rxInit(dev) {
+		klog.Errf("[VirtIO Net] RX init failed\n")
+		return false
+	}
+
 	klog.Logf("[VirtIO Net] init OK: MAC=%02x:%02x:%02x:%02x:%02x:%02x status=%#x\n",
 		uint64(dev.MAC[0]), uint64(dev.MAC[1]), uint64(dev.MAC[2]),
 		uint64(dev.MAC[3]), uint64(dev.MAC[4]), uint64(dev.MAC[5]),

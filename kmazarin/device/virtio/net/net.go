@@ -31,6 +31,18 @@ type VirtIONetDevice struct {
 	TxBufPA uintptr // Physical address of the TX payload buffer
 	TxBufVA uintptr // Kernel virtual address of the TX payload buffer
 
+	// RX buffer pool — netRxBufCount Device-nGnRnE buffers, each holding one
+	// [VirtIONetHdr][Ethernet frame]. Pre-posted to the RX Engine; the device
+	// writes received frames into them.
+	RxBufPA [netRxBufCount]uintptr
+	RxBufVA [netRxBufCount]uintptr
+	// rxInFlight maps an RX descriptor index → the RX-buffer index posted under it.
+	rxInFlight [netQueueSize]uint16
+	// RX drain state (bring-up verification; a real consumer replaces the peek).
+	rxCount      uint32   // atomic: total frames drained
+	rxLastLen    uint32   // UsedLen of the most-recently-drained frame
+	rxLastSrcMAC [6]uint8 // src MAC of the most-recently-drained frame
+
 	// Device configuration — populated from config space during bring-up (MAZ-19).
 	MAC               [6]uint8 // Valid iff VIRTIO_NET_F_MAC negotiated
 	Status            uint16   // Link status; valid iff VIRTIO_NET_F_STATUS
