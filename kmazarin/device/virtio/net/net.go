@@ -25,6 +25,12 @@ type VirtIONetDevice struct {
 	// Device-nGnRnE slots for per-packet VirtIONetHdr headers.
 	Sidecars virtio.SidecarPool
 
+	// TX payload DMA buffer (Device-nGnRnE driver page, allocated by txInit).
+	// One synchronous in-flight TX at a time copies its frame here before
+	// submit — keeps the whole TX path cache-management-free.
+	TxBufPA uintptr // Physical address of the TX payload buffer
+	TxBufVA uintptr // Kernel virtual address of the TX payload buffer
+
 	// Device configuration — populated from config space during bring-up (MAZ-19).
 	MAC               [6]uint8 // Valid iff VIRTIO_NET_F_MAC negotiated
 	Status            uint16   // Link status; valid iff VIRTIO_NET_F_STATUS

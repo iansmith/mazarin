@@ -1,0 +1,138 @@
+// tx.go — VirtIO-net transmit path (MAZ-20).
+//
+// Step 4 of the MAZ-16 virtio-net chain. Builds a 2-descriptor TX chain
+// (VirtIONetHdr + frame payload, both device-readable), submits it on the TX
+// Engine, notifies the device, and reclaims the completion by polling the used
+// ring. No interrupts — TX completions are reclaimed synchronously by polling
+// PopUsed (interrupt wiring is MAZ-26).
+//
+// The whole TX path is cache-management-free: the VirtIONetHdr lives in a
+// Device-nGnRnE sidecar slot and the payload buffer is a Device-nGnRnE driver
+// page, so CPU writes are immediately device-visible. The only cacheable memory
+// is the queue/descriptor page, and Engine.Submit already cleans descriptors
+// itself.
+package net
+
+import (
+	"unsafe"
+
+	"mazzy/kmazarin/asm"
+	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/klog"
+	"mazzy/kmazarin/kmem"
+)
+
+// TX path constants.
+const (
+	// txMaxFrameLen is the largest Ethernet frame Transmit accepts: 1514-byte
+	// payload (14-byte header + 1500 MTU). The TX payload buffer is one 4KB
+	// driver page, so this fits comfortably.
+	txMaxFrameLen = 1514
+
+	// txPollMaxIterations bounds the completion poll loop. Each iteration does
+	// an MMIO ISR read (a guaranteed VM exit under HVF), so this is a generous
+	// cap before declaring a timeout — a healthy device completes a TX in a
+	// handful of iterations.
+	txPollMaxIterations = 1000000
+)
+
+// txInit allocates the single Device-nGnRnE TX payload DMA buffer. The TX
+// Engine itself (virtqueue 1) and the sidecar pool are already brought up by
+// virtioNetInit (MAZ-19) — txInit only adds the payload buffer. Returns false
+// on allocation failure.
+func txInit(dev *VirtIONetDevice) bool {
+	pa, va := kmem.AllocDriverPage()
+	if pa == 0 {
+		klog.Errf("[VirtIO Net] ERROR: failed to allocate TX payload buffer\n")
+		return false
+	}
+	dev.TxBufPA = pa
+	dev.TxBufVA = va
+	return true
+}
+
+// Transmit sends a single raw Ethernet frame on the TX virtqueue. It builds a
+// 2-descriptor chain — Descs[0] = a zeroed VirtIONetHdr in a sidecar slot,
+// Descs[1] = the frame payload copied into the Device-nGnRnE TX buffer — both
+// device-readable (Flags = 0, no VIRTQ_DESC_F_WRITE). After Submit + Notify it
+// polls the used ring for the completion, mirroring block's bootYieldForIO by
+// reading the ISR register each iteration to force a VM exit under HVF.
+//
+// Synchronous: one in-flight TX at a time, which is all the current callers
+// need. Returns true on a reclaimed completion, false on a bad length, an
+// exhausted sidecar pool, a submit failure, or a poll timeout.
+//
+//go:nosplit
+func Transmit(frame []byte) bool {
+	dev := &virtioNetDevice
+	n := len(frame)
+	if n == 0 || n > txMaxFrameLen {
+		klog.Errf("[VirtIO Net] TX: bad frame length\n")
+		return false
+	}
+
+	// VirtIONetHdr goes in a Device-nGnRnE sidecar slot — zeroed: plain frame,
+	// no checksum offload, no GSO. The nGnRnE write is immediately
+	// device-visible, so no cache management.
+	slot, ok := dev.Sidecars.Alloc()
+	if !ok {
+		klog.Errf("[VirtIO Net] TX: no sidecar slots\n")
+		return false
+	}
+	*(*VirtIONetHdr)(unsafe.Pointer(slot.VA)) = VirtIONetHdr{}
+
+	// Copy the payload into the Device-nGnRnE TX buffer — no cache management
+	// (contrast block, which uses a cacheable buffer + CleanDCacheRange).
+	dst := (*[txMaxFrameLen]byte)(unsafe.Pointer(dev.TxBufVA))
+	for i := 0; i < n; i++ {
+		dst[i] = frame[i]
+	}
+
+	// 2-desc chain: header → payload, both device-readable.
+	var chain virtio.DescChain
+	chain.Count = 2
+	chain.Descs[0] = virtio.DescSpec{
+		PA:    uint64(slot.PA),
+		Len:   uint32(unsafe.Sizeof(VirtIONetHdr{})),
+		Flags: 0,
+	}
+	chain.Descs[1] = virtio.DescSpec{
+		PA:    uint64(dev.TxBufPA),
+		Len:   uint32(n),
+		Flags: 0,
+	}
+
+	tag := dev.TxEng.Submit(&chain)
+	if tag == virtio.InvalidIOTag {
+		klog.Errf("[VirtIO Net] TX: submit failed\n")
+		dev.Sidecars.Release(slot)
+		return false
+	}
+
+	asm.Dsb()
+	dev.TxEng.Notify()
+
+	// Poll the used ring for the completion. Reading the ISR register each
+	// iteration forces a VM exit under HVF (cf. block's bootYieldForIO) — a
+	// pure spin on HasUsed may never observe the device's used-ring write.
+	for i := 0; i < txPollMaxIterations; i++ {
+		if dev.ISRBase != 0 {
+			_ = asm.MmioRead8(dev.ISRBase)
+		}
+		asm.DmaRmb()
+		if dev.TxEng.HasUsed() {
+			info := dev.TxEng.PopUsed() // frees the descriptor chain
+			dev.Sidecars.Release(slot)
+			if info.Tag != tag {
+				klog.Errf("[VirtIO Net] TX: unexpected completion tag\n")
+				return false
+			}
+			return true
+		}
+	}
+
+	// Timed out — leave the sidecar slot leaked: the device may still own the
+	// descriptor chain and could write to it later.
+	klog.Errf("[VirtIO Net] TX: completion timed out\n")
+	return false
+}

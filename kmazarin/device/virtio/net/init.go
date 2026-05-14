@@ -61,10 +61,18 @@ func Init() bool {
 		return false
 	}
 
+	// Allocate the TX payload DMA buffer (MAZ-20). The TX Engine and sidecar
+	// pool are already up (virtioNetInit); txInit only adds the payload buffer.
+	if !txInit(dev) {
+		klog.Errf("[VirtIO Net] TX init failed\n")
+		return false
+	}
+
 	klog.Logf("[VirtIO Net] init OK: MAC=%02x:%02x:%02x:%02x:%02x:%02x status=%#x\n",
 		uint64(dev.MAC[0]), uint64(dev.MAC[1]), uint64(dev.MAC[2]),
 		uint64(dev.MAC[3]), uint64(dev.MAC[4]), uint64(dev.MAC[5]),
 		uint64(dev.Status))
+
 	return true
 }
 

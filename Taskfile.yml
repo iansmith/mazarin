@@ -682,7 +682,7 @@ tasks:
     cmds:
       - '{{.GO}} tool go-rm {{.CPU_LOG_FILE}}'
       - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -object filter-dump,id=netdump,netdev=net0,file=/tmp/net0.pcap -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -728,7 +728,7 @@ tasks:
     cmds:
       - '{{.GO}} tool go-rm {{.CPU_LOG_FILE}}'
       - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt -accel hvf -cpu host -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -accel hvf -cpu host -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -object filter-dump,id=netdump,netdev=net0,file=/tmp/net0.pcap -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI + HVF) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -761,7 +761,7 @@ tasks:
       LOG_FILE: /tmp/diplomat-serial.log
       FW_CODE: '{{if ne .OVMF ""}}{{.OVMF}}{{else}}{{dir .QEMU_X86_64}}/../share/qemu/edk2-x86_64-code.fd{{end}}'
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_X86_64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -drive file={{.BUILD_DIR}}/disk-amd64.img,format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0,bus=pcie.0,addr=0x10 -boot c -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -display cocoa -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU_X86_64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -drive file={{.BUILD_DIR}}/disk-amd64.img,format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0,bus=pcie.0,addr=0x10 -boot c -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -object filter-dump,id=netdump,netdev=net0,file=/tmp/net0.pcap -display cocoa -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (x86_64 + kmazarin) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
