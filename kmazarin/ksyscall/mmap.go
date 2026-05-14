@@ -1,4 +1,3 @@
-
 package ksyscall
 
 import (
@@ -33,8 +32,8 @@ const (
 // Constraint pages are mapped read-only into every shepherd's address space.
 // The kernel writes via its own VA mapping (PA + KernelVAOffset).
 const (
-	UserConstraintPagesVA   = 0x00007FFD00000000          // Fixed VA for constraint pages
-	UserConstraintPagesSize = kmem.ConstraintTotalSize    // Derived from region layout
+	UserConstraintPagesVA   = 0x00007FFD00000000       // Fixed VA for constraint pages
+	UserConstraintPagesSize = kmem.ConstraintTotalSize // Derived from region layout
 )
 
 // userspaceActive is set to true when we jump to userspace.
@@ -435,6 +434,14 @@ func syscallMmapContiguous(alignedLength uint64) int64 {
 		uintptr(baseVA), basePA, buddyPages) {
 		kmem.BuddyFreeTyped(basePA, order, kmem.PageUserDMA)
 		return -12 // ENOMEM — page table allocation failed
+	}
+
+	// Zero all pages before exposing to userspace.
+	// The buddy allocator does not zero; pages contain stale data from
+	// previous owners (kernel log strings, heap objects, etc.).
+	kernelVA := basePA + constants.KernelMMIOOffset
+	for i := 0; i < buddyPages; i++ {
+		kmem.Bzero4K(kernelVA + uintptr(i)*4096)
 	}
 
 	// Register DMA clump for this shepherd

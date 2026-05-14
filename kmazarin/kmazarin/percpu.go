@@ -211,6 +211,7 @@ func allocContiguousPages(numPages int) uintptr {
 	if basePA == 0 {
 		return 0
 	}
+	kmem.ZeroFrame(basePA)
 
 	for i := 1; i < numPages; i++ {
 		nextPA := kmem.AllocKernelFrame()
@@ -218,6 +219,7 @@ func allocContiguousPages(numPages int) uintptr {
 			// Failed to allocate - we can't easily return the already allocated pages
 			return 0
 		}
+		kmem.ZeroFrame(nextPA)
 		expectedPA := basePA + uintptr(i*0x1000)
 		if nextPA != expectedPA {
 			// Pages are not contiguous - for now, continue anyway
