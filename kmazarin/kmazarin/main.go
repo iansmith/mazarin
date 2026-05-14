@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/device/virtio/input"
+	_ "mazzy/kmazarin/device/virtio/net" // MAZ-18: net protocol layer; real net.Init() wired in MAZ-19
 	"mazzy/kmazarin/device/virtio/rng"
 	"mazzy/kmazarin/dtb"
 	"mazzy/kmazarin/klog"
