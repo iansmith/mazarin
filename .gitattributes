@@ -1,0 +1,2 @@
+*.py linguist-vendored
+   analyze_distribution.py linguist-detectable=false
