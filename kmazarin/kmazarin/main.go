@@ -6,7 +6,7 @@ import (
 	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/device/virtio/input"
-	_ "mazzy/kmazarin/device/virtio/net" // MAZ-18: net protocol layer; real net.Init() wired in MAZ-19
+	"mazzy/kmazarin/device/virtio/net"
 	"mazzy/kmazarin/device/virtio/rng"
 	"mazzy/kmazarin/dtb"
 	"mazzy/kmazarin/klog"
@@ -589,6 +589,14 @@ func simpleMain() {
 		klog.Errf("[Main] VirtIO Block init failed (no device found?)\n")
 	} else {
 		klog.Logf("[Main] VirtIO Block init OK, IRQ=%d\n", uint64(block.GetIRQNum()))
+	}
+
+	// Initialize VirtIO network device (bring-up only — no RX/TX traffic or
+	// interrupts yet; MAZ-21 wires interrupts, MAZ-20/22 add TX/RX).
+	if !net.Init() {
+		klog.Errf("[Main] VirtIO Net init failed (no device found?)\n")
+	} else {
+		klog.Logf("[Main] VirtIO Net init OK\n")
 	}
 
 	// Initialize VirtIO RNG device (entropy source).
