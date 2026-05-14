@@ -173,7 +173,7 @@ var blockSidecarFreePtr *uint64 // pointer to SidecarPool.FreeBits for release
 type blockAsyncSlot struct {
 	sidecarStatusVA uintptr // VA of status byte in sidecar
 	sidecarIdx      uint8   // Sidecar slot index (for release)
-	dataKernelVA    uintptr // Kernel VA of data page (PA + KernelMMIOOffset)
+	dataKernelVA    uintptr // Kernel VA of data page (PA + KernelVAOffset)
 	dataLen         uint32  // Data buffer size (for cache invalidate)
 	clumpAddr       uintptr // VA of *proc.DMAClump, stored as uintptr (no write barrier)
 	userData        uint64  // Opaque tag from io_uring SQEntry.UserData, written to CQEntry

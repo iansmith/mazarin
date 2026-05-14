@@ -189,7 +189,7 @@ func InitUnifiedPool() {
 	InitBuddyAllocator(
 		globalPool.initialNext,
 		globalPool.end,
-		constants.KernelMMIOOffset,
+		constants.KernelVAOffset,
 		bootstrapPages,
 	)
 }

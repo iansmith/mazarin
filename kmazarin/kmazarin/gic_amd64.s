@@ -1,6 +1,6 @@
 #include "textflag.h"
 
-// LAPIC registers (physical addresses, add KernelMMIOOffset for VA)
+// LAPIC registers (physical addresses, add KernelVAOffset for VA)
 #define LAPIC_PHYS_BASE   0xFEE00000
 #define LAPIC_LVT_TMR     0x320
 #define LAPIC_INITIAL_COUNT 0x380

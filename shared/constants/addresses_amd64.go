@@ -12,5 +12,5 @@ const (
 	KernelHeapSize  = KernelHeapEnd - KernelHeapStart
 
 	// COM1 serial port - ISA I/O port 0x3F8, MMIO mapped
-	KernelUartBase = KernelMMIOOffset + 0x3F8
+	KernelUartBase = KernelVAOffset + 0x3F8
 )

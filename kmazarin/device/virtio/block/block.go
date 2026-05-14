@@ -42,7 +42,7 @@ type VirtIOBlockDevice struct {
 	// PCI mode: data buffer only (header/status live in sidecar slots).
 	// MMIO mode: combined header+status+data buffer (legacy layout).
 	DmaPagePA uintptr // Physical address of the DMA page
-	DmaPageVA uintptr // Virtual address of the DMA page (PA + KernelMMIOOffset)
+	DmaPageVA uintptr // Virtual address of the DMA page (PA + KernelVAOffset)
 
 	// Interrupt-driven I/O
 	IRQNum     uint32 // Assigned IRQ number (0 = polling mode, no interrupts)
@@ -117,7 +117,7 @@ func Init() bool {
 		return false
 	}
 	virtioBlockDevice.DmaPagePA = dmaPA
-	virtioBlockDevice.DmaPageVA = dmaPA + constants.KernelMMIOOffset
+	virtioBlockDevice.DmaPageVA = dmaPA + constants.KernelVAOffset
 
 	// Register with device manager
 	device.RegisterBlockDevice(&virtioBlockDevice)
@@ -207,7 +207,7 @@ func virtioBlockInit() bool {
 		klog.Errf("[VirtIO Block] ERROR: Failed to allocate queue DMA page\n")
 		return false
 	}
-	queuePageVA := queuePagePA + constants.KernelMMIOOffset
+	queuePageVA := queuePagePA + constants.KernelVAOffset
 
 	// Initialize Engine: sets up VQ on DMA page, enables queue on device.
 	// Queue 0, 128 entries: desc(2048)+avail(262)+used(1030) = 3340 bytes < 4096

@@ -115,7 +115,7 @@ func RegisterBlockCompletionRing(ringVA uintptr, shepherdID int16) int64 {
 	desc.Flags |= kmem.PD_PINNED
 	desc.RefCount++
 
-	// Compute kernel VA (all RAM is identity-mapped at KernelMMIOOffset)
+	// Compute kernel VA (all RAM is identity-mapped at KernelVAOffset)
 	kva := kmem.MapPAToKernelScratch(pa)
 	if kva == 0 {
 		desc.Flags &^= kmem.PD_PINNED

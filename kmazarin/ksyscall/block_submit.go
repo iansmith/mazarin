@@ -130,7 +130,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	}
 
 	// For writes, clean cache so device sees userspace data
-	kernelVA := pa + constants.KernelMMIOOffset
+	kernelVA := pa + constants.KernelVAOffset
 	if requestType == block.VIRTIO_BLK_T_OUT {
 		asm.CleanDCacheRange(kernelVA, uintptr(totalBytes))
 		asm.DmaWmb()
@@ -148,7 +148,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	// Store per-tag metadata for the top-half completion handler.
 	// sidecarStatusVA: VA of the status byte in the sidecar slot.
 	sidecarSlot := dev.GetInFlightSidecar(0)
-	dataKernelVA := pa + constants.KernelMMIOOffset
+	dataKernelVA := pa + constants.KernelVAOffset
 	if requestType == block.VIRTIO_BLK_T_OUT {
 		dataKernelVA = 0 // No cache invalidate needed for writes
 	}

@@ -29,7 +29,7 @@ import (
 //go:nosplit
 func unmapCardinal() {
 	// KernelVAOffset is a constant - no need to read from RuntimeConfig
-	vaOffset := uint64(constants.KernelMMIOOffset)
+	vaOffset := uint64(constants.KernelVAOffset)
 
 	// Read TTBR0_EL1 to get L0 page table physical address
 	ttbr0Phys := readTTBR0()

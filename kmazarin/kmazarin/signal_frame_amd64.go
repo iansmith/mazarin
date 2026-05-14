@@ -59,7 +59,7 @@ const (
 // For software signals (tgkill, etc.) they should be left as 0.
 //
 // The signal frame is in userspace memory, so all writes go through the kernel
-// linear map (VA→PA walk + KernelMMIOOffset) since direct userspace access is
+// linear map (VA→PA walk + KernelVAOffset) since direct userspace access is
 // blocked by SMAP on x86_64.
 //
 //go:nosplit

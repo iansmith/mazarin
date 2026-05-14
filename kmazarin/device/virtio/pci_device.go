@@ -34,7 +34,7 @@ type PCIDevice struct {
 	ISRConfig    pci.VirtIOCapabilityInfo
 	DeviceConfig pci.VirtIOCapabilityInfo
 
-	// Mapped virtual addresses (PA + KernelMMIOOffset + OffsetInBar)
+	// Mapped virtual addresses (PA + KernelVAOffset + OffsetInBar)
 	CommonConfigBase uintptr // Common config register base VA
 	NotifyBase       uintptr // Notify register base VA
 	ISRBase          uintptr // ISR status register VA (for interrupt acknowledgement)
@@ -74,7 +74,7 @@ func (d *PCIDevice) FindAndMapBARs(bus, slot, funcNum uint8, mmioBase uintptr) b
 		commonBarBase = pci.ReadBAR64(bus, slot, funcNum, d.CommonConfig.Bar)
 	}
 	kmem.MapDeviceMMIO(commonBarBase, 0x10000)
-	d.CommonConfigBase = commonBarBase + constants.KernelMMIOOffset + uintptr(d.CommonConfig.OffsetInBar)
+	d.CommonConfigBase = commonBarBase + constants.KernelVAOffset + uintptr(d.CommonConfig.OffsetInBar)
 
 	// Map notify BAR (may be same as common)
 	notifyBarBase := pci.ReadBAR64(bus, slot, funcNum, d.NotifyConfig.Bar)
@@ -85,7 +85,7 @@ func (d *PCIDevice) FindAndMapBARs(bus, slot, funcNum uint8, mmioBase uintptr) b
 	if notifyBarBase != commonBarBase {
 		kmem.MapDeviceMMIO(notifyBarBase, 0x10000)
 	}
-	d.NotifyBase = notifyBarBase + constants.KernelMMIOOffset + uintptr(d.NotifyConfig.OffsetInBar)
+	d.NotifyBase = notifyBarBase + constants.KernelVAOffset + uintptr(d.NotifyConfig.OffsetInBar)
 
 	// Map ISR BAR (optional, may be same as common)
 	if d.ISRConfig.Offset != 0 {
@@ -94,7 +94,7 @@ func (d *PCIDevice) FindAndMapBARs(bus, slot, funcNum uint8, mmioBase uintptr) b
 			if isrBarBase != commonBarBase && isrBarBase != notifyBarBase {
 				kmem.MapDeviceMMIO(isrBarBase, 0x10000)
 			}
-			d.ISRBase = isrBarBase + constants.KernelMMIOOffset + uintptr(d.ISRConfig.OffsetInBar)
+			d.ISRBase = isrBarBase + constants.KernelVAOffset + uintptr(d.ISRConfig.OffsetInBar)
 		}
 	}
 
@@ -105,7 +105,7 @@ func (d *PCIDevice) FindAndMapBARs(bus, slot, funcNum uint8, mmioBase uintptr) b
 			if devCfgBarBase != commonBarBase && devCfgBarBase != notifyBarBase {
 				kmem.MapDeviceMMIO(devCfgBarBase, 0x10000)
 			}
-			d.DeviceConfigBase = devCfgBarBase + constants.KernelMMIOOffset + uintptr(d.DeviceConfig.OffsetInBar)
+			d.DeviceConfigBase = devCfgBarBase + constants.KernelVAOffset + uintptr(d.DeviceConfig.OffsetInBar)
 		}
 	}
 

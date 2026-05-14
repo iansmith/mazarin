@@ -55,7 +55,7 @@ const (
 	IOAPICSize     = 0x1000  // 4KB
 
 	// Kernel VA offset — add to physical address for kernel virtual address
-	KernelMMIOOffset = 0xFFFFFFFF00000000
+	KernelVAOffset = 0xFFFFFFFF00000000
 )
 
 // LVT timer modes
@@ -88,8 +88,8 @@ func (d *APICDriver) Init(_ *dtb.Node) (deviceapi.Closable, error) {
 	}
 
 	dev := &APIC{
-		lapicBase:  LAPICPhysBase + KernelMMIOOffset,
-		ioapicBase: IOAPICPhysBase + KernelMMIOOffset,
+		lapicBase:  LAPICPhysBase + KernelVAOffset,
+		ioapicBase: IOAPICPhysBase + KernelVAOffset,
 	}
 
 	dev.initHardware()

@@ -418,7 +418,7 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 	// Framebuffer allocated
 
 	// Zero framebuffer (use linear map VA for CPU access)
-	fbVA := virtioGPUFramebufferAddr + constants.KernelMMIOOffset
+	fbVA := virtioGPUFramebufferAddr + constants.KernelVAOffset
 	fbMem := unsafe.Pointer(fbVA)
 	virtio.Bzero4K(fbMem, fbSize)
 

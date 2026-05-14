@@ -382,7 +382,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// L0 table
 	l0PA := ttbr1L0PA
-	l0VA := l0PA + constants.KernelMMIOOffset
+	l0VA := l0PA + constants.KernelVAOffset
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
 	if (l0Entry & PTE_VALID) == 0 {
 		return 0
@@ -390,7 +390,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// L1 table
 	l1PA := uintptr(l0Entry & PTE_ADDR_MASK)
-	l1VA := l1PA + constants.KernelMMIOOffset
+	l1VA := l1PA + constants.KernelVAOffset
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
 	if (l1Entry & PTE_VALID) == 0 {
 		return 0
@@ -398,7 +398,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// L2 table
 	l2PA := uintptr(l1Entry & PTE_ADDR_MASK)
-	l2VA := l2PA + constants.KernelMMIOOffset
+	l2VA := l2PA + constants.KernelVAOffset
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
 	if (l2Entry & PTE_VALID) == 0 {
 		return 0
@@ -415,7 +415,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// L3 table (L2 is a table pointer)
 	l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
-	l3VA := l3PA + constants.KernelMMIOOffset
+	l3VA := l3PA + constants.KernelVAOffset
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 	if (l3Entry & PTE_VALID) == 0 {
 		return 0

@@ -44,7 +44,7 @@ const (
 // siCode: the si_code value for siginfo (e.g., SEGV_MAPERR; 0 for software signals)
 //
 // The signal frame is in userspace memory, so all writes go through the kernel
-// linear map (VA→PA walk + KernelMMIOOffset) since direct userspace access is
+// linear map (VA→PA walk + KernelVAOffset) since direct userspace access is
 // blocked by PAN (ARM64) / SUM (RISC-V) / SMAP (x86_64).
 //
 //go:nosplit

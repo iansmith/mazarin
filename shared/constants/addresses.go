@@ -22,19 +22,23 @@ const (
 )
 
 // ============================================================================
-// MMIO Device Virtual Addresses
+// Kernel Linear Map
 // ============================================================================
-// QEMU virt machine has fixed MMIO device addresses. We map them to high
-// memory with a fixed offset.
+// diplomat builds a full linear map of physical RAM (and the low MMIO window)
+// into the kernel's high half: any physical address < 4GB is reachable at
+// PA + KernelVAOffset. See diplomat/main/kernelvm_arm64.go:createDiplomatLinearMap.
+// MMIO device bases below are just fixed points within that same map.
 
 const (
-	// MMIO mapping offset - add to physical address to get kernel VA
-	KernelMMIOOffset = 0xFFFFFFFF00000000
+	// KernelVAOffset is the kernel linear-map offset: add it to any physical
+	// address < 4GB to get its kernel VA. The buddy allocator caps the pool at
+	// the 4GB boundary so PA + KernelVAOffset never wraps.
+	KernelVAOffset = 0xFFFFFFFF00000000
 
 	// KernelUartBase is arch-specific — see addresses_{arm64,amd64,riscv64}.go
 
 	// GIC - physical 0x0800_0000 -> virtual 0xFFFF_FFFF_0800_0000
-	KernelGicBase = KernelMMIOOffset + 0x08000000
+	KernelGicBase = KernelVAOffset + 0x08000000
 )
 
 // ============================================================================
@@ -100,9 +104,9 @@ const (
 
 const (
 	// KernelTextBase is the high-memory VA where kmazarin code starts.
-	// Computed from KernelMMIOOffset + KmazarinLoadAddr.
+	// Computed from KernelVAOffset + KmazarinLoadAddr.
 	// KmazarinLoadAddr is defined in shared/constants/layout.go.
-	KernelTextBase = KernelMMIOOffset + KmazarinLoadAddr // 0xFFFFFFFF42000000
+	KernelTextBase = KernelVAOffset + KmazarinLoadAddr // 0xFFFFFFFF42000000
 
 	// TTBR1 page table region and PT pool sizes (fixed policy decisions)
 	KernelTTBR1RegionSize = 0x10000 // 64KB (16 page tables max)

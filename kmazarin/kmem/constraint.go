@@ -136,7 +136,7 @@ func InitConstraintPages() bool {
 	}
 
 	// Zero the entire region via kernel VA.
-	va := pa + constants.KernelMMIOOffset
+	va := pa + constants.KernelVAOffset
 	ptr := (*[ConstraintTotalSize]byte)(unsafe.Pointer(va))
 	for i := range ptr {
 		ptr[i] = 0
@@ -204,7 +204,7 @@ func GetConstraintPageKernelVA() uintptr {
 	if pa == 0 {
 		return 0
 	}
-	return pa + constants.KernelMMIOOffset
+	return pa + constants.KernelVAOffset
 }
 
 // MapUserConstraintPages maps the constraint shared pages read-only into the

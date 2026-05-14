@@ -62,8 +62,8 @@ func (d *NS16550Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 	}
 
 	// Convert physical address to high-memory kernel address
-	const KernelMMIOOffset = 0xFFFFFFFF00000000
-	baseAddr := reg.Address + KernelMMIOOffset
+	const KernelVAOffset = 0xFFFFFFFF00000000
+	baseAddr := reg.Address + KernelVAOffset
 
 	u := &NS16550{
 		name:     node.Name,

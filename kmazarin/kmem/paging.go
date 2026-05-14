@@ -328,7 +328,7 @@ func SwitchTTBR0WithASID(l0PA uintptr, asid uint16) {
 //
 //go:nosplit
 func paToVA(pa uintptr) uintptr {
-	return pa + constants.KernelMMIOOffset
+	return pa + constants.KernelVAOffset
 }
 
 // cachePTVA stores a PA -> VA mapping for an allocated page table.
@@ -380,7 +380,7 @@ func paToVAOrCache(pa uintptr) uintptr {
 //
 //go:nosplit
 func vaToPa(va uintptr) uintptr {
-	return va - constants.KernelMMIOOffset
+	return va - constants.KernelVAOffset
 }
 
 // GetPTPoolStats returns the current PT pool allocation state.
@@ -414,7 +414,7 @@ func allocPTPage() uintptr {
 	}
 
 	// Convert PA to VA using kernel VA offset (use constant to avoid deep config chain)
-	va := pa + constants.KernelMMIOOffset
+	va := pa + constants.KernelVAOffset
 
 	// Zero the page
 	ptr := (*[512]uint64)(unsafe.Pointer(va))
@@ -1900,12 +1900,12 @@ func MapUserFramebufferWithL0(framebufferPA uintptr, framebufferSize uintptr, l0
 }
 
 // MapPAToKernelScratch returns a kernel VA for reading a physical page.
-// All physical RAM is permanently identity-mapped at KernelMMIOOffset via 2MB
+// All physical RAM is permanently identity-mapped at KernelVAOffset via 2MB
 // block descriptors set up by diplomat, so this is a pure arithmetic translation
 // with no TLB entries, no page table writes, and nothing to release.
 // Safe to call from any goroutine at any time.
 func MapPAToKernelScratch(pa uintptr) uintptr {
-	return pa + constants.KernelMMIOOffset
+	return pa + constants.KernelVAOffset
 }
 
 // WalkUserPageTable translates a userspace VA to PA by walking TTBR0 page tables.
@@ -2001,7 +2001,7 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 // WalkUserPTLean translates a userspace VA to PA using an explicit L0 page table.
 // Unlike WalkUserPageTableWithL0, this function:
 //   - Skips pagingInitialized check (caller guarantees paging is initialized)
-//   - Uses direct linear map (pa + KernelMMIOOffset) instead of VA cache
+//   - Uses direct linear map (pa + KernelVAOffset) instead of VA cache
 //   - Requires l0PA to be non-zero
 //
 // Designed for use from deep nosplit call chains (signal frame building)
@@ -2014,28 +2014,28 @@ func WalkUserPTLean(va uintptr, l0PA uintptr) uintptr {
 	l2Idx := (va >> L2Shift) & 0x1FF
 	l3Idx := (va >> L3Shift) & 0x1FF
 
-	l0VA := l0PA + constants.KernelMMIOOffset
+	l0VA := l0PA + constants.KernelVAOffset
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
 	if !pteIsValid(l0Entry) {
 		return 0
 	}
 
 	l1PA := pteExtractPA(l0Entry)
-	l1VA := l1PA + constants.KernelMMIOOffset
+	l1VA := l1PA + constants.KernelVAOffset
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
 	if !pteIsValid(l1Entry) {
 		return 0
 	}
 
 	l2PA := pteExtractPA(l1Entry)
-	l2VA := l2PA + constants.KernelMMIOOffset
+	l2VA := l2PA + constants.KernelVAOffset
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
 	if !pteIsValid(l2Entry) {
 		return 0
 	}
 
 	l3PA := pteExtractPA(l2Entry)
-	l3VA := l3PA + constants.KernelMMIOOffset
+	l3VA := l3PA + constants.KernelVAOffset
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 	if !pteIsValid(l3Entry) {
 		return 0
@@ -2644,7 +2644,7 @@ func WriteUserUint64WithL0(va uintptr, val uint64, l0PA uintptr) bool {
 	if pa == 0 {
 		return false
 	}
-	kernelVA := pa + constants.KernelMMIOOffset
+	kernelVA := pa + constants.KernelVAOffset
 	*(*uint64)(unsafe.Pointer(kernelVA)) = val
 	return true
 }
@@ -2661,7 +2661,7 @@ func WriteUserUint32WithL0(va uintptr, val uint32, l0PA uintptr) bool {
 	if pa == 0 {
 		return false
 	}
-	kernelVA := pa + constants.KernelMMIOOffset
+	kernelVA := pa + constants.KernelVAOffset
 	*(*uint32)(unsafe.Pointer(kernelVA)) = val
 	return true
 }
@@ -2678,7 +2678,7 @@ func WriteUserInt32WithL0(va uintptr, val int32, l0PA uintptr) bool {
 	if pa == 0 {
 		return false
 	}
-	kernelVA := pa + constants.KernelMMIOOffset
+	kernelVA := pa + constants.KernelVAOffset
 	*(*int32)(unsafe.Pointer(kernelVA)) = val
 	return true
 }
@@ -2695,7 +2695,7 @@ func WriteUserUint16WithL0(va uintptr, val uint16, l0PA uintptr) bool {
 	if pa == 0 {
 		return false
 	}
-	kernelVA := pa + constants.KernelMMIOOffset
+	kernelVA := pa + constants.KernelVAOffset
 	*(*uint16)(unsafe.Pointer(kernelVA)) = val
 	return true
 }
@@ -2713,7 +2713,7 @@ func ReadUserUint64WithL0(va uintptr, l0PA uintptr) (uint64, bool) {
 	if pa == 0 {
 		return 0, false
 	}
-	kernelVA := pa + constants.KernelMMIOOffset
+	kernelVA := pa + constants.KernelVAOffset
 	return *(*uint64)(unsafe.Pointer(kernelVA)), true
 }
 
@@ -2735,7 +2735,7 @@ func ZeroUserMemoryWithL0(va uintptr, n uintptr, l0PA uintptr) bool {
 		if pa == 0 {
 			return false
 		}
-		kernelVA := pa + constants.KernelMMIOOffset
+		kernelVA := pa + constants.KernelVAOffset
 		// Calculate how many bytes we can zero on this page
 		pageOffset := currentVA & (PageSize - 1)
 		pageRemain := PageSize - pageOffset
@@ -2784,7 +2784,7 @@ func EnsureUserPageMappedWithL0(userVA uintptr, l0PA uintptr) bool {
 	}
 
 	// Zero the page via kernel linear map
-	scratchVA := framePA + constants.KernelMMIOOffset
+	scratchVA := framePA + constants.KernelVAOffset
 	zeroPageSlow(scratchVA)
 
 	// Cache clean + TLB invalidate

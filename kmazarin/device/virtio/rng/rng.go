@@ -58,7 +58,7 @@ func Init() bool {
 		return false
 	}
 	dev.DmaPagePA = dmaPA
-	dev.DmaPageVA = dmaPA + constants.KernelMMIOOffset
+	dev.DmaPageVA = dmaPA + constants.KernelVAOffset
 
 	return true
 }
@@ -180,7 +180,7 @@ func handshake() bool {
 		klog.Errf("[VirtIO RNG] ERROR: Failed to allocate queue DMA page\n")
 		return false
 	}
-	queuePageVA := queuePagePA + constants.KernelMMIOOffset
+	queuePageVA := queuePagePA + constants.KernelVAOffset
 
 	// Read device's max queue size and use min(16, max)
 	dev.WriteCommonConfig16(virtio.CfgQueueSelect, 0)

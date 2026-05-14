@@ -214,7 +214,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			// Cache management: writes need clean (push dirty lines to RAM),
 			// reads need pre-invalidate (discard dirty lines so DMA'd data
 			// isn't overwritten by stale cache writeback).
-			kernelVA := pa + constants.KernelMMIOOffset
+			kernelVA := pa + constants.KernelVAOffset
 			requestType := block.VIRTIO_BLK_T_IN
 			if sqe.Opcode == iouring.IOUringOpWrite {
 				requestType = block.VIRTIO_BLK_T_OUT
@@ -234,7 +234,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 			// Store per-tag metadata for IRQ top-half.
 			sidecarSlot := dev.GetInFlightSidecar(0)
-			dataKernelVA := pa + constants.KernelMMIOOffset
+			dataKernelVA := pa + constants.KernelVAOffset
 			if sqe.Opcode == iouring.IOUringOpWrite {
 				dataKernelVA = 0
 			}

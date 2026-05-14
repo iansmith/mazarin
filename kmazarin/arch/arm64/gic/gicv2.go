@@ -52,10 +52,10 @@ func (d *GICv2Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 	// Convert physical address to high-memory kernel address
 	// Physical: 0x08000000 → Kernel: 0xFFFFFFFF08000000
 	// This matches what the exception handler uses for GIC access
-	const KernelMMIOOffset = 0xFFFFFFFF00000000
+	const KernelVAOffset = 0xFFFFFFFF00000000
 	gic := &GICv2{
-		distBase: distReg.Address + KernelMMIOOffset, // Distributor (high memory)
-		cpuBase:  cpuReg.Address + KernelMMIOOffset,  // CPU interface (high memory)
+		distBase: distReg.Address + KernelVAOffset, // Distributor (high memory)
+		cpuBase:  cpuReg.Address + KernelVAOffset,  // CPU interface (high memory)
 	}
 
 	// Initialize GIC hardware

@@ -38,7 +38,7 @@ func AllocDriverPage() (pa uintptr, va uintptr) {
 		return 0, 0
 	}
 
-	va = pa + constants.KernelMMIOOffset
+	va = pa + constants.KernelVAOffset
 
 	// Map as device memory (non-cacheable), splitting L2 blocks if needed
 	if !mapDevicePage(va, pa) {

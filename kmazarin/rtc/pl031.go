@@ -41,8 +41,8 @@ func (d *PL031Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 
 	// Convert physical address to high-memory kernel address
 	// Physical: 0x09010000 → Kernel: 0xFFFFFFFF09010000
-	const KernelMMIOOffset = 0xFFFFFFFF00000000
-	baseAddr := reg.Address + KernelMMIOOffset
+	const KernelVAOffset = 0xFFFFFFFF00000000
+	baseAddr := reg.Address + KernelVAOffset
 
 	rtc := &PL031{
 		name:     node.Name,

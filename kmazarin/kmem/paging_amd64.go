@@ -51,7 +51,7 @@ func readCurrentL0PA() uintptr {
 //
 //go:nosplit
 func initProcessL0(l0VA uintptr) {
-	kernelL0VA := ttbr1L0PA + constants.KernelMMIOOffset
+	kernelL0VA := ttbr1L0PA + constants.KernelVAOffset
 
 	// Copy PML4[256-511] from kernel (kernel VA space only).
 	for i := uintptr(256); i < 512; i++ {
@@ -73,7 +73,7 @@ func initProcessL0(l0VA uintptr) {
 	if newPdptPA == 0 {
 		return
 	}
-	newPdptVA := newPdptPA + constants.KernelMMIOOffset
+	newPdptVA := newPdptPA + constants.KernelVAOffset
 
 	// Zero the new PDPT
 	for i := uintptr(0); i < 512; i++ {
@@ -83,7 +83,7 @@ func initProcessL0(l0VA uintptr) {
 	// Copy ONLY PDPT[1] (kmazarin code at VA 0x40000000-0x7FFFFFFF).
 	// All other PDPT entries (0, 2+) are left empty for user demand paging.
 	kernelPdptPA := uintptr(kernelPML4E0 & PTE_ADDR_MASK)
-	kernelPdptVA := kernelPdptPA + constants.KernelMMIOOffset
+	kernelPdptVA := kernelPdptPA + constants.KernelVAOffset
 	*(*uint64)(unsafe.Pointer(newPdptVA + 1*8)) = *(*uint64)(unsafe.Pointer(kernelPdptVA + 1*8))
 
 	// Set PML4[0] to point to our new PDPT with USER bit
@@ -95,7 +95,7 @@ func initProcessL0(l0VA uintptr) {
 //
 //go:nosplit
 func verifyUserspaceShepherdL0(l0PA uintptr, asid uint16) {
-	l0VA := l0PA + constants.KernelMMIOOffset
+	l0VA := l0PA + constants.KernelVAOffset
 	e0 := *(*uint64)(unsafe.Pointer(l0VA))
 	if (e0 & X86_PTE_PRESENT) == 0 {
 		serial.RawUARTPuts("\r\n[SWITCH_PT] L0[0] INVALID! l0PA=0x")
@@ -239,7 +239,7 @@ func mapDevicePage(va, pa uintptr) bool {
 
 // MapDeviceMMIO is a no-op on x86_64.
 // Diplomat's linear map already covers all physical addresses below 4GB
-// (PA → VA via KernelMMIOOffset), including PCI BAR regions.
+// (PA → VA via KernelVAOffset), including PCI BAR regions.
 func MapDeviceMMIO(physAddr uintptr, size uint64) error {
 	return nil
 }
@@ -262,7 +262,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// PML4 table
 	pml4PA := ttbr1L0PA
-	pml4VA := pml4PA + constants.KernelMMIOOffset
+	pml4VA := pml4PA + constants.KernelVAOffset
 	pml4Entry := *(*uint64)(unsafe.Pointer(pml4VA + pml4Idx*8))
 	if (pml4Entry & X86_PTE_PRESENT) == 0 {
 		return 0
@@ -270,7 +270,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// PDPT table
 	pdptPA := uintptr(pml4Entry & PTE_ADDR_MASK)
-	pdptVA := pdptPA + constants.KernelMMIOOffset
+	pdptVA := pdptPA + constants.KernelVAOffset
 	pdptEntry := *(*uint64)(unsafe.Pointer(pdptVA + pdptIdx*8))
 	if (pdptEntry & X86_PTE_PRESENT) == 0 {
 		return 0
@@ -285,7 +285,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// PD table
 	pdPA := uintptr(pdptEntry & PTE_ADDR_MASK)
-	pdVA := pdPA + constants.KernelMMIOOffset
+	pdVA := pdPA + constants.KernelVAOffset
 	pdEntry := *(*uint64)(unsafe.Pointer(pdVA + pdIdx*8))
 	if (pdEntry & X86_PTE_PRESENT) == 0 {
 		return 0
@@ -300,7 +300,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// PT table (4KB pages)
 	ptPA := uintptr(pdEntry & PTE_ADDR_MASK)
-	ptVA := ptPA + constants.KernelMMIOOffset
+	ptVA := ptPA + constants.KernelVAOffset
 	ptEntry := *(*uint64)(unsafe.Pointer(ptVA + ptIdx*8))
 	if (ptEntry & X86_PTE_PRESENT) == 0 {
 		return 0
@@ -418,7 +418,7 @@ func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
 	ptIdx := (va >> L3Shift) & 0x1FF
 
 	pml4PA := ttbr1L0PA
-	pml4VA := pml4PA + constants.KernelMMIOOffset
+	pml4VA := pml4PA + constants.KernelVAOffset
 
 	// PML4 — never a huge page
 	pml4Entry := *(*uint64)(unsafe.Pointer(pml4VA + pml4Idx*8))
@@ -428,7 +428,7 @@ func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
 
 	// PDPT
 	pdptPA := uintptr(pml4Entry & PTE_ADDR_MASK)
-	pdptVA := pdptPA + constants.KernelMMIOOffset
+	pdptVA := pdptPA + constants.KernelVAOffset
 	pdptEntry := *(*uint64)(unsafe.Pointer(pdptVA + pdptIdx*8))
 	if pdptEntry&X86_PTE_PRESENT == 0 {
 		return 0, 0, false
@@ -440,7 +440,7 @@ func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
 
 	// PD
 	pdPA := uintptr(pdptEntry & PTE_ADDR_MASK)
-	pdVA := pdPA + constants.KernelMMIOOffset
+	pdVA := pdPA + constants.KernelVAOffset
 	pdEntry := *(*uint64)(unsafe.Pointer(pdVA + pdIdx*8))
 	if pdEntry&X86_PTE_PRESENT == 0 {
 		return 0, 0, false
@@ -452,7 +452,7 @@ func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
 
 	// PT (4KB leaf)
 	ptPA := uintptr(pdEntry & PTE_ADDR_MASK)
-	ptVA := ptPA + constants.KernelMMIOOffset
+	ptVA := ptPA + constants.KernelVAOffset
 	ptEntry := *(*uint64)(unsafe.Pointer(ptVA + ptIdx*8))
 	if ptEntry&X86_PTE_PRESENT == 0 {
 		return 0, 0, false
@@ -471,7 +471,7 @@ func platformWritePTEAt(va uintptr, newPTE uint64) bool {
 	ptIdx := (va >> L3Shift) & 0x1FF
 
 	pml4PA := ttbr1L0PA
-	pml4VA := pml4PA + constants.KernelMMIOOffset
+	pml4VA := pml4PA + constants.KernelVAOffset
 
 	pml4Entry := *(*uint64)(unsafe.Pointer(pml4VA + pml4Idx*8))
 	if pml4Entry&X86_PTE_PRESENT == 0 {
@@ -479,21 +479,21 @@ func platformWritePTEAt(va uintptr, newPTE uint64) bool {
 	}
 
 	pdptPA := uintptr(pml4Entry & PTE_ADDR_MASK)
-	pdptVA := pdptPA + constants.KernelMMIOOffset
+	pdptVA := pdptPA + constants.KernelVAOffset
 	pdptEntry := *(*uint64)(unsafe.Pointer(pdptVA + pdptIdx*8))
 	if pdptEntry&X86_PTE_PRESENT == 0 || pdptEntry&0x80 != 0 {
 		return false // Not mapped or 1GB page
 	}
 
 	pdPA := uintptr(pdptEntry & PTE_ADDR_MASK)
-	pdVA := pdPA + constants.KernelMMIOOffset
+	pdVA := pdPA + constants.KernelVAOffset
 	pdEntry := *(*uint64)(unsafe.Pointer(pdVA + pdIdx*8))
 	if pdEntry&X86_PTE_PRESENT == 0 || pdEntry&0x80 != 0 {
 		return false // Not mapped or 2MB page
 	}
 
 	ptPA := uintptr(pdEntry & PTE_ADDR_MASK)
-	ptVA := ptPA + constants.KernelMMIOOffset
+	ptVA := ptPA + constants.KernelVAOffset
 	ptPtr := (*uint64)(unsafe.Pointer(ptVA + ptIdx*8))
 	if *ptPtr&X86_PTE_PRESENT == 0 {
 		return false

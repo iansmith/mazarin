@@ -23,7 +23,7 @@ func platformCPU0Stacks() (g0Top, g0Bottom, excTop, excBottom uint64) {
 //
 //go:nosplit
 func platformKernelVAOffset() uint64 {
-	return constants.KernelMMIOOffset
+	return constants.KernelVAOffset
 }
 
 // platformSaveKernelTLS saves the kernel's FS_BASE MSR into kmazarinFSBase.

@@ -138,7 +138,7 @@ func initDerivedValues() {
 		derivedRAMSize = uint64(kmazarinRAMSize)
 	} else if dtbPhysAddr != 0 {
 		// Fallback: parse DTB for RAM info
-		dtbVirtAddr := dtbPhysAddr + uint64(constants.KernelMMIOOffset)
+		dtbVirtAddr := dtbPhysAddr + uint64(constants.KernelVAOffset)
 		ramBase, ramSize, ok := dtb.GetMemoryInfo(uintptr(dtbVirtAddr))
 		if ok {
 			derivedRAMBase = uint64(ramBase)
@@ -336,7 +336,7 @@ func getFullConfig() *fullConfig {
 func populateFullConfig() {
 	initDerivedValues()
 
-	cachedFullConfig.KernelVAOffset = uint64(constants.KernelMMIOOffset)
+	cachedFullConfig.KernelVAOffset = uint64(constants.KernelVAOffset)
 	cachedFullConfig.KmazarinSize = uint64(kmazarinKmazarinSize)
 	cachedFullConfig.KmazarinPhysAddr = uint64(constants.KmazarinLoadAddr)
 	cachedFullConfig.FramePoolStart = uint64(kmazarinFramePoolStart)

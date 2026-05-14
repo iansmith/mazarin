@@ -31,8 +31,8 @@ func (d *GoldfishDriver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 		return nil, err
 	}
 
-	const KernelMMIOOffset = 0xFFFFFFFF00000000
-	baseAddr := reg.Address + KernelMMIOOffset
+	const KernelVAOffset = 0xFFFFFFFF00000000
+	baseAddr := reg.Address + KernelVAOffset
 
 	g := &Goldfish{
 		name:     node.Name,
