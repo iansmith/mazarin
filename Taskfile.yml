@@ -724,16 +724,44 @@ tasks:
     vars:
       LOG_FILE: /tmp/diplomat-arm64-serial.log
       CPU_LOG_FILE: /tmp/qemu-arm64-cpu.log
+      # QEMU_EXTRA: extra flags appended to the QEMU command line. Empty for a
+      # normal run; qemu-for-gdb passes "-S -s" (freeze at reset + gdb stub).
+      QEMU_EXTRA: '{{.QEMU_EXTRA | default ""}}'
       FW_CODE: '{{if ne .OVMF_ARM64 ""}}{{.OVMF_ARM64}}{{else}}{{dir .QEMU}}/../share/qemu/edk2-aarch64-code.fd{{end}}'
       FW_VARS_TEMPLATE: '{{if ne .OVMF_ARM64 ""}}{{dir .OVMF_ARM64}}/edk2-arm-vars.fd{{else}}{{dir .QEMU}}/../share/qemu/edk2-arm-vars.fd{{end}}'
     cmds:
       - '{{.GO}} tool go-rm {{.CPU_LOG_FILE}}'
       - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt -accel hvf -cpu host -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -object filter-dump,id=netdump,netdev=net0,file=/tmp/net0.pcap -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -accel hvf -cpu host -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci -device virtio-rng-pci -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -object filter-dump,id=netdump,netdev=net0,file=/tmp/net0.pcap -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} {{.QEMU_EXTRA}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI + HVF) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
       - '{{.GO}} tool go-echo "CPU log: {{.CPU_LOG_FILE}}"'
+
+  # ── ARM64 HVF, frozen + gdb stub, no timeout — for MAZ-15 kernel debugging ──
+  qemu-for-gdb:
+    desc: "Boot ARM64+HVF FROZEN with a gdb stub on :1234, no timeout (MAZ-15 debugging)"
+    deps: [diplomat:esp-arm64, disk-arm64]
+    vars:
+      LOG_FILE: /tmp/diplomat-arm64-serial.log
+    cmds:
+      - task: stop-arm64
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - '{{.GO}} tool go-echo "Starting ARM64+HVF FROZEN with gdb stub on :1234 (no timeout)..."'
+      - task: run-arm64-hvf-background
+        vars:
+          QEMU_EXTRA: '-S -s'
+      # QEMU with -S freezes the vCPU at reset; it only needs a moment to bring
+      # up the monitor (:4446) and gdb (:1234) sockets. Then alert + leave running.
+      - '{{.GO}} tool go-sleep 2s'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "=================================================================="'
+      - '{{.GO}} tool go-echo "  QEMU READY  --  vCPU frozen at reset, gdb stub listening on :1234"'
+      - '{{.GO}} tool go-echo "  Connect (from the repo root):"'
+      - '{{.GO}} tool go-echo "    /Users/iansmith/mazzy/bin/target-gdb build/kmazarin.elf -x tools/gdb/maz15-catch.gdb"'
+      - '{{.GO}} tool go-echo "  Then in gdb:   continue"'
+      - '{{.GO}} tool go-echo "  Stop QEMU:     {{.GO}} tool task stop-arm64"'
+      - '{{.GO}} tool go-echo "=================================================================="'
 
   run-x86_64:
     desc: "Run x86_64 diplomat+kmazarin in QEMU (TIMEOUT=N for timeout, default=5s)"
