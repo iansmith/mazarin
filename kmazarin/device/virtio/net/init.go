@@ -1,13 +1,14 @@
-// init.go — VirtIO-net device discovery and bring-up (MAZ-19).
+// init.go — VirtIO-net device discovery and bring-up (MAZ-19, MAZ-23).
 //
 // Mirrors the block driver's discovery/handshake path (block/block.go) — the
 // only structural difference is two Engine.Init calls (RX = virtqueue 0,
-// TX = virtqueue 1) instead of one. Bring-up only: no RX/TX traffic, no
-// interrupt wiring (MAZ-21 wires interrupts; MAZ-20/22 add TX/RX), no
-// device-manager registration (MAZ-23).
+// TX = virtqueue 1) instead of one. Init brings the device up (TX via MAZ-20,
+// RX via MAZ-22) and registers it with the device manager (MAZ-23). Interrupt
+// wiring is still pending (MAZ-26).
 package net
 
 import (
+	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
@@ -40,9 +41,9 @@ var virtioNetDevice VirtIONetDevice
 
 // Init discovers the VirtIO network device on the PCI bus and brings it up:
 // PCI BAR mapping, feature handshake, RX + TX queue setup, sidecar pool, and
-// DRIVER_OK. Bring-up only — no RX/TX traffic, no interrupt wiring (MAZ-21),
-// no device-manager registration (MAZ-23). Returns true on success, false if
-// no device was found or initialization failed.
+// DRIVER_OK, then registers it with the device manager (MAZ-23). No interrupt
+// wiring yet (MAZ-26). Returns true on success, false if no device was found
+// or initialization failed.
 func Init() bool {
 	dev := &virtioNetDevice
 
@@ -75,9 +76,14 @@ func Init() bool {
 		return false
 	}
 
+	// Register with the device manager (MAZ-23) — mirrors block.Init's
+	// device.RegisterBlockDevice. *VirtIONetDevice satisfies device.NetDevice
+	// (compile-checked in device.go).
+	device.RegisterNetDevice(dev)
+
 	klog.Logf("[VirtIO Net] init OK: MAC=%02x:%02x:%02x:%02x:%02x:%02x status=%#x\n",
-		uint64(dev.MAC[0]), uint64(dev.MAC[1]), uint64(dev.MAC[2]),
-		uint64(dev.MAC[3]), uint64(dev.MAC[4]), uint64(dev.MAC[5]),
+		uint64(dev.HWAddr[0]), uint64(dev.HWAddr[1]), uint64(dev.HWAddr[2]),
+		uint64(dev.HWAddr[3]), uint64(dev.HWAddr[4]), uint64(dev.HWAddr[5]),
 		uint64(dev.Status))
 
 	return true
@@ -207,12 +213,12 @@ func virtioNetReadConfig(dev *VirtIONetDevice) bool {
 	reg4 := dev.ReadDeviceConfig32(netCfgMACOffset + 4)          // bytes [4..7]  = MAC[4..5] + Status
 	reg8 := dev.ReadDeviceConfig32(netCfgMaxVirtqueuePairsOffset) // bytes [8..11] = MaxVQPairs + MTU
 
-	dev.MAC[0] = uint8(reg0)
-	dev.MAC[1] = uint8(reg0 >> 8)
-	dev.MAC[2] = uint8(reg0 >> 16)
-	dev.MAC[3] = uint8(reg0 >> 24)
-	dev.MAC[4] = uint8(reg4)
-	dev.MAC[5] = uint8(reg4 >> 8)
+	dev.HWAddr[0] = uint8(reg0)
+	dev.HWAddr[1] = uint8(reg0 >> 8)
+	dev.HWAddr[2] = uint8(reg0 >> 16)
+	dev.HWAddr[3] = uint8(reg0 >> 24)
+	dev.HWAddr[4] = uint8(reg4)
+	dev.HWAddr[5] = uint8(reg4 >> 8)
 	dev.Status = uint16(reg4 >> 16)      // status @ offset 6
 	dev.MaxVirtqueuePairs = uint16(reg8) // max_virtqueue_pairs @ offset 8
 	dev.MTU = uint16(reg8 >> 16)         // mtu @ offset 10

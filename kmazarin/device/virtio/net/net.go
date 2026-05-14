@@ -44,7 +44,7 @@ type VirtIONetDevice struct {
 	rxLastSrcMAC [6]uint8 // src MAC of the most-recently-drained frame
 
 	// Device configuration — populated from config space during bring-up (MAZ-19).
-	MAC               [6]uint8 // Valid iff VIRTIO_NET_F_MAC negotiated
+	HWAddr            [6]uint8 // Device MAC address; valid iff VIRTIO_NET_F_MAC negotiated
 	Status            uint16   // Link status; valid iff VIRTIO_NET_F_STATUS
 	MaxVirtqueuePairs uint16   // Valid iff VIRTIO_NET_F_MQ
 	MTU               uint16   // Valid iff VIRTIO_NET_F_MTU

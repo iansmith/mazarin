@@ -20,6 +20,7 @@ var (
 	// Devices by interface type (typed!)
 	byteStreams          []ByteStream
 	blockDevices         []BlockDevice
+	netDevices           []NetDevice
 	randomSources        []RandomSource
 	clocks               []Clock
 	displays             []Display
@@ -151,6 +152,11 @@ func indexDeviceByInterfaces(dev Closable) {
 		blockDevices = append(blockDevices, bd)
 	}
 
+	// Check NetDevice
+	if nd, ok := dev.(NetDevice); ok {
+		netDevices = append(netDevices, nd)
+	}
+
 	// Check RandomSource
 	if rs, ok := dev.(RandomSource); ok {
 		randomSources = append(randomSources, rs)
@@ -221,6 +227,20 @@ func GetBlockDevice() (BlockDevice, bool) {
 // GetAllBlockDevices returns all block devices.
 func GetAllBlockDevices() []BlockDevice {
 	return blockDevices
+}
+
+// GetNetDevice returns the first network device.
+// Returns nil, false if no network device exists.
+func GetNetDevice() (NetDevice, bool) {
+	if len(netDevices) == 0 {
+		return nil, false
+	}
+	return netDevices[0], true
+}
+
+// GetAllNetDevices returns all network devices.
+func GetAllNetDevices() []NetDevice {
+	return netDevices
 }
 
 // GetRandomSource returns the random number generator.
@@ -307,5 +327,11 @@ func WireInterrupts() error {
 // Used for PCI devices that don't appear in the device tree.
 func RegisterBlockDevice(dev BlockDevice) {
 	blockDevices = append(blockDevices, dev)
+}
+
+// RegisterNetDevice registers a network device that was discovered outside of DTB.
+// Used for PCI devices that don't appear in the device tree.
+func RegisterNetDevice(dev NetDevice) {
+	netDevices = append(netDevices, dev)
 }
 

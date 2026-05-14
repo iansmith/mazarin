@@ -1,4 +1,4 @@
-// tx.go — VirtIO-net transmit path (MAZ-20).
+// tx.go — VirtIO-net transmit path (MAZ-20, MAZ-23).
 //
 // Step 4 of the MAZ-16 virtio-net chain. Builds a 2-descriptor TX chain
 // (VirtIONetHdr + frame payload, both device-readable), submits it on the TX
@@ -24,7 +24,7 @@ import (
 
 // TX path constants.
 const (
-	// txMaxFrameLen is the largest Ethernet frame Transmit accepts: 1514-byte
+	// txMaxFrameLen is the largest Ethernet frame SendTx accepts: 1514-byte
 	// payload (14-byte header + 1500 MTU). The TX payload buffer is one 4KB
 	// driver page, so this fits comfortably.
 	txMaxFrameLen = 1514
@@ -51,7 +51,7 @@ func txInit(dev *VirtIONetDevice) bool {
 	return true
 }
 
-// Transmit sends a single raw Ethernet frame on the TX virtqueue. It builds a
+// SendTx sends a single raw Ethernet frame on the TX virtqueue. It builds a
 // 2-descriptor chain — Descs[0] = a zeroed VirtIONetHdr in a sidecar slot,
 // Descs[1] = the frame payload copied into the Device-nGnRnE TX buffer — both
 // device-readable (Flags = 0, no VIRTQ_DESC_F_WRITE). After Submit + Notify it
@@ -62,9 +62,10 @@ func txInit(dev *VirtIONetDevice) bool {
 // need. Returns true on a reclaimed completion, false on a bad length, an
 // exhausted sidecar pool, a submit failure, or a poll timeout.
 //
+// SendTx satisfies the device.NetDevice interface (MAZ-23).
+//
 //go:nosplit
-func Transmit(frame []byte) bool {
-	dev := &virtioNetDevice
+func (d *VirtIONetDevice) SendTx(frame []byte) bool {
 	n := len(frame)
 	if n == 0 || n > txMaxFrameLen {
 		klog.Errf("[VirtIO Net] TX: bad frame length\n")
@@ -74,7 +75,7 @@ func Transmit(frame []byte) bool {
 	// VirtIONetHdr goes in a Device-nGnRnE sidecar slot — zeroed: plain frame,
 	// no checksum offload, no GSO. The nGnRnE write is immediately
 	// device-visible, so no cache management.
-	slot, ok := dev.Sidecars.Alloc()
+	slot, ok := d.Sidecars.Alloc()
 	if !ok {
 		klog.Errf("[VirtIO Net] TX: no sidecar slots\n")
 		return false
@@ -83,7 +84,7 @@ func Transmit(frame []byte) bool {
 
 	// Copy the payload into the Device-nGnRnE TX buffer — no cache management
 	// (contrast block, which uses a cacheable buffer + CleanDCacheRange).
-	dst := (*[txMaxFrameLen]byte)(unsafe.Pointer(dev.TxBufVA))
+	dst := (*[txMaxFrameLen]byte)(unsafe.Pointer(d.TxBufVA))
 	for i := 0; i < n; i++ {
 		dst[i] = frame[i]
 	}
@@ -97,32 +98,32 @@ func Transmit(frame []byte) bool {
 		Flags: 0,
 	}
 	chain.Descs[1] = virtio.DescSpec{
-		PA:    uint64(dev.TxBufPA),
+		PA:    uint64(d.TxBufPA),
 		Len:   uint32(n),
 		Flags: 0,
 	}
 
-	tag := dev.TxEng.Submit(&chain)
+	tag := d.TxEng.Submit(&chain)
 	if tag == virtio.InvalidIOTag {
 		klog.Errf("[VirtIO Net] TX: submit failed\n")
-		dev.Sidecars.Release(slot)
+		d.Sidecars.Release(slot)
 		return false
 	}
 
 	asm.Dsb()
-	dev.TxEng.Notify()
+	d.TxEng.Notify()
 
 	// Poll the used ring for the completion. Reading the ISR register each
 	// iteration forces a VM exit under HVF (cf. block's bootYieldForIO) — a
 	// pure spin on HasUsed may never observe the device's used-ring write.
 	for i := 0; i < txPollMaxIterations; i++ {
-		if dev.ISRBase != 0 {
-			_ = asm.MmioRead8(dev.ISRBase)
+		if d.ISRBase != 0 {
+			_ = asm.MmioRead8(d.ISRBase)
 		}
 		asm.DmaRmb()
-		if dev.TxEng.HasUsed() {
-			info := dev.TxEng.PopUsed() // frees the descriptor chain
-			dev.Sidecars.Release(slot)
+		if d.TxEng.HasUsed() {
+			info := d.TxEng.PopUsed() // frees the descriptor chain
+			d.Sidecars.Release(slot)
 			if info.Tag != tag {
 				klog.Errf("[VirtIO Net] TX: unexpected completion tag\n")
 				return false

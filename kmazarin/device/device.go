@@ -10,6 +10,7 @@ type Discoverable = deviceapi.Discoverable
 type Closable = deviceapi.Closable
 type ByteStream = deviceapi.ByteStream
 type BlockDevice = deviceapi.BlockDevice
+type NetDevice = deviceapi.NetDevice
 type RandomSource = deviceapi.RandomSource
 type Clock = deviceapi.Clock
 type Display = deviceapi.Display

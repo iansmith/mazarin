@@ -1,15 +1,15 @@
-// rx.go — VirtIO-net receive path (MAZ-22).
+// rx.go — VirtIO-net receive path (MAZ-22, MAZ-23).
 //
 // Step 3 of the MAZ-16 virtio-net chain. Unlike the block driver's
 // request/response model, RX buffers are *pre-posted*: rxInit allocates a pool
 // of device-writable buffers and submits every one to the RX Engine before any
 // traffic arrives. The device fills a buffer per received frame and posts it to
-// the used ring; rxDrain pops completions, peeks per-frame metadata, and
+// the used ring; DrainRx pops completions, peeks per-frame metadata, and
 // re-posts the buffer so the queue never starves.
 //
-// rxDrain is //go:nosplit and allocation-free — written so MAZ-26 can call it
+// DrainRx is //go:nosplit and allocation-free — written so MAZ-26 can call it
 // from the IRQ top-half (NonTimerIRQTopHalf) unchanged. MAZ-22 itself has no
-// interrupt wiring; it exercises rxDrain by polling.
+// interrupt wiring; it exercises DrainRx by polling.
 //
 // Cache discipline: RX buffers are Device-nGnRnE driver pages, so the device's
 // writes are immediately CPU-visible — no InvalidateDCacheRange, just an
@@ -86,7 +86,7 @@ func rxInit(dev *VirtIONetDevice) bool {
 	return true
 }
 
-// rxDrain drains the RX used ring: for every completed buffer it recovers the
+// DrainRx drains the RX used ring: for every completed buffer it recovers the
 // buffer index via rxInFlight, peeks the source MAC and length into the device
 // struct (a bring-up affordance — a real consumer hands the whole frame up
 // instead), bumps the atomic rxCount, and re-posts the same buffer so the queue
@@ -95,18 +95,20 @@ func rxInit(dev *VirtIONetDevice) bool {
 // //go:nosplit and allocation-free: MAZ-26 calls this from the IRQ top-half
 // unchanged. No formatted logging (fmt.Sprintf is not nosplit-safe) — plain
 // string klog.Errf only. The caller (polling wrapper or MAZ-26's top-half) is
-// responsible for the ISR read that forces the VM exit; rxDrain does not touch
+// responsible for the ISR read that forces the VM exit; DrainRx does not touch
 // the ISR register itself.
 //
+// DrainRx satisfies the device.NetDevice interface (MAZ-23).
+//
 //go:nosplit
-func rxDrain(dev *VirtIONetDevice) int {
+func (d *VirtIONetDevice) DrainRx() int {
 	n := 0
-	for dev.RxEng.HasUsed() {
-		info := dev.RxEng.PopUsed() // frees the descriptor chain
+	for d.RxEng.HasUsed() {
+		info := d.RxEng.PopUsed() // frees the descriptor chain
 		if info.Tag == virtio.InvalidIOTag {
 			break
 		}
-		bufIdx := dev.rxInFlight[info.Tag]
+		bufIdx := d.rxInFlight[info.Tag]
 		if bufIdx >= netRxBufCount {
 			klog.Errf("[VirtIO Net] RX: bad in-flight buffer index\n")
 			break
@@ -121,31 +123,31 @@ func rxDrain(dev *VirtIONetDevice) int {
 		//
 		// RX buffers are Device-nGnRnE — unaligned multi-byte loads fault, so
 		// the src MAC is copied one byte at a time.
-		srcMACBase := dev.RxBufVA[bufIdx] + unsafe.Sizeof(VirtIONetHdr{}) + 6
+		srcMACBase := d.RxBufVA[bufIdx] + unsafe.Sizeof(VirtIONetHdr{}) + 6
 		for k := uintptr(0); k < 6; k++ {
-			dev.rxLastSrcMAC[k] = *(*uint8)(unsafe.Pointer(srcMACBase + k))
+			d.rxLastSrcMAC[k] = *(*uint8)(unsafe.Pointer(srcMACBase + k))
 		}
-		dev.rxLastLen = info.UsedLen
-		atomic.AddUint32(&dev.rxCount, 1)
+		d.rxLastLen = info.UsedLen
+		atomic.AddUint32(&d.rxCount, 1)
 
 		// Re-post the same buffer (fresh 1-desc device-writable chain) so the
 		// RX queue never starves.
 		var chain virtio.DescChain
 		chain.Count = 1
 		chain.Descs[0] = virtio.DescSpec{
-			PA:    uint64(dev.RxBufPA[bufIdx]),
+			PA:    uint64(d.RxBufPA[bufIdx]),
 			Len:   netRxBufSize,
 			Flags: virtio.VIRTQ_DESC_F_WRITE,
 		}
-		if tag := dev.RxEng.Submit(&chain); tag != virtio.InvalidIOTag {
-			dev.rxInFlight[tag] = bufIdx
+		if tag := d.RxEng.Submit(&chain); tag != virtio.InvalidIOTag {
+			d.rxInFlight[tag] = bufIdx
 		} else {
 			klog.Errf("[VirtIO Net] RX: failed to re-post buffer\n")
 		}
 		n++
 	}
 	if n > 0 {
-		dev.RxEng.Notify()
+		d.RxEng.Notify()
 	}
 	return n
 }
