@@ -688,6 +688,7 @@ tasks:
       - '{{.HELLOWORLD_MAZ_AMD64}}'
       - '{{.PREFS_MAZ_AMD64}}'
       - '{{.FONTSVC_MAZ_AMD64}}'
+      - '{{.KEYMAPPER_MAZ_AMD64}}'
       - '{{.LINUX_UI_MAZ_AMD64}}'
       - '{{.FTI_MAZ_AMD64}}'
       - '{{.MAILDB_MAZ_AMD64}}'
