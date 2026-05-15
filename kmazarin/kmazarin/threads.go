@@ -244,12 +244,8 @@ const ReservedKernelThreads = 8
 const ReservedKernelShepherds = 1
 
 // startingTicksProgram is the CNTVCT_EL0 value when all shepherds are launched.
-// Zero means not yet set — skip all timed-shutdown accounting.
+// Baseline for ResetTickAccounting; zero means not yet set.
 var startingTicksProgram uint64
-
-// shutdownTicksThreshold is 60 seconds in raw counter ticks.
-// Set once startingTicksProgram is established (needs SystemTimerFrequency).
-var shutdownTicksThreshold uint64
 
 // ResetTickAccounting zeroes all thread and shepherd tick accumulators and sets
 // TicksStartedRunning to startTime for any currently-running thread/shepherd.
@@ -3584,17 +3580,6 @@ func boostThread0ForPendingWork(sf *SchedulerFunc, oldThread *Thread, framePtr u
 //go:nosplit
 //go:noinline
 func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
-	// Timed shutdown: after shutdownTicksThreshold raw ticks, print stats and exit
-	if startingTicksProgram != 0 && shutdownTicksThreshold != 0 {
-		now := kirq.ReadCounterValue()
-		if now-startingTicksProgram >= shutdownTicksThreshold {
-			// Clear threshold to prevent re-entrant Exit() calls
-			// (Exit re-enables IRQs briefly for WFI, which can re-enter this path)
-			shutdownTicksThreshold = 0
-			Exit()
-		}
-	}
-
 	oldThread := GetCurrentThread()
 	if oldThread == nil {
 		// Idle CPU (no current thread) - check if there's work to pick up
@@ -3778,15 +3763,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 //go:nosplit
 //go:noinline
 func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *ThreadContext {
-	// Timed shutdown: after shutdownTicksThreshold raw ticks, print stats and exit
-	if startingTicksProgram != 0 && shutdownTicksThreshold != 0 {
-		now := kirq.ReadCounterValue()
-		if now-startingTicksProgram >= shutdownTicksThreshold {
-			shutdownTicksThreshold = 0
-			Exit()
-		}
-	}
-
 	// Save current thread's context
 	SaveContextFromFrame(framePtr)
 

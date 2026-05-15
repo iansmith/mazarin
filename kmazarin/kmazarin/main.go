@@ -690,11 +690,10 @@ func simpleMain() {
 	// StartSecondaryCPUs()
 	_ = StartSecondaryCPUs // Silence unused warning
 
-	// Start program clock for timed shutdown (15 seconds in raw counter ticks).
+	// Start program clock for tick accounting (baseline for ResetTickAccounting).
 	// Disable IRQs briefly so no timer preemption during reset.
 	savedDAIF := SaveAndDisableIRQs()
 	startingTicksProgram = kirq.ReadCounterValue()
-	shutdownTicksThreshold = kirq.SystemTimerFrequency * 300
 	ResetTickAccounting(startingTicksProgram)
 	RestoreIRQs(savedDAIF)
 
