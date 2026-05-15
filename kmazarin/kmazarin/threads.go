@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"mazzy/kmazarin/asm"
+	"mazzy/kmazarin/device/virtio/net"
 	"mazzy/kmazarin/ds"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/klog"
@@ -1580,6 +1581,14 @@ func KernelIdleLoop() {
 			case pageTrackingEventChan <- struct{}{}:
 			default:
 			}
+		}
+		if atomic.SwapUint32(&net.RxPending, 0) == 1 {
+			// Drain net RX inline (MAZ-26). KernelIdleLoop runs in safe Go
+			// context with a full goroutine stack, so DrainRx + Engine.Submit
+			// fit comfortably here — vs. blowing the 792-byte nosplit budget
+			// from the IRQ top-half (the panicBounds chain inside Submit is
+			// the worst offender). The top-half just sets the flag.
+			net.DrainRxFromBottomHalf()
 		}
 		// Flush any pending console ring data to userspace.
 		if softIRQConsole != nil {

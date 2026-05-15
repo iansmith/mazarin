@@ -591,8 +591,10 @@ func simpleMain() {
 		klog.Logf("[Main] VirtIO Block init OK, IRQ=%d\n", uint64(block.GetIRQNum()))
 	}
 
-	// Initialize VirtIO network device (bring-up only — no RX/TX traffic or
-	// interrupts yet; MAZ-21 wires interrupts, MAZ-20/22 add TX/RX).
+	// Initialize VirtIO network device: PCI discovery + handshake (MAZ-19),
+	// RX pre-posting (MAZ-22), TX buffer (MAZ-20), MSI-X config (MAZ-26),
+	// device-manager registration (MAZ-23). IRQs are enabled below alongside
+	// the block wire-up.
 	if !net.Init() {
 		klog.Errf("[Main] VirtIO Net init failed (no device found?)\n")
 	} else {
@@ -609,10 +611,21 @@ func simpleMain() {
 	// enable at the interrupt controller so interrupts reach the CPU.
 	if irq := block.GetIRQNum(); irq != 0 {
 		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr(), block.GetEnginePtr(), block.GetSidecarFreeBitsPtr())
-		enableBlockDeviceIRQ(irq)
+		enableMSIXDeviceIRQ(irq)
 		// Register async mode callback so doBlockIO (kernel polling path)
 		// can temporarily disable async mode during its polling loop.
 		block.GetDevice().SetAsyncMode = SetBlockAsyncMode
+	}
+
+	// Wire up net device IRQ (MAZ-26): register the IRQ number with the
+	// top-half dispatcher (net.NetIRQTopHalf runs from there) and enable at
+	// the interrupt controller. No SetAsyncMode callback — net's top-half
+	// drains RxEng only; SendTx polls TxEng (with WFI). They are disjoint,
+	// so there is no poll/top-half contention.
+	if irq := net.GetIRQNum(); irq != 0 {
+		SetNetIRQ(irq)
+		enableMSIXDeviceIRQ(irq)
+		klog.Logf("[Main] VirtIO Net IRQ wired: IRQ=%d\n", uint64(irq))
 	}
 
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)

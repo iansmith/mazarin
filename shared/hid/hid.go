@@ -145,6 +145,12 @@ const BlockIOCompleteCode int64 = 0x4200
 // Used by the disk shepherd to register for block device ownership via RegisterSoftIRQ.
 const BlockVirtualIRQ uint32 = 201
 
+// NetVirtualIRQ is the virtual IRQ number reserved for the kernel net device.
+// Reserved by MAZ-26 for namespace hygiene; MAZ-26's net top-half does not yet
+// call WakeSlotForIRQ (no net consumer shepherd is registered). The wake will
+// be wired when a net consumer lands.
+const NetVirtualIRQ uint32 = 202
+
 // TimerVirtualIRQ is the virtual IRQ number for the kernel timer device.
 // Well above real device IRQs, within the 256-entry irqToSlot array.
 const TimerVirtualIRQ uint32 = 200

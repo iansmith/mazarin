@@ -1,15 +1,16 @@
-// init.go — VirtIO-net device discovery and bring-up (MAZ-19, MAZ-23).
+// init.go — VirtIO-net device discovery and bring-up (MAZ-19, MAZ-23, MAZ-26).
 //
 // Mirrors the block driver's discovery/handshake path (block/block.go) — the
 // only structural difference is two Engine.Init calls (RX = virtqueue 0,
 // TX = virtqueue 1) instead of one. Init brings the device up (TX via MAZ-20,
-// RX via MAZ-22) and registers it with the device manager (MAZ-23). Interrupt
-// wiring is still pending (MAZ-26).
+// RX via MAZ-22), configures MSI-X (MAZ-26), and registers with the device
+// manager (MAZ-23). Top-half + main.go wire-up complete the IRQ path.
 package net
 
 import (
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/device/virtio/irq"
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
@@ -50,6 +51,17 @@ func Init() bool {
 	if !findVirtIONet(dev) {
 		klog.Errf("[VirtIO Net] No network device found\n")
 		return false
+	}
+
+	// Configure MSI-X interrupts (MAZ-26). Net is PCI-only — there is no MMIO
+	// fallback to gate on (cf. block.Init's `dev.MMIOBase == 0` guard). The
+	// arch-specific MSI-X programming (GICv2m on arm64, LAPIC on amd64) lives
+	// in irq.ConfigureMSIXForDevice; the local is named irqNum to avoid
+	// shadowing the imported `irq` package. Must precede virtioNetInit so the
+	// MSI-X table is programmed before the handshake assigns config/queue
+	// vectors.
+	if irqNum := irq.ConfigureMSIXForDevice(dev.Bus, dev.Slot, dev.Func); irqNum != 0 {
+		dev.IRQNum = irqNum
 	}
 
 	if !virtioNetInit(dev) {
@@ -138,8 +150,9 @@ func findVirtIONet(dev *VirtIONetDevice) bool {
 
 // virtioNetInit runs the VirtIO handshake and brings up both data queues.
 // Mirrors block's virtioBlockInit, with two Engine.Init calls (RX = virtqueue
-// 0, TX = virtqueue 1) instead of one. MSI-X is left unconfigured
-// (MSIXNoVector) — interrupt wiring is MAZ-21.
+// 0, TX = virtqueue 1) instead of one. MSI-X has already been programmed by
+// the irq.ConfigureMSIXForDevice call in Init; here we just assign the shared
+// vector (irq.DeviceMSIXVector = 0) to the config register and both queues.
 //
 //go:nosplit
 func virtioNetInit(dev *VirtIONetDevice) bool {
@@ -152,8 +165,9 @@ func virtioNetInit(dev *VirtIONetDevice) bool {
 		return false
 	}
 
-	// No MSI-X yet — bring-up only. MAZ-21 wires interrupts.
-	dev.SetMSIXConfig(virtio.MSIXNoVector)
+	// MSI-X config vector — shared with block via irq.DeviceMSIXVector (= 0).
+	msixVec := irq.DeviceMSIXVector
+	dev.SetMSIXConfig(msixVec)
 
 	// RX queue (virtqueue 0) on its own DMA page.
 	rxPagePA := kmem.AllocKernelFrame()
@@ -162,7 +176,7 @@ func virtioNetInit(dev *VirtIONetDevice) bool {
 		return false
 	}
 	rxPageVA := rxPagePA + constants.KernelMMIOOffset
-	if !dev.RxEng.Init(&dev.PCIDevice, 0, netQueueSize, rxPagePA, rxPageVA, 0, virtio.MSIXNoVector) {
+	if !dev.RxEng.Init(&dev.PCIDevice, 0, netQueueSize, rxPagePA, rxPageVA, 0, msixVec) {
 		klog.Errf("[VirtIO Net] ERROR: failed to init RX engine\n")
 		return false
 	}
@@ -174,7 +188,7 @@ func virtioNetInit(dev *VirtIONetDevice) bool {
 		return false
 	}
 	txPageVA := txPagePA + constants.KernelMMIOOffset
-	if !dev.TxEng.Init(&dev.PCIDevice, 1, netQueueSize, txPagePA, txPageVA, 0, virtio.MSIXNoVector) {
+	if !dev.TxEng.Init(&dev.PCIDevice, 1, netQueueSize, txPagePA, txPageVA, 0, msixVec) {
 		klog.Errf("[VirtIO Net] ERROR: failed to init TX engine\n")
 		return false
 	}

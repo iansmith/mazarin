@@ -48,6 +48,16 @@ const (
 	MSIX_PBA_OFFSET     = 8 // PBA offset/BIR at cap+8
 )
 
+// DeviceMSIXVector is the MSI-X vector that VirtIO drivers assign to the device
+// config register and every virtqueue during the handshake. Both arches use
+// vector 0 — the arch-specific work (LAPIC target on amd64 vs GICv2m doorbell on
+// arm64) lives in ConfigureMSIXForDevice; per-vector routing is unnecessary.
+//
+// Used by VirtIO devices that are MSI-X on both arches (block, net). Input
+// deliberately uses INTx on ARM64 (returns virtio.MSIXNoVector from its own
+// platformMSIXVector) and does not reference this const.
+const DeviceMSIXVector uint16 = 0
+
 // nextMSIXSPI tracks the next available GICv2m SPI for MSI-X allocation
 var nextMSIXSPI uint32
 

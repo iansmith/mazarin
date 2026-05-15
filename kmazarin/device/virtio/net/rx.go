@@ -64,16 +64,18 @@ func rxInit(dev *VirtIONetDevice) bool {
 		}
 	}
 
-	// Pre-post every buffer as a 1-desc device-writable chain.
+	// Initialize the per-device re-post template once. DrainRx reuses this in
+	// the IRQ top-half (MAZ-26) to avoid a 136-byte DescChain on its nosplit
+	// stack each iteration — only Descs[0].PA varies per re-post.
+	dev.rxRepostChain.Count = 1
+	dev.rxRepostChain.Descs[0].Len = netRxBufSize
+	dev.rxRepostChain.Descs[0].Flags = virtio.VIRTQ_DESC_F_WRITE
+
+	// Pre-post every buffer as a 1-desc device-writable chain. Uses the same
+	// per-device template for symmetry with DrainRx.
 	for i := 0; i < netRxBufCount; i++ {
-		var chain virtio.DescChain
-		chain.Count = 1
-		chain.Descs[0] = virtio.DescSpec{
-			PA:    uint64(dev.RxBufPA[i]),
-			Len:   netRxBufSize,
-			Flags: virtio.VIRTQ_DESC_F_WRITE,
-		}
-		tag := dev.RxEng.Submit(&chain)
+		dev.rxRepostChain.Descs[0].PA = uint64(dev.RxBufPA[i])
+		tag := dev.RxEng.Submit(&dev.rxRepostChain)
 		if tag == virtio.InvalidIOTag {
 			klog.Errf("[VirtIO Net] ERROR: failed to pre-post RX buffer\n")
 			return false
@@ -130,16 +132,11 @@ func (d *VirtIONetDevice) DrainRx() int {
 		d.rxLastLen = info.UsedLen
 		atomic.AddUint32(&d.rxCount, 1)
 
-		// Re-post the same buffer (fresh 1-desc device-writable chain) so the
-		// RX queue never starves.
-		var chain virtio.DescChain
-		chain.Count = 1
-		chain.Descs[0] = virtio.DescSpec{
-			PA:    uint64(d.RxBufPA[bufIdx]),
-			Len:   netRxBufSize,
-			Flags: virtio.VIRTQ_DESC_F_WRITE,
-		}
-		if tag := d.RxEng.Submit(&chain); tag != virtio.InvalidIOTag {
+		// Re-post the same buffer using the per-device template (Count/Len/
+		// Flags set once by rxInit). Only the PA varies — keeps this nosplit
+		// frame lean enough for the IRQ top-half budget.
+		d.rxRepostChain.Descs[0].PA = uint64(d.RxBufPA[bufIdx])
+		if tag := d.RxEng.Submit(&d.rxRepostChain); tag != virtio.InvalidIOTag {
 			d.rxInFlight[tag] = bufIdx
 		} else {
 			klog.Errf("[VirtIO Net] RX: failed to re-post buffer\n")

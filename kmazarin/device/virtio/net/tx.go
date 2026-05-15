@@ -55,8 +55,14 @@ func txInit(dev *VirtIONetDevice) bool {
 // 2-descriptor chain — Descs[0] = a zeroed VirtIONetHdr in a sidecar slot,
 // Descs[1] = the frame payload copied into the Device-nGnRnE TX buffer — both
 // device-readable (Flags = 0, no VIRTQ_DESC_F_WRITE). After Submit + Notify it
-// polls the used ring for the completion, mirroring block's bootYieldForIO by
-// reading the ISR register each iteration to force a VM exit under HVF.
+// waits for the completion via a bootYieldForIO-style hybrid loop (check
+// HasUsed; if not done, ISR-read + WFI). The ISR read forces a VM exit under
+// HVF and guards the stale-GIC WFI-deadlock; the WFI sleeps until the next
+// interrupt — typically the TX-completion MSI-X that MAZ-26 now delivers,
+// but any IRQ (e.g. timer) wakes it.
+//
+// Pre-MAZ-26 this loop was a tight MMIO-spin with no WFI because net had no
+// interrupts to wake one. The WFI is the efficiency win MAZ-26 unlocks.
 //
 // Synchronous: one in-flight TX at a time, which is all the current callers
 // need. Returns true on a reclaimed completion, false on a bad length, an
@@ -113,13 +119,12 @@ func (d *VirtIONetDevice) SendTx(frame []byte) bool {
 	asm.Dsb()
 	d.TxEng.Notify()
 
-	// Poll the used ring for the completion. Reading the ISR register each
-	// iteration forces a VM exit under HVF (cf. block's bootYieldForIO) — a
-	// pure spin on HasUsed may never observe the device's used-ring write.
+	// Wait for the completion via the bootYieldForIO-style hybrid loop:
+	// check HasUsed; if not done, ISR-read + WFI. The ISR read forces a VM
+	// exit (services QEMU's backend + guards the stale-GIC WFI deadlock
+	// block/io_arm64.go documents); the WFI sleeps until the next interrupt
+	// — typically the TX-completion MSI-X that MAZ-26 wires.
 	for i := 0; i < txPollMaxIterations; i++ {
-		if d.ISRBase != 0 {
-			_ = asm.MmioRead8(d.ISRBase)
-		}
 		asm.DmaRmb()
 		if d.TxEng.HasUsed() {
 			info := d.TxEng.PopUsed() // frees the descriptor chain
@@ -130,6 +135,10 @@ func (d *VirtIONetDevice) SendTx(frame []byte) bool {
 			}
 			return true
 		}
+		if d.ISRBase != 0 {
+			_ = asm.MmioRead8(d.ISRBase)
+		}
+		asm.Wfi()
 	}
 
 	// Timed out — leave the sidecar slot leaked: the device may still own the

@@ -38,6 +38,15 @@ type VirtIONetDevice struct {
 	RxBufVA [netRxBufCount]uintptr
 	// rxInFlight maps an RX descriptor index → the RX-buffer index posted under it.
 	rxInFlight [netQueueSize]uint16
+	// rxRepostChain is the pre-built 1-descriptor chain that DrainRx hands to
+	// Engine.Submit when re-posting a buffer. Hoisting it onto the device
+	// struct (instead of building a fresh DescChain on the stack each
+	// iteration) keeps DrainRx's nosplit frame ~136 bytes lighter, which is
+	// what lets the IRQ top-half chain `NonTimerIRQTopHalf → DrainRx →
+	// PopUsed → ...` fit under the 792-byte nosplit budget (MAZ-26). Count,
+	// Len, and Flags are filled once by rxInit; DrainRx only writes the PA.
+	// Single-writer (DrainRx is non-reentrant), so no concurrency concern.
+	rxRepostChain virtio.DescChain
 	// RX drain state (bring-up verification; a real consumer replaces the peek).
 	rxCount      uint32   // atomic: total frames drained
 	rxLastLen    uint32   // UsedLen of the most-recently-drained frame
