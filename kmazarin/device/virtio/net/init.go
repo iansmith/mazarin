@@ -56,12 +56,16 @@ func Init() bool {
 	// Configure MSI-X interrupts (MAZ-26). Net is PCI-only — there is no MMIO
 	// fallback to gate on (cf. block.Init's `dev.MMIOBase == 0` guard). The
 	// arch-specific MSI-X programming (GICv2m on arm64, LAPIC on amd64) lives
-	// in irq.ConfigureMSIXForDevice; the local is named irqNum to avoid
-	// shadowing the imported `irq` package. Must precede virtioNetInit so the
-	// MSI-X table is programmed before the handshake assigns config/queue
-	// vectors.
-	if irqNum := irq.ConfigureMSIXForDevice(dev.Bus, dev.Slot, dev.Func); irqNum != 0 {
-		dev.IRQNum = irqNum
+	// in irq.ConfigureMSIXForDevice. Must precede virtioNetInit so the MSI-X
+	// table is programmed before the handshake assigns config/queue vectors.
+	//
+	// MSI-X failure is fatal for net: there is no INTx fallback (RISC-V's
+	// legacy path is gone). A half-initialized NIC silently drops RX and hangs
+	// SendTx's WFI on TX, so treat IRQ-0 as a hard Init failure.
+	dev.IRQNum = irq.ConfigureMSIXForDevice(dev.Bus, dev.Slot, dev.Func)
+	if dev.IRQNum == 0 {
+		klog.Errf("[VirtIO Net] ERROR: MSI-X configuration failed\n")
+		return false
 	}
 
 	if !virtioNetInit(dev) {
