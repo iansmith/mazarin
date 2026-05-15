@@ -22,6 +22,8 @@ var nextAPICVector uint32 = 42
 // vector as if it came from the IOAPIC, and our isrDev32-47 stubs handle it.
 //
 // Returns the IRQ number (vector - 32) for use by NonTimerIRQTopHalf, or 0 on failure.
+//
+//go:nosplit
 func ConfigureMSIXForDevice(bus, slot, funcNum uint8) uint32 {
 	// Find MSI-X capability
 	capPtr := pci.ConfigRead8(bus, slot, funcNum, pci.PCI_CAPABILITIES)
