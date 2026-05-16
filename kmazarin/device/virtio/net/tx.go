@@ -14,6 +14,7 @@
 package net
 
 import (
+	"sync/atomic"
 	"unsafe"
 
 	"mazzy/kmazarin/asm"
@@ -70,11 +71,27 @@ func txInit(dev *VirtIONetDevice) bool {
 //
 // SendTx satisfies the device.NetDevice interface (MAZ-23).
 //
+// SendTx is reentrant-safe: a concurrent caller is rejected with false
+// (klog'd) via an atomic CAS on d.txInUse. The flag is cleared on every
+// exit path including the timeout-leak case.
+//
 //go:nosplit
 func (d *VirtIONetDevice) SendTx(frame []byte) bool {
+	// Serialize against concurrent SendTx callers — the shared TX DMA
+	// buffer (d.TxBufVA), the TX Engine, and the sidecar pool can only
+	// service one in-flight TX at a time. SendTx is //go:nosplit so a
+	// sync.Mutex would call morestack; atomic CAS matches the RxPending
+	// pattern in interrupt.go. The flag is cleared on every exit path
+	// (incl. timeout) so a leaked-sidecar timeout doesn't jam the gate.
+	if !atomic.CompareAndSwapUint32(&d.txInUse, 0, 1) {
+		klog.Errf("[VirtIO Net] TX: concurrent SendTx rejected\n")
+		return false
+	}
+
 	n := len(frame)
 	if n == 0 || n > txMaxFrameLen {
 		klog.Errf("[VirtIO Net] TX: bad frame length\n")
+		atomic.StoreUint32(&d.txInUse, 0)
 		return false
 	}
 
@@ -84,6 +101,7 @@ func (d *VirtIONetDevice) SendTx(frame []byte) bool {
 	slot, ok := d.Sidecars.Alloc()
 	if !ok {
 		klog.Errf("[VirtIO Net] TX: no sidecar slots\n")
+		atomic.StoreUint32(&d.txInUse, 0)
 		return false
 	}
 	*(*VirtIONetHdr)(unsafe.Pointer(slot.VA)) = VirtIONetHdr{}
@@ -113,6 +131,7 @@ func (d *VirtIONetDevice) SendTx(frame []byte) bool {
 	if tag == virtio.InvalidIOTag {
 		klog.Errf("[VirtIO Net] TX: submit failed\n")
 		d.Sidecars.Release(slot)
+		atomic.StoreUint32(&d.txInUse, 0)
 		return false
 	}
 
@@ -131,8 +150,10 @@ func (d *VirtIONetDevice) SendTx(frame []byte) bool {
 			d.Sidecars.Release(slot)
 			if info.Tag != tag {
 				klog.Errf("[VirtIO Net] TX: unexpected completion tag\n")
+				atomic.StoreUint32(&d.txInUse, 0)
 				return false
 			}
+			atomic.StoreUint32(&d.txInUse, 0)
 			return true
 		}
 		if d.ISRBase != 0 {
@@ -141,8 +162,10 @@ func (d *VirtIONetDevice) SendTx(frame []byte) bool {
 		asm.Wfi()
 	}
 
-	// Timed out — leave the sidecar slot leaked: the device may still own the
-	// descriptor chain and could write to it later.
+	// Timed out — leave the sidecar slot leaked: the device may still own
+	// the descriptor chain and could write to it later. Clear txInUse
+	// anyway so subsequent callers aren't permanently locked out.
 	klog.Errf("[VirtIO Net] TX: completion timed out\n")
+	atomic.StoreUint32(&d.txInUse, 0)
 	return false
 }

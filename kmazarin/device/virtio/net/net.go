@@ -31,6 +31,12 @@ type VirtIONetDevice struct {
 	TxBufPA uintptr // Physical address of the TX payload buffer
 	TxBufVA uintptr // Kernel virtual address of the TX payload buffer
 
+	// txInUse serializes SendTx against itself. SendTx is //go:nosplit so it
+	// cannot acquire a sync.Mutex (would call morestack); the CAS pattern is
+	// used instead. Cleared on every SendTx exit path including timeout —
+	// see SendTx doc for the rationale on the timeout/leak case.
+	txInUse uint32
+
 	// RX buffer pool — netRxBufCount Device-nGnRnE buffers, each holding one
 	// [VirtIONetHdr][Ethernet frame]. Pre-posted to the RX Engine; the device
 	// writes received frames into them.
