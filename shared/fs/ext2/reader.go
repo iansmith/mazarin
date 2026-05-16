@@ -308,8 +308,7 @@ func (fs *FileSystem) readInodeLocked(inum uint32) (*Inode, error) {
 
 	var inBuf [InodeSize128]byte
 	if err := fs.readBytes(offset, inBuf[:]); err != nil {
-		fmt.Printf("[ext2:readInode] inum=%d offset=%d err=%v\n", inum, offset, err)
-		return nil, ErrReadFailed
+		return nil, fmt.Errorf("ext2: read inode %d at offset %d: %w", inum, offset, err)
 	}
 	return UnmarshalInode(inBuf[:])
 }
