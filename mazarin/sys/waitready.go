@@ -32,7 +32,8 @@ func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 		}
 		if err == ErrNotReady {
 			sawShepherd = true
-			if polls <= 3 || polls%20 == 0 {
+			// Only print first 3 polls — after that, silence.
+			if polls <= 3 {
 				UartWriteString("[waitready] " + name + " sid=" + itoa(int64(sid)) + " not ready yet (poll " + itoa(int64(polls)) + ")\n")
 			}
 		} else if polls <= 3 {
@@ -91,4 +92,3 @@ func itoa(v int64) string {
 	}
 	return string(buf[i:])
 }
-

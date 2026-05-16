@@ -2,6 +2,7 @@ package ext2
 
 import (
 	"encoding/binary"
+	"fmt"
 	"sync"
 	"time"
 
@@ -307,6 +308,7 @@ func (fs *FileSystem) readInodeLocked(inum uint32) (*Inode, error) {
 
 	var inBuf [InodeSize128]byte
 	if err := fs.readBytes(offset, inBuf[:]); err != nil {
+		fmt.Printf("[ext2:readInode] inum=%d offset=%d err=%v\n", inum, offset, err)
 		return nil, ErrReadFailed
 	}
 	return UnmarshalInode(inBuf[:])

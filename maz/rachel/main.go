@@ -1284,7 +1284,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 			switch msg := wmMsg.Msg.(type) {
 			case wm.AppStart:
 				rachelMsgAppStart++
-				fmt.Printf("[rachel:wm] AppStart sid=%d w=%d h=%d\n", senderSID, msg.Width, msg.Height)
+				// AppStart + placement detail removed — per-event noise
 
 				// Track the shepherd's AppWindow Bounds in rachel's constraint space.
 				if trackAppBounds(senderSID) == nil {
@@ -1322,10 +1322,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				ta.x = int32(appX)
 				ta.y = int32(appY)
 
-				fmt.Printf("[rachel:wm] sid=%d pos=(%d,%d) bs=%dx%d pick-rect=(%d,%d)-(%d,%d)\n",
-					senderSID, ta.x, ta.y, ta.bsWidth, ta.bsHeight,
-					int32(appX)-int32(borderLeft), int32(appY)-int32(borderTop),
-					int32(appX)-int32(borderLeft)+ta.bsWidth, int32(appY)-int32(borderTop)+ta.bsHeight)
+				// placement detail removed — per-event noise
 
 				// Allocate backing store pages.
 				bsBytes := totalW * 4 * totalH
@@ -1369,8 +1366,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 				if err := uring.Send(senderSID, &bsr); err != nil {
 					sys.UartWriteString("[rachel:wm] uring.Send BackingStoreReady failed\n")
 				}
-				fmt.Printf("[rachel:wm] SID %d: backing store %dx%d at (%d,%d)\n",
-					senderSID, totalW, totalH, ta.x, ta.y)
+				// backing store detail removed — per-event noise
 
 				// Grant focus to this new shepherd.
 				grantFocus(senderSID)
@@ -1383,34 +1379,19 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 			case wm.Blit:
 				rachelMsgBlit++
 				if rachelMsgBlit%2000 == 0 {
-					fmt.Printf("[rachel] notify=%d appStart=%d blit=%d other=%d hid=%d\n",
-						rachelNotifyCount, rachelMsgAppStart, rachelMsgBlit, rachelMsgOther, rachelHIDEvents)
+					// notify counter removed — per-event noise
 				}
 				if rachelMsgBlit%2000 == 0 {
 					blitTimingReport()
 				}
-				if rachelMsgBlit%2000 == 0 && !blitRateStart.IsZero() {
-					ms := time.Since(blitRateStart).Milliseconds()
-					if ms > 0 {
-						rateX10 := rachelMsgBlit * 10000 / ms
-						whole := rateX10 / 10
-						frac := rateX10 % 10
-						secs := ms / 1000
-						secFrac := (ms / 100) % 10
-						fmt.Printf("[rachel:rate] %d blits in %d.%ds = %d.%d blits/sec\n",
-							rachelMsgBlit, secs, secFrac, whole, frac)
-					}
-				}
+
 				ta, ok := trackedApps[senderSID]
 				if !ok || ta.backingStore == nil {
 					// Shepherd is sending blits but isn't registered or has no
 					// backing store — this indicates a loop cycle. Log every 50th
 					// dropped blit to avoid flooding the serial console.
 					droppedBlits[senderSID]++
-					if droppedBlits[senderSID]%50 == 1 {
-						fmt.Printf("[rachel:wm] dropped blit from untracked sid=%d (count=%d) — loop cycle?\n",
-							senderSID, droppedBlits[senderSID])
-					}
+					// Dropped blit warning removed — per-event noise
 					continue
 				}
 				// Update last-drawn dimensions from Blit message.

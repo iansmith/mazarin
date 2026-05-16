@@ -558,6 +558,8 @@ func (e ErrnoErr) Errno() int32 { return int32(e) }
 
 // IsErrno extracts the errno from an fsclient error.
 // Returns (errno, true) for fs errors, (0, false) otherwise.
+//
+//go:noinline
 func IsErrno(err error) (int32, bool) {
 	if e, ok := err.(ErrnoErr); ok {
 		return e.Errno(), true

@@ -96,6 +96,25 @@ type BlockDevice interface {
 	NumBlocks() uint64
 }
 
+// NetDevice is for network interface devices.
+// Examples: VirtIO net, hardware Ethernet NICs
+type NetDevice interface {
+	Closable
+
+	// MAC returns the device's 6-byte hardware (MAC) address.
+	MAC() [6]uint8
+
+	// SendTx transmits a single raw Ethernet frame on the device's TX queue.
+	// Returns true if the frame was submitted and reclaimed, false on a bad
+	// length, a full queue, or a transmit failure.
+	SendTx(frame []byte) bool
+
+	// DrainRx drains completed receive buffers from the device's RX queue,
+	// re-posting each so the queue stays replenished.
+	// Returns the number of frames drained.
+	DrainRx() int
+}
+
 // Clock is for time sources.
 // Examples: RTC, VirtIO RTC, platform timers
 type Clock interface {

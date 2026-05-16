@@ -1,6 +1,7 @@
 package input
 
 import (
+	"mazzy/kmazarin/device/virtio/irq"
 	"mazzy/kmazarin/pci"
 )
 
@@ -26,7 +27,7 @@ func disableMSIX(bus, slot, funcNum uint8) {
 	capPtr := pci.ConfigRead8(bus, slot, funcNum, pci.PCI_CAPABILITIES)
 	for i := 0; i < 32 && capPtr != 0 && capPtr != 0xFF; i++ {
 		capID := pci.ConfigRead8(bus, slot, funcNum, capPtr)
-		if capID == PCI_CAP_MSIX {
+		if capID == irq.PCI_CAP_MSIX {
 			// Read Message Control (upper 16 bits of the capability dword)
 			capDword := pci.ConfigRead32(bus, slot, funcNum, capPtr)
 			// Clear bit 15 (MSI-X Enable) and bit 14 (Function Mask)
@@ -37,15 +38,6 @@ func disableMSIX(bus, slot, funcNum uint8) {
 		}
 		capPtr = pci.ConfigRead8(bus, slot, funcNum, capPtr+1)
 	}
-}
-
-// ConfigureMSIXForDevice configures MSI-X for an external VirtIO device
-// (block, GPU) on ARM64 via GICv2m. Programs the MSI-X table to target the
-// GICv2m SETSPI doorbell and allocates a unique SPI for this device.
-// Returns the GIC IRQ number (SPI + 32) for NonTimerIRQTopHalf, or 0 on failure.
-func ConfigureMSIXForDevice(bus, slot, funcNum uint8) uint32 {
-	initGICv2mSPIBase()
-	return configureMSIX(bus, slot, funcNum)
 }
 
 // platformMSIXVector returns 0xFFFF (VIRTIO_MSI_NO_VECTOR) on ARM64.

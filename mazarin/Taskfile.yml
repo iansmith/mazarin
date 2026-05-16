@@ -13,16 +13,3 @@ tasks:
       - '{{.USERSPACE_OVERLAY_JSON}}'
     cmds:
       - '{{.GO}} tool gen-overlay -type userspace -patches {{.USERSPACE_OVERLAY_DIR}} -o {{.USERSPACE_OVERLAY_JSON}}'
-
-  maz-exit-overlay:
-    run: once
-    method: checksum
-    desc: Generate maz-specific overlay (os.Exit → panic)
-    deps: [':build-dir']
-    sources:
-      - '{{.MAZ_EXIT_OVERLAY_DIR}}/os_proc.go'
-    generates:
-      - '{{.MAZ_EXIT_OVERLAY_JSON}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Generating maz-exit overlay (os.Exit → panic)..."'
-      - '{{.GO}} tool gen-overlay -type maz-exit -patches {{.MAZ_EXIT_OVERLAY_DIR}} -o {{.MAZ_EXIT_OVERLAY_JSON}}'

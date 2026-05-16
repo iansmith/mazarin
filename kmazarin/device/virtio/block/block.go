@@ -3,6 +3,7 @@ package block
 import (
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/device/virtio/irq"
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
@@ -72,11 +73,14 @@ func Init() bool {
 	if findVirtIOBlock() {
 		dev := &virtioBlockDevice
 
-		// For PCI transport, configure interrupts (MSI-X on AMD64/ARM64, INTx on RISC-V).
+		// For PCI transport, configure MSI-X interrupts. The arch split (GICv2m
+		// doorbell on arm64, LAPIC on amd64) lives inside irq.ConfigureMSIXForDevice;
+		// no per-device wrapper is needed. The local is named irqNum to avoid
+		// shadowing the imported `irq` package.
 		if dev.MMIOBase == 0 {
-			irq := configureBlockInterrupt(dev.Bus, dev.Slot, dev.Func)
-			if irq != 0 {
-				dev.IRQNum = irq
+			irqNum := irq.ConfigureMSIXForDevice(dev.Bus, dev.Slot, dev.Func)
+			if irqNum != 0 {
+				dev.IRQNum = irqNum
 			}
 		}
 
@@ -189,9 +193,12 @@ func virtioBlockInit() bool {
 		return false
 	}
 
-	// MSI-X config vector. On INTx platforms (ARM64/RISC-V), blockMSIXVector()
-	// returns MSIXNoVector and SetMSIXConfig skips the write.
-	msixVec := blockMSIXVector()
+	// MSI-X config vector — shared with net via irq.DeviceMSIXVector (= 0). Block
+	// is MSI-X on both arches; the arch-specific MSI-X programming has already
+	// happened in irq.ConfigureMSIXForDevice. (The stale "INTx on ARM64/RISC-V"
+	// comment was leftover from when RISC-V used INTx; RISC-V was removed in
+	// a04ce0a and ARM64 moved to MSI-X.)
+	msixVec := irq.DeviceMSIXVector
 	dev.SetMSIXConfig(msixVec)
 
 	// Allocate DMA page for virtqueue structures

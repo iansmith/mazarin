@@ -52,9 +52,12 @@ func enableDeviceIRQ(irq uint32, isrBase uintptr) {
 	cachedGIC.EnableIRQ(irq)
 }
 
-// enableBlockDeviceIRQ configures and enables the block device IRQ at the GIC.
-// ARM64 block device uses GICv2m MSI-X (edge-triggered).
-func enableBlockDeviceIRQ(irq uint32) {
+// enableMSIXDeviceIRQ configures and enables a VirtIO MSI-X device IRQ at the
+// GIC. The body is device-agnostic — every MSI-X-driven VirtIO PCI device on
+// ARM64 uses edge-triggered delivery through GICv2m. Shared by block + net
+// (formerly enableBlockDeviceIRQ; the rename reflects the lack of any
+// block-specific content).
+func enableMSIXDeviceIRQ(irq uint32) {
 	if cachedGIC == nil {
 		return
 	}

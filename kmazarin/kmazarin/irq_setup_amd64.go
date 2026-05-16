@@ -31,9 +31,11 @@ func disableTimerAtController() {}
 // bypassing the IOAPIC entirely.
 func enableDeviceIRQ(irq uint32, isrBase uintptr) {}
 
-// enableBlockDeviceIRQ is a no-op on x86_64.
-// Block device uses MSI-X which bypasses the IOAPIC.
-func enableBlockDeviceIRQ(irq uint32) {}
+// enableMSIXDeviceIRQ is a no-op on x86_64.
+// VirtIO MSI-X devices (block, net) write directly to the LAPIC, bypassing
+// the IOAPIC entirely. Shared by block + net (formerly enableBlockDeviceIRQ;
+// the rename reflects the lack of any block-specific content).
+func enableMSIXDeviceIRQ(irq uint32) {}
 
 // enableIOAPICIRQ enables an IRQ at the IOAPIC. Used for legacy ISA devices
 // like COM1 UART that route through the IOAPIC rather than MSI-X.

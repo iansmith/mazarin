@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/gpu"
+	"mazzy/kmazarin/device/virtio/net"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/hid"
@@ -124,6 +125,12 @@ var blockIRQNum uint32
 var blockISRBase uintptr
 var blockIOComplete *uint32
 
+// Net device IRQ state — set by SetNetIRQ during init (MAZ-26). Only the
+// IRQ number is cached here; the rest of net's top-half state (ISRBase, the
+// device pointer for DrainRx) lives in the net package, accessed via
+// net.NetIRQTopHalf() which operates on net.virtioNetDevice directly.
+var netIRQNum uint32
+
 // Debug counters for block IRQ instrumentation
 var dbgBlockIRQCount uint32       // total block IRQs received
 var dbgBlockIRQSync uint32        // handled in sync mode (IOComplete)
@@ -183,6 +190,14 @@ func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32, enginePtr u
 	blockIOComplete = ioComplete
 	blockEnginePtr = enginePtr
 	blockSidecarFreePtr = sidecarFreePtr
+}
+
+// SetNetIRQ registers the net device's IRQ number with the top-half
+// dispatcher (MAZ-26). The handler itself (net.NetIRQTopHalf) lives in the
+// net package and operates on net.virtioNetDevice directly, so unlike block
+// only the IRQ number needs to be cached here.
+func SetNetIRQ(irqNum uint32) {
+	netIRQNum = irqNum
 }
 
 // SetBlockAsyncSlot stores per-tag metadata for async completion.
@@ -506,6 +521,16 @@ func NonTimerIRQTopHalf() {
 				atomic.StoreUint32(blockIOComplete, 1)
 			}
 		}
+		return
+	}
+
+	// Net device (MAZ-26): the handler lives in the net package and operates
+	// on net.virtioNetDevice directly. It acks the ISR, DmaRmbs, then runs
+	// DrainRx (MAZ-22's purpose-built nosplit drain). TX completions are NOT
+	// drained here — SendTx polls TxEng itself (with WFI); the TX interrupt
+	// only wakes that WFI. RxEng/TxEng are disjoint so this is race-free.
+	if irqNum == netIRQNum && netIRQNum != 0 {
+		net.NetIRQTopHalf()
 		return
 	}
 
@@ -857,6 +882,15 @@ func pageAuditBottomHalf() {
 		kmem.LogPageAudit()
 	}
 }
+
+// MAZ-26 — net RX drain happens inline in KernelIdleLoop (threads.go), not via
+// a bottom-half goroutine. The drain is in safe Go context with full
+// goroutine stack (the IRQ top-half just sets net.RxPending; the idle loop
+// observes it and calls net.DrainRxFromBottomHalf directly). A channel +
+// goroutine hop was tried but the goroutine never got scheduled — the idle
+// loop never yields (no runtime.Gosched, by design) and async preemption
+// alone didn't pick it up. Direct drain works because the idle loop runs in
+// goroutine context anyway.
 
 // ============================================================================
 // Startup

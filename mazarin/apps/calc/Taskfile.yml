@@ -2,36 +2,52 @@ version: '3'
 
 tasks:
   arm64:
-    desc: Build calc (ARM64)
+    desc: Build calc.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
     run: once
-    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mancini:compile-constraints']
     sources:
-      - '{{.ROOT_DIR}}/mazarin/apps/calc/**/*'
+      - '{{.ROOT_DIR}}/mazarin/apps/calc/**/*.go'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.CALC_ELF}}'
+      - '{{.CALC_MAZ}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building calc..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CALC_ELF}} ./mazarin/apps/calc'
-      - '{{.GO}} tool go-echo "Calc built at {{.CALC_ELF}}"'
+      - '{{.GO}} tool go-echo "Building calc.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.CALC_MAZ}} ./mazarin/apps/calc
+      - '{{.GO}} tool go-echo "calc.maz ready at {{.CALC_MAZ}}"'
 
-  x86_64:
-    desc: Build calc (x86_64)
+  amd64:
+    desc: Build calc.maz for x86_64 via mazgo
     run: once
-    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mancini:compile-constraints']
     sources:
-      - '{{.ROOT_DIR}}/mazarin/apps/calc/**/*'
+      - '{{.ROOT_DIR}}/mazarin/apps/calc/**/*.go'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
     generates:
-      - '{{.CALC_AMD64_ELF}}'
+      - '{{.CALC_MAZ_AMD64}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building calc for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CALC_AMD64_ELF}} ./mazarin/apps/calc'
-      - '{{.GO}} tool go-echo "Calc x86_64 built at {{.CALC_AMD64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building calc.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.CALC_MAZ_AMD64}} ./mazarin/apps/calc
+      - '{{.GO}} tool go-echo "calc.maz (x86_64) ready at {{.CALC_MAZ_AMD64}}"'
 

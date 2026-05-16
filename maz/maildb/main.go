@@ -191,10 +191,7 @@ func main() {
 
 	mlogInfo("[maildb] MailDBIO config prepared")
 
-	// 2a. Run mmap coherence test before badger (which also uses mmap).
-	if !testMmapCoherence() {
-		mlogErrorf("[maildb] WARNING: mmap coherence test FAILED")
-	}
+	// mmap coherence test disabled — produces 80+ lines per boot.
 
 	// 2b. Import mbox into BadgerDB; indexing is delegated to fti.
 

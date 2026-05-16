@@ -13,10 +13,10 @@ package input
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/device/virtio/irq"
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
-	"mazzy/shared/constants"
 	"mazzy/shared/hid"
 	"sync/atomic"
 	"unsafe"
@@ -46,49 +46,6 @@ const (
 	PCI_INTERRUPT_LINE = 0x3C
 	PCI_INTERRUPT_PIN  = 0x3D
 )
-
-// QEMU ARM virt machine maps PCI INTx to GIC SPI 3-6.
-// The swizzle formula: spi = (slot + pin - 1) % 4 + 3
-// GIC IRQ ID = SPI number + 32
-const (
-	PCIE_SPI_BASE  = 3  // First SPI number for PCI INTx
-	GIC_SPI_OFFSET = 32 // SPI 0 = GIC IRQ 32
-)
-
-// GICv2m MSI controller on QEMU ARM virt
-const (
-	GICV2M_PHYS     = 0x08020000 // GICv2m physical base
-	GICV2M_SIZE     = 0x1000     // 4KB
-	GICV2M_TYPER    = 0x008      // MSI type register offset
-	GICV2M_SETSPI   = 0x040      // MSI doorbell register offset
-)
-
-// gicv2mBase holds the kernel virtual address of the GICv2m after mapping.
-var gicv2mBase uintptr
-
-// MSI-X table entry structure (16 bytes per entry)
-const (
-	MSIX_ENTRY_ADDR_LO  = 0x00 // Message address low 32 bits
-	MSIX_ENTRY_ADDR_HI  = 0x04 // Message address high 32 bits
-	MSIX_ENTRY_DATA     = 0x08 // Message data (SPI number)
-	MSIX_ENTRY_CONTROL  = 0x0C // Vector control (bit 0 = mask)
-	MSIX_ENTRY_SIZE     = 16
-)
-
-// PCI MSI-X capability offsets
-const (
-	PCI_CAP_MSIX         = 0x11
-	MSIX_MSGCTRL_OFFSET  = 2  // Message control at cap+2
-	MSIX_TABLE_OFFSET    = 4  // Table offset/BIR at cap+4
-	MSIX_PBA_OFFSET      = 8  // PBA offset/BIR at cap+8
-)
-
-// nextMSIXSPI tracks the next available GICv2m SPI for MSI-X allocation
-var nextMSIXSPI uint32
-
-// nextMSIXBarAddr tracks the next PCI MMIO address for unassigned MSI-X table BARs.
-// Uses PCI_MMIO_BASE+0x80000 to avoid conflicts with common/notify BARs.
-var nextMSIXBarAddr = uint32(pci.PCI_MMIO_BASE + 0x80000)
 
 // NumEventBuffers is the number of pre-allocated event buffers per device.
 const NumEventBuffers = 32
@@ -338,13 +295,13 @@ func (dev *VirtIOInputDevice) classifyDevice() uint32 {
 
 // computeIRQ calculates the GIC IRQ number from PCI slot and interrupt pin.
 // QEMU ARM virt: INTx maps to SPI 3-6, GIC IRQ = SPI + 32.
-// Swizzle: spi = (slot + pin - 1) % 4 + PCIE_SPI_BASE
+// Swizzle: spi = (slot + pin - 1) % 4 + irq.PCIE_SPI_BASE
 func computeIRQ(slot uint8, pin uint8) uint32 {
 	if pin == 0 {
 		return 0 // No interrupt
 	}
-	spi := (uint32(slot) + uint32(pin) - 1) % 4 + PCIE_SPI_BASE
-	return spi + GIC_SPI_OFFSET
+	spi := (uint32(slot) + uint32(pin) - 1) % 4 + irq.PCIE_SPI_BASE
+	return spi + irq.GIC_SPI_OFFSET
 }
 
 // initDevice performs the VirtIO initialization handshake for one input device.
@@ -412,145 +369,11 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	return true
 }
 
-// gicv2mInitDone tracks whether initGICv2mSPIBase has been called.
-var gicv2mInitDone bool
-
-// initGICv2mSPIBase maps the GICv2m and reads TYPER to determine the SPI base.
-// Must be called once before configureMSIX. Idempotent.
-func initGICv2mSPIBase() {
-	if gicv2mInitDone {
-		return
-	}
-	gicv2mInitDone = true
-	if err := kmem.MapDeviceMMIO(GICV2M_PHYS, GICV2M_SIZE); err != nil {
-		klog.Errf("[VirtIO Input] ERROR: Failed to map GICv2m: %v\n", err)
-		return
-	}
-	gicv2mBase = 0xFFFFFFFF00000000 + GICV2M_PHYS
-	typer := asm.MmioRead32(gicv2mBase + GICV2M_TYPER)
-	spiBase := (typer >> 16) & 0x3FF
-	_ = typer & 0x3FF // spiCount — used only for validation
-	nextMSIXSPI = spiBase
-}
-
 // PlatformInitInterrupts exports the platform-specific interrupt initialization
 // so other drivers (block, GPU) can ensure the SPI allocator is ready before
 // configuring their own MSI-X. Idempotent — safe to call multiple times.
 func PlatformInitInterrupts() {
 	platformInitInterrupts()
-}
-
-// allocateMSIXSPI allocates the next available GICv2m SPI number.
-func allocateMSIXSPI() uint32 {
-	spi := nextMSIXSPI
-	nextMSIXSPI++
-	return spi
-}
-
-// AllocateMSIXSPI is the public version of allocateMSIXSPI.
-// Used by other VirtIO drivers (block, GPU) that configure their own MSI-X.
-func AllocateMSIXSPI() uint32 {
-	return allocateMSIXSPI()
-}
-
-// configureMSIX finds the MSI-X capability, programs MSI-X table entries
-// to target the GICv2m doorbell, and enables MSI-X.
-// Returns the GIC IRQ number (SPI + 32) for this device, or 0 on failure.
-func configureMSIX(bus, slot, funcNum uint8) uint32 {
-	// Find MSI-X capability
-	capPtr := pci.ConfigRead8(bus, slot, funcNum, pci.PCI_CAPABILITIES)
-	var msixCapPtr uint8
-	for i := 0; i < 32 && capPtr != 0 && capPtr != 0xFF; i++ {
-		capID := pci.ConfigRead8(bus, slot, funcNum, capPtr)
-		if capID == PCI_CAP_MSIX {
-			msixCapPtr = capPtr
-			break
-		}
-		capPtr = pci.ConfigRead8(bus, slot, funcNum, capPtr+1)
-	}
-	if msixCapPtr == 0 {
-		klog.Errf("[VirtIO Input] ERROR: No MSI-X capability found\n")
-		return 0
-	}
-
-	// Read message control to get table size
-	msgCtrlWord := pci.ConfigRead32(bus, slot, funcNum, msixCapPtr)
-	msgCtrl := uint16(msgCtrlWord >> 16)
-	tableSize := (msgCtrl & 0x7FF) + 1 // Bits [10:0] = table size - 1
-
-	// Read table BAR and offset
-	tableOffsetBIR := pci.ConfigRead32(bus, slot, funcNum, msixCapPtr+MSIX_TABLE_OFFSET)
-	tableBIR := tableOffsetBIR & 0x7            // BAR index
-	tableOffset := tableOffsetBIR & ^uint32(0x7) // Offset within BAR
-
-	// Always reprogram the MSI-X table BAR to a unique address from our pool.
-	// UEFI-assigned addresses can collide with BARs reprogrammed by other drivers
-	// (e.g., keyboard BAR4 reprogrammed to 0x10040000 overlaps mouse's UEFI BAR1 at 0x10041000).
-	barOffset := uint8(0x10 + tableBIR*4)
-	barAddr := pci.ConfigRead32(bus, slot, funcNum, barOffset)
-	is64bit := barAddr&0x6 == 0x4
-
-	pciAddr := nextMSIXBarAddr
-	nextMSIXBarAddr += 0x1000
-	pci.ConfigWrite32(bus, slot, funcNum, barOffset, pciAddr)
-	if is64bit {
-		pci.ConfigWrite32(bus, slot, funcNum, barOffset+4, 0) // Clear high 32 bits
-	}
-	barAddr = pci.ConfigRead32(bus, slot, funcNum, barOffset)
-	barBasePA := uintptr(barAddr & 0xFFFFFFF0)
-
-	// Map MSI-X BAR into TTBR1 kernel space
-	kmem.MapDeviceMMIO(barBasePA, 0x1000)
-	barBase := barBasePA + constants.KernelMMIOOffset
-
-	tableBase := barBase + uintptr(tableOffset)
-
-	// Allocate an SPI and program all vectors to the same SPI
-	spi := allocateMSIXSPI()
-	gicIRQ := spi + GIC_SPI_OFFSET
-
-	// Enable MSI-X with function mask so we can safely program the table
-	low16 := msgCtrlWord & 0xFFFF
-	enableAndMask := uint32(msgCtrl) | (1 << 15) | (1 << 14) // enable + function mask
-	pci.ConfigWrite32(bus, slot, funcNum, msixCapPtr, low16|(enableAndMask<<16))
-
-	// Program all table entries to point to GICv2m doorbell.
-	// MSI-X data must contain the SPI number (not the GIC IRQ number).
-	// The GICv2m SETSPI register maps SPI N → GIC IRQ N+32 internally.
-	doorbellAddr := uint64(GICV2M_PHYS + GICV2M_SETSPI)
-	for i := uint32(0); i < uint32(tableSize); i++ {
-		entryAddr := tableBase + uintptr(i*MSIX_ENTRY_SIZE)
-		asm.MmioWrite32(entryAddr+MSIX_ENTRY_ADDR_LO, uint32(doorbellAddr))
-		asm.MmioWrite32(entryAddr+MSIX_ENTRY_ADDR_HI, uint32(doorbellAddr>>32))
-		asm.MmioWrite32(entryAddr+MSIX_ENTRY_DATA, gicIRQ) // GICv2m expects SPI+32
-		asm.MmioWrite32(entryAddr+MSIX_ENTRY_CONTROL, 0) // Unmask
-	}
-	asm.Dsb()
-
-	// Readback MSI-X table entry 0 to verify programming
-	readData := asm.MmioRead32(tableBase + MSIX_ENTRY_DATA)
-	readCtrl := asm.MmioRead32(tableBase + MSIX_ENTRY_CONTROL)
-	if readData != gicIRQ || readCtrl != 0 {
-		klog.Errf("[VirtIO Input] MSI-X entry[0] mismatch: data=%d (expect %d) ctrl=0x%x\n",
-			readData, gicIRQ, readCtrl)
-	}
-
-	// Clear function mask (keep enable)
-	enableOnly := (uint32(msgCtrl) | (1 << 15)) &^ (1 << 14) // enable=1, function mask=0
-	pci.ConfigWrite32(bus, slot, funcNum, msixCapPtr, low16|(enableOnly<<16))
-
-	// Verify MSI-X is actually enabled in PCI config
-	finalMsgCtrl := pci.ConfigRead32(bus, slot, funcNum, msixCapPtr)
-	finalCtrl := uint16(finalMsgCtrl >> 16)
-	msixEnabled := (finalCtrl & (1 << 15)) != 0
-	funcMasked := (finalCtrl & (1 << 14)) != 0
-	readAddr := asm.MmioRead32(tableBase + MSIX_ENTRY_ADDR_LO)
-	readDataFinal := asm.MmioRead32(tableBase + MSIX_ENTRY_DATA)
-	_ = msixEnabled
-	_ = funcMasked
-	_ = readAddr
-	_ = readDataFinal
-	return gicIRQ
 }
 
 // InitVirtIOInput discovers and initializes all VirtIO Input PCI devices.
@@ -586,10 +409,10 @@ func InitVirtIOInput() {
 				pci.ConfigWrite32(bus, slot, funcNum, pci.PCI_COMMAND, cmd)
 
 				// Configure interrupts (platform-specific: MSI-X on x86_64, INTx on ARM64/RISC-V)
-				irq := platformConfigureDeviceIRQ(bus, slot, funcNum)
+				irqNum := platformConfigureDeviceIRQ(bus, slot, funcNum)
 
 				dev := &VirtIOInputDevice{
-					IRQNum: irq,
+					IRQNum: irqNum,
 				}
 
 				// Use per-device MMIO base to avoid BAR collisions with GPU/block
@@ -607,13 +430,13 @@ func InitVirtIOInput() {
 				// Assign to global slots
 				if dev.DevType == hid.DeviceTypeKeyboard && KeyboardDevice == nil {
 					KeyboardDevice = dev
-					klog.Logf("[VirtIO Input] Keyboard assigned (slot %d, IRQ %d)\n", slot, irq)
+					klog.Logf("[VirtIO Input] Keyboard assigned (slot %d, IRQ %d)\n", slot, irqNum)
 				} else if dev.DevType == hid.DeviceTypeMouse && MouseDevice == nil {
 					MouseDevice = dev
-					klog.Logf("[VirtIO Input] Mouse assigned (slot %d, IRQ %d)\n", slot, irq)
+					klog.Logf("[VirtIO Input] Mouse assigned (slot %d, IRQ %d)\n", slot, irqNum)
 				} else if dev.DevType == hid.DeviceTypeTablet && TabletDevice == nil {
 					TabletDevice = dev
-					klog.Logf("[VirtIO Input] Tablet assigned (slot %d, IRQ %d)\n", slot, irq)
+					klog.Logf("[VirtIO Input] Tablet assigned (slot %d, IRQ %d)\n", slot, irqNum)
 				}
 				allDevices = append(allDevices, dev)
 			}
