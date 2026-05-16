@@ -78,8 +78,12 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 	barAddr = pci.ConfigRead32(bus, slot, funcNum, barOffset)
 	barBasePA := uintptr(barAddr & 0xFFFFFFF0)
 
-	// Map MSI-X BAR into TTBR1 kernel space
-	kmem.MapDeviceMMIO(barBasePA, 0x1000)
+	// Map MSI-X BAR into TTBR1 kernel space. Without this, the
+	// asm.MmioWrite32 calls below would target unmapped memory.
+	if err := kmem.MapDeviceMMIO(barBasePA, 0x1000); err != nil {
+		klog.Errf("[MSI-X] ERROR: Failed to map MSI-X BAR at 0x%x: %v\n", barBasePA, err)
+		return 0
+	}
 	barBase := barBasePA + constants.KernelMMIOOffset
 
 	tableBase := barBase + uintptr(tableOffset)
@@ -93,9 +97,10 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 	enableAndMask := uint32(msgCtrl) | (1 << 15) | (1 << 14) // enable + function mask
 	pci.ConfigWrite32(bus, slot, funcNum, msixCapPtr, low16|(enableAndMask<<16))
 
-	// Program all table entries to point to GICv2m doorbell.
-	// MSI-X data must contain the SPI number (not the GIC IRQ number).
-	// The GICv2m SETSPI register maps SPI N → GIC IRQ N+32 internally.
+	// Program all table entries to point to the GICv2m SETSPI doorbell.
+	// MSI-X data must be the GIC interrupt ID, i.e. gicIRQ = spi + GIC_SPI_OFFSET.
+	// (GICv2m's SETSPI register subtracts GIC_SPI_OFFSET internally to recover
+	// the raw SPI number.)
 	doorbellAddr := uint64(GICV2M_PHYS + GICV2M_SETSPI)
 	for i := uint32(0); i < uint32(tableSize); i++ {
 		entryAddr := tableBase + uintptr(i*MSIX_ENTRY_SIZE)
