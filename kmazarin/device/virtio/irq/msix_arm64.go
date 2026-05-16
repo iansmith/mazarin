@@ -12,6 +12,8 @@ import (
 
 // initGICv2mSPIBase maps the GICv2m and reads TYPER to determine the SPI base.
 // Must be called once before configureMSIX. Idempotent.
+//
+//go:nosplit
 func initGICv2mSPIBase() {
 	if gicv2mInitDone {
 		return
@@ -31,6 +33,8 @@ func initGICv2mSPIBase() {
 // configureMSIX finds the MSI-X capability, programs MSI-X table entries
 // to target the GICv2m doorbell, and enables MSI-X.
 // Returns the GIC IRQ number (SPI + 32) for this device, or 0 on failure.
+//
+//go:nosplit
 func configureMSIX(bus, slot, funcNum uint8) uint32 {
 	// Find MSI-X capability
 	capPtr := pci.ConfigRead8(bus, slot, funcNum, pci.PCI_CAPABILITIES)
@@ -132,6 +136,8 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 // (block, GPU) on ARM64 via GICv2m. Programs the MSI-X table to target the
 // GICv2m SETSPI doorbell and allocates a unique SPI for this device.
 // Returns the GIC IRQ number (SPI + 32) for NonTimerIRQTopHalf, or 0 on failure.
+//
+//go:nosplit
 func ConfigureMSIXForDevice(bus, slot, funcNum uint8) uint32 {
 	initGICv2mSPIBase()
 	return configureMSIX(bus, slot, funcNum)
