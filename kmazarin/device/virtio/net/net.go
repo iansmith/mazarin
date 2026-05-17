@@ -66,4 +66,16 @@ type VirtIONetDevice struct {
 
 	// Interrupt-driven I/O — wired in MAZ-21.
 	IRQNum uint32 // Assigned IRQ number (0 = not yet wired)
+
+	// RxIRQTimestamps records the IRQ-arrival timestamp (nanoseconds) per
+	// RX descriptor slot, written by the kernel IRQ top-half before
+	// pushing the CQE. Net.elf reads it via the NetReadIRQTimestamp
+	// syscall after dequeuing the CQE to compute IRQ→shepherd latency.
+	// Indexed by descIdx (0..netQueueSize-1); netQueueSize=128.
+	//
+	// Race: kernel may overwrite slot N for a new IRQ before net.elf
+	// reads the previous value. Benign for step 2's debugging
+	// instrumentation (one ARP request, no back-to-back IRQs on same
+	// slot). MAZ-27 may replace with an inline CQE-encoded timestamp.
+	RxIRQTimestamps [netQueueSize]uint64
 }

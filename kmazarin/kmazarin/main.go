@@ -617,13 +617,13 @@ func simpleMain() {
 		block.GetDevice().SetAsyncMode = SetBlockAsyncMode
 	}
 
-	// Wire up net device IRQ (MAZ-26): register the IRQ number with the
-	// top-half dispatcher (net.NetIRQTopHalf runs from there) and enable at
-	// the interrupt controller. No SetAsyncMode callback — net's top-half
-	// drains RxEng only; SendTx polls TxEng (with WFI). They are disjoint,
-	// so there is no poll/top-half contention.
+	// Wire up net device IRQ (MAZ-28 step 2 — replaces MAZ-26 deferred-drain
+	// path). The bottom_half's net branch inlines the RX drain (PopUsedNoFree
+	// + CQE push) so SetNetIRQ now caches ISR base, RX engine, and device
+	// pointers in addition to the IRQ number. RxEng/TxEng remain disjoint
+	// so no SetAsyncMode callback is needed.
 	if irq := net.GetIRQNum(); irq != 0 {
-		SetNetIRQ(irq)
+		SetNetIRQ(irq, net.GetISRBase(), net.GetRxEnginePtr(), net.GetDevicePtr())
 		enableMSIXDeviceIRQ(irq)
 		klog.Logf("[Main] VirtIO Net IRQ wired: IRQ=%d\n", uint64(irq))
 	}
