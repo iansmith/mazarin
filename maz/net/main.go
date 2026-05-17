@@ -24,6 +24,12 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	// Step 2: host-side LinkSurface/EthFraming implementations live in
+	// maz/net/host. They're not yet wired into the main loop — step 4
+	// swaps the inline ARP test for an EthFraming-driven path — but the
+	// package is imported here so it builds with net.elf.
+	_ "mazzy/maz/net/host"
 )
 
 const (

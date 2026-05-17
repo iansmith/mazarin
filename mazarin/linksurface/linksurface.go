@@ -75,15 +75,39 @@ type Allocator interface {
 	Release(ReceivePacket)
 }
 
-// LinkSurfaceInit is the injection bag for the net.elf ⇄ L3-plugin boundary.
-// Net.elf fills Device, Allocator, and RecvChan; the L3 plugin fills TxChan
-// from inside its MazarinShepherd.
+// LinkSurfaceInjector is the cross-.maz contract for the net.elf ⇄ L3-plugin
+// boundary. The plugin's MazarinShepherd type-asserts its `interface{}` arg
+// to this interface (not the concrete *LinkSurfaceInit — concrete-struct
+// assertions across .maz module boundaries are unreliable).
+type LinkSurfaceInjector interface {
+	GetDevice() Device
+	GetAllocator() Allocator
+	GetRecvChan() chan RxEnvelope
+	RegisterTxChan(ch chan TxEnvelope)
+}
+
+// LinkSurfaceInit implements LinkSurfaceInjector and is the host's
+// concrete bag. Net.elf fills Device, Allocator, and RecvChan; the L3
+// plugin calls RegisterTxChan from inside its MazarinShepherd. Net.elf
+// reads TxChan back after MazarinShepherd returns.
 type LinkSurfaceInit struct {
 	Device    Device
 	Allocator Allocator
 	RecvChan  chan RxEnvelope
 	TxChan    chan TxEnvelope
 }
+
+// GetDevice implements LinkSurfaceInjector.
+func (l *LinkSurfaceInit) GetDevice() Device { return l.Device }
+
+// GetAllocator implements LinkSurfaceInjector.
+func (l *LinkSurfaceInit) GetAllocator() Allocator { return l.Allocator }
+
+// GetRecvChan implements LinkSurfaceInjector.
+func (l *LinkSurfaceInit) GetRecvChan() chan RxEnvelope { return l.RecvChan }
+
+// RegisterTxChan implements LinkSurfaceInjector.
+func (l *LinkSurfaceInit) RegisterTxChan(ch chan TxEnvelope) { l.TxChan = ch }
 
 // EthFraming is the link-layer plugin's contract with net.elf.
 //
@@ -109,10 +133,24 @@ type EthFraming interface {
 	AddSendBytes(env TxEnvelope) (wireOffset int, wireLen int, err error)
 }
 
-// EthFramingInit is the injection bag for the net.elf ⇄ ethernet-plugin
-// boundary. Net.elf fills Allocator; ethernet.maz fills Framing from inside
-// its MazarinShepherd.
+// EthFramingInjector is the cross-.maz contract for the net.elf ⇄
+// ethernet-plugin boundary. ethernet.maz's MazarinShepherd type-asserts
+// its `interface{}` arg to this interface.
+type EthFramingInjector interface {
+	GetAllocator() Allocator
+	RegisterFraming(f EthFraming)
+}
+
+// EthFramingInit implements EthFramingInjector. Net.elf fills Allocator;
+// ethernet.maz calls RegisterFraming from inside its MazarinShepherd.
+// Net.elf reads Framing back after MazarinShepherd returns.
 type EthFramingInit struct {
 	Allocator Allocator
 	Framing   EthFraming
 }
+
+// GetAllocator implements EthFramingInjector.
+func (e *EthFramingInit) GetAllocator() Allocator { return e.Allocator }
+
+// RegisterFraming implements EthFramingInjector.
+func (e *EthFramingInit) RegisterFraming(f EthFraming) { e.Framing = f }
