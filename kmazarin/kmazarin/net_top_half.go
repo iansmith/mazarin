@@ -62,15 +62,24 @@ func netTopHalf() {
 		}
 
 		if ioRing != nil {
-			atomic.AddUint32(&dbgNetCQEWritten, 1)
 			cqTail := ioRing.CQTail
-			cqIdx := cqTail & iouring.CQMask
-			ioRing.CQEntries[cqIdx] = iouring.CQEntry{
-				UserData: iouring.NetEncodeRxUserData(tag),
-				Res:      int32(info.UsedLen),
+			cqHead := atomic.LoadUint32(&ioRing.CQHead)
+			if cqTail-cqHead < iouring.CQCapacity {
+				atomic.AddUint32(&dbgNetCQEWritten, 1)
+				cqIdx := cqTail & iouring.CQMask
+				ioRing.CQEntries[cqIdx] = iouring.CQEntry{
+					UserData: iouring.NetEncodeRxUserData(tag),
+					Res:      int32(info.UsedLen),
+				}
+				asm.Dsb()
+				atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
+			} else {
+				// CQ full — drop. The slot stays "in flight" until net.elf
+				// catches up; eventually the RX pool will stall under
+				// sustained overflow, which is the right failure mode
+				// (better than silently overwriting completed entries).
+				atomic.AddUint32(&dbgNetCQEMissed, 1)
 			}
-			asm.Dsb()
-			atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
 		} else {
 			atomic.AddUint32(&dbgNetCQEMissed, 1)
 		}
@@ -91,15 +100,23 @@ func netTopHalf() {
 		}
 
 		if ioRing != nil {
-			atomic.AddUint32(&dbgNetCQEWritten, 1)
 			cqTail := ioRing.CQTail
-			cqIdx := cqTail & iouring.CQMask
-			ioRing.CQEntries[cqIdx] = iouring.CQEntry{
-				UserData: iouring.NetEncodeTxUserData(txTag),
-				Res:      0,
+			cqHead := atomic.LoadUint32(&ioRing.CQHead)
+			if cqTail-cqHead < iouring.CQCapacity {
+				atomic.AddUint32(&dbgNetCQEWritten, 1)
+				cqIdx := cqTail & iouring.CQMask
+				ioRing.CQEntries[cqIdx] = iouring.CQEntry{
+					UserData: iouring.NetEncodeTxUserData(txTag),
+					Res:      0,
+				}
+				asm.Dsb()
+				atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
+			} else {
+				// CQ full — TX completion dropped. Net.elf will lose
+				// track of this in-flight TX (no completion to pair
+				// with the SubmitTx); same fail-stop trade-off as RX.
+				atomic.AddUint32(&dbgNetCQEMissed, 1)
 			}
-			asm.Dsb()
-			atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
 		} else {
 			atomic.AddUint32(&dbgNetCQEMissed, 1)
 		}
