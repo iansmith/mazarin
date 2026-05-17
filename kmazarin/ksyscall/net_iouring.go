@@ -94,6 +94,13 @@ func handleNetRearmDesc(shepherd *proc.Shepherd, dev *netdev.VirtIONetDevice, sq
 	}
 
 	pageVA := uintptr(sqe.Addr)
+	// Slot-pinned re-arm publishes a full 4 KiB descriptor; refuse a
+	// non-page-aligned base so the device can't DMA 4 KiB starting
+	// mid-page into adjacent physical memory.
+	if pageVA&0xFFF != 0 {
+		klog.Errf("[IOUring net] EINVAL: rearm VA 0x%x not page-aligned\n", uint64(pageVA))
+		return -22 // EINVAL
+	}
 	clump := shepherd.FindClumpByVA(pageVA)
 	if clump == nil {
 		klog.Errf("[IOUring net] EFAULT: rearm VA 0x%x not in clump\n", uint64(pageVA))
@@ -128,6 +135,14 @@ func handleNetSubmitTx(shepherd *proc.Shepherd, dev *netdev.VirtIONetDevice, sqe
 	length := sqe.Len
 	txTag := uint16(sqe.UserData)
 
+	// The descriptor PA we publish is pageVA→PA + offset; if pageVA
+	// isn't page-aligned, the PA lookup below resolves only the first
+	// byte and the device can read past the intended page once Off
+	// is applied. Same hazard as the RX rearm path — refuse the SQE.
+	if pageVA&0xFFF != 0 {
+		klog.Errf("[IOUring net] EINVAL: TX VA 0x%x not page-aligned\n", uint64(pageVA))
+		return -22 // EINVAL
+	}
 	if length == 0 || length > 4096 || offset+uintptr(length) > 4096 {
 		klog.Errf("[IOUring net] EINVAL: bad TX length=%d offset=%d\n", uint64(length), uint64(offset))
 		return -22 // EINVAL

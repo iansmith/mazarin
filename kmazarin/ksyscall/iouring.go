@@ -177,11 +177,17 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		// re-arming via VirtqueueAddToAvailable.
 		if ioUringSlotDeviceType(ringID) == 2 {
 			n, err := dispatchNetSQEs(shepherd, ring, sqHead, toSubmit)
+			// Advance SQHead unconditionally — dispatchNetSQEs can
+			// return (n>0, err) when an SQE later in the batch fails
+			// after earlier ones already touched the device. Without
+			// the advance, the next IOUringEnter would replay the
+			// already-consumed SQEs (duplicate TX frames, double
+			// rearm of the same RX slot).
+			submitted = n
+			atomic.StoreUint32(&ring.SQHead, sqHead+submitted)
 			if err != 0 {
 				return err
 			}
-			submitted = n
-			atomic.StoreUint32(&ring.SQHead, sqHead+submitted)
 			// Fall through to Phase B (wait for completions).
 		} else {
 		_, ok := device.GetBlockDevice()
