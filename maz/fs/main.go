@@ -285,23 +285,34 @@ func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {
 	return &cfg
 }
 
-// launchShepherd loads the generic /shepherd.elf host from the ext2
-// filesystem and hands it the requested plugin path (a .maz file) as its
-// sole argument. shepherd.elf's main() reads os.Args[2] and loads the
-// .maz via its own fsclient IPC connection.
+// launchShepherd loads a shepherd binary into pages and hands it to the
+// kernel via RunShepherd. Dispatch on file extension:
 //
-// All shepherds are .maz plugins now; the legacy ET_EXEC path is gone.
+//   - pluginPath ends in ".maz": load the generic /shepherd.elf host and
+//     pass the .maz path as its sole argument. shepherd.elf's main()
+//     reads os.Args[2] and loads the .maz via its own fsclient IPC.
+//
+//   - pluginPath ends in ".elf": load that ELF directly as the executable;
+//     no plugin-path arg. For self-contained shepherds like fs.elf,
+//     net.elf, or the long-aspirational sievetest.elf.
+//
 // memlimitMB > 0 overrides the system-wide GOMEMLIMIT for this shepherd.
 // gcPercent > 0 overrides the system-wide GOGC for this shepherd.
 func launchShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB, gcPercent int) {
-	fmt.Printf("[fs] reading /shepherd.elf (for %s → %s)...\n", name, pluginPath)
-	va, numPages, bytesRead, err := readFileIntoPages(fsys, "/shepherd.elf")
+	binaryPath := "/shepherd.elf"
+	var args []string
+	if strings.HasSuffix(pluginPath, ".elf") {
+		binaryPath = pluginPath
+	} else {
+		args = append(args, pluginPath)
+	}
+	fmt.Printf("[fs] reading %s (for %s → %s)...\n", binaryPath, name, pluginPath)
+	va, numPages, bytesRead, err := readFileIntoPages(fsys, binaryPath)
 	if err != nil {
-		fmt.Printf("[fs] failed to read /shepherd.elf\n")
+		fmt.Printf("[fs] failed to read %s\n", binaryPath)
 		return
 	}
-	fmt.Printf("[fs] read done /shepherd.elf bytes=%d numPages=%d (for %s)\n", bytesRead, numPages, name)
-	args := []string{pluginPath}
+	fmt.Printf("[fs] read done %s bytes=%d numPages=%d (for %s)\n", binaryPath, bytesRead, numPages, name)
 	if memlimitMB > 0 {
 		args = append(args, "__MAZZY_GOMEMLIMIT="+strconv.Itoa(memlimitMB))
 	}

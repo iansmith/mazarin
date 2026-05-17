@@ -1,0 +1,38 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build net shepherd (eth-layer .elf host, ARM64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - '{{.ROOT_DIR}}/maz/**/*.go'
+      - '{{.ROOT_DIR}}/maz/**/*.s'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.NET_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building net shepherd for ARM64..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.NET_ELF}} ./maz/net'
+      - '{{.GO}} tool go-echo "Net shepherd ARM64 built at {{.NET_ELF}}"'
+
+  x86_64:
+    desc: Build net shepherd (eth-layer .elf host, x86_64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - '{{.ROOT_DIR}}/maz/**/*.go'
+      - '{{.ROOT_DIR}}/maz/**/*.s'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.NET_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building net shepherd for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.NET_AMD64_ELF}} ./maz/net'
+      - '{{.GO}} tool go-echo "Net shepherd x86_64 built at {{.NET_AMD64_ELF}}"'

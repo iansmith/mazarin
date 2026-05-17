@@ -22,3 +22,7 @@ path = "/maildb.maz"
 [[shepherd]]
 name = "mail"
 path = "/mail.maz"
+
+[[shepherd]]
+name = "net"
+path = "/net.elf"
