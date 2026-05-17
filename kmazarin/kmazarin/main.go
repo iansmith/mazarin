@@ -623,7 +623,7 @@ func simpleMain() {
 	// pointers in addition to the IRQ number. RxEng/TxEng remain disjoint
 	// so no SetAsyncMode callback is needed.
 	if irq := net.GetIRQNum(); irq != 0 {
-		SetNetIRQ(irq, net.GetISRBase(), net.GetRxEnginePtr(), net.GetDevicePtr())
+		SetNetIRQ(irq, net.GetISRBase(), net.GetRxEnginePtr(), net.GetTxEnginePtr(), net.GetDevicePtr())
 		enableMSIXDeviceIRQ(irq)
 		klog.Logf("[Main] VirtIO Net IRQ wired: IRQ=%d\n", uint64(irq))
 	}

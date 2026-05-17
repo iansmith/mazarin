@@ -102,6 +102,13 @@ func GetRxEnginePtr() uintptr {
 	return uintptr(unsafe.Pointer(&virtioNetDevice.RxEng))
 }
 
+// GetTxEnginePtr returns a uintptr to the TX Engine (MAZ-28 step 3).
+// The IRQ top-half drains TX completions from this engine alongside
+// the RX drain.
+func GetTxEnginePtr() uintptr {
+	return uintptr(unsafe.Pointer(&virtioNetDevice.TxEng))
+}
+
 // GetDevicePtr returns a uintptr to the global VirtIONetDevice (MAZ-28
 // step 2). Used by the IRQ top-half to write RxIRQTimestamps[tag] in
 // nosplit context.

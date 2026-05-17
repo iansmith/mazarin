@@ -3,7 +3,11 @@
 // are added in later MAZ-16 subtasks. The block driver is the structural template.
 package net
 
-import "mazzy/kmazarin/device/virtio"
+import (
+	"sync"
+
+	"mazzy/kmazarin/device/virtio"
+)
 
 // VirtIO net PCI device IDs
 const (
@@ -78,4 +82,18 @@ type VirtIONetDevice struct {
 	// instrumentation (one ARP request, no back-to-back IRQs on same
 	// slot). MAZ-27 may replace with an inline CQE-encoded timestamp.
 	RxIRQTimestamps [netQueueSize]uint64
+
+	// TxTagByDescIdx maps a TX descriptor head index → the caller's
+	// txTag (MAZ-28 step 3). Recorded by the IOUringOpNetSubmitTx
+	// handler when it submits to TxEng; read by the IRQ top-half when
+	// TxEng's used ring delivers a completion. The CQE's UserData is
+	// then encoded with NetEncodeTxUserData(txTag) so net.elf knows
+	// which submit completed without a kernel→userspace round-trip.
+	TxTagByDescIdx [netQueueSize]uint16
+
+	// TxSubmitMu serializes concurrent IOUringOpNetSubmitTx handlers
+	// (full-Go-context SVC path). Replaces the MAZ-20 txInUse atomic
+	// CAS that lived inside SendTx; SendTx is now bypassed by the SQE
+	// path and will be removed in step 4.
+	TxSubmitMu sync.Mutex
 }
