@@ -67,7 +67,7 @@ func ConfigureMSIXForDevice(bus, slot, funcNum uint8) uint32 {
 
 	// Map MSI-X BAR into kernel space
 	kmem.MapDeviceMMIO(barBasePA, 0x1000)
-	barBase := barBasePA + constants.KernelMMIOOffset
+	barBase := barBasePA + constants.KernelVAOffset
 	tableBase := barBase + uintptr(tableOffset)
 
 	// Allocate a vector in the 32-47 range

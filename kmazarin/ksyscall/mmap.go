@@ -439,7 +439,7 @@ func syscallMmapContiguous(alignedLength uint64) int64 {
 	// Zero all pages before exposing to userspace.
 	// The buddy allocator does not zero; pages contain stale data from
 	// previous owners (kernel log strings, heap objects, etc.).
-	kernelVA := basePA + constants.KernelMMIOOffset
+	kernelVA := basePA + constants.KernelVAOffset
 	for i := 0; i < buddyPages; i++ {
 		kmem.Bzero4K(kernelVA + uintptr(i)*4096)
 	}

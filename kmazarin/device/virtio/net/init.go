@@ -179,7 +179,7 @@ func virtioNetInit(dev *VirtIONetDevice) bool {
 		klog.Errf("[VirtIO Net] ERROR: failed to allocate RX queue DMA page\n")
 		return false
 	}
-	rxPageVA := rxPagePA + constants.KernelMMIOOffset
+	rxPageVA := rxPagePA + constants.KernelVAOffset
 	if !dev.RxEng.Init(&dev.PCIDevice, 0, netQueueSize, rxPagePA, rxPageVA, 0, msixVec) {
 		klog.Errf("[VirtIO Net] ERROR: failed to init RX engine\n")
 		return false
@@ -191,7 +191,7 @@ func virtioNetInit(dev *VirtIONetDevice) bool {
 		klog.Errf("[VirtIO Net] ERROR: failed to allocate TX queue DMA page\n")
 		return false
 	}
-	txPageVA := txPagePA + constants.KernelMMIOOffset
+	txPageVA := txPagePA + constants.KernelVAOffset
 	if !dev.TxEng.Init(&dev.PCIDevice, 1, netQueueSize, txPagePA, txPageVA, 0, msixVec) {
 		klog.Errf("[VirtIO Net] ERROR: failed to init TX engine\n")
 		return false

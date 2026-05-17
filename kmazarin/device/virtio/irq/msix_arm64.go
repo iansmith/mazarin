@@ -84,7 +84,7 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 		klog.Errf("[MSI-X] ERROR: Failed to map MSI-X BAR at 0x%x: %v\n", barBasePA, err)
 		return 0
 	}
-	barBase := barBasePA + constants.KernelMMIOOffset
+	barBase := barBasePA + constants.KernelVAOffset
 
 	tableBase := barBase + uintptr(tableOffset)
 
