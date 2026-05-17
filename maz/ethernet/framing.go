@@ -18,10 +18,12 @@ const EthHeaderLen = 14
 const VirtIONetHdrLen = 12
 
 // AlignmentPad is the 6-byte pad at the start of every TX page that
-// keeps L3 16-byte-aligned (6 + 12 + 14 = 32, which is round_up(26,
-// 16)). The wire-bytes range AddSendBytes returns starts after this
-// pad so the device sees only [virtio_net_hdr][eth][L3].
-const AlignmentPad = VirtIONetHdrLen + EthHeaderLen - 16 // = 6+12+14 - 32 reversed; literal 6
+// keeps L3 16-byte-aligned: 6 + 12 + 14 = 32 = round_up(26, 16). The
+// wire-bytes range AddSendBytes returns starts after this pad so the
+// device sees only [virtio_net_hdr][eth][L3]. RX has no such pad —
+// the kernel page-aligns RX descriptors so virtio_net_hdr lands at
+// page+0 and L3 ends up unaligned at page+26.
+const AlignmentPad = 6
 
 // defaultHWAddr — QEMU's default MAC for virtio-net. Hard-coded for
 // now; matches maz/net/host/device.go and maz/net/main.go. Replace
