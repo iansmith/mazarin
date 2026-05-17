@@ -32,7 +32,7 @@ import (
 // SyscallIOUringSetup creates an io_uring instance.
 // arg0 = capacity hint (ignored, always 32 SQ / 64 CQ)
 // arg1 = ringPageVA (userspace VA of a pre-allocated shared page)
-// arg2 = flags: low byte = device type (0=block, 1=input)
+// arg2 = flags: low byte = device type (0=block, 1=input, 2=net)
 // Returns: ringID (0-3) on success, negative errno on error.
 //
 //go:noinline
@@ -40,7 +40,7 @@ func SyscallIOUringSetup(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	ringPageVA := uintptr(arg1)
 	deviceType := uint8(arg2 & 0xFF)
 
-	if deviceType > 1 {
+	if deviceType > 2 {
 		return -22 // EINVAL — unknown device type
 	}
 	if ringPageVA == 0 || ringPageVA&0xFFF != 0 {
@@ -172,6 +172,18 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			toSubmit = available
 		}
 
+		// Net rings (MAZ-28 step 2) take an entirely different path —
+		// no block device lookup, no DMA cache management, just descriptor
+		// re-arming via VirtqueueAddToAvailable.
+		if ioUringSlotDeviceType(ringID) == 2 {
+			n, err := dispatchNetSQEs(shepherd, ring, sqHead, toSubmit)
+			if err != 0 {
+				return err
+			}
+			submitted = n
+			atomic.StoreUint32(&ring.SQHead, sqHead+submitted)
+			// Fall through to Phase B (wait for completions).
+		} else {
 		_, ok := device.GetBlockDevice()
 		if !ok {
 			return -19 // ENODEV
@@ -250,6 +262,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 		// Advance SQ head.
 		atomic.StoreUint32(&ring.SQHead, sqHead+toSubmit)
+		} // end of block-device else branch
 	}
 
 	// Phase B: Wait for completions.
@@ -325,3 +338,5 @@ func checkIOUringWFITimeout(ringID int, currentCompletions uint32) bool
 
 //go:linkname ioUringSlotDeviceType main.IOUringSlotDeviceType
 func ioUringSlotDeviceType(ringID int) uint8
+
+// (dispatchNetSQEs appended below)

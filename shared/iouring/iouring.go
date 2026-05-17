@@ -27,6 +27,16 @@ const (
 	IOUringOpNop   uint8 = 0
 	IOUringOpRead  uint8 = 1
 	IOUringOpWrite uint8 = 2
+
+	// IOUringOpNetRearmDesc re-arms a specific VirtIO-net RX descriptor
+	// with a fresh DMA page. Used by net.elf after consuming an RX frame
+	// (CQE delivered the descIdx; net.elf hands back a new pagePA for
+	// the same slot). Slot-pinned: descIdx ↔ net.elf page mapping is
+	// stable across the round trip.
+	//
+	// SQEntry usage: FD = descIdx (uint16), Addr = pagePA (uintptr).
+	// Handler runs in full Go context (not nosplit).
+	IOUringOpNetRearmDesc uint8 = 3
 )
 
 // SQEntry is a submission queue entry. Userspace writes these to the SQ ring

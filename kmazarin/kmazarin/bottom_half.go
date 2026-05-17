@@ -7,8 +7,10 @@ import (
 	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/device/virtio/net"
+	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
+	"mazzy/shared/constants"
 	"mazzy/shared/hid"
 	"mazzy/shared/iouring"
 	"sync/atomic"
@@ -125,11 +127,27 @@ var blockIRQNum uint32
 var blockISRBase uintptr
 var blockIOComplete *uint32
 
-// Net device IRQ state — set by SetNetIRQ during init (MAZ-26). Only the
-// IRQ number is cached here; the rest of net's top-half state (ISRBase, the
-// device pointer for DrainRx) lives in the net package, accessed via
-// net.NetIRQTopHalf() which operates on net.virtioNetDevice directly.
-var netIRQNum uint32
+// Net device IRQ state — set by SetNetIRQ during init.
+//
+// MAZ-26 cached only the IRQ number; the top-half delegated to
+// net.NetIRQTopHalf() (deferred drain via RxPending flag). MAZ-28 step 2
+// caches the full set of pointers needed for the inline RX drain +
+// CQE-push path: ISR ack, RX engine for PopUsedNoFree, device pointer
+// for RxIRQTimestamps writeback.
+var (
+	netIRQNum       uint32
+	netISRBase      uintptr // ISR register VA for ack
+	netRxEnginePtr  uintptr // *virtio.Engine stored as uintptr (nosplit-safe)
+	netDevicePtr    uintptr // *net.VirtIONetDevice stored as uintptr (for RxIRQTimestamps writeback)
+)
+
+// Net IRQ debug counters — bumped from nosplit top-half.
+var (
+	dbgNetIRQCount      uint32 // total net IRQs received (mirrors net.dbgNetIRQCount; this is the bottom_half copy)
+	dbgNetRxDrained     uint32 // total RX completions drained from RxEng (cumulative)
+	dbgNetCQEWritten    uint32 // RX completions written to io_uring CQ
+	dbgNetCQEMissed     uint32 // RX completions dropped because no io_uring ring registered
+)
 
 // Debug counters for block IRQ instrumentation
 var dbgBlockIRQCount uint32       // total block IRQs received
@@ -192,12 +210,14 @@ func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32, enginePtr u
 	blockSidecarFreePtr = sidecarFreePtr
 }
 
-// SetNetIRQ registers the net device's IRQ number with the top-half
-// dispatcher (MAZ-26). The handler itself (net.NetIRQTopHalf) lives in the
-// net package and operates on net.virtioNetDevice directly, so unlike block
-// only the IRQ number needs to be cached here.
-func SetNetIRQ(irqNum uint32) {
+// SetNetIRQ registers the net device's IRQ number and the pointers the
+// top-half RX drain needs (ISR ack, RX engine, device for timestamps).
+// MAZ-28 step 2: extended from MAZ-26's single-arg form.
+func SetNetIRQ(irqNum uint32, isrBase uintptr, rxEnginePtr uintptr, devicePtr uintptr) {
 	netIRQNum = irqNum
+	netISRBase = isrBase
+	netRxEnginePtr = rxEnginePtr
+	netDevicePtr = devicePtr
 }
 
 // SetBlockAsyncSlot stores per-tag metadata for async completion.
@@ -524,13 +544,72 @@ func NonTimerIRQTopHalf() {
 		return
 	}
 
-	// Net device (MAZ-26): the handler lives in the net package and operates
-	// on net.virtioNetDevice directly. It acks the ISR, DmaRmbs, then runs
-	// DrainRx (MAZ-22's purpose-built nosplit drain). TX completions are NOT
-	// drained here — SendTx polls TxEng itself (with WFI); the TX interrupt
-	// only wakes that WFI. RxEng/TxEng are disjoint so this is race-free.
+	// Net device (MAZ-28 step 2): inline RX drain + io_uring CQE push.
+	// Replaces MAZ-26's deferred-drain path. Pops completions from RxEng
+	// via PopUsedNoFree (slot stays "owned" by net.elf until it re-arms
+	// via IOUringOpNetRearmDesc SQE), records IRQ timestamp per tag, and
+	// pushes a CQE per frame. TX drain stays deferred to step 3; for now
+	// SendTx still polls TxEng itself.
+	//
+	// Nosplit budget: no Engine.Submit (no re-post in the IRQ branch — net.elf
+	// re-arms), no allocations, no formatted logging. Stays well under 792 bytes.
 	if irqNum == netIRQNum && netIRQNum != 0 {
-		net.NetIRQTopHalf()
+		atomic.AddUint32(&dbgNetIRQCount, 1)
+		if netISRBase != 0 {
+			_ = asm.MmioRead8(netISRBase) // Ack interrupt
+		}
+		asm.DmaRmb()
+
+		now := kirq.ReadCounterValue()
+		eng := (*virtio.Engine)(unsafe.Pointer(netRxEnginePtr))
+		dev := (*net.VirtIONetDevice)(unsafe.Pointer(netDevicePtr))
+		_, ioRing := GetIOUringSlotForNetIRQ()
+		descTable := uintptr(eng.VQ.DescTable)
+		descStride := unsafe.Sizeof(virtio.VirtQDesc{})
+
+		for eng.HasUsed() {
+			info := eng.PopUsedNoFree()
+			if info.Tag == virtio.InvalidIOTag {
+				break
+			}
+			tag := uint16(info.Tag)
+			atomic.AddUint32(&dbgNetRxDrained, 1)
+
+			// Record per-tag IRQ timestamp for the latency syscall.
+			// Slot-pinned: net.elf re-arms this tag after consuming
+			// the CQE, so subsequent IRQs on the same tag overwrite.
+			if int(tag) < len(dev.RxIRQTimestamps) {
+				atomic.StoreUint64(&dev.RxIRQTimestamps[tag], now)
+			}
+
+			// Cache invalidate the DMA'd region so net.elf reads
+			// device-written data, not stale CPU cache lines.
+			// AllocContiguous-backed RX pool is normal cacheable.
+			desc := (*virtio.VirtQDesc)(unsafe.Pointer(descTable + uintptr(tag)*descStride))
+			framePA := uintptr(desc.Addr)
+			if framePA != 0 && info.UsedLen > 0 {
+				frameKernelVA := framePA + constants.KernelVAOffset
+				asm.InvalidateDCacheRange(frameKernelVA, uintptr(info.UsedLen))
+			}
+
+			// Push CQE: UserData = tag, Res = frame bytes.
+			if ioRing != nil {
+				atomic.AddUint32(&dbgNetCQEWritten, 1)
+				cqTail := ioRing.CQTail
+				cqIdx := cqTail & iouring.CQMask
+				ioRing.CQEntries[cqIdx] = iouring.CQEntry{
+					UserData: uint64(tag),
+					Res:      int32(info.UsedLen),
+				}
+				asm.Dsb()
+				atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
+			} else {
+				atomic.AddUint32(&dbgNetCQEMissed, 1)
+			}
+		}
+
+		WakeIOUringFromIRQ()
+		WakeSlotForIRQ(hid.NetVirtualIRQ)
 		return
 	}
 

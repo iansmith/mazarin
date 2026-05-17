@@ -30,6 +30,7 @@ package net
 
 import (
 	"sync/atomic"
+	"unsafe"
 
 	"mazzy/kmazarin/asm"
 )
@@ -86,6 +87,44 @@ func DrainRxFromBottomHalf() {
 // the SetNetIRQ + enableMSIXDeviceIRQ wire-up.
 func GetIRQNum() uint32 {
 	return virtioNetDevice.IRQNum
+}
+
+// GetISRBase returns the ISR register VA for interrupt acknowledgement
+// (MAZ-28 step 2). Used by the kernel IRQ top-half to ack net IRQs.
+func GetISRBase() uintptr {
+	return virtioNetDevice.ISRBase
+}
+
+// GetRxEnginePtr returns a uintptr to the RX Engine (MAZ-28 step 2). The
+// IRQ top-half pops completions from this engine — stored as uintptr so
+// bottom_half.go doesn't need to import this package (nosplit-safe).
+func GetRxEnginePtr() uintptr {
+	return uintptr(unsafe.Pointer(&virtioNetDevice.RxEng))
+}
+
+// GetDevicePtr returns a uintptr to the global VirtIONetDevice (MAZ-28
+// step 2). Used by the IRQ top-half to write RxIRQTimestamps[tag] in
+// nosplit context.
+func GetDevicePtr() uintptr {
+	return uintptr(unsafe.Pointer(&virtioNetDevice))
+}
+
+// GetDevice returns a typed pointer to the global VirtIONetDevice
+// (MAZ-28 step 2). Used by the SQE dispatcher for IOUringOpNetRearmDesc.
+func GetDevice() *VirtIONetDevice {
+	return &virtioNetDevice
+}
+
+// ReadRxIRQTimestamp returns the kernel-recorded IRQ timestamp (ns) for
+// the given RX descriptor tag (MAZ-28 step 2). Called via syscall from
+// net.elf after dequeuing a CQE to compute IRQ→shepherd latency.
+//
+// Returns 0 if tag is out of range.
+func ReadRxIRQTimestamp(tag uint16) uint64 {
+	if int(tag) >= len(virtioNetDevice.RxIRQTimestamps) {
+		return 0
+	}
+	return atomic.LoadUint64(&virtioNetDevice.RxIRQTimestamps[tag])
 }
 
 // GetNetIRQCount returns the cumulative count of net IRQs handled by the

@@ -85,12 +85,13 @@ func Init() bool {
 		return false
 	}
 
-	// Allocate the RX buffer pool and pre-post every buffer (MAZ-22). The RX
-	// Engine itself (virtqueue 0) is already up (virtioNetInit).
-	if !rxInit(dev) {
-		klog.Errf("[VirtIO Net] RX init failed\n")
-		return false
-	}
+	// MAZ-28 step 2: skip MAZ-26's kernel-owned RX buffer pre-arming.
+	// net.elf now owns RX pool allocation and pre-arms descriptors via
+	// IOUringOpNetRearmDesc SQEs. Until net.elf comes up, no RX
+	// descriptors are armed and inbound frames are dropped by the device
+	// (acceptable for boot since nothing in the boot sequence needs RX).
+	// rxInit + the entire MAZ-26 RX pool become dead code in step 2,
+	// scheduled for deletion in step 4.
 
 	// Register with the device manager (MAZ-23) — mirrors block.Init's
 	// device.RegisterBlockDevice. *VirtIONetDevice satisfies device.NetDevice

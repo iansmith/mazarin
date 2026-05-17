@@ -22,6 +22,7 @@ const MaxIORings = 4
 const (
 	IOUringDeviceBlock uint8 = 0 // block device (fs shepherd)
 	IOUringDeviceInput uint8 = 1 // HID input devices (window manager)
+	IOUringDeviceNet   uint8 = 2 // VirtIO-net (net shepherd, MAZ-28 step 2)
 )
 
 // IOUringSlot holds kernel-side state for one io_uring instance.
@@ -292,6 +293,23 @@ func GetIOUringSlotForInputIRQ() (*IOUringSlot, *iouring.IORing) {
 	for i := 0; i < MaxIORings; i++ {
 		slot := &IOUringTable[i]
 		if slot.KVA != 0 && slot.DeviceType == IOUringDeviceInput {
+			ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
+			return slot, ring
+		}
+	}
+	return nil, nil
+}
+
+// GetIOUringSlotForNetIRQ returns the net device ring slot and IORing
+// pointer for writing RX completion CQEs from the IRQ top-half (MAZ-28
+// step 2). Returns nil, nil if no net ring is set up (net.elf not yet
+// started, or shut down).
+//
+//go:nosplit
+func GetIOUringSlotForNetIRQ() (*IOUringSlot, *iouring.IORing) {
+	for i := 0; i < MaxIORings; i++ {
+		slot := &IOUringTable[i]
+		if slot.KVA != 0 && slot.DeviceType == IOUringDeviceNet {
 			ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
 			return slot, ring
 		}
