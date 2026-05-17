@@ -14,17 +14,31 @@
 // pattern; net.elf fills the host-side fields before MazarinShepherd runs,
 // the plugin fills its side from inside MazarinShepherd.
 //
-// Page layout (a single net.elf-owned DMA page per packet):
+// Page layout. RX and TX are *not* symmetric: the kernel page-aligns
+// RX descriptors (handleNetRearmDesc rejects non-page-aligned VAs)
+// while TX lets us pass an in-page Off field. So TX gets a 6-byte
+// alignment pad up front (yielding 16-byte-aligned L3); RX has the
+// virtio_net_hdr at page+0 and L3 lands at offset 26 unaligned.
 //
+//	TX page (we choose this layout):
 //	┌──────┬──────────────┬──────────────────┬──────────────────────────┐
 //	│ pad  │virtio_net_hdr│ ethernet header  │  L3 bytes (IP+…)         │
 //	│ 6 B  │   12 B       │     14 B         │                          │
 //	└──────┴──────────────┴──────────────────┴──────────────────────────┘
 //	 0..5    6..17           18..31              32..32+L3Len-1
+//	→ SendPacket.Offset() = 32 == Device.Headroom()
 //
-// Device.Headroom() = round_up(virtio_net_hdr_size + EthFraming.Headroom(), 16)
-// — 32 for plain Ethernet. SendPacket.Offset() on a freshly-allocated TX page
-// equals Device.Headroom(); the L3 plugin writes its bytes starting there.
+//	RX page (kernel-imposed):
+//	┌──────────────┬──────────────────┬──────────────────────────────────┐
+//	│virtio_net_hdr│ ethernet header  │  L3 bytes (IP+…)                 │
+//	│   12 B       │     14 B         │                                  │
+//	└──────────────┴──────────────────┴──────────────────────────────────┘
+//	 0..11           12..25              26..26+L3Len-1
+//	→ ReceivePacket.Offset() = 26 (NOT 16-aligned)
+//
+// Device.Headroom() reports the TX value (32). L3 plugins that care
+// about 16-aligned RX must copy or arrange their own alignment;
+// gvisor copies into its PacketBuffer so this is mostly invisible.
 package linksurface
 
 // ReceivePacket is a shallow view into a net.elf-owned page. It must not
