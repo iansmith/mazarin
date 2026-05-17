@@ -1,6 +1,15 @@
-// Package net implements the VirtIO network device protocol layer for kmazarin.
-// Step 1 (MAZ-18) is types and constants only — discovery, handshake, and I/O
-// are added in later MAZ-16 subtasks. The block driver is the structural template.
+// Package net implements the VirtIO-net device for kmazarin.
+//
+// The kernel side is intentionally thin: it brings the device up, exposes
+// the RX/TX engines via accessors, and pushes a typed CQE per completion
+// from the IRQ top-half. All TX submission and RX re-arming is driven by
+// userspace (net.elf) over an io_uring ring, using the
+// IOUringOpNetSubmitTx and IOUringOpNetRearmDesc opcodes.
+//
+// History note: MAZ-18..23 built a kernel-resident raw L2 path (DrainRx,
+// SendTx, a 32-slot RX pool, an RxPending flag drained from
+// KernelIdleLoop). MAZ-28 moved all of that into net.elf and deleted the
+// kernel-side scaffolding. This file shrank accordingly.
 package net
 
 import (
@@ -15,85 +24,47 @@ const (
 	VIRTIO_NET_DEVICE_ID_MODERN = 0x1041 // Non-transitional (VirtIO 1.0+)
 )
 
-// VirtIONetDevice represents a VirtIO network device. Embeds virtio.PCIDevice
-// for shared PCI transport state. Net is PCI-only — unlike the block driver
-// there is no MMIO/legacy fallback path (and RISC-V is gone from the project).
+// VirtIONetDevice represents a VirtIO network device. The kernel only
+// owns enough state to bring the device up and route IRQs to
+// io_uring CQEs; the RX page pool and TX frame buffers live in
+// userspace (net.elf).
 type VirtIONetDevice struct {
 	virtio.PCIDevice // Shared PCI transport (Bus/Slot/Func, capability bases, IRQ state)
 
-	// Two data virtqueues — net is asymmetric: RX buffers are pre-posted,
-	// TX descriptors are submitted on demand. One Engine each.
-	RxEng virtio.Engine // Receive queue  (virtqueue 0)
-	TxEng virtio.Engine // Transmit queue (virtqueue 1)
+	RxEng virtio.Engine // virtqueue 0
+	TxEng virtio.Engine // virtqueue 1
 
-	// Device-nGnRnE slots for per-packet VirtIONetHdr headers.
+	// Sidecars is the pool of Device-nGnRnE slots for per-packet
+	// VirtIONetHdr headers. Kept for future use (a TX path that builds
+	// the header on the kernel side rather than in userspace would
+	// rent one of these per send); currently unused — net.elf prepends
+	// the virtio_net_hdr inline at the start of each TX frame.
 	Sidecars virtio.SidecarPool
 
-	// TX payload DMA buffer (Device-nGnRnE driver page, allocated by txInit).
-	// One synchronous in-flight TX at a time copies its frame here before
-	// submit — keeps the whole TX path cache-management-free.
-	TxBufPA uintptr // Physical address of the TX payload buffer
-	TxBufVA uintptr // Kernel virtual address of the TX payload buffer
+	// Device configuration (populated by virtioNetReadConfig).
+	HWAddr            [6]uint8
+	Status            uint16
+	MaxVirtqueuePairs uint16
+	MTU               uint16
 
-	// txInUse serializes SendTx against itself. SendTx is //go:nosplit so it
-	// cannot acquire a sync.Mutex (would call morestack); the CAS pattern is
-	// used instead. Cleared on every SendTx exit path including timeout —
-	// see SendTx doc for the rationale on the timeout/leak case.
-	txInUse uint32
+	// IRQNum is the assigned IRQ vector (0 if MSI-X setup failed).
+	IRQNum uint32
 
-	// RX buffer pool — netRxBufCount Device-nGnRnE buffers, each holding one
-	// [VirtIONetHdr][Ethernet frame]. Pre-posted to the RX Engine; the device
-	// writes received frames into them.
-	RxBufPA [netRxBufCount]uintptr
-	RxBufVA [netRxBufCount]uintptr
-	// rxInFlight maps an RX descriptor index → the RX-buffer index posted under it.
-	rxInFlight [netQueueSize]uint16
-	// rxRepostChain is the pre-built 1-descriptor chain that DrainRx hands to
-	// Engine.Submit when re-posting a buffer. Hoisting it onto the device
-	// struct (instead of building a fresh DescChain on the stack each
-	// iteration) keeps DrainRx's nosplit frame ~136 bytes lighter, which is
-	// what lets the IRQ top-half chain `NonTimerIRQTopHalf → DrainRx →
-	// PopUsed → ...` fit under the 792-byte nosplit budget (MAZ-26). Count,
-	// Len, and Flags are filled once by rxInit; DrainRx only writes the PA.
-	// Single-writer (DrainRx is non-reentrant), so no concurrency concern.
-	rxRepostChain virtio.DescChain
-	// RX drain state (bring-up verification; a real consumer replaces the peek).
-	rxCount      uint32   // atomic: total frames drained
-	rxLastLen    uint32   // UsedLen of the most-recently-drained frame
-	rxLastSrcMAC [6]uint8 // src MAC of the most-recently-drained frame
-
-	// Device configuration — populated from config space during bring-up (MAZ-19).
-	HWAddr            [6]uint8 // Device MAC address; valid iff VIRTIO_NET_F_MAC negotiated
-	Status            uint16   // Link status; valid iff VIRTIO_NET_F_STATUS
-	MaxVirtqueuePairs uint16   // Valid iff VIRTIO_NET_F_MQ
-	MTU               uint16   // Valid iff VIRTIO_NET_F_MTU
-
-	// Interrupt-driven I/O — wired in MAZ-21.
-	IRQNum uint32 // Assigned IRQ number (0 = not yet wired)
-
-	// RxIRQTimestamps records the IRQ-arrival timestamp (nanoseconds) per
-	// RX descriptor slot, written by the kernel IRQ top-half before
-	// pushing the CQE. Net.elf reads it via the NetReadIRQTimestamp
-	// syscall after dequeuing the CQE to compute IRQ→shepherd latency.
-	// Indexed by descIdx (0..netQueueSize-1); netQueueSize=128.
-	//
-	// Race: kernel may overwrite slot N for a new IRQ before net.elf
-	// reads the previous value. Benign for step 2's debugging
-	// instrumentation (one ARP request, no back-to-back IRQs on same
-	// slot). MAZ-27 may replace with an inline CQE-encoded timestamp.
+	// RxIRQTimestamps records the IRQ-arrival timestamp (ticks of the
+	// platform timer) per RX descriptor slot. The IRQ top-half writes
+	// it; net.elf reads it via SyscallNetReadRxLatencyUs after
+	// dequeuing the corresponding CQE. Race accepted (kernel may
+	// overwrite a slot before userspace reads it under back-to-back
+	// IRQs on the same slot).
 	RxIRQTimestamps [netQueueSize]uint64
 
 	// TxTagByDescIdx maps a TX descriptor head index → the caller's
-	// txTag (MAZ-28 step 3). Recorded by the IOUringOpNetSubmitTx
-	// handler when it submits to TxEng; read by the IRQ top-half when
-	// TxEng's used ring delivers a completion. The CQE's UserData is
-	// then encoded with NetEncodeTxUserData(txTag) so net.elf knows
-	// which submit completed without a kernel→userspace round-trip.
+	// txTag. Written by the IOUringOpNetSubmitTx handler at submit
+	// time, read by the IRQ top-half on TX completion to encode the
+	// CQE's UserData (so net.elf knows which submit completed).
 	TxTagByDescIdx [netQueueSize]uint16
 
 	// TxSubmitMu serializes concurrent IOUringOpNetSubmitTx handlers
-	// (full-Go-context SVC path). Replaces the MAZ-20 txInUse atomic
-	// CAS that lived inside SendTx; SendTx is now bypassed by the SQE
-	// path and will be removed in step 4.
+	// (full-Go-context SVC path).
 	TxSubmitMu sync.Mutex
 }
