@@ -21,6 +21,7 @@ type LineJoin int
 const (
 	LineJoinRound LineJoin = iota
 	LineJoinBevel
+	LineJoinMiter
 )
 
 // FillRule specifies the fill algorithm for self-intersecting paths.
