@@ -98,6 +98,12 @@ type DrawContext interface {
 	SetLineWidth(lineWidth float64)
 	SetLineCap(lineCap LineCap)
 	SetLineJoin(lineJoin LineJoin)
+	// SetMiterLimit sets the ratio cap for [LineJoinMiter]. If the miter
+	// length (corner extension from the join center) divided by half the
+	// line width exceeds this limit, the join degrades to a bevel.
+	// SVG/CSS default is 4. Has no effect when the active line join is
+	// not [LineJoinMiter].
+	SetMiterLimit(limit float64)
 	SetFillRule(fillRule FillRule)
 	SetDash(dashes ...float64)
 

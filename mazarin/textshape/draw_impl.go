@@ -36,6 +36,7 @@ type graphicsState struct {
 	lineWidth     float64
 	lineCap       LineCap
 	lineJoin      LineJoin
+	miterLimit    float64 // SVG/CSS stroke-miterlimit; ratio cap for LineJoinMiter. Default 4.
 	fillRule      FillRule
 	dashes        []float64
 	clipMask      *image.Alpha    // canvas-sized hard-edged coverage mask for non-rectangular clips; nil when the clip is rect-only
@@ -89,6 +90,7 @@ func NewDrawContext(width, height int, provider GlyphProvider) *DrawContextImpl 
 		fillPattern:   NewSolidPattern(color.White),
 		strokePattern: NewSolidPattern(color.Black),
 		lineWidth:     1,
+		miterLimit:    4,
 		fillRule:      FillRuleWinding,
 	}
 	return dc
@@ -110,6 +112,7 @@ func NewDrawContextForImage(target *image.RGBA, provider GlyphProvider) *DrawCon
 		fillPattern:   NewSolidPattern(color.White),
 		strokePattern: NewSolidPattern(color.Black),
 		lineWidth:     1,
+		miterLimit:    4,
 		fillRule:      FillRuleWinding,
 	}
 	return dc
@@ -144,6 +147,7 @@ func (dc *DrawContextImpl) NewChildContext(target *image.RGBA) DrawContext {
 		fillPattern:   NewSolidPattern(color.White),
 		strokePattern: NewSolidPattern(color.Black),
 		lineWidth:     1,
+		miterLimit:    4,
 		fillRule:      FillRuleWinding,
 	}
 	return child
@@ -171,6 +175,7 @@ func (dc *DrawContextImpl) SetStrokeStyle(p Pattern) {
 func (dc *DrawContextImpl) SetLineWidth(w float64)       { dc.gs.lineWidth = w }
 func (dc *DrawContextImpl) SetLineCap(lc LineCap)        { dc.gs.lineCap = lc }
 func (dc *DrawContextImpl) SetLineJoin(lj LineJoin)      { dc.gs.lineJoin = lj }
+func (dc *DrawContextImpl) SetMiterLimit(limit float64)  { dc.gs.miterLimit = limit }
 func (dc *DrawContextImpl) SetFillRule(fr FillRule)      { dc.gs.fillRule = fr }
 func (dc *DrawContextImpl) SetDash(dashes ...float64)    { dc.gs.dashes = append([]float64(nil), dashes...) }
 
@@ -808,12 +813,36 @@ func (dc *DrawContextImpl) FillPreserve() {
 // strokeExpand expands the stored path into a filled polygon representing the stroke.
 // It discretizes curves to line segments, then expands each segment into a rectangle.
 func (dc *DrawContextImpl) strokeExpand() []pathSeg {
-	// First flatten path to line segments.
+	// Flatten path to line segments and build nextLine in one pass.
+	// nextLine[i] is the index of the line that follows line i within the
+	// same subpath, or -1 if line i is the last in an open subpath. For a
+	// closed subpath, the last line wraps to the subpath's first line —
+	// this is the wraparound join.
 	var lines [][2][2]float64 // each: [start, end]
+	var nextLine []int        // parallel to lines
 
 	var curX, curY float64
 	var subStartX, subStartY float64
+	subStartLine := 0
+	subAlreadyClosed := false // prevents double-finalization at end-of-loop
 	hasPos := false
+
+	appendLine := func(ax, ay, bx, by float64) {
+		lines = append(lines, [2][2]float64{{ax, ay}, {bx, by}})
+		nextLine = append(nextLine, len(lines)) // tentative: i+1; fixed up at subpath end
+	}
+
+	finalizeSubpath := func(closed bool) {
+		if subAlreadyClosed || len(lines) == subStartLine {
+			return
+		}
+		if closed {
+			nextLine[len(lines)-1] = subStartLine
+		} else {
+			nextLine[len(lines)-1] = -1
+		}
+		subAlreadyClosed = true
+	}
 
 	flattenCubic := func(x0, y0, x1, y1, x2, y2, x3, y3 float64) {
 		const steps = 32
@@ -823,7 +852,7 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 			mt := 1 - t
 			nx := mt*mt*mt*x0 + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*x3
 			ny := mt*mt*mt*y0 + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*y3
-			lines = append(lines, [2][2]float64{{px, py}, {nx, ny}})
+			appendLine(px, py, nx, ny)
 			px, py = nx, ny
 		}
 	}
@@ -836,7 +865,7 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 			mt := 1 - t
 			nx := mt*mt*x0 + 2*mt*t*x1 + t*t*x2
 			ny := mt*mt*y0 + 2*mt*t*y1 + t*t*y2
-			lines = append(lines, [2][2]float64{{px, py}, {nx, ny}})
+			appendLine(px, py, nx, ny)
 			px, py = nx, ny
 		}
 	}
@@ -844,12 +873,15 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 	for _, seg := range dc.path {
 		switch seg.op {
 		case pathMoveTo:
+			finalizeSubpath(false) // finalize previous subpath as open
 			curX, curY = seg.args[0], seg.args[1]
 			subStartX, subStartY = curX, curY
+			subStartLine = len(lines)
+			subAlreadyClosed = false
 			hasPos = true
 		case pathLineTo:
 			if hasPos {
-				lines = append(lines, [2][2]float64{{curX, curY}, {seg.args[0], seg.args[1]}})
+				appendLine(curX, curY, seg.args[0], seg.args[1])
 			}
 			curX, curY = seg.args[0], seg.args[1]
 		case pathQuadTo:
@@ -867,21 +899,29 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 			curX, curY = seg.args[4], seg.args[5]
 		case pathClose:
 			if hasPos {
-				lines = append(lines, [2][2]float64{{curX, curY}, {subStartX, subStartY}})
+				appendLine(curX, curY, subStartX, subStartY)
+				finalizeSubpath(true)
 			}
 			curX, curY = subStartX, subStartY
 		}
 	}
+	finalizeSubpath(false) // finalize trailing subpath if it didn't end with Close
 
 	if len(lines) == 0 {
 		return nil
 	}
 
 	hw := dc.gs.lineWidth / 2
-
-	// Build expanded path segments. Each line segment becomes a quad (4 vertices).
-	// We collect all quads as individual MoveTo+LineTo+ClosePath sequences.
 	var out []pathSeg
+
+	addTri := func(a, b, c [2]float64) {
+		out = append(out,
+			pathSeg{op: pathMoveTo, args: [6]float64{a[0], a[1]}},
+			pathSeg{op: pathLineTo, args: [6]float64{b[0], b[1]}},
+			pathSeg{op: pathLineTo, args: [6]float64{c[0], c[1]}},
+			pathSeg{op: pathClose},
+		)
+	}
 
 	addQuad := func(p0, p1, p2, p3 [2]float64) {
 		out = append(out,
@@ -941,6 +981,79 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 		}
 	}
 
+	// emitJoin fills the outer corner between lines[i] (incoming) and
+	// lines[next] (outgoing). Bevel emits no patch — the existing
+	// per-segment quad ends already meet at a chord-like seam.
+	emitJoin := func(i, next int) {
+		dx := lines[i][1][0] - lines[i][0][0]
+		dy := lines[i][1][1] - lines[i][0][1]
+		dlen := math.Hypot(dx, dy)
+		nx := lines[next][1][0] - lines[next][0][0]
+		ny := lines[next][1][1] - lines[next][0][1]
+		nlen := math.Hypot(nx, ny)
+		if dlen < 1e-10 || nlen < 1e-10 {
+			return
+		}
+		P := [2]float64{lines[i][1][0], lines[i][1][1]}
+
+		switch dc.gs.lineJoin {
+		case LineJoinRound:
+			a1 := math.Atan2(dy, dx) - math.Pi/2
+			a2 := math.Atan2(ny, nx) - math.Pi/2
+			if a2 < a1 {
+				a1, a2 = a2, a1
+			}
+			const steps = 8
+			for j := 0; j < steps; j++ {
+				aa1 := a1 + (a2-a1)*float64(j)/float64(steps)
+				aa2 := a1 + (a2-a1)*float64(j+1)/float64(steps)
+				addTri(
+					P,
+					[2]float64{P[0] + hw*math.Cos(aa1), P[1] + hw*math.Sin(aa1)},
+					[2]float64{P[0] + hw*math.Cos(aa2), P[1] + hw*math.Sin(aa2)},
+				)
+			}
+		case LineJoinMiter:
+			// Unit perpendiculars using the +perp convention from the
+			// quad (rotates segment direction 90° math-CCW; image-CW
+			// since y is down). dot(n1, n2) is invariant under joint
+			// sign flip, so compute it from the pp's directly.
+			pp1x, pp1y := -dy/dlen, dx/dlen
+			pp2x, pp2y := -ny/nlen, nx/nlen
+			dotN := pp1x*pp2x + pp1y*pp2y
+			if dotN > 1 {
+				dotN = 1
+			} else if dotN < -1 {
+				dotN = -1
+			}
+			sinHalf := math.Sqrt((1 + dotN) / 2)
+			// Outer side: -perp when the cross product is positive
+			// (right turn in image coords; raw cross sign suffices).
+			sign := 1.0
+			if dx*ny > dy*nx {
+				sign = -1
+			}
+			n1x, n1y := sign*pp1x, sign*pp1y
+			n2x, n2y := sign*pp2x, sign*pp2y
+			A1 := [2]float64{P[0] + n1x*hw, P[1] + n1y*hw}
+			A2 := [2]float64{P[0] + n2x*hw, P[1] + n2y*hw}
+			// Fallback per SVG/CSS: degrade to bevel when miter length
+			// (= hw / sinHalf) exceeds miterLimit · hw.
+			if sinHalf*dc.gs.miterLimit < 1 || sinHalf < 1e-6 {
+				addTri(A1, P, A2)
+				return
+			}
+			// Miter point M = P + (n1+n2)·hw / (2·sinHalf²). Derivation:
+			// bisector unit = (n1+n2)/||n1+n2||, ||n1+n2|| = 2·sinHalf,
+			// miter length from pivot = hw / sinHalf.
+			mScale := hw / (2 * sinHalf * sinHalf)
+			M := [2]float64{P[0] + (n1x+n2x)*mScale, P[1] + (n1y+n2y)*mScale}
+			// Kite {A1, P, A2, M} as two triangles sharing the pivot.
+			addTri(P, A1, M)
+			addTri(P, M, A2)
+		}
+	}
+
 	for i, line := range lines {
 		x0, y0 := line[0][0], line[0][1]
 		x1, y1 := line[1][0], line[1][1]
@@ -959,7 +1072,8 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 		p3 := [2]float64{x1 + px, y1 + py}
 		addQuad(p0, p1, p2, p3)
 
-		// Add caps at start of first segment and end of last segment.
+		// Caps at the global path start/end (pre-existing behavior; not
+		// per-subpath and not skipped for closed paths).
 		if i == 0 {
 			addCap(x0, y0, dx, dy, true)
 		}
@@ -967,30 +1081,8 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 			addCap(x1, y1, dx, dy, false)
 		}
 
-		// Round joins between adjacent segments.
-		if i < len(lines)-1 && dc.gs.lineJoin == LineJoinRound {
-			next := lines[i+1]
-			nx, ny := next[1][0]-next[0][0], next[1][1]-next[0][1]
-			nlen := math.Hypot(nx, ny)
-			if nlen > 1e-10 {
-				// Join at x1,y1: fill the angle between current end and next start.
-				a1 := math.Atan2(dy/length, dx/length) - math.Pi/2
-				a2 := math.Atan2(ny/nlen, nx/nlen) - math.Pi/2
-				if a2 < a1 {
-					a1, a2 = a2, a1
-				}
-				const steps = 8
-				for j := 0; j < steps; j++ {
-					aa1 := a1 + (a2-a1)*float64(j)/float64(steps)
-					aa2 := a1 + (a2-a1)*float64(j+1)/float64(steps)
-					out = append(out,
-						pathSeg{op: pathMoveTo, args: [6]float64{x1, y1}},
-						pathSeg{op: pathLineTo, args: [6]float64{x1 + hw*math.Cos(aa1), y1 + hw*math.Sin(aa1)}},
-						pathSeg{op: pathLineTo, args: [6]float64{x1 + hw*math.Cos(aa2), y1 + hw*math.Sin(aa2)}},
-						pathSeg{op: pathClose},
-					)
-				}
-			}
+		if next := nextLine[i]; next >= 0 {
+			emitJoin(i, next)
 		}
 	}
 
