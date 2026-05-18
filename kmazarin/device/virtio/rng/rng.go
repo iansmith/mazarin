@@ -22,6 +22,10 @@ const (
 	VIRTIO_RNG_DEVICE_ID_TRANSITIONAL = 0x1005 // Transitional (legacy compatible)
 )
 
+// dmaBufSize is the maximum bytes of entropy returned per request. The
+// DMA buffer is a single contiguous page, so the whole page is usable.
+const dmaBufSize = constants.PAGE_SIZE
+
 // rngDevice holds the state for the VirtIO RNG PCI device.
 // Embeds virtio.PCIDevice for shared PCI transport state.
 type rngDevice struct {
@@ -29,8 +33,8 @@ type rngDevice struct {
 
 	Eng virtio.Engine // Owns the PCI virtqueue, submit/complete
 
-	// DMA page layout:
-	//   [0..63]  result buffer (up to 64 bytes of entropy per request)
+	// DMA page: one page used as the result buffer (up to dmaBufSize
+	// bytes of entropy per request).
 	DmaPagePA uintptr
 	DmaPageVA uintptr
 
@@ -71,15 +75,15 @@ func Get(buf []byte) int {
 	}
 
 	n := len(buf)
-	if n > 64 {
-		n = 64 // limit to DMA buffer size
+	if n > dmaBufSize {
+		n = dmaBufSize
 	}
 
-	// Zero the DMA result buffer
-	resultBuf := unsafe.Slice((*byte)(unsafe.Pointer(dev.DmaPageVA)), 64)
-	for i := range resultBuf {
-		resultBuf[i] = 0
-	}
+	// Pre-zero only the request window so a short device write doesn't
+	// leave stale entropy in the caller's slice. The trailing bytes in
+	// the DMA buffer are never read (we copy only [:bytesWritten]).
+	resultBuf := unsafe.Slice((*byte)(unsafe.Pointer(dev.DmaPageVA)), dmaBufSize)
+	clear(resultBuf[:n])
 
 	// Build single-descriptor chain: device writes entropy to DMA page
 	var chain virtio.DescChain

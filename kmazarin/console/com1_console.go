@@ -69,19 +69,19 @@ func (c *COM1Console) KWriteString(s string) {
 }
 
 // KPrintf implements Console.KPrintf
-func (c *COM1Console) KPrintf(format string, args ...interface{}) {
+func (c *COM1Console) KPrintf(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	c.KWriteString(s)
 }
 
 // KErrPrintf implements Console.KErrPrintf
-func (c *COM1Console) KErrPrintf(format string, args ...interface{}) {
+func (c *COM1Console) KErrPrintf(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	c.KWriteString(s)
 }
 
 // KPrintHex implements Console.KPrintHex
-func (c *COM1Console) KPrintHex(value interface{}) {
+func (c *COM1Console) KPrintHex(value any) {
 	v := reflect.ValueOf(value)
 	kind := v.Kind()
 
@@ -100,4 +100,3 @@ func (c *COM1Console) KPrintHex(value interface{}) {
 		c.KWriteString("not hex value")
 	}
 }
-

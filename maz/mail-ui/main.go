@@ -7,10 +7,11 @@ package main
 import (
 	"fmt"
 
+	"mazzy/maz/maildb/shared"
 	"mazzy/mazarin/maildbio"
 	"mazzy/mazarin/mancini/linuxapp"
 	"mazzy/mazarin/mancini/std"
-	"mazzy/maz/maildb/shared"
+	"mazzy/mazarin/mazhost"
 )
 
 const (
@@ -18,20 +19,7 @@ const (
 	consoleRows int = 12
 )
 
-// MazEntryPoint holds a reference to MazarinMain to prevent DCE.
-var MazEntryPoint func() = MazarinMain
-
-// MazarinShepherdAddr holds a reference to MazarinShepherd to prevent DCE.
-var MazarinShepherdAddr func(interface{}) error = MazarinShepherd
-
-func init() {
-	if MazEntryPoint == nil {
-		panic("unreachable")
-	}
-	if MazarinShepherdAddr == nil {
-		panic("unreachable")
-	}
-}
+func init() { mazhost.PinEntry(MazarinMain, MazarinShepherd) }
 
 // inj holds the injection result from MazarinShepherd.
 var inj *linuxapp.Injection[maildbio.MailDBIO]
@@ -39,7 +27,7 @@ var inj *linuxapp.Injection[maildbio.MailDBIO]
 // MazarinShepherd receives the MailDBIO injection from the maildb shepherd.
 //
 //go:noinline
-func MazarinShepherd(injected interface{}) error {
+func MazarinShepherd(injected any) error {
 	var err error
 	inj, err = linuxapp.HandleInjection[maildbio.MailDBIO](injected, func(io maildbio.MailDBIO) linuxapp.SetupResult {
 		wmRawCh := make(chan []byte, 8)

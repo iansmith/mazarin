@@ -1221,7 +1221,7 @@ func trackAppBounds(sid int) *trackedApp {
 // doesn't include the interface type in its typelinks.
 //
 //go:noinline
-func forceKeyMapperItab(v interface{}) {
+func forceKeyMapperItab(v any) {
 	inj, ok := v.(mancini.KeyMapperInjector)
 	if !ok {
 		return
@@ -1236,7 +1236,7 @@ func forceKeyMapperItab(v interface{}) {
 // doesn't include the interface type in its typelinks.
 //
 //go:noinline
-func forceFontSvcItab(v interface{}) {
+func forceFontSvcItab(v any) {
 	inj, ok := v.(fontcache.FontSvcInjector)
 	if !ok {
 		return
@@ -1511,13 +1511,7 @@ func wmEventLoop(wmCh <-chan any, inputCh <-chan hid.HIDEvent,
 	}
 }
 
-// MazEntryPoint holds a reference to MazarinMain to prevent DCE of the
-// plugin entry point. The generic shepherd host looks up MazarinMain via
-// mazdl; without this reference the linker would drop the symbol.
-var MazEntryPoint func() = MazarinMain
-
-// MazarinShepherdAddr prevents DCE of MazarinShepherd.
-var MazarinShepherdAddr func(interface{}) error = MazarinShepherd
+func init() { mazhost.PinEntry(MazarinMain, MazarinShepherd) }
 
 // shepherdInit holds the injection from the generic shepherd.
 var shepherdInit mazhost.ShepherdInjector
@@ -1535,7 +1529,7 @@ func forceShepherdInjectorItab(init *mazhost.ShepherdInit) {
 // MazarinShepherd receives ring and fsclient info from the generic shepherd.
 //
 //go:noinline
-func MazarinShepherd(injected interface{}) error {
+func MazarinShepherd(injected any) error {
 	init, ok := injected.(mazhost.ShepherdInjector)
 	if !ok {
 		return fmt.Errorf("rachel: expected mazhost.ShepherdInjector, got %T", injected)
@@ -1676,7 +1670,7 @@ func MazarinMain() {
 		sys.UartWriteString("[rachel] LoadMazBootstrap(keymapper) failed: " + kmErr.Error() + "\n")
 	} else {
 		if kmInitAddr != 0 {
-			shepherdInit := mazdl.Funcval[func(interface{}) error](kmInitAddr)
+			shepherdInit := mazdl.Funcval[func(any) error](kmInitAddr)
 			if err := shepherdInit(kmInit); err != nil {
 				sys.UartWriteString("[rachel] keymapper MazarinShepherd failed: " + err.Error() + "\n")
 			} else if kmInit.Mapper != nil {
@@ -1703,7 +1697,7 @@ func MazarinMain() {
 	} else {
 		// Inject the callback registration into fontsvc via MazarinShepherd.
 		if fontSvcInitAddr != 0 {
-			shepherdInit := mazdl.Funcval[func(interface{}) error](fontSvcInitAddr)
+			shepherdInit := mazdl.Funcval[func(any) error](fontSvcInitAddr)
 			if err := shepherdInit(initData); err != nil {
 				fmt.Printf("[rachel] fontsvc MazarinShepherd failed: %v\n", err)
 			}

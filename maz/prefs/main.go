@@ -9,17 +9,11 @@ import (
 	"image/color"
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini/theme"
+	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
 )
 
-// MazEntryPoint holds a reference to MazarinMain to prevent DCE.
-var MazEntryPoint func() = MazarinMain
-
-func init() {
-	if MazEntryPoint == nil {
-		panic("unreachable")
-	}
-}
+func init() { mazhost.PinEntry(MazarinMain, nil) }
 
 // MazarinMain is the entry point called by the host shepherd when this .maz is loaded.
 //

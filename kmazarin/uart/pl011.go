@@ -77,12 +77,12 @@ func (d *PL011Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 	// TODO: Register interrupt handler when interrupt controller is available
 
 	// Initialize hardware
-	uart.WriteReg(RegCR, 0)              // Disable UART
-	uart.WriteReg(RegIBRD, 26)           // 115200 baud at 24MHz
-	uart.WriteReg(RegFBRD, 3)            // Fractional part
-	uart.WriteReg(RegLCRH, 0x70)         // 8N1, enable FIFOs
-	uart.WriteReg(RegIMSC, 0)            // Interrupts disabled initially
-	uart.WriteReg(RegCR, 0x301)          // Enable UART
+	uart.WriteReg(RegCR, 0)      // Disable UART
+	uart.WriteReg(RegIBRD, 26)   // 115200 baud at 24MHz
+	uart.WriteReg(RegFBRD, 3)    // Fractional part
+	uart.WriteReg(RegLCRH, 0x70) // 8N1, enable FIFOs
+	uart.WriteReg(RegIMSC, 0)    // Interrupts disabled initially
+	uart.WriteReg(RegCR, 0x301)  // Enable UART
 
 	return uart, nil
 }
@@ -95,8 +95,8 @@ type PL011 struct {
 	rxBuf    *RingBuffer
 	txBuf    *RingBuffer
 	ic       deviceapi.InterruptController // Set by WireInterrupts
-	txLock   uint32                         // Spinlock for TX buffer access
-	rxLock   uint32                         // Spinlock for RX buffer access
+	txLock   uint32                        // Spinlock for TX buffer access
+	rxLock   uint32                        // Spinlock for RX buffer access
 }
 
 // IRQ returns the IRQ number for this UART.
@@ -266,19 +266,19 @@ func (c *PL011Console) KWriteString(s string) {
 }
 
 // KPrintf implements console.Console.KPrintf
-func (c *PL011Console) KPrintf(format string, args ...interface{}) {
+func (c *PL011Console) KPrintf(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	c.uart.WriteString(s)
 }
 
 // KErrPrintf implements console.Console.KErrPrintf
-func (c *PL011Console) KErrPrintf(format string, args ...interface{}) {
+func (c *PL011Console) KErrPrintf(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	c.uart.WriteString(s)
 }
 
 // KPrintHex implements console.Console.KPrintHex
-func (c *PL011Console) KPrintHex(value interface{}) {
+func (c *PL011Console) KPrintHex(value any) {
 	v := reflect.ValueOf(value)
 	kind := v.Kind()
 

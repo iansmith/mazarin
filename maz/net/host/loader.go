@@ -28,7 +28,7 @@ func LoadLinkSurfacePlugin(fc fsclient.FSClient, name string, dev linksurface.De
 		return nil, fmt.Errorf("%s: no MazarinShepherd export", path)
 	}
 
-	shepherdInit := mazdl.Funcval[func(interface{}) error](shepherdAddr)
+	shepherdInit := mazdl.Funcval[func(any) error](shepherdAddr)
 	if err := shepherdInit(init); err != nil {
 		return nil, fmt.Errorf("%s MazarinShepherd: %w", path, err)
 	}

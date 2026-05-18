@@ -29,6 +29,7 @@ import (
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
 	mctheme "mazzy/mazarin/mancini/theme"
+	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
@@ -81,14 +82,11 @@ func startUringDispatcher(fc *fontcache.FontCache) {
 	d.Start()
 }
 
+func init() { mazhost.PinEntry(MazarinMain, nil) }
+
 // MazarinMain is the .maz plugin entry point. Identical semantics to main();
 // the dual spelling lets mail build both as legacy ET_EXEC (uses main) and
 // as a .maz plugin (uses MazarinMain via mazdl).
-//
-// MazEntryPoint keeps the symbol alive in plugin builds — without this
-// reference the linker would drop it.
-var MazEntryPoint func() = MazarinMain
-
 func MazarinMain() { main() }
 
 func main() {

@@ -14,7 +14,6 @@ import (
 // SoftIRQConsole implements console.Console by pushing bytes into the
 // topHalfUartRing. Rachel (or any userspace shepherd registered on the
 // UART soft IRQ slot) receives these bytes via WaitSoftIRQ.
-//
 type SoftIRQConsole struct {
 	// pendingWake is set to 1 by nosplit pushes that cannot call
 	// WakeSlotForIRQ. The event poller checks this flag and wakes
@@ -68,7 +67,7 @@ func (c *SoftIRQConsole) KWriteString(s string) {
 
 // KPrintf implements console.Console.KPrintf
 // Not nosplit — safe to call WakeSlotForIRQ directly.
-func (c *SoftIRQConsole) KPrintf(format string, args ...interface{}) {
+func (c *SoftIRQConsole) KPrintf(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	c.KWriteString(s)
 	// Wake immediately since we're in normal Go context
@@ -76,14 +75,14 @@ func (c *SoftIRQConsole) KPrintf(format string, args ...interface{}) {
 }
 
 // KErrPrintf implements console.Console.KErrPrintf
-func (c *SoftIRQConsole) KErrPrintf(format string, args ...interface{}) {
+func (c *SoftIRQConsole) KErrPrintf(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	c.KWriteString(s)
 	c.wake()
 }
 
 // KPrintHex implements console.Console.KPrintHex
-func (c *SoftIRQConsole) KPrintHex(value interface{}) {
+func (c *SoftIRQConsole) KPrintHex(value any) {
 	v := reflect.ValueOf(value)
 	kind := v.Kind()
 

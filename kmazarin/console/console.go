@@ -25,14 +25,14 @@ type Console interface {
 	KWriteString(s string)
 
 	// KPrintf formats and writes to the console (like fmt.Printf).
-	KPrintf(format string, args ...interface{})
+	KPrintf(format string, args ...any)
 
 	// KErrPrintf formats and writes error output to the console.
-	KErrPrintf(format string, args ...interface{})
+	KErrPrintf(format string, args ...any)
 
 	// KPrintHex formats and writes a value in hex with appropriate width.
 	// Uses reflection to determine the type and format integers/pointers accordingly.
-	KPrintHex(value interface{})
+	KPrintHex(value any)
 }
 
 // consoleWrapper wraps a Console interface so atomic.Value always stores the same concrete type.
@@ -163,7 +163,7 @@ func KPrintHex64(val uint64) {
 
 // KPrintf formats and writes to the current console.
 // No-op if no console is set or if suppressed.
-func KPrintf(format string, args ...interface{}) {
+func KPrintf(format string, args ...any) {
 	if isSuppressed() {
 		return
 	}
@@ -176,7 +176,7 @@ func KPrintf(format string, args ...interface{}) {
 
 // KErrPrintf formats and writes error output to the current console.
 // No-op if no console is set or if suppressed.
-func KErrPrintf(format string, args ...interface{}) {
+func KErrPrintf(format string, args ...any) {
 	if isSuppressed() {
 		return
 	}
@@ -190,7 +190,7 @@ func KErrPrintf(format string, args ...interface{}) {
 // KPrintHex formats and writes a value in hex with appropriate width.
 // Uses reflection to determine the type and format integers/pointers accordingly.
 // No-op if no console is set or if suppressed.
-func KPrintHex(value interface{}) {
+func KPrintHex(value any) {
 	if isSuppressed() {
 		return
 	}
@@ -287,19 +287,19 @@ func (c *MMIOUartConsole) KWriteString(s string) {
 }
 
 // KPrintf implements Console.KPrintf
-func (c *MMIOUartConsole) KPrintf(format string, args ...interface{}) {
+func (c *MMIOUartConsole) KPrintf(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	c.KWriteString(s)
 }
 
 // KErrPrintf implements Console.KErrPrintf
-func (c *MMIOUartConsole) KErrPrintf(format string, args ...interface{}) {
+func (c *MMIOUartConsole) KErrPrintf(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	c.KWriteString(s)
 }
 
 // KPrintHex implements Console.KPrintHex
-func (c *MMIOUartConsole) KPrintHex(value interface{}) {
+func (c *MMIOUartConsole) KPrintHex(value any) {
 	v := reflect.ValueOf(value)
 	kind := v.Kind()
 
@@ -318,4 +318,3 @@ func (c *MMIOUartConsole) KPrintHex(value interface{}) {
 		c.KWriteString("not hex value")
 	}
 }
-

@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"mazzy/mazarin/linksurface"
+	"mazzy/mazarin/mazhost"
 )
 
 // Plumbed from MazarinShepherd into MazarinMain. The MazarinShepherd
@@ -31,24 +32,10 @@ var (
 	pendingAlloc linksurface.Allocator
 )
 
-// MazEntryPoint pins MazarinMain so the linker keeps it for the
-// `MazarinMain` export. Same pattern keymapper.maz / ethernet.maz used.
-var MazEntryPoint func() = MazarinMain
-
-// MazarinShepherdAddr pins MazarinShepherd similarly.
-var MazarinShepherdAddr func(interface{}) error = MazarinShepherd
-
-func init() {
-	if MazEntryPoint == nil {
-		panic("unreachable")
-	}
-	if MazarinShepherdAddr == nil {
-		panic("unreachable")
-	}
-}
+func init() { mazhost.PinEntry(MazarinMain, MazarinShepherd) }
 
 // MazarinShepherd is called by net.elf's plugin loader. It type-asserts
-// its `interface{}` arg to linksurface.LinkSurfaceInjector (concrete
+// its `any` arg to linksurface.LinkSurfaceInjector (concrete
 // struct assertions across .maz module boundaries are unreliable —
 // fontcache rule), pulls Device/Allocator/RecvChan, creates the TxChan,
 // and registers it back.
@@ -58,7 +45,7 @@ func init() {
 // host's MazarinShepherd-return path fast.
 //
 //go:noinline
-func MazarinShepherd(arg interface{}) error {
+func MazarinShepherd(arg any) error {
 	inj, ok := arg.(linksurface.LinkSurfaceInjector)
 	if !ok {
 		return fmt.Errorf("gvisor: expected LinkSurfaceInjector, got %T", arg)
@@ -77,11 +64,13 @@ func MazarinShepherd(arg interface{}) error {
 //
 //go:noinline
 func MazarinMain() {
-	if err := buildStack(pendingDev, pendingAlloc); err != nil {
+	s, err := buildStack(pendingDev, pendingAlloc)
+	if err != nil {
 		fmt.Printf("[gvisor] buildStack failed: %v\n", err)
 		return
 	}
 	fmt.Println("[gvisor] stack up; entering RX dispatch loop")
+	go runEchoTest(s)
 	runRxDispatcher()
 }
 

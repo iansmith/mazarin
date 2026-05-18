@@ -1,4 +1,3 @@
-
 // Package kmem provides memory management for the kmazarin kernel.
 // This includes physical frame allocation for heap pages and page table management.
 package kmem
@@ -21,7 +20,7 @@ const KmazarinTotalLimit = 64 * 1024 * 1024 // 64 MB
 // The old separate kernel/user pools are deprecated.
 
 // getRuntimeConfig is provided by main package via go:linkname.
-func getRuntimeConfig() interface{}
+func getRuntimeConfig() any
 
 // Auxv-backed config values, set by archauxv() during runtime init.
 // These replace the old getStartupConfigValue() which read from StartupParams.
@@ -140,40 +139,40 @@ func GetUserFrameStats() (allocated, remaining uint64) {
 // runtimeConfigStruct is a local copy of RuntimeConfig to avoid circular imports.
 // Must match the layout in shared/constants/runtime_config.go exactly.
 type runtimeConfigStruct struct {
-	Magic                uint32
-	Version              uint32
-	DtbPhysAddr          uint64
-	DtbSize              uint64
-	DtbVirtAddr          uint64 // High-memory virtual address of DTB
-	KmazarinPhysAddr     uint64
-	KmazarinSize         uint64
-	FramePoolStart       uint64
-	FramePoolEnd         uint64
-	KernelUartBase       uint64
-	KernelGicBase        uint64
-	TTBR1L0Phys          uint64
-	TTBR0L0Phys          uint64
-	StartupParamsAddr    uint64
-	KernelVAOffset       uint64
-	KernelPTPoolStart    uint64
-	KernelPTPoolEnd      uint64
-	KernelHeapStart      uint64
-	KernelHeapEnd        uint64
-	PageSize             uint64
-	HWCap                uint64
-	G0StackBottom        uint64
-	G0StackTop           uint64
-	G0StackSize          uint64 // Size of g0 stack
-	ExceptionStackBottom uint64 // Bottom of exception stack
-	ExceptionStackTop    uint64
-	ExceptionStackSize   uint64
-	G0StructAddr         uint64
+	Magic                  uint32
+	Version                uint32
+	DtbPhysAddr            uint64
+	DtbSize                uint64
+	DtbVirtAddr            uint64 // High-memory virtual address of DTB
+	KmazarinPhysAddr       uint64
+	KmazarinSize           uint64
+	FramePoolStart         uint64
+	FramePoolEnd           uint64
+	KernelUartBase         uint64
+	KernelGicBase          uint64
+	TTBR1L0Phys            uint64
+	TTBR0L0Phys            uint64
+	StartupParamsAddr      uint64
+	KernelVAOffset         uint64
+	KernelPTPoolStart      uint64
+	KernelPTPoolEnd        uint64
+	KernelHeapStart        uint64
+	KernelHeapEnd          uint64
+	PageSize               uint64
+	HWCap                  uint64
+	G0StackBottom          uint64
+	G0StackTop             uint64
+	G0StackSize            uint64 // Size of g0 stack
+	ExceptionStackBottom   uint64 // Bottom of exception stack
+	ExceptionStackTop      uint64
+	ExceptionStackSize     uint64
+	G0StructAddr           uint64
 	_reservedAsyncPreempt1 uint64 // Padding (was AsyncPreemptAddr — now unused)
 	_reservedAsyncPreempt2 uint64 // Padding (was ReadyForAsyncPreempt — now unused)
-	FramebufferPhysAddr  uint64
-	FramebufferSize      uint64
-	BootImagePhysAddr    uint64
-	BootImageSize        uint64
+	FramebufferPhysAddr    uint64
+	FramebufferSize        uint64
+	BootImagePhysAddr      uint64
+	BootImageSize          uint64
 	// New userspace memory region fields
 	TotalRAMSize            uint64
 	RAMBaseAddr             uint64
@@ -224,4 +223,3 @@ func GetRuntimeConfig() *RuntimeConfig {
 		KernelVAOffset: cfg.KernelVAOffset,
 	}
 }
-

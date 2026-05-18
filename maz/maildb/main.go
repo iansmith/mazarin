@@ -27,7 +27,7 @@ import (
 // descriptor and all method wrappers for *MailDBIOInit.
 //
 //go:noinline
-func forceMailDBIOItab(v interface{}) {
+func forceMailDBIOItab(v any) {
 	io, ok := v.(maildbio.MailDBIO)
 	if !ok {
 		return
@@ -145,14 +145,11 @@ func handleList(cs *collectionStore, ms *MessageStore, respCh chan<- shared.Resp
 	}()
 }
 
+func init() { mazhost.PinEntry(MazarinMain, nil) }
+
 // MazarinMain is the .maz plugin entry point. Identical semantics to main();
 // the dual spelling lets maildb build both as legacy ET_EXEC (uses main) and
 // as a .maz plugin (uses MazarinMain via mazdl).
-//
-// MazEntryPoint keeps the symbol alive in plugin builds — without this
-// reference the linker would drop it.
-var MazEntryPoint func() = MazarinMain
-
 func MazarinMain() { main() }
 
 func main() {
@@ -276,7 +273,7 @@ func main() {
 	if uiInitAddr != 0 {
 		type funcval struct{ fn uintptr }
 		fv := &funcval{fn: uiInitAddr}
-		shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+		shepherdInit := *(*func(any) error)(unsafe.Pointer(&fv))
 		if err := shepherdInit(ioInit); err != nil {
 			mlogErrorf("[maildb] mail-ui MazarinShepherd failed: %v", err)
 		}

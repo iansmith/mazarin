@@ -42,7 +42,7 @@ func NewLinkSurfaceInit(dev linksurface.Device, alloc *Allocator) *linksurface.L
 // (keeps the *deviceImpl + *Allocator method sets live).
 //
 //go:noinline
-func ForceLinkSurfaceItab(v interface{}) {
+func ForceLinkSurfaceItab(v any) {
 	inj, ok := v.(linksurface.LinkSurfaceInjector)
 	if !ok {
 		return
@@ -58,7 +58,19 @@ func ForceLinkSurfaceItab(v interface{}) {
 	dev.GetEthernetAddr()
 	dev.Headroom()
 	_ = dev.Allocator()
-	_ = alloc.AllocTx()
+	sp := alloc.AllocTx()
+	if sp != nil {
+		// Exercise SendPacket methods so the linker keeps them; plugins
+		// call these through the interface and the host never does.
+		_ = sp.VABase()
+		_ = sp.Offset()
+		alloc.ReleaseTx(sp)
+	}
+	// Same for ReceivePacket. NewRxPacket(0,0,0) is just a method-pinning
+	// vehicle — never Release()d (Release would pollute the pool with VA=0).
+	rp := NewRxPacket(0, 0, 0)
+	_ = rp.VABase()
+	_ = rp.Offset()
+	_ = rp.Len()
 	alloc.Release(nil)
-	alloc.ReleaseTx(nil)
 }

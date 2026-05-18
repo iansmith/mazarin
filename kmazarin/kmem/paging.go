@@ -416,11 +416,13 @@ func allocPTPage() uintptr {
 	// Convert PA to VA using kernel VA offset (use constant to avoid deep config chain)
 	va := pa + constants.KernelVAOffset
 
-	// Zero the page
+	// Zero the page. clear() compiles to memclr without a bounds-check
+	// chain — important here because allocPTPage sits on the nosplit
+	// stack-budget path from SyscallWrite via CopyFromUser fault-on-miss,
+	// and a manual indexed loop pulls panicBounds/panicBounds64 into the
+	// reachable set (~224 bytes), blowing the 792-byte limit.
 	ptr := (*[512]uint64)(unsafe.Pointer(va))
-	for i := 0; i < 512; i++ {
-		ptr[i] = 0
-	}
+	clear(ptr[:])
 
 	// Queue deferred record for bottom-half page tracking.
 	// Use cached IDs from the current page fault context (set by HandlePageFault
@@ -2803,11 +2805,27 @@ func CopyFromUser(dst []byte, userVA uintptr, n int) bool {
 		}
 		return true
 	}
+	// Linux's copy_from_user gets fault-on-miss "for free" via the exception
+	// table — a fault during the user read transparently demand-pages and
+	// retries. We open-code the same semantics: walk → if miss,
+	// EnsureUserPageMapped → re-walk. Matters for syscall buffers Go
+	// allocated via mmap MAP_ANON but never touched (Go skips memclr on
+	// guaranteed-zero arena pages); demand-faulting yields a zero page,
+	// which is what Linux would deliver.
+	l0PA := uintptr(readCurrentL0PA())
 	copied := 0
 	for copied < n {
-		pa := WalkUserPageTable(userVA + uintptr(copied))
+		va := userVA + uintptr(copied)
+		pa := WalkUserPageTable(va)
 		if pa == 0 {
-			return false
+			if l0PA == 0 {
+				return false
+			}
+			pagePA, ok := EnsureUserPageMappedWithL0(va, l0PA)
+			if !ok {
+				return false
+			}
+			pa = pagePA | (va & (PageSize - 1))
 		}
 		pagePA := pa &^ (PageSize - 1)
 		pageOffset := pa & (PageSize - 1)

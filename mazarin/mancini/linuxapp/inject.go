@@ -53,7 +53,7 @@ type Injection[T any] struct {
 //
 // Call this from MazarinShepherd. Store the returned Injection and
 // pass it to Bootstrap from MazarinMain.
-func HandleInjection[T any](injected interface{}, setup func(T) SetupResult) (*Injection[T], error) {
+func HandleInjection[T any](injected any, setup func(T) SetupResult) (*Injection[T], error) {
 	if injected == nil {
 		rawPuts("[linuxapp] HandleInjection: nil injection\n")
 		return nil, fmt.Errorf("nil injection")

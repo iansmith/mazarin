@@ -27,7 +27,7 @@ import (
 // constructing a funcval from the returned second return value.
 //
 // On success, returns a func() that the caller should run as a goroutine.
-func LoadMazBootstrap(fc fsclient.FSClient, filename string, _ interface{}) (func(), uintptr, *merror.Error) {
+func LoadMazBootstrap(fc fsclient.FSClient, filename string, _ any) (func(), uintptr, *merror.Error) {
 	return loadMazInternal(fc, filename)
 }
 

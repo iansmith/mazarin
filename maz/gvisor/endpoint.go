@@ -111,7 +111,20 @@ func (e *rawEndpoint) writeOne(pb *stack.PacketBuffer) bool {
 
 	base := sp.VABase() + uintptr(sp.Offset())
 	written := 0
-	for _, s := range pb.AsSlices() {
+	// Iterate the underlying view list directly to avoid the per-packet
+	// [][]byte allocation that pb.AsSlices() makes. AsViewList returns the
+	// raw ViewList plus a header offset that may fall inside the first
+	// view (mirrors gvisor's own fdbased TX path in
+	// pkg/tcpip/link/fdbased/endpoint.go:695-730). Caller must not save
+	// or modify the list.
+	views, offset := pb.AsViewList()
+	view := views.Front()
+	for ; view != nil && offset >= view.Size(); view = view.Next() {
+		offset -= view.Size()
+	}
+	for ; view != nil; view = view.Next() {
+		s := view.AsSlice()[offset:]
+		offset = 0
 		dst := unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(written))), len(s))
 		copy(dst, s)
 		written += len(s)

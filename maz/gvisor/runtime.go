@@ -1,6 +1,9 @@
 package main
 
 import (
+	"sync/atomic"
+	"time"
+
 	"mazzy/mazarin/linksurface"
 	"mazzy/shared/constants"
 )
@@ -25,16 +28,25 @@ var (
 // Debug counters bumped via atomic.AddUint64.
 var (
 	dbgRxNoDispatcher uint64 // RX arrived before stack was Attach()ed
+	dbgRxPanic        uint64 // deliverRx panicked; goroutine respawned
 	dbgTxAllocFail    uint64 // AllocTx returned nil (pool / hard watermark)
 	dbgTxChanFull     uint64 // txChan full, packet dropped
 	dbgTxOversize     uint64 // PacketBuffer > pageSize - VirtIONetHdrSize
 )
 
 // runRxDispatcher drains RecvChan and hands each RxEnvelope to the
-// rawEndpoint. gvisor's NetworkDispatcher.DeliverNetworkPacket is
-// concurrent-safe, so a worker fan-out is a drop-in if profiling
-// warrants it. Single-threaded until then.
+// rawEndpoint. A deferred recover catches panics from deliverRx (gvisor
+// parsing bugs on adversarial input have bitten us on the @go branch);
+// on panic we respawn after a short backoff so a recurring panic
+// becomes a counter-flood rather than a CPU spin.
 func runRxDispatcher() {
+	defer func() {
+		if r := recover(); r != nil {
+			atomic.AddUint64(&dbgRxPanic, 1)
+			time.Sleep(100 * time.Millisecond)
+			go runRxDispatcher()
+		}
+	}()
 	for env := range globalRecvChan {
 		globalRawEP.deliverRx(env)
 	}

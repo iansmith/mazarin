@@ -13,7 +13,7 @@ import (
 //
 //go:linkname getRuntimeConfigForKmem mazzy/kmazarin/kmem.getRuntimeConfig
 //go:nosplit
-func getRuntimeConfigForKmem() interface{} {
+func getRuntimeConfigForKmem() any {
 	return getFullConfig()
 }
 
@@ -29,7 +29,7 @@ func processDeadlinesForKirq() {
 //
 //go:linkname getRuntimeConfigForKsyscall mazzy/kmazarin/ksyscall.getRuntimeConfig
 //go:nosplit
-func getRuntimeConfigForKsyscall() interface{} {
+func getRuntimeConfigForKsyscall() any {
 	return getFullConfig()
 }
 
@@ -298,5 +298,3 @@ func kernelYieldForKsyscall() {
 func setThread0PendingDeadlineForKsyscall(deadline uint64) {
 	thread0PendingDeadline = deadline
 }
-
-

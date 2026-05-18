@@ -14,22 +14,24 @@ import (
 	"mazzy/mazarin/linksurface"
 )
 
-const (
-	// nicID is the gvisor NIC identifier we attach our LinkEndpoint to.
-	// One NIC per shepherd — multi-NIC isn't a thing in mazarin yet.
-	nicID tcpip.NICID = 1
+// nicID is the gvisor NIC identifier we attach our LinkEndpoint to.
+// One NIC per shepherd — multi-NIC isn't a thing in mazarin yet.
+const nicID tcpip.NICID = 1
 
-	// hostV4 / gwV4 / v4PrefixLen: hardcoded SLIRP defaults. DHCP and
-	// SLAAC are deferred (MAZ-33 covers v6).
-	hostV4      = "\x0a\x00\x02\x0f" // 10.0.2.15
-	gwV4        = "\x0a\x00\x02\x02" // 10.0.2.2 (SLIRP gateway)
-	v4PrefixLen = 24
+// v4PrefixLen is the /24 prefix for the SLIRP subnet.
+const v4PrefixLen = 24
+
+// hostV4 / gwV4: hardcoded SLIRP defaults. DHCP and SLAAC are deferred
+// (MAZ-33 covers v6).
+var (
+	hostV4 = tcpip.AddrFrom4([4]byte{10, 0, 2, 15})
+	gwV4   = tcpip.AddrFrom4([4]byte{10, 0, 2, 2})
 )
 
 // buildStack constructs the tcpip.Stack, wraps the inner rawEndpoint
 // with link/ethernet for L2 framing, attaches it as NIC nicID, and
 // installs the static IPv4 address + default route.
-func buildStack(dev linksurface.Device, alloc linksurface.Allocator) error {
+func buildStack(dev linksurface.Device, alloc linksurface.Allocator) (*stack.Stack, error) {
 	s := stack.New(stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			arp.NewProtocol,
@@ -50,7 +52,7 @@ func buildStack(dev linksurface.Device, alloc linksurface.Allocator) error {
 	}
 
 	if err := s.CreateNIC(nicID, ethernet.New(globalRawEP)); err != nil {
-		return fmt.Errorf("CreateNIC: %v", err)
+		return nil, fmt.Errorf("CreateNIC: %v", err)
 	}
 
 	// ARP is auto-handled by the NIC once an IPv4 address is bound;
@@ -59,21 +61,21 @@ func buildStack(dev linksurface.Device, alloc linksurface.Allocator) error {
 	if err := s.AddProtocolAddress(nicID, tcpip.ProtocolAddress{
 		Protocol: ipv4.ProtocolNumber,
 		AddressWithPrefix: tcpip.AddressWithPrefix{
-			Address:   tcpip.AddrFromSlice([]byte(hostV4)),
+			Address:   hostV4,
 			PrefixLen: v4PrefixLen,
 		},
 	}, stack.AddressProperties{}); err != nil {
-		return fmt.Errorf("AddProtocolAddress(IPv4): %v", err)
+		return nil, fmt.Errorf("AddProtocolAddress(IPv4): %v", err)
 	}
 
 	s.SetRouteTable([]tcpip.Route{
 		{
 			Destination: header.IPv4EmptySubnet,
-			Gateway:     tcpip.AddrFromSlice([]byte(gwV4)),
+			Gateway:     gwV4,
 			NIC:         nicID,
 		},
 	})
-	return nil
+	return s, nil
 }
 
 // macFromInt64 unpacks the BE-int64 MAC convention (low 6 bytes carry

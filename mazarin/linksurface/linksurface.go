@@ -88,7 +88,7 @@ type Allocator interface {
 }
 
 // LinkSurfaceInjector is the cross-.maz contract for the net.elf ⇄ L3-plugin
-// boundary. The plugin's MazarinShepherd type-asserts its `interface{}` arg
+// boundary. The plugin's MazarinShepherd type-asserts its `any` arg
 // to this interface (not the concrete *LinkSurfaceInit — concrete-struct
 // assertions across .maz module boundaries are unreliable).
 type LinkSurfaceInjector interface {
