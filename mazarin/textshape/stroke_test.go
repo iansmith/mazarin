@@ -141,6 +141,94 @@ func TestStrokeExpand_MiterFallbackThreshold(t *testing.T) {
 	}
 }
 
+// Regression: stray line ops after pathClose (no intervening MoveTo) must
+// not OOB on nextLine, and should be treated as an implicit subpath rooted
+// at the close point. Caught by CodeRabbit on the initial MAZ-30 PR.
+func TestStrokeExpand_StrayLineAfterClose(t *testing.T) {
+	dc := newStrokeTestDC(LineJoinMiter)
+	dc.path = []pathSeg{
+		{op: pathMoveTo, args: [6]float64{10, 10}},
+		{op: pathLineTo, args: [6]float64{50, 10}},
+		{op: pathClose},                              // appends (50,10→10,10), wraps to first
+		{op: pathLineTo, args: [6]float64{30, 30}},   // implicit subpath: (10,10→30,30)
+	}
+
+	// Must not panic. Should emit: 3 quads (line0, close-line, stray) +
+	// 1 miter join at the wraparound (line0↔close) × 2 triangles. The
+	// stray line is alone in its implicit subpath, so no join with it.
+	expanded := dc.strokeExpand()
+	if got := countShapes(expanded); got != 5 {
+		t.Errorf("M L Z L: got %d shapes, want 5 (3 quads + 1 miter × 2 triangles)", got)
+	}
+}
+
+// Regression: round join must use the shortest arc, not numeric sort of raw
+// Atan2 results. Two segments whose directions straddle the ±π branch cut
+// would otherwise produce a ~2π fan instead of a tiny corner fan.
+func TestStrokeExpand_RoundJoinBranchCut(t *testing.T) {
+	dc := newStrokeTestDC(LineJoinRound)
+	dc.gs.lineWidth = 0.002
+	const eps = 0.01
+	dc.path = []pathSeg{
+		{op: pathMoveTo, args: [6]float64{1, eps}},  // seg1 into origin: atan2 ≈ -π + ε
+		{op: pathLineTo, args: [6]float64{0, 0}},
+		{op: pathLineTo, args: [6]float64{-1, eps}}, // seg2 from origin: atan2 ≈ +π - ε
+	}
+
+	// Walk shapes by MoveTo boundaries, collect only fan triangles
+	// (addTri = M+L+L+Z, 2 LineTos; quad = M+L+L+L+Z, 3 LineTos). Fan
+	// triangles have MoveTo at the pivot (origin in this test).
+	expanded := dc.strokeExpand()
+	var fanVerts [][2]float64
+	for i := 0; i < len(expanded); {
+		if expanded[i].op != pathMoveTo {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(expanded) && expanded[j].op == pathLineTo {
+			j++
+		}
+		if j-i-1 == 2 && near(expanded[i].args[0], 0) && near(expanded[i].args[1], 0) {
+			fanVerts = append(fanVerts, [2]float64{expanded[i+1].args[0], expanded[i+1].args[1]})
+			fanVerts = append(fanVerts, [2]float64{expanded[i+2].args[0], expanded[i+2].args[1]})
+		}
+		i = j + 1 // skip past pathClose
+	}
+	if len(fanVerts) == 0 {
+		t.Fatal("no fan triangles found")
+	}
+	// Real sweep ~2ε rad → chord on hw=0.001 ≈ 2e-5. A full 2π fan has
+	// max chord = diameter = 2·hw = 2e-3. A threshold of hw/4 cleanly separates.
+	maxDist := 0.0
+	for i := range fanVerts {
+		for j := i + 1; j < len(fanVerts); j++ {
+			d := math.Hypot(fanVerts[i][0]-fanVerts[j][0], fanVerts[i][1]-fanVerts[j][1])
+			if d > maxDist {
+				maxDist = d
+			}
+		}
+	}
+	if maxDist > dc.gs.lineWidth/4 {
+		t.Errorf("round-join fan max chord %.6f > %.6f — branch-cut bug regressed",
+			maxDist, dc.gs.lineWidth/4)
+	}
+}
+
+// Regression: closed subpaths must emit no caps (the wrap fills the seam).
+// Before the per-subpath cap fix, LineCapRound on a closed rect would emit
+// 32 spurious cap triangles at the closure seam.
+func TestStrokeExpand_ClosedRectNoCaps(t *testing.T) {
+	dc := newStrokeTestDC(LineJoinMiter)
+	dc.gs.lineCap = LineCapRound // would emit 16 fan triangles per cap if buggy
+	dc.path = closedRectPath(10, 10, 40, 40)
+
+	// 4 quads + 4 miter joins × 2 triangles = 12. Caps must contribute 0.
+	if got := countShapes(dc.strokeExpand()); got != 12 {
+		t.Errorf("closed rect with LineCapRound: got %d shapes, want 12 (caps must be skipped on closed subpaths)", got)
+	}
+}
+
 func near(a, b float64) bool {
 	return math.Abs(a-b) < 1e-6
 }

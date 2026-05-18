@@ -903,12 +903,35 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 				finalizeSubpath(true)
 			}
 			curX, curY = subStartX, subStartY
+			// Any line-producing op after Close (no intervening MoveTo)
+			// starts an implicit subpath at the close point. Without
+			// this reset, subAlreadyClosed=true would leave the new
+			// subpath's nextLine entry at its tentative value (= len(lines)),
+			// which then OOBs when emitJoin dereferences it.
+			subStartX, subStartY = curX, curY
+			subStartLine = len(lines)
+			subAlreadyClosed = false
 		}
 	}
 	finalizeSubpath(false) // finalize trailing subpath if it didn't end with Close
 
 	if len(lines) == 0 {
 		return nil
+	}
+
+	// prevLine[i] is the index of the line that precedes line i within
+	// the same subpath, or -1 if line i is the first in a subpath. Used
+	// (along with nextLine) to detect subpath endpoints for cap emission:
+	// open-subpath endpoints get caps; closed-subpath lines never do
+	// (their nextLine/prevLine always reference another line via wrap).
+	prevLine := make([]int, len(lines))
+	for i := range prevLine {
+		prevLine[i] = -1
+	}
+	for i, n := range nextLine {
+		if n >= 0 && n < len(lines) {
+			prevLine[n] = i
+		}
 	}
 
 	hw := dc.gs.lineWidth / 2
@@ -998,15 +1021,23 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 
 		switch dc.gs.lineJoin {
 		case LineJoinRound:
+			// Normalize the sweep to the shortest arc so the ±π branch
+			// cut of Atan2 doesn't turn a tiny corner into a ~360° fan.
 			a1 := math.Atan2(dy, dx) - math.Pi/2
 			a2 := math.Atan2(ny, nx) - math.Pi/2
-			if a2 < a1 {
-				a1, a2 = a2, a1
+			delta := a2 - a1
+			if delta > math.Pi {
+				delta -= 2 * math.Pi
+			} else if delta < -math.Pi {
+				delta += 2 * math.Pi
+			}
+			if delta < 0 {
+				a1, delta = a1+delta, -delta // start at the other endpoint, sweep forward
 			}
 			const steps = 8
 			for j := 0; j < steps; j++ {
-				aa1 := a1 + (a2-a1)*float64(j)/float64(steps)
-				aa2 := a1 + (a2-a1)*float64(j+1)/float64(steps)
+				aa1 := a1 + delta*float64(j)/float64(steps)
+				aa2 := a1 + delta*float64(j+1)/float64(steps)
 				addTri(
 					P,
 					[2]float64{P[0] + hw*math.Cos(aa1), P[1] + hw*math.Sin(aa1)},
@@ -1072,12 +1103,12 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 		p3 := [2]float64{x1 + px, y1 + py}
 		addQuad(p0, p1, p2, p3)
 
-		// Caps at the global path start/end (pre-existing behavior; not
-		// per-subpath and not skipped for closed paths).
-		if i == 0 {
+		// Caps at open-subpath endpoints only. Closed subpaths never
+		// trigger a cap because the wrap fills both nextLine and prevLine.
+		if prevLine[i] == -1 {
 			addCap(x0, y0, dx, dy, true)
 		}
-		if i == len(lines)-1 {
+		if nextLine[i] == -1 {
 			addCap(x1, y1, dx, dy, false)
 		}
 
