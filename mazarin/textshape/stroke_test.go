@@ -69,7 +69,7 @@ func TestStrokeExpand_MiterLimitFallback(t *testing.T) {
 	// At a 90° corner sin(halfAngle) = √2/2 ≈ 0.707, so any miterLimit < √2
 	// forces fallback.
 	dc := newStrokeTestDC(LineJoinMiter)
-	dc.gs.miterLimit = 1.0
+	dc.SetMiterLimit(1.0)
 	dc.path = closedRectPath(10, 10, 40, 40)
 
 	expanded := dc.strokeExpand()
@@ -124,7 +124,7 @@ func TestStrokeExpand_OpenPathNoWraparound(t *testing.T) {
 // 50° is below.
 func TestStrokeExpand_MiterFallbackThreshold(t *testing.T) {
 	dc := newStrokeTestDC(LineJoinMiter)
-	dc.gs.miterLimit = 2.0
+	dc.SetMiterLimit(2.0)
 
 	// Two segments meeting at the origin with a 50° interior angle.
 	const thetaDeg = 50.0
