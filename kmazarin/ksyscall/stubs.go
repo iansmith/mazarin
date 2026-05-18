@@ -507,9 +507,10 @@ func SyscallClockGettime(clockid, timespecPtr, _, _, _, _ uint64) int64 {
 // VirtIO RNG device. Returns the number of bytes written, or a negative
 // errno on failure.
 //
-// virtio-rng caps each request at 64 bytes (the DMA result buffer size
-// in the rng driver), so we loop. CopyToUser handles demand-faulting
-// for Go-runtime-lazy mmap pages — see kmem/paging.go:CopyToUser.
+// We loop in 64-byte chunks because SyscallGetrandom is //go:nosplit
+// and a larger on-stack buffer would blow the nosplit budget shared
+// with CopyToUser's fault-on-miss chain. The rng driver itself can
+// serve up to a full page per request.
 //
 // If virtio-rng isn't initialized (no device on the PCI bus), returns
 // ENOSYS so callers can fall back. Linux callers like gvisor's pkg/rand
@@ -532,11 +533,18 @@ func SyscallGetrandom(bufPtr, count, _, _, _, _ uint64) int64 {
 		n := min(remaining, 64)
 		got := rng.Get(chunk[:n])
 		if got == 0 {
-			// RNG not initialized / device hung. ENOSYS lets the caller
-			// know to fall back.
+			// RNG not initialized / device hung. If we already copied
+			// some bytes, surface the partial success; only return
+			// ENOSYS on a zero-byte total so callers can fall back.
+			if offset > 0 {
+				return int64(offset)
+			}
 			return -38 // ENOSYS
 		}
 		if !kmem.CopyToUser(uintptr(bufPtr+offset), chunk[:got]) {
+			if offset > 0 {
+				return int64(offset)
+			}
 			return -14 // EFAULT
 		}
 		offset += uint64(got)

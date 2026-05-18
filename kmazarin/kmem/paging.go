@@ -81,6 +81,28 @@ func currentShepherdSpanContains(addr uint64) bool {
 	return p.Spans.Contains(addr)
 }
 
+// inAllocatedUserRegion returns true if va falls within a region the
+// current shepherd has been granted: the MAP_FIXED slot below
+// userMmapStart, the bump-allocated mmap region, or any registered
+// span. Used as the gate before demand-mapping a frame so a crafted
+// address can't force the kernel to materialize a mapping outside the
+// shepherd's allocations.
+//
+//go:nosplit
+func inAllocatedUserRegion(va uint64) bool {
+	const minUserAddr = 0x10000
+	if va < minUserAddr {
+		return false
+	}
+	if va < userMmapStart {
+		return true
+	}
+	if va < currentShepherdBumpEnd() {
+		return true
+	}
+	return currentShepherdSpanContains(va)
+}
+
 // debugPrint conditionally outputs a character if debugging is enabled.
 //
 //go:nosplit
@@ -746,21 +768,11 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 		return false
 	}
 
-	// Get the current mmap allocation end (addresses >= this were NOT allocated)
-	allocEnd := currentShepherdBumpEnd()
-
-	// For UNMAPPED pages, validate the address is in a known allocation region:
-	// 1. MAP_FIXED region: 0x10000 to userMmapStart — ELF, thread stacks, Go heap arenas, etc.
-	// 2. Bump-allocated region: userMmapStart to allocEnd — file-backed mmaps, anon mmaps
-	// 3. Hint-based allocations: tracked in the span list (can be anywhere in userspace range)
-	const minUserAddr = 0x10000 // Minimum userspace address (64KB, above NULL guard)
-	inMapFixedRegion := uint64(faultAddr) >= minUserAddr && uint64(faultAddr) < userMmapStart
-	inBumpRegion := uint64(faultAddr) >= userMmapStart && uint64(faultAddr) < allocEnd
-	inSpanRegion := currentShepherdSpanContains(uint64(faultAddr))
-
-	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
-		// Debug: if fault is below 0x10000, log shepherd and file mapping info
-		if uint64(faultAddr) < minUserAddr {
+	// Validate the unmapped fault address is in an allocated region:
+	// MAP_FIXED slot (ELF/stacks/Go heap), bump-allocated mmap, or a
+	// registered span (hint-based mmaps).
+	if !inAllocatedUserRegion(uint64(faultAddr)) {
+		if uint64(faultAddr) < 0x10000 {
 			logLowFaultDebug(faultAddr)
 		}
 		serial.RawUART('!')
@@ -912,14 +924,7 @@ func DemandMapUserPage(va uintptr, l0PA uintptr) uintptr {
 	pfContextShepherdID = currentShepherdID()
 	pfContextThreadID = getCurrentThreadTID()
 
-	// Validate address is in a known allocation region
-	allocEnd := currentShepherdBumpEnd()
-	const minUserAddr = 0x10000
-	inMapFixedRegion := uint64(va) >= minUserAddr && uint64(va) < userMmapStart
-	inBumpRegion := uint64(va) >= userMmapStart && uint64(va) < allocEnd
-	inSpanRegion := currentShepherdSpanContains(uint64(va))
-
-	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
+	if !inAllocatedUserRegion(uint64(va)) {
 		klog.Errf("[DemandMap] VA 0x%x not in valid region\n", va)
 		return 0
 	}
@@ -2767,6 +2772,14 @@ func EnsureUserPageMappedWithL0(userVA uintptr, l0PA uintptr) (uintptr, bool) {
 
 	if pa := WalkUserPTLean(pageAddr, l0PA); pa != 0 {
 		return pa, true
+	}
+
+	// Refuse to demand-map outside the shepherd's allocated regions —
+	// without this, a crafted syscall-buffer pointer routed through
+	// CopyFromUser/CopyToUser fault-on-miss can force the kernel to
+	// materialize a mapping anywhere in the VA space.
+	if !inAllocatedUserRegion(uint64(pageAddr)) {
+		return 0, false
 	}
 
 	pfContextShepherdID = currentShepherdID()

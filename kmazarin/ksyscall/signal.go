@@ -119,13 +119,20 @@ func SyscallSigaltstack(newPtr, oldPtr, _, _, _, _ uint64) int64 {
 			// BuildSignalFrame writes the signal frame at the top of this stack
 			// from nosplit kernel context where the nosplit budget is too tight
 			// for demand-paging allocation. Pre-faulting here (in the syscall
-			// path, which has more budget) ensures the pages are mapped.
+			// path, which has more budget) ensures the pages are mapped. If
+			// either pre-fault fails the stack the caller gave us is bad —
+			// surface as EFAULT now rather than crashing later in
+			// BuildSignalFrame.
 			l0PA := uintptr(kmem.ReadCurrentL0PA())
 			if l0PA != 0 && size > 0 {
 				top := uintptr(sp + uint64(size) - 1)
-				_, _ = kmem.EnsureUserPageMappedWithL0(top, l0PA)
+				if _, ok := kmem.EnsureUserPageMappedWithL0(top, l0PA); !ok {
+					return -14 // EFAULT
+				}
 				if size > 4096 {
-					_, _ = kmem.EnsureUserPageMappedWithL0(top-4096, l0PA)
+					if _, ok := kmem.EnsureUserPageMappedWithL0(top-4096, l0PA); !ok {
+						return -14 // EFAULT
+					}
 				}
 			}
 		}

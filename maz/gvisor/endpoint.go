@@ -55,7 +55,10 @@ func (e *rawEndpoint) Attach(d stack.NetworkDispatcher) {
 		e.dispatcher.Store(nil)
 		return
 	}
-	e.dispatcher.Store(&d)
+	// Explicit heap holder — readability over relying on escape analysis.
+	dp := new(stack.NetworkDispatcher)
+	*dp = d
+	e.dispatcher.Store(dp)
 }
 
 func (e *rawEndpoint) IsAttached() bool {
