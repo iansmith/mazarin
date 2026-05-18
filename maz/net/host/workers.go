@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"mazzy/mazarin/linksurface"
 	"mazzy/mazarin/sys"
@@ -21,32 +22,19 @@ const TxWorkers = 64
 // (256). Refusing to submit when full beats overflowing the SQ.
 const MaxInflightTx = 200
 
-// Page-layout constants — see mazarin/linksurface package doc + maz/
-// ethernet/framing.go for the matching plugin-side numbers.
-const (
-	// VirtIONetHdrSize is the virtio-net hardware-spec header on every
-	// RX and TX buffer. The host owns it; the EthFraming plugin never
-	// sees it (Validate gets a buffer where it's already stripped, and
-	// AddSendBytes zeros it as part of writing the wire bytes).
-	VirtIONetHdrSize = 12
-
-	// TxAlignmentPad is the 6-byte unused prefix on outbound pages
-	// (TX only). Lets the wire bytes start at page+6 so [virtio_net_hdr
-	// (12)][eth (14)] + L3 puts L3 at offset 32 = round_up(26, 16).
-	// EthFraming.AddSendBytes returns wireOffset=TxAlignmentPad and
-	// net.elf passes that as the SQE's Off field; the kernel computes
-	// desc.Addr = pagePA + Off so the page-alignment check on the SQE
-	// Addr is still satisfied.
-	TxAlignmentPad = 6
-)
+// VirtIONetHdrSize is the 12-byte virtio-net hardware header that prefixes
+// every RX and TX buffer. Net.elf owns it; the L3 plugin never sees it
+// (RX pages are handed out with Offset=12 already past it; TX pages
+// reserve 12 bytes at the front for net.elf to zero before submission).
+const VirtIONetHdrSize = 12
 
 // Dispatcher is the single CQE-drain goroutine for the net io_uring
 // ring. It services both RX and TX completions:
 //
-//   - RX: Framing.ValidateReceivePacket peels the L2 header; an
-//     RxEnvelope is non-blocking-sent on RecvChan (drop + counter bump
-//     if full); a fresh page is pulled from Allocator and pinned to the
-//     descriptor slot via a re-arm SQE.
+//   - RX: hand the page (advanced past virtio_net_hdr) to the plugin via
+//     a non-blocking send on RecvChan (drop + counter bump if full); a
+//     fresh page is pulled from Allocator and pinned to the descriptor
+//     slot via a re-arm SQE.
 //   - TX: pageVA is looked up in inflight; alloc.ReleaseRaw returns
 //     the page to the pool.
 //
@@ -56,7 +44,6 @@ type Dispatcher struct {
 	Ring      *iouring.IORing
 	RingID    int
 	Allocator *Allocator
-	Framing   linksurface.EthFraming
 	RecvChan  chan<- linksurface.RxEnvelope
 
 	// Rx slot state: slotPages[tag] is the page VA currently pinned
@@ -66,9 +53,9 @@ type Dispatcher struct {
 
 	// Tx in-flight: txTag → pageVA. Populated by SubmitTx; consumed
 	// on TX completion.
-	txMu       sync.Mutex
-	inflight   map[uint16]uintptr
-	txTagSeq   atomic.Uint32
+	txMu     sync.Mutex
+	inflight map[uint16]uintptr
+	txTagSeq atomic.Uint32
 
 	// SQE submission mutex — serializes writers across the Dispatcher
 	// (re-arm SQEs) and TxWorkers (submit SQEs).
@@ -82,12 +69,11 @@ type Dispatcher struct {
 // NewDispatcher constructs the dispatcher. armed is the number of RX
 // descriptor slots; PreArm pulls that many pages from the allocator
 // and submits the initial re-arms.
-func NewDispatcher(ring *iouring.IORing, ringID, armed int, alloc *Allocator, framing linksurface.EthFraming, recvChan chan<- linksurface.RxEnvelope) *Dispatcher {
+func NewDispatcher(ring *iouring.IORing, ringID, armed int, alloc *Allocator, recvChan chan<- linksurface.RxEnvelope) *Dispatcher {
 	return &Dispatcher{
 		Ring:      ring,
 		RingID:    ringID,
 		Allocator: alloc,
-		Framing:   framing,
 		RecvChan:  recvChan,
 		slotPages: make([]uintptr, armed),
 		inflight:  make(map[uint16]uintptr, MaxInflightTx),
@@ -108,10 +94,9 @@ func (d *Dispatcher) PreArm() error {
 		}
 		d.slotPages[tag] = va
 		// RX descriptor addr MUST be page-aligned per the kernel's
-		// handleNetRearmDesc check — the device DMAs the full 4 KiB.
-		// virtio_net_hdr lands at offset 0, eth at 12, L3 at 26 (NOT
-		// 16-aligned; the design's L3-alignment goal only applies to
-		// TX, where we control the in-page Off field).
+		// handleNetRearmDesc check — the device DMAs the full 4 KiB
+		// starting at the page base, with virtio_net_hdr landing at
+		// offset 0 and the eth header at offset 12.
 		writeRearmSQE(d.Ring, uint32(tag), va)
 	}
 	n := uint32(len(d.slotPages))
@@ -127,10 +112,7 @@ func (d *Dispatcher) PreArm() error {
 //
 // Uses IOUringEnterBlocking (NOT IOUringEnter) for the wait so the
 // Go P is released while parked in the kernel — other goroutines
-// (RxConsumer, TxWorkers) need the P to make progress. The Phase A
-// runConsumer got away with the P-holding variant because it was the
-// only goroutine doing real work; Phase B has plugin-side workers
-// competing on the scheduler.
+// (RxConsumer, TxWorkers) need the P to make progress.
 func (d *Dispatcher) Run() {
 	for {
 		if _, err := sys.IOUringEnterBlocking(d.RingID, 0, 1, 0); err != nil {
@@ -194,37 +176,23 @@ func (d *Dispatcher) Run() {
 	}
 }
 
-// dispatchRx validates the frame and tries to hand it to the plugin.
-// Returns true if the page was loaned to the plugin (caller must
-// allocate a fresh page for the slot); false if the page is to be
-// re-armed in place (invalid frame or RecvChan full).
+// dispatchRx hands the frame to the plugin. Returns true if the page
+// was loaned to the plugin (caller must allocate a fresh page for the
+// slot); false if the page is to be re-armed in place (runt frame or
+// RecvChan full).
 //
 // usedLen is the CQE's reported byte count — bytes the kernel wrote
-// starting at the descriptor address (the page base, since RX is
-// page-aligned). We strip the 12-byte virtio_net_hdr off the front
-// so Framing sees the ethernet header at offset 0 (per the EthFraming
-// contract).
+// starting at the descriptor address (the page base). We hand the
+// plugin a ReceivePacket with Offset=VirtIONetHdrSize so it sees the
+// eth header at the start of its view; the plugin's link/ethernet
+// layer parses from there.
 func (d *Dispatcher) dispatchRx(pageVA uintptr, usedLen int) bool {
 	if usedLen <= VirtIONetHdrSize {
 		atomic.AddUint64(&d.DbgRxInvalid, 1)
 		return false
 	}
-	rawVA := pageVA + VirtIONetHdrSize
-	rawLen := usedLen - VirtIONetHdrSize
-	l3Offset, l3Len, srcMAC, ethertype, ok, _ := d.Framing.ValidateReceivePacket(rawVA, rawLen)
-	if !ok {
-		atomic.AddUint64(&d.DbgRxInvalid, 1)
-		return false
-	}
-	// l3Offset is relative to rawVA; convert back to a pageVA-relative
-	// offset. For plain ethernet this is 12+14 = 26 (not 32 — RX can't
-	// achieve TX's 16-aligned L3 because the kernel page-aligns the
-	// virtio_net_hdr).
-	pktOffset := VirtIONetHdrSize + l3Offset
 	env := linksurface.RxEnvelope{
-		Packet:    NewRxPacket(pageVA, pktOffset, l3Len),
-		SrcMAC:    srcMAC,
-		Ethertype: ethertype,
+		Packet: NewRxPacket(pageVA, VirtIONetHdrSize, usedLen-VirtIONetHdrSize),
 	}
 	select {
 	case d.RecvChan <- env:
@@ -235,19 +203,23 @@ func (d *Dispatcher) dispatchRx(pageVA uintptr, usedLen int) bool {
 	}
 }
 
-// SubmitTx writes a TX SQE for env, records the txTag→pageVA mapping
-// in inflight, and kicks the kernel. Returns an error only when the
-// SQE write or IOUringEnter fails — drop-on-full (inflight or pool
-// exhausted) is reported via DbgTxDropped, not as an error.
+// SubmitTx writes the 12-byte virtio_net_hdr at the front of the page,
+// emits a TX SQE for env, records the txTag→pageVA mapping in inflight,
+// and kicks the kernel. Returns an error only when the SQE write or
+// IOUringEnter fails — drop-on-full (inflight or pool exhausted) is
+// reported via DbgTxDropped, not as an error.
 func (d *Dispatcher) SubmitTx(env linksurface.TxEnvelope) error {
 	if env.Packet == nil {
 		return fmt.Errorf("SubmitTx: nil packet")
 	}
-	wireOffset, wireLen, err := d.Framing.AddSendBytes(env)
-	if err != nil {
-		return fmt.Errorf("Framing.AddSendBytes: %w", err)
-	}
 	pageVA := env.Packet.VABase()
+
+	// Zero the 12-byte virtio_net_hdr at the front of the page.
+	vhdr := unsafe.Slice((*byte)(unsafe.Pointer(pageVA)), VirtIONetHdrSize)
+	for i := range vhdr {
+		vhdr[i] = 0
+	}
+
 	txTag := uint16(d.txTagSeq.Add(1))
 
 	d.txMu.Lock()
@@ -261,7 +233,8 @@ func (d *Dispatcher) SubmitTx(env linksurface.TxEnvelope) error {
 	d.txMu.Unlock()
 
 	d.sqMu.Lock()
-	writeTxSQE(d.Ring, pageVA, uintptr(wireOffset), uint32(wireLen), txTag)
+	// Wire range: addr = page base, off = 0, len = virtio_net_hdr + plugin bytes.
+	writeTxSQE(d.Ring, pageVA, 0, uint32(VirtIONetHdrSize+env.Len), txTag)
 	if _, err := sys.IOUringEnter(d.RingID, 1, 0, 0); err != nil {
 		d.sqMu.Unlock()
 		return fmt.Errorf("IOUringEnter: %w", err)

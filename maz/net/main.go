@@ -1,31 +1,26 @@
 // net is the standalone ethernet-layer shepherd. It owns the VirtIO-net
-// device and hosts protocol stacks as .maz plugins.
+// device and hosts an L3+ protocol stack as a .maz plugin.
 //
 // Phase A (MAZ-28 commits 1–4) brought up the raw L2 path: kernel IRQ
 // pushes typed CQEs, net.elf re-arms RX descriptors and submits TX
 // frames over io_uring, end-to-end ARP round-trip at 3-4µs IRQ→
 // shepherd latency.
 //
-// Phase B step 1 introduced the linksurface package and its two
-// boundaries (LinkSurface for L3 plugins, EthFraming for the L2
-// plugin). Step 2 implemented the net.elf side (host package).
-// Step 3 wrote ethernet.maz. Step 4 (this file's rewrite) loads
-// ethernet.maz, wires the Dispatcher + TxWorkers into the io_uring
-// ring, replaces the inline ARP frame builder with a TxEnvelope sent
-// through the plugin boundary, and switches RX pre-arm to page+6 so
-// L3 lands 16-byte-aligned at offset 32 — same page layout the L3
-// plugin (gvisor, step 5) will receive.
+// Phase B step 5 swaps the original two-plugin design (ethernet.maz +
+// gvisor.maz) for a single L3+ plugin: gvisor's link/ethernet wrapper
+// owns the 14-byte L2 header. Net.elf only owns the 12-byte
+// virtio_net_hdr — RX pages are handed to the plugin starting at
+// offset 12 (where the eth header lives); on TX the plugin writes the
+// eth header + L3 at offset 12, and net.elf zeros virtio_net_hdr at
+// page+0 before submission.
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"os"
-	"unsafe"
 
 	"mazzy/maz/net/host"
 	"mazzy/mazarin/fsclient"
-	"mazzy/mazarin/linksurface"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
@@ -49,58 +44,34 @@ const (
 	netDeviceType = 2
 
 	// fsRing is the IPC ring index reserved for fsclient responses
-	// (matches shepherd.elf's convention). Ring 0 is kernel-allocated;
-	// ring 2 is free.
+	// (matches shepherd.elf's convention).
 	fsRing = 1
-)
 
-// hwAddr — QEMU's default virtio-net MAC. Used to fill the ARP body's
-// SHA field. The ethernet.maz plugin separately uses the same value
-// for the outbound eth header's source field. Replace when a
-// SysNetReadMAC syscall lands; see maz/net/host/device.go +
-// maz/ethernet/framing.go for the matching TODOs.
-var hwAddr = [6]uint8{0x52, 0x54, 0x00, 0x12, 0x34, 0x56}
+	// pluginHeadroom is the byte count plugins must leave at the start
+	// of each page for net.elf's virtio_net_hdr. Matches
+	// host.VirtIONetHdrSize; the plugin writes its eth header + L3 + …
+	// starting at VABase+pluginHeadroom.
+	pluginHeadroom = host.VirtIONetHdrSize
+)
 
 func main() {
 	fmt.Println("net: up")
 
-	fc := setupFSClient()
+	_ = setupFSClient() // fsclient must exist for plugin loads via mazhost.
 	alloc := setupAllocator()
 	ring, netRingID := setupNetRing()
 
-	framingInit, err := host.LoadEthFramingPlugin(fc, "ethernet", alloc)
-	if err != nil {
-		fmt.Printf("[net] LoadEthFramingPlugin(ethernet) failed: %v\n", err)
-		os.Exit(1)
-	}
-	framing := framingInit.Framing
-	fmt.Printf("[net] ethernet.maz loaded; Framing.Headroom=%d Device.Headroom=%d\n",
-		framing.Headroom(), alloc.Headroom())
+	dev := host.NewDevice(alloc, [6]uint8{}) // zero → falls back to QEMU's default MAC
+	_ = dev // gvisor.maz load slot — Phase B step 5 follow-up.
 
-	// Recv channel the (not-yet-loaded) L3 plugin would read from. Until
-	// gvisor.maz lands (step 5), a no-op consumer logs + Releases so the
-	// pool stays balanced and the ARP test still produces visible output.
-	recvChan := make(chan linksurface.RxEnvelope, host.RecvChanBuffer)
+	dispatcher := host.NewDispatcher(ring, netRingID, rxArmedCount, alloc, nil)
+	_ = dispatcher
+	// TODO(MAZ-28 Phase B step 5): once gvisor.maz exists, load it here
+	// via host.LoadLinkSurfacePlugin(fc, "gvisor", dev, alloc); wire its
+	// TxChan into host.RunTxWorkers; PreArm the dispatcher; spin Run.
+	// Until then net.elf is a quiet host with no plugin loaded.
 
-	dispatcher := host.NewDispatcher(ring, netRingID, rxArmedCount, alloc, framing, recvChan)
-	if err := dispatcher.PreArm(); err != nil {
-		fmt.Printf("[net] dispatcher.PreArm failed: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("[net] pre-armed %d RX descriptors\n", rxArmedCount)
-	go dispatcher.Run()
-	go runRxConsumer(alloc, recvChan)
-
-	// Net.elf-internal TxChan. Step 5 wires the L3 plugin to drive this;
-	// for the ARP bring-up, net.elf produces a single TxEnvelope itself
-	// and the TxWorker pool reads it like any plugin-produced one.
-	txChan := make(chan linksurface.TxEnvelope, 32)
-	go host.RunTxWorkers(host.TxWorkers, dispatcher, txChan)
-
-	sendArpProbe(alloc, txChan)
-
-	// Block forever; the Dispatcher / TxWorkers / RxConsumer goroutines
-	// own the lifetime from here.
+	fmt.Println("[net] awaiting L3+ plugin (gvisor.maz not yet loaded)")
 	select {}
 }
 
@@ -129,11 +100,10 @@ func setupFSClient() fsclient.FSClient {
 	return fc
 }
 
-// setupAllocator allocates the contiguous DMA pool and reports its
-// extent. Headroom=32 matches Device.Headroom (round_up(virtio_net_hdr
-// (12) + eth header (14), 16)).
+// setupAllocator allocates the contiguous DMA pool. Headroom=12 leaves
+// room for net.elf's virtio_net_hdr at the front of every page.
 func setupAllocator() *host.Allocator {
-	alloc, err := host.NewAllocator(poolPages, 32)
+	alloc, err := host.NewAllocator(poolPages, pluginHeadroom)
 	if err != nil {
 		fmt.Printf("[net] host.NewAllocator failed: %v\n", err)
 		os.Exit(1)
@@ -159,56 +129,4 @@ func setupNetRing() (*iouring.IORing, int) {
 	}
 	fmt.Printf("[net] io_uring created: ringID=%d type=%d\n", ringID, netDeviceType)
 	return ring, ringID
-}
-
-// runRxConsumer is the stand-in L3 plugin. Until gvisor.maz lands
-// (step 5), this drains RecvChan, logs srcMAC + ethertype + L3 length
-// (proves the dispatcher → Framing.Validate → channel path works
-// end-to-end), and Releases the page so the pool stays balanced.
-func runRxConsumer(alloc *host.Allocator, recvChan <-chan linksurface.RxEnvelope) {
-	for env := range recvChan {
-		mac := env.SrcMAC
-		fmt.Printf("[net] RX l3Len=%d src=%02x:%02x:%02x:%02x:%02x:%02x ethertype=0x%04x\n",
-			env.Packet.Len(),
-			uint8(mac>>40), uint8(mac>>32), uint8(mac>>24),
-			uint8(mac>>16), uint8(mac>>8), uint8(mac),
-			env.Ethertype)
-		alloc.Release(env.Packet)
-	}
-}
-
-// sendArpProbe allocates a TX page, writes the 28-byte ARP body at
-// VABase+Offset (= page+Headroom = page+32), and queues a TxEnvelope
-// on txChan. A TxWorker reads it, calls Framing.AddSendBytes (which
-// fills the 14-byte eth header + zeros the 12-byte virtio_net_hdr),
-// and submits the TX SQE.
-//
-// Body content: gratuitous ARP-request for 10.0.2.2 (SLIRP gateway),
-// same wire contents as the Phase A inline probe.
-func sendArpProbe(alloc *host.Allocator, txChan chan<- linksurface.TxEnvelope) {
-	pkt := alloc.AllocTx()
-	if pkt == nil {
-		fmt.Println("[net] ARP: AllocTx returned nil — pool exhausted")
-		return
-	}
-	arp := unsafe.Slice((*byte)(unsafe.Pointer(pkt.VABase()+uintptr(pkt.Offset()))), 28)
-	binary.BigEndian.PutUint16(arp[0:2], 0x0001)  // HTYPE Ethernet
-	binary.BigEndian.PutUint16(arp[2:4], 0x0800)  // PTYPE IPv4
-	arp[4] = 6                                    // HLEN
-	arp[5] = 4                                    // PLEN
-	binary.BigEndian.PutUint16(arp[6:8], 0x0001)  // OPER request
-	copy(arp[8:14], hwAddr[:])                    // SHA (our MAC)
-	arp[14], arp[15], arp[16], arp[17] = 0, 0, 0, 0 // SPA (we don't know our IP)
-	for i := 18; i < 24; i++ {
-		arp[i] = 0 // THA (asking)
-	}
-	arp[24], arp[25], arp[26], arp[27] = 10, 0, 2, 2 // TPA = 10.0.2.2
-
-	txChan <- linksurface.TxEnvelope{
-		Packet:    pkt,
-		Len:       28,
-		DstMAC:    0xffffffffffff, // broadcast
-		Ethertype: 0x0806,         // ARP
-	}
-	fmt.Println("[net] ARP probe queued via plugin chain for 10.0.2.2")
 }

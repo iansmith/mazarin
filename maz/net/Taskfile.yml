@@ -2,11 +2,11 @@ version: '3'
 
 # net.elf is built like shepherd.elf: mazgo + mazlink with -tags
 # mazhost + -dynlink + -dlopen-host-exports so it can serve as the
-# dlopen host for ethernet.maz / gvisor.maz / future protocol plugins.
-# The plain `go build` from Phase A worked while net.elf only ran
-# raw L2; Phase B step 4 adds plugin loading which needs the full
-# dlopen-host setup (RegisterHost via SysGetOwnExports, host symbols
-# in dynsym for plugin PLT resolution).
+# dlopen host for gvisor.maz / future protocol plugins. The plain
+# `go build` from Phase A worked while net.elf only ran raw L2;
+# Phase B adds plugin loading which needs the full dlopen-host setup
+# (RegisterHost via SysGetOwnExports, host symbols in dynsym for
+# plugin PLT resolution).
 tasks:
   arm64:
     desc: Build net shepherd (eth-layer .elf plugin host, ARM64)

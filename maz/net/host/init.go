@@ -28,17 +28,6 @@ func NewLinkSurfaceInit(dev linksurface.Device, alloc *Allocator) *linksurface.L
 	}
 }
 
-// NewEthFramingInit builds the bag net.elf hands to ethernet.maz's
-// MazarinShepherd. ethernet.maz reads Allocator and calls RegisterFraming
-// with its EthFraming impl; net.elf reads init.Framing back.
-//
-// Caller MUST run ForceEthFramingItab on the result.
-func NewEthFramingInit(alloc *Allocator) *linksurface.EthFramingInit {
-	return &linksurface.EthFramingInit{
-		Allocator: alloc,
-	}
-}
-
 // ForceLinkSurfaceItab keeps the linker from dropping the
 // (*linksurface.LinkSurfaceInit, linksurface.LinkSurfaceInjector) itab.
 // Without this the host binary's typelinks don't include the interface
@@ -55,17 +44,4 @@ func ForceLinkSurfaceItab(v interface{}) {
 	inj.GetAllocator()
 	inj.GetRecvChan()
 	inj.RegisterTxChan(nil)
-}
-
-// ForceEthFramingItab keeps the
-// (*linksurface.EthFramingInit, linksurface.EthFramingInjector) itab live.
-//
-//go:noinline
-func ForceEthFramingItab(v interface{}) {
-	inj, ok := v.(linksurface.EthFramingInjector)
-	if !ok {
-		return
-	}
-	inj.GetAllocator()
-	inj.RegisterFraming(nil)
 }
