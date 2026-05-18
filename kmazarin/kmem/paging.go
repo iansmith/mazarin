@@ -2751,50 +2751,43 @@ func ZeroUserMemoryWithL0(va uintptr, n uintptr, l0PA uintptr) bool {
 	return true
 }
 
-// EnsureUserPageMappedWithL0 ensures that the 4KB page containing userVA is
+// EnsureUserPageMappedWithL0 ensures the 4KB page containing userVA is
 // backed by a physical frame in the page table rooted at l0PA.
-// If the page is already mapped, returns true immediately.
-// If not mapped, allocates a frame, maps it with RWX permissions, zeros it,
-// and invalidates TLBs.
+// Returns the page-aligned PA of the (possibly newly-allocated) frame.
+// If allocation/mapping fails, returns (0, false).
 //
-// This is safe to call from nosplit context (signal delivery, exception handlers).
-// It uses the same allocation path as HandleUserPageFault.
+// Safe to call from nosplit context (signal delivery, exception handlers,
+// CopyToUser fault retry). Uses the same allocation path as HandleUserPageFault.
 //
 //go:nosplit
-func EnsureUserPageMappedWithL0(userVA uintptr, l0PA uintptr) bool {
+func EnsureUserPageMappedWithL0(userVA uintptr, l0PA uintptr) (uintptr, bool) {
 	pageAddr := userVA &^ (PageSize - 1)
 
-	// Check if already mapped
-	pa := WalkUserPTLean(pageAddr, l0PA)
-	if pa != 0 {
-		return true
+	if pa := WalkUserPTLean(pageAddr, l0PA); pa != 0 {
+		return pa, true
 	}
 
-	// Not mapped — demand-allocate a physical frame
 	pfContextShepherdID = currentShepherdID()
 	framePA := AllocUserFrame()
 	if framePA == 0 {
-		return false
+		return 0, false
 	}
 
-	// Map with RWX permissions (signal stack needs RW at minimum)
+	// Map RWX (signal stack needs RW at minimum).
 	elfFlags := uint32(ELF_PF_R | ELF_PF_W | ELF_PF_X)
 	if !mapUserPageWithL0(pageAddr, framePA, elfFlags, l0PA) {
-		return false
+		return 0, false
 	}
 
-	// Zero the page via kernel linear map
 	scratchVA := framePA + constants.KernelVAOffset
 	zeroPageSlow(scratchVA)
-
-	// Cache clean + TLB invalidate
 	CleanPageCache(scratchVA)
 	dsbSY()
 	tlbiVMALLE1IS()
 	dsbSY()
 	isbSY()
 
-	return true
+	return framePA, true
 }
 
 // CopyFromUser copies n bytes from a VA into dst.
@@ -2850,11 +2843,35 @@ func CopyToUser(userVA uintptr, src []byte) bool {
 		}
 		return true
 	}
+	// Cache current process's L0 once for fault-on-miss retries.
+	// Linux's copy_to_user gets fault-on-miss "for free" via the exception
+	// table (a fault during the user write transparently demand-pages and
+	// retries). We don't have that hook, so we open-code the same
+	// semantics: walk → if miss, EnsureUserPageMapped → re-walk. This
+	// matters for syscall buffers Go allocated via mmap MAP_ANON but
+	// never touched (Go skips memclr on guaranteed-zero arena pages —
+	// see gvisor's pkg/rand bufio.Reader buffer at package init).
+	//
+	// CopyToUserWithL0 keeps the original "fail on miss" semantics because
+	// it runs in delegation-reply context where the L0 doesn't match the
+	// current TTBR0 and faulting would install pages in the wrong process.
+	l0PA := uintptr(readCurrentL0PA())
 	copied := 0
 	for copied < n {
-		pa := WalkUserPageTable(userVA + uintptr(copied))
+		va := userVA + uintptr(copied)
+		pa := WalkUserPageTable(va)
 		if pa == 0 {
-			return false
+			if l0PA == 0 {
+				return false
+			}
+			pagePA, ok := EnsureUserPageMappedWithL0(va, l0PA)
+			if !ok {
+				return false
+			}
+			// EnsureUserPageMappedWithL0 returns the page-aligned PA;
+			// reconstruct the byte-offset PA WalkUserPageTable would
+			// have returned.
+			pa = pagePA | (va & (PageSize - 1))
 		}
 		pagePA := pa &^ (PageSize - 1)
 		pageOffset := pa & (PageSize - 1)

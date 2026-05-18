@@ -80,6 +80,11 @@ type Device interface {
 type Allocator interface {
 	AllocTx() SendPacket
 	Release(ReceivePacket)
+
+	// ReleaseTx returns a TX page to the pool on the plugin's drop path —
+	// when the plugin allocated via AllocTx but is abandoning the packet
+	// before queuing it for the host (txChan full, oversized, etc.).
+	ReleaseTx(SendPacket)
 }
 
 // LinkSurfaceInjector is the cross-.maz contract for the net.elf ⇄ L3-plugin

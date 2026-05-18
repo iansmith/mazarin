@@ -10,7 +10,7 @@ require (
 	github.com/go-text/typesetting v0.3.4
 	github.com/pelletier/go-toml/v2 v2.3.0
 	golang.org/x/image v0.24.0
-	golang.org/x/mod v0.34.0
+	golang.org/x/mod v0.36.0
 	louis14 v0.0.0-00010101000000-000000000000
 	mazarin/textshape v0.0.0-00010101000000-000000000000
 )
@@ -145,6 +145,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.3 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
@@ -159,6 +160,7 @@ require (
 	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gvisor.dev/gvisor v0.0.0-20260518063529-209a0ce076a1 // indirect
 	mvdan.cc/sh/moreinterp v0.0.0-20251109230715-65adef8e2c5b // indirect
 	mvdan.cc/sh/v3 v3.12.0 // indirect
 )

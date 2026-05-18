@@ -57,21 +57,30 @@ const (
 func main() {
 	fmt.Println("net: up")
 
-	_ = setupFSClient() // fsclient must exist for plugin loads via mazhost.
+	fc := setupFSClient()
 	alloc := setupAllocator()
 	ring, netRingID := setupNetRing()
 
-	dev := host.NewDevice(alloc, [6]uint8{}) // zero → falls back to QEMU's default MAC
-	_ = dev // gvisor.maz load slot — Phase B step 5 follow-up.
+	dev := host.NewDevice(alloc, [6]uint8{}) // zero → QEMU SLIRP default MAC
 
-	dispatcher := host.NewDispatcher(ring, netRingID, rxArmedCount, alloc, nil)
-	_ = dispatcher
-	// TODO(MAZ-28 Phase B step 5): once gvisor.maz exists, load it here
-	// via host.LoadLinkSurfacePlugin(fc, "gvisor", dev, alloc); wire its
-	// TxChan into host.RunTxWorkers; PreArm the dispatcher; spin Run.
-	// Until then net.elf is a quiet host with no plugin loaded.
+	linkInit, err := host.LoadLinkSurfacePlugin(fc, "gvisor", dev, alloc)
+	if err != nil {
+		fmt.Printf("[net] LoadLinkSurfacePlugin(gvisor) failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("[net] gvisor.maz loaded; Device.Headroom=%d\n", alloc.Headroom())
 
-	fmt.Println("[net] awaiting L3+ plugin (gvisor.maz not yet loaded)")
+	dispatcher := host.NewDispatcher(ring, netRingID, rxArmedCount, alloc, linkInit.RecvChan)
+	if err := dispatcher.PreArm(); err != nil {
+		fmt.Printf("[net] dispatcher.PreArm failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("[net] pre-armed %d RX descriptors\n", rxArmedCount)
+	go dispatcher.Run()
+	go host.RunTxWorkers(host.TxWorkers, dispatcher, linkInit.TxChan)
+
+	// Block forever; the Dispatcher / TxWorkers / gvisor.maz goroutines
+	// own the lifetime from here.
 	select {}
 }
 

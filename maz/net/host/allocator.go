@@ -129,11 +129,16 @@ func (a *Allocator) Release(pkt linksurface.ReceivePacket) {
 	if pkt == nil {
 		return
 	}
-	va := pkt.VABase()
-	a.mu.Lock()
-	a.free = append(a.free, va)
-	a.mu.Unlock()
-	a.outstanding.Add(-1)
+	a.ReleaseRaw(pkt.VABase())
+}
+
+// ReleaseTx implements linksurface.Allocator. Symmetric drop-path
+// helper for SendPacket — same outcome as Release(ReceivePacket).
+func (a *Allocator) ReleaseTx(pkt linksurface.SendPacket) {
+	if pkt == nil {
+		return
+	}
+	a.ReleaseRaw(pkt.VABase())
 }
 
 // AllocRaw is the host-internal allocation primitive used by the

@@ -1,6 +1,7 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/device/virtio/rng"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
@@ -502,36 +503,44 @@ func SyscallClockGettime(clockid, timespecPtr, _, _, _, _ uint64) int64 {
 // Random number generation
 // ============================================================================
 
-// SyscallGetrandom generates random bytes
-// Fill buffer with fake random data
+// SyscallGetrandom fills the user buffer with random bytes from the
+// VirtIO RNG device. Returns the number of bytes written, or a negative
+// errno on failure.
+//
+// virtio-rng caps each request at 64 bytes (the DMA result buffer size
+// in the rng driver), so we loop. CopyToUser handles demand-faulting
+// for Go-runtime-lazy mmap pages — see kmem/paging.go:CopyToUser.
+//
+// If virtio-rng isn't initialized (no device on the PCI bus), returns
+// ENOSYS so callers can fall back. Linux callers like gvisor's pkg/rand
+// will then try crypto/rand → /dev/urandom — which we don't have, so
+// in practice "no virtio-rng" == "no entropy". Worth wiring a hardware
+// fallback in that case, but not today.
 //
 //go:nosplit
 func SyscallGetrandom(bufPtr, count, _, _, _, _ uint64) int64 {
 	if count == 0 {
 		return 0
 	}
-	// Validate user buffer address - reject NULL and kernel addresses
 	if !isValidUserAddr(bufPtr) {
 		return -14 // EFAULT
 	}
-	// Build random data in a kernel buffer, then copy to user
-	// Process in chunks to avoid large stack allocations
 	remaining := count
 	offset := uint64(0)
 	for remaining > 0 {
-		var chunk [256]byte
-		n := remaining
-		if n > 256 {
-			n = 256
+		var chunk [64]byte
+		n := min(remaining, 64)
+		got := rng.Get(chunk[:n])
+		if got == 0 {
+			// RNG not initialized / device hung. ENOSYS lets the caller
+			// know to fall back.
+			return -38 // ENOSYS
 		}
-		for i := uint64(0); i < n; i++ {
-			chunk[i] = byte((offset + i) & 0xFF)
-		}
-		if !kmem.CopyToUser(uintptr(bufPtr+offset), chunk[:n]) {
+		if !kmem.CopyToUser(uintptr(bufPtr+offset), chunk[:got]) {
 			return -14 // EFAULT
 		}
-		offset += n
-		remaining -= n
+		offset += uint64(got)
+		remaining -= uint64(got)
 	}
 	return int64(count)
 }

@@ -29,10 +29,17 @@ func NewLinkSurfaceInit(dev linksurface.Device, alloc *Allocator) *linksurface.L
 }
 
 // ForceLinkSurfaceItab keeps the linker from dropping the
-// (*linksurface.LinkSurfaceInit, linksurface.LinkSurfaceInjector) itab.
-// Without this the host binary's typelinks don't include the interface
-// type, so the plugin's `arg.(LinkSurfaceInjector)` assertion fails.
-// Mirrors rachel's forceKeyMapperItab pattern.
+// (*linksurface.LinkSurfaceInit, linksurface.LinkSurfaceInjector) itab
+// AND the host-side concrete types' interface methods that plugins
+// invoke through Device/Allocator. Without this, the linker DCEs
+// methods like (*deviceImpl).GetEthernetAddr or (*Allocator).AllocTx —
+// the host never calls them itself, so they're cold from the binary's
+// perspective. Plugins then hit "unreachable method called. linker
+// bug?" when they call through the itab at runtime.
+//
+// The function exercises the Injector interface (keeps the *Init →
+// LinkSurfaceInjector itab live) plus the Device + Allocator interfaces
+// (keeps the *deviceImpl + *Allocator method sets live).
 //
 //go:noinline
 func ForceLinkSurfaceItab(v interface{}) {
@@ -40,8 +47,18 @@ func ForceLinkSurfaceItab(v interface{}) {
 	if !ok {
 		return
 	}
-	inj.GetDevice()
-	inj.GetAllocator()
+	dev := inj.GetDevice()
+	alloc := inj.GetAllocator()
 	inj.GetRecvChan()
 	inj.RegisterTxChan(nil)
+
+	// Force Device + Allocator method itabs to stay reachable. The host
+	// always populates both (NewLinkSurfaceInit requires non-nil dev +
+	// alloc), so nil-checks here would only mask construction bugs.
+	dev.GetEthernetAddr()
+	dev.Headroom()
+	_ = dev.Allocator()
+	_ = alloc.AllocTx()
+	alloc.Release(nil)
+	alloc.ReleaseTx(nil)
 }

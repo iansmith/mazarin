@@ -123,9 +123,9 @@ func SyscallSigaltstack(newPtr, oldPtr, _, _, _, _ uint64) int64 {
 			l0PA := uintptr(kmem.ReadCurrentL0PA())
 			if l0PA != 0 && size > 0 {
 				top := uintptr(sp + uint64(size) - 1)
-				kmem.EnsureUserPageMappedWithL0(top, l0PA)
+				_, _ = kmem.EnsureUserPageMappedWithL0(top, l0PA)
 				if size > 4096 {
-					kmem.EnsureUserPageMappedWithL0(top-4096, l0PA)
+					_, _ = kmem.EnsureUserPageMappedWithL0(top-4096, l0PA)
 				}
 			}
 		}
