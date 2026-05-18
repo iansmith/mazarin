@@ -4,7 +4,7 @@ tasks:
   arm64:
     desc: Build gvisor.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
     run: once
-    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    deps: [':check-env', ':build-dir', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
       - '{{.ROOT_DIR}}/maz/gvisor/**/*.go'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
@@ -29,7 +29,7 @@ tasks:
   amd64:
     desc: Build gvisor.maz for x86_64 via mazgo
     run: once
-    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    deps: [':check-env', ':build-dir', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
     sources:
       - '{{.ROOT_DIR}}/maz/gvisor/**/*.go'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'

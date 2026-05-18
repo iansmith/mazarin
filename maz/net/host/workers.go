@@ -48,8 +48,14 @@ type Dispatcher struct {
 
 	// Rx slot state: slotPages[tag] is the page VA currently pinned
 	// to RX descriptor `tag`. Set by PreArm + every re-arm; read on
-	// RX completion to derive frame VA.
+	// RX completion to derive frame VA. Zero means the slot is parked
+	// (allocator was empty when we tried to re-arm). Only touched from Run.
 	slotPages []uintptr
+
+	// slotsParked signals that at least one slotPages[tag] is 0. Run
+	// scans for zero entries and re-arms them after every CQE-drain
+	// pass. Only touched from Run.
+	slotsParked bool
 
 	// Tx in-flight: txTag → pageVA. Populated by SubmitTx; consumed
 	// on TX completion.
@@ -107,6 +113,14 @@ func (d *Dispatcher) PreArm() error {
 	return nil
 }
 
+// pendingRearm is a deferred SQE write batched and flushed under sqMu after
+// the CQE-drain pass. Batching keeps the sqMu critical section short and
+// race-free against TxWorkers, which hold sqMu when writing TX SQEs.
+type pendingRearm struct {
+	tag    uint32
+	pageVA uintptr
+}
+
 // Run drains CQEs forever, dispatching RX to the plugin and releasing
 // TX pages. Blocks; intended to be launched as `go dispatcher.Run()`.
 //
@@ -114,6 +128,7 @@ func (d *Dispatcher) PreArm() error {
 // Go P is released while parked in the kernel — other goroutines
 // (RxConsumer, TxWorkers) need the P to make progress.
 func (d *Dispatcher) Run() {
+	var pending []pendingRearm
 	for {
 		if _, err := sys.IOUringEnterBlocking(d.RingID, 0, 1, 0); err != nil {
 			// Spurious wake / transient error — small backoff.
@@ -122,7 +137,7 @@ func (d *Dispatcher) Run() {
 
 		cqHead := atomic.LoadUint32(&d.Ring.CQHead)
 		cqTail := atomic.LoadUint32(&d.Ring.CQTail)
-		rearms := uint32(0)
+		pending = pending[:0]
 		for cqHead != cqTail {
 			cqe := d.Ring.CQEntries[cqHead&iouring.CQMask]
 			ud := cqe.UserData
@@ -151,26 +166,46 @@ func (d *Dispatcher) Run() {
 			usedLen := int(cqe.Res)
 
 			if d.dispatchRx(pageVA, usedLen) {
-				// Page is loaned to plugin; pull a fresh one for re-arm.
 				newVA, ok := d.Allocator.AllocRaw()
 				if !ok {
-					// Pool exhausted — leave slot un-armed; will
-					// recover when plugin Release()s a page.
+					// Pool exhausted — park; recovery scan below retries.
 					d.slotPages[tag] = 0
+					d.slotsParked = true
 					continue
 				}
 				d.slotPages[tag] = newVA
 			}
-			// If dispatchRx returned false the page was kept (drop /
-			// invalid frame) — re-arm with the same page.
-			writeRearmSQE(d.Ring, uint32(tag), d.slotPages[tag])
-			rearms++
+			// dispatchRx==false → re-arm same page; ==true → re-arm new page.
+			pending = append(pending, pendingRearm{uint32(tag), d.slotPages[tag]})
 		}
 		atomic.StoreUint32(&d.Ring.CQHead, cqHead)
 
-		if rearms > 0 {
+		// Recovery: scan for parked slots and re-arm them. A TX completion
+		// or plugin Release during this pass may have returned pages to the
+		// pool. Bail on the first AllocRaw failure to avoid hammering the
+		// allocator lock under sustained exhaustion.
+		if d.slotsParked {
+			d.slotsParked = false
+			for tag, va := range d.slotPages {
+				if va != 0 {
+					continue
+				}
+				newVA, ok := d.Allocator.AllocRaw()
+				if !ok {
+					d.slotsParked = true
+					break
+				}
+				d.slotPages[tag] = newVA
+				pending = append(pending, pendingRearm{uint32(tag), newVA})
+			}
+		}
+
+		if len(pending) > 0 {
 			d.sqMu.Lock()
-			_, _ = sys.IOUringEnter(d.RingID, rearms, 0, 0)
+			for _, p := range pending {
+				writeRearmSQE(d.Ring, p.tag, p.pageVA)
+			}
+			_, _ = sys.IOUringEnter(d.RingID, uint32(len(pending)), 0, 0)
 			d.sqMu.Unlock()
 		}
 	}
@@ -220,14 +255,23 @@ func (d *Dispatcher) SubmitTx(env linksurface.TxEnvelope) error {
 		vhdr[i] = 0
 	}
 
-	txTag := uint16(d.txTagSeq.Add(1))
-
 	d.txMu.Lock()
 	if len(d.inflight) >= MaxInflightTx {
 		d.txMu.Unlock()
 		atomic.AddUint64(&d.DbgTxDropped, 1)
 		d.Allocator.ReleaseRaw(pageVA)
 		return nil
+	}
+	// Find an unused uint16 tag. The wire encoding (NetEncodeTxUserData) caps
+	// the tag at uint16, so after 65536 submissions txTagSeq wraps. With
+	// MaxInflightTx (200) << 65536 the loop is O(1) on average; the
+	// MaxInflightTx guard above bounds it (≥65336 tags are always unused).
+	var txTag uint16
+	for {
+		txTag = uint16(d.txTagSeq.Add(1))
+		if _, busy := d.inflight[txTag]; !busy {
+			break
+		}
 	}
 	d.inflight[txTag] = pageVA
 	d.txMu.Unlock()
