@@ -2802,7 +2802,69 @@ func EnsureUserPageMappedWithL0(userVA uintptr, l0PA uintptr) (uintptr, bool) {
 	dsbSY()
 	isbSY()
 
+	// Track the allocation so the page is reclaimed on shepherd exit. The
+	// helper is non-nosplit to keep its DeferredPageRecord struct literal
+	// off this function's nosplit chain — same pattern as HandleUserPageFault's
+	// repeatFaultDiagnostic call.
+	queueEnsuredUserPageRecord(framePA, pageAddr)
+
 	return framePA, true
+}
+
+// queueEnsuredUserPageRecord is the deferred-record enqueue path lifted out of
+// EnsureUserPageMappedWithL0. Non-nosplit on purpose so its struct literal
+// doesn't count against the nosplit caller chain.
+//
+//go:noinline
+func queueEnsuredUserPageRecord(framePA, pageAddr uintptr) {
+	QueueDeferredRecord(DeferredPageRecord{
+		PA:         framePA,
+		VA:         pageAddr,
+		Type:       PageAllocUser,
+		ShepherdID: pfContextShepherdID,
+		ThreadID:   getCurrentThreadTID(),
+		Order:      0,
+	})
+}
+
+// resolveUserPageWithFallback returns the byte-offset PA for userVA,
+// demand-paging if the PTE is missing. Used by CopyFromUser/CopyToUser to
+// open-code Linux's fault-on-miss copy_to_user/copy_from_user semantics:
+// walk → if miss, dispatch to the file-mapped fault handler if the page is
+// file-backed, otherwise fall back to anonymous-zero demand allocation via
+// EnsureUserPageMappedWithL0. The file-mapping branch is what stops the
+// anonymous fallback from silently zeroing a file-backed mmap page on first
+// access. Returns (0, false) on failure; caller propagates as a user fault.
+//
+// Non-nosplit on purpose: its own stack frame plus the chain through
+// EnsureUserPageMappedWithL0 would push SyscallWrite's nosplit budget over
+// the 792-byte limit. Same pattern as HandleUserPageFault →
+// repeatFaultDiagnostic.
+//
+//go:noinline
+func resolveUserPageWithFallback(va, l0PA uintptr) (uintptr, bool) {
+	if pa := WalkUserPageTable(va); pa != 0 {
+		return pa, true
+	}
+	if l0PA == 0 {
+		return 0, false
+	}
+	pageAddr := va &^ (PageSize - 1)
+	if fm := currentShepherdFindFileMapping(uint64(pageAddr)); fm != nil {
+		if OnFileMappedPageFault == nil || !OnFileMappedPageFault(va, fm) {
+			return 0, false
+		}
+		pa := WalkUserPageTable(va)
+		if pa == 0 {
+			return 0, false
+		}
+		return pa, true
+	}
+	pagePA, ok := EnsureUserPageMappedWithL0(va, l0PA)
+	if !ok {
+		return 0, false
+	}
+	return pagePA | (va & (PageSize - 1)), true
 }
 
 // CopyFromUser copies n bytes from a VA into dst.
@@ -2818,27 +2880,13 @@ func CopyFromUser(dst []byte, userVA uintptr, n int) bool {
 		}
 		return true
 	}
-	// Linux's copy_from_user gets fault-on-miss "for free" via the exception
-	// table — a fault during the user read transparently demand-pages and
-	// retries. We open-code the same semantics: walk → if miss,
-	// EnsureUserPageMapped → re-walk. Matters for syscall buffers Go
-	// allocated via mmap MAP_ANON but never touched (Go skips memclr on
-	// guaranteed-zero arena pages); demand-faulting yields a zero page,
-	// which is what Linux would deliver.
 	l0PA := uintptr(readCurrentL0PA())
 	copied := 0
 	for copied < n {
 		va := userVA + uintptr(copied)
-		pa := WalkUserPageTable(va)
-		if pa == 0 {
-			if l0PA == 0 {
-				return false
-			}
-			pagePA, ok := EnsureUserPageMappedWithL0(va, l0PA)
-			if !ok {
-				return false
-			}
-			pa = pagePA | (va & (PageSize - 1))
+		pa, ok := resolveUserPageWithFallback(va, l0PA)
+		if !ok {
+			return false
 		}
 		pagePA := pa &^ (PageSize - 1)
 		pageOffset := pa & (PageSize - 1)
@@ -2874,15 +2922,6 @@ func CopyToUser(userVA uintptr, src []byte) bool {
 		}
 		return true
 	}
-	// Cache current process's L0 once for fault-on-miss retries.
-	// Linux's copy_to_user gets fault-on-miss "for free" via the exception
-	// table (a fault during the user write transparently demand-pages and
-	// retries). We don't have that hook, so we open-code the same
-	// semantics: walk → if miss, EnsureUserPageMapped → re-walk. This
-	// matters for syscall buffers Go allocated via mmap MAP_ANON but
-	// never touched (Go skips memclr on guaranteed-zero arena pages —
-	// see gvisor's pkg/rand bufio.Reader buffer at package init).
-	//
 	// CopyToUserWithL0 keeps the original "fail on miss" semantics because
 	// it runs in delegation-reply context where the L0 doesn't match the
 	// current TTBR0 and faulting would install pages in the wrong process.
@@ -2890,19 +2929,9 @@ func CopyToUser(userVA uintptr, src []byte) bool {
 	copied := 0
 	for copied < n {
 		va := userVA + uintptr(copied)
-		pa := WalkUserPageTable(va)
-		if pa == 0 {
-			if l0PA == 0 {
-				return false
-			}
-			pagePA, ok := EnsureUserPageMappedWithL0(va, l0PA)
-			if !ok {
-				return false
-			}
-			// EnsureUserPageMappedWithL0 returns the page-aligned PA;
-			// reconstruct the byte-offset PA WalkUserPageTable would
-			// have returned.
-			pa = pagePA | (va & (PageSize - 1))
+		pa, ok := resolveUserPageWithFallback(va, l0PA)
+		if !ok {
+			return false
 		}
 		pagePA := pa &^ (PageSize - 1)
 		pageOffset := pa & (PageSize - 1)

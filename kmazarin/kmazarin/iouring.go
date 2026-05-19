@@ -66,6 +66,8 @@ var (
 	dbgTimeoutBlkNE     uint32 // block device timeout not enough
 	dbgTimeoutInpOK     uint32 // input device timeout had enough
 	dbgTimeoutInpNE     uint32 // input device timeout not enough
+	dbgTimeoutNetOK     uint32 // net device timeout had enough
+	dbgTimeoutNetNE     uint32 // net device timeout not enough
 )
 
 // InitIOUringTimeout computes the timeout ticks from the system timer frequency.
@@ -240,16 +242,22 @@ func checkIOUringTimeoutFromTimer() {
 			atomic.AddUint32(&dbgTimeoutWakes, 1)
 			if tmoAvail >= slot.MinComplete {
 				atomic.AddUint32(&dbgTimeoutHadEnough, 1)
-				if slot.DeviceType == IOUringDeviceBlock {
+				switch slot.DeviceType {
+				case IOUringDeviceBlock:
 					atomic.AddUint32(&dbgTimeoutBlkOK, 1)
-				} else {
+				case IOUringDeviceNet:
+					atomic.AddUint32(&dbgTimeoutNetOK, 1)
+				default:
 					atomic.AddUint32(&dbgTimeoutInpOK, 1)
 				}
 			} else {
 				atomic.AddUint32(&dbgTimeoutNotEnough, 1)
-				if slot.DeviceType == IOUringDeviceBlock {
+				switch slot.DeviceType {
+				case IOUringDeviceBlock:
 					atomic.AddUint32(&dbgTimeoutBlkNE, 1)
-				} else {
+				case IOUringDeviceNet:
+					atomic.AddUint32(&dbgTimeoutNetNE, 1)
+				default:
 					atomic.AddUint32(&dbgTimeoutInpNE, 1)
 				}
 			}

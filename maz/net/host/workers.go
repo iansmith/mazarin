@@ -67,9 +67,19 @@ type Dispatcher struct {
 	// (re-arm SQEs) and TxWorkers (submit SQEs).
 	sqMu sync.Mutex
 
-	DbgRxDropped uint64 // accessed via atomic
-	DbgRxInvalid uint64
-	DbgTxDropped uint64
+	// unkickedSQEs counts SQEs queued in the ring (SQTail advanced) but
+	// not yet successfully submitted to the kernel because a prior
+	// IOUringEnter failed. The next successful IOUringEnter from any path
+	// adds this count to its toSubmit so the kernel catches up; without
+	// it, queued SQEs cause head-of-line blocking for the next caller.
+	unkickedSQEs atomic.Uint32
+
+	// Diagnostic counters, all accessed via atomic.AddUint64.
+	DbgRxDropped  uint64
+	DbgRxInvalid  uint64
+	DbgTxDropped  uint64
+	DbgTxOversize uint64
+	DbgKickFailed uint64
 }
 
 // NewDispatcher constructs the dispatcher. armed is the number of RX
@@ -205,7 +215,14 @@ func (d *Dispatcher) Run() {
 			for _, p := range pending {
 				writeRearmSQE(d.Ring, p.tag, p.pageVA)
 			}
-			_, _ = sys.IOUringEnter(d.RingID, uint32(len(pending)), 0, 0)
+			toSubmit := uint32(len(pending)) + d.unkickedSQEs.Swap(0)
+			if _, err := sys.IOUringEnter(d.RingID, toSubmit, 0, 0); err != nil {
+				// SQEs are queued in the ring (writeRearmSQE advanced
+				// SQTail); the next successful kick from any path will
+				// flush them.
+				d.unkickedSQEs.Add(toSubmit)
+				atomic.AddUint64(&d.DbgKickFailed, 1)
+			}
 			d.sqMu.Unlock()
 		}
 	}
@@ -238,6 +255,11 @@ func (d *Dispatcher) dispatchRx(pageVA uintptr, usedLen int) bool {
 	}
 }
 
+// MaxTxPayload caps the L3+ plugin bytes per TX page. A page holds
+// virtio_net_hdr (12 B) followed by the plugin's bytes; oversize would
+// overflow the page on the wire side and corrupt the next clump slot.
+const MaxTxPayload = PageSize - VirtIONetHdrSize
+
 // SubmitTx writes the 12-byte virtio_net_hdr at the front of the page,
 // emits a TX SQE for env, records the txTag→pageVA mapping in inflight,
 // and kicks the kernel. Returns an error only when the SQE write or
@@ -248,6 +270,12 @@ func (d *Dispatcher) SubmitTx(env linksurface.TxEnvelope) error {
 		return fmt.Errorf("SubmitTx: nil packet")
 	}
 	pageVA := env.Packet.VABase()
+
+	if env.Len < 0 || env.Len > MaxTxPayload {
+		atomic.AddUint64(&d.DbgTxOversize, 1)
+		d.Allocator.ReleaseRaw(pageVA)
+		return nil
+	}
 
 	// Zero the 12-byte virtio_net_hdr at the front of the page.
 	vhdr := unsafe.Slice((*byte)(unsafe.Pointer(pageVA)), VirtIONetHdrSize)
@@ -279,8 +307,19 @@ func (d *Dispatcher) SubmitTx(env linksurface.TxEnvelope) error {
 	d.sqMu.Lock()
 	// Wire range: addr = page base, off = 0, len = virtio_net_hdr + plugin bytes.
 	writeTxSQE(d.Ring, pageVA, 0, uint32(VirtIONetHdrSize+env.Len), txTag)
-	if _, err := sys.IOUringEnter(d.RingID, 1, 0, 0); err != nil {
+	toSubmit := uint32(1) + d.unkickedSQEs.Swap(0)
+	if _, err := sys.IOUringEnter(d.RingID, toSubmit, 0, 0); err != nil {
+		// Roll back our SQE (sqMu held, no concurrent SQTail writers) so
+		// the kernel never sees this TX. Re-park the prior unkicked
+		// count for next attempt.
+		atomic.AddUint32(&d.Ring.SQTail, ^uint32(0))
+		d.unkickedSQEs.Add(toSubmit - 1)
 		d.sqMu.Unlock()
+		d.txMu.Lock()
+		delete(d.inflight, txTag)
+		d.txMu.Unlock()
+		d.Allocator.ReleaseRaw(pageVA)
+		atomic.AddUint64(&d.DbgKickFailed, 1)
 		return fmt.Errorf("IOUringEnter: %w", err)
 	}
 	d.sqMu.Unlock()

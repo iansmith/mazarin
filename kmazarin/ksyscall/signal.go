@@ -113,16 +113,13 @@ func SyscallSigaltstack(newPtr, oldPtr, _, _, _, _ uint64) int64 {
 		if flagsVal == uint32(ssDisable) {
 			SetThreadSignalStack(tPtr, 0, 0, 0)
 		} else {
-			SetThreadSignalStack(tPtr, sp, sp+uint64(size), uint64(size))
-
-			// Pre-fault the top 2 pages of the signal stack.
-			// BuildSignalFrame writes the signal frame at the top of this stack
-			// from nosplit kernel context where the nosplit budget is too tight
-			// for demand-paging allocation. Pre-faulting here (in the syscall
-			// path, which has more budget) ensures the pages are mapped. If
-			// either pre-fault fails the stack the caller gave us is bad —
-			// surface as EFAULT now rather than crashing later in
-			// BuildSignalFrame.
+			// Pre-fault the top 2 pages of the signal stack BEFORE installing
+			// it on the thread. BuildSignalFrame writes the signal frame at
+			// the top of this stack from nosplit kernel context where the
+			// nosplit budget is too tight for demand-paging allocation. If
+			// pre-fault fails the stack is bad — return EFAULT here and
+			// leave the thread's prior altstack untouched so later signal
+			// delivery doesn't try to use the rejected stack.
 			l0PA := uintptr(kmem.ReadCurrentL0PA())
 			if l0PA != 0 && size > 0 {
 				top := uintptr(sp + uint64(size) - 1)
@@ -135,6 +132,7 @@ func SyscallSigaltstack(newPtr, oldPtr, _, _, _, _ uint64) int64 {
 					}
 				}
 			}
+			SetThreadSignalStack(tPtr, sp, sp+uint64(size), uint64(size))
 		}
 	}
 
