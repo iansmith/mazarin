@@ -15,20 +15,36 @@ type Addr struct {
 
 // --- Request structs (client → net.elf) ---
 
+// NetIPCConnectReq is the first message a client sends to net.elf. It
+// declares the IPC ring index on the client's own side that net.elf must
+// write responses and unsolicited RecvDgram deliveries to, and requests a
+// per-client TX page watermark. Mirrors fs's OpConnect.
+//
+// Watermark=0 requests the default TX page limit; non-zero values are
+// clamped to [1, MaxTxWatermark] by net.elf and echoed in
+// NetIPCConnectResp.
+//
+// Subsequent Connect messages from the same client re-arm the response
+// ring index and re-grant the watermark (useful for clients that
+// repurpose IPC rings dynamically).
+//
+// Layout (8 bytes): ReqID(4) + RespRing(1) + Watermark(1) + _pad(2).
+type NetIPCConnectReq struct {
+	ReqID     uint32
+	RespRing  uint8
+	Watermark uint8
+	_pad      [2]byte
+}
+
 // BindUDPReq creates a UDP endpoint at (LocalIP, LocalPort). LocalPort=0
 // requests an ephemeral port; LocalIP={0,0,0,0} binds to all interfaces.
-// Watermark=0 requests the default TX page limit; non-zero values are
-// clamped to MaxTxWatermark by net.elf and echoed back in BindUDPResp.
 //
-// Layout (16 bytes): ReqID(4) + LocalPort(2) + _pad(2) + LocalIP(4) +
-// Watermark(1) + _pad2(3).
+// Layout (12 bytes): ReqID(4) + LocalPort(2) + _pad(2) + LocalIP(4).
 type BindUDPReq struct {
 	ReqID     uint32
 	LocalPort uint16
 	_pad      [2]byte
 	LocalIP   [4]byte
-	Watermark uint8
-	_pad2     [3]byte
 }
 
 // SendDgramReq sends one datagram from an already-transferred TX page.
@@ -74,19 +90,26 @@ type CloseReq struct {
 
 // --- Response structs (net.elf → client) ---
 
+// NetIPCConnectResp acks a Connect. Watermark is the per-client TX page
+// limit actually granted (clamped to [1, MaxTxWatermark]).
+//
+// Layout (8 bytes): ReqID(4) + ErrCode(2) + Watermark(1) + _pad(1).
+type NetIPCConnectResp struct {
+	ReqID     uint32
+	ErrCode   int16
+	Watermark uint8
+	_pad      [1]byte
+}
+
 // BindUDPResp echoes the granted ConnID and bound port. ErrCode is one of
 // the NetErr* constants; on error, ConnID is 0 and LocalPort is undefined.
-// Watermark is the per-client TX page limit actually granted (after clamp).
 //
-// Layout (16 bytes): ReqID(4) + ConnID(4) + LocalPort(2) + ErrCode(2) +
-// Watermark(1) + _pad(3).
+// Layout (12 bytes): ReqID(4) + ConnID(4) + LocalPort(2) + ErrCode(2).
 type BindUDPResp struct {
 	ReqID     uint32
 	ConnID    uint32
 	LocalPort uint16
 	ErrCode   int16
-	Watermark uint8
-	_pad      [3]byte
 }
 
 // SendDgramResp confirms the kernel handed the page to gvisor for TX.
@@ -142,10 +165,12 @@ const maxNetIPCMsgBody = 108
 
 var _ [maxNetIPCMsgBody]byte = [maxNetIPCMsgBody]byte{}
 var _ [8]byte = [unsafe.Sizeof(Addr{})]byte{}
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(NetIPCConnectReq{})]byte
 var _ [maxNetIPCMsgBody - unsafe.Sizeof(BindUDPReq{})]byte
 var _ [maxNetIPCMsgBody - unsafe.Sizeof(SendDgramReq{})]byte
 var _ [maxNetIPCMsgBody - unsafe.Sizeof(ReleaseReq{})]byte
 var _ [maxNetIPCMsgBody - unsafe.Sizeof(CloseReq{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(NetIPCConnectResp{})]byte
 var _ [maxNetIPCMsgBody - unsafe.Sizeof(BindUDPResp{})]byte
 var _ [maxNetIPCMsgBody - unsafe.Sizeof(SendDgramResp{})]byte
 var _ [maxNetIPCMsgBody - unsafe.Sizeof(CloseResp{})]byte

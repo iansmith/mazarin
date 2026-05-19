@@ -27,12 +27,26 @@
 // just bound endpoints — the same Conn handle accepts both Connect+Send and
 // SendTo with an explicit destination.
 //
+// # Connect / response ring
+//
+// Before any other operation the client sends NetMsgConnect, declaring the
+// IPC ring index on its own side that net.elf should write responses to
+// (RespRing). Net.elf records that index in per-client state and uses
+// uring.SendWithRing(clientSID, msg, respRing) for every subsequent
+// response and unsolicited RecvDgram delivery. This mirrors fs's OpConnect
+// pattern exactly — the server doesn't care which ring the client picked,
+// it just stores the number. NetMsgConnect must precede NetMsgBindUDP for
+// a given client; later Connects re-arm the ring index and re-grant the
+// watermark.
+//
 // # Watermark
 //
 // Each client may have at most Watermark TX pages in flight at net.elf at
-// any time. Clients request a value at BindUDP; net.elf clamps to
-// [1, MaxTxWatermark] and reports the granted value back in BindUDPResp.
-// A request of 0 means "use default" (DefaultTxWatermark).
+// any time. Clients request a value at NetMsgConnect; net.elf clamps to
+// [1, MaxTxWatermark] and reports the granted value back in
+// NetMsgConnectResp. A request of 0 means "use default"
+// (DefaultTxWatermark). Watermark is a per-client policy that applies
+// across all of the client's endpoints, not per-endpoint.
 //
 // # Wire format
 //
@@ -84,21 +98,32 @@ const (
 
 // Request types (client → net.elf, via ProtoNetIPCReq).
 const (
-	NetMsgBindUDP   uint32 = 1
-	NetMsgSendDgram uint32 = 2
-	NetMsgRelease   uint32 = 3
-	NetMsgClose     uint32 = 4
+	NetMsgConnect   uint32 = 1
+	NetMsgBindUDP   uint32 = 2
+	NetMsgSendDgram uint32 = 3
+	NetMsgRelease   uint32 = 4
+	NetMsgClose     uint32 = 5
 )
 
 // Response / unsolicited types (net.elf → client, via ProtoNetIPCResp).
 const (
-	NetMsgBindUDPResp   uint32 = 50
-	NetMsgSendDgramResp uint32 = 51
-	NetMsgCloseResp     uint32 = 52
+	NetMsgConnectResp   uint32 = 50
+	NetMsgBindUDPResp   uint32 = 51
+	NetMsgSendDgramResp uint32 = 52
+	NetMsgCloseResp     uint32 = 53
 	NetMsgRecvDgram     uint32 = 60 // unsolicited (RX delivery)
 )
 
 // --- Encode helpers (request side) ---
+
+func EncodeConnect(r *NetIPCConnectReq, senderSID int16) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCReq
+	msg.SenderSID = senderSID
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgConnect
+	*(*NetIPCConnectReq)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
 
 func EncodeBindUDP(r *BindUDPReq, senderSID int16) ipc.UringIPCMsg {
 	var msg ipc.UringIPCMsg
@@ -137,6 +162,14 @@ func EncodeClose(r *CloseReq, senderSID int16) ipc.UringIPCMsg {
 }
 
 // --- Encode helpers (response / notification side) ---
+
+func EncodeConnectResp(r *NetIPCConnectResp) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCResp
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgConnectResp
+	*(*NetIPCConnectResp)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
 
 func EncodeBindUDPResp(r *BindUDPResp) ipc.UringIPCMsg {
 	var msg ipc.UringIPCMsg
@@ -183,6 +216,10 @@ func MsgTypeOf(msg *ipc.UringIPCMsg) uint32 {
 	return *(*uint32)(unsafe.Pointer(&msg.Payload[0]))
 }
 
+func DecodeConnectReq(msg *ipc.UringIPCMsg) *NetIPCConnectReq {
+	return (*NetIPCConnectReq)(unsafe.Pointer(&msg.Payload[4]))
+}
+
 func DecodeBindUDPReq(msg *ipc.UringIPCMsg) *BindUDPReq {
 	return (*BindUDPReq)(unsafe.Pointer(&msg.Payload[4]))
 }
@@ -197,6 +234,10 @@ func DecodeReleaseReq(msg *ipc.UringIPCMsg) *ReleaseReq {
 
 func DecodeCloseReq(msg *ipc.UringIPCMsg) *CloseReq {
 	return (*CloseReq)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeConnectResp(msg *ipc.UringIPCMsg) *NetIPCConnectResp {
+	return (*NetIPCConnectResp)(unsafe.Pointer(&msg.Payload[4]))
 }
 
 func DecodeBindUDPResp(msg *ipc.UringIPCMsg) *BindUDPResp {
