@@ -4,6 +4,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
+
 	"mazzy/mazarin/linksurface"
 	"mazzy/shared/constants"
 )
@@ -23,6 +25,7 @@ var (
 	globalRecvChan chan linksurface.RxEnvelope
 	globalTxChan   chan linksurface.TxEnvelope
 	globalRawEP    *rawEndpoint
+	globalStack    *stack.Stack // set by MazarinMain after buildStack; read by NetIPC handlers
 )
 
 // Debug counters bumped via atomic.AddUint64.

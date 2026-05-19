@@ -70,6 +70,7 @@ func MazarinMain() {
 		fmt.Printf("[gvisor] buildStack failed: %v\n", err)
 		return
 	}
+	globalStack = s
 	fmt.Println("[gvisor] stack up; entering RX dispatch loop")
 	go runEchoTest(s)
 	runRxDispatcher()

@@ -18,6 +18,11 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+	"gvisor.dev/gvisor/pkg/waiter"
+
 	"mazzy/mazarin/uring"
 	"mazzy/shared/ipc"
 	"mazzy/shared/netproto"
@@ -25,18 +30,33 @@ import (
 
 // clientState holds the per-client NetIPC state, keyed by SenderSID in
 // the clients map. respRing and watermark are set at NetMsgConnect.
-// conns is populated by NetMsgBindUDP / NetMsgConnect (TCP, Phase 6);
-// rxLoaned by the per-endpoint RX bridge in Phase 3 step 4.
+// conns is populated by NetMsgBindUDP (and NetMsgConnect/TCP in Phase 6);
+// rxLoaned by the per-endpoint RX bridge.
 type clientState struct {
 	sid       int16
 	respRing  uint8
 	watermark uint8
+
+	// nextConnID is the per-client monotonic ConnID counter. ConnIDs
+	// start at 1 (0 is reserved for "invalid") and never wrap.
+	nextConnID uint32
+	conns      map[uint32]*clientConn
 
 	// txInFlight is the count of TX pages this client has handed off to
 	// net.elf that have not yet been TX-completed. Compared against
 	// watermark on SendDgram; bumped on accept, decremented in the
 	// virtio TX-completion path.
 	txInFlight int32
+}
+
+// clientConn pairs a per-client connID with the gvisor endpoint it
+// resolves to. The waiter.Queue is what the per-endpoint RX reader
+// goroutine sleeps on once Phase 3 step 4 lands.
+type clientConn struct {
+	connID uint32
+	sid    int16
+	ep     tcpip.Endpoint
+	wq     *waiter.Queue
 }
 
 var (
@@ -49,6 +69,7 @@ var (
 	dbgNetIPCReceived uint64
 	dbgNetIPCUnknown  uint64
 	dbgConnects       uint64
+	dbgBinds          uint64
 	dbgNotConnected   uint64
 	dbgSendRespFail   uint64
 )
@@ -59,7 +80,7 @@ func handleNetIPC(msg *ipc.UringIPCMsg) {
 	case netproto.NetMsgConnect:
 		handleConnect(msg)
 	case netproto.NetMsgBindUDP:
-		rejectNotConnected(msg, "BindUDP")
+		handleBindUDP(msg)
 	case netproto.NetMsgSendDgram:
 		rejectNotConnected(msg, "SendDgram")
 	case netproto.NetMsgRelease:
@@ -146,4 +167,85 @@ func sendResp(targetSID int16, respRing uint8, msg ipc.UringIPCMsg) {
 		fmt.Printf("[gvisor:netipc] response send failed: targetSID=%d ring=%d err=%v\n",
 			targetSID, respRing, err)
 	}
+}
+
+// handleBindUDP creates a gvisor UDP endpoint bound to (LocalIP,
+// LocalPort), allocates a per-client ConnID, records it in clientState,
+// and replies with BindUDPResp carrying the ConnID and the actual bound
+// port (which may have been ephemerally assigned if the client passed
+// LocalPort=0).
+//
+// The endpoint exists but is not yet draining received datagrams — that
+// per-endpoint RX reader goroutine lands in Phase 3 step 4. SendDgram
+// would land in step 4 as well; for now BindUDP is purely structural.
+func handleBindUDP(msg *ipc.UringIPCMsg) {
+	atomic.AddUint64(&dbgBinds, 1)
+	req := *netproto.DecodeBindUDPReq(msg)
+
+	clientsMu.Lock()
+	cs, ok := clients[msg.SenderSID]
+	clientsMu.Unlock()
+	if !ok {
+		bindUDPError(msg.SenderSID, 0, req.ReqID, netproto.NetErrInvalid, 0)
+		fmt.Printf("[gvisor:netipc] BindUDP from unconnected SID=%d\n", msg.SenderSID)
+		return
+	}
+
+	if globalStack == nil {
+		bindUDPError(msg.SenderSID, cs.respRing, req.ReqID, netproto.NetErrUnknown, 0)
+		return
+	}
+
+	wq := &waiter.Queue{}
+	ep, terr := globalStack.NewEndpoint(udp.ProtocolNumber, ipv4.ProtocolNumber, wq)
+	if terr != nil {
+		bindUDPError(msg.SenderSID, cs.respRing, req.ReqID, netproto.NetErrUnknown, 0)
+		fmt.Printf("[gvisor:netipc] BindUDP NewEndpoint err=%v SID=%d\n", terr, msg.SenderSID)
+		return
+	}
+
+	addr := tcpip.FullAddress{Port: req.LocalPort}
+	if req.LocalIP != [4]byte{} {
+		addr.Addr = tcpip.AddrFrom4(req.LocalIP)
+	}
+	if terr := ep.Bind(addr); terr != nil {
+		ep.Close()
+		bindUDPError(msg.SenderSID, cs.respRing, req.ReqID, netproto.NetErrAddrInUse, 0)
+		fmt.Printf("[gvisor:netipc] BindUDP Bind err=%v SID=%d\n", terr, msg.SenderSID)
+		return
+	}
+	bound, terr := ep.GetLocalAddress()
+	if terr != nil {
+		ep.Close()
+		bindUDPError(msg.SenderSID, cs.respRing, req.ReqID, netproto.NetErrUnknown, 0)
+		return
+	}
+
+	clientsMu.Lock()
+	cs.nextConnID++
+	if cs.nextConnID == 0 {
+		cs.nextConnID = 1
+	}
+	connID := cs.nextConnID
+	if cs.conns == nil {
+		cs.conns = make(map[uint32]*clientConn)
+	}
+	cs.conns[connID] = &clientConn{connID: connID, sid: msg.SenderSID, ep: ep, wq: wq}
+	respRing := cs.respRing
+	clientsMu.Unlock()
+
+	resp := netproto.BindUDPResp{
+		ReqID:     req.ReqID,
+		ConnID:    connID,
+		LocalPort: bound.Port,
+		ErrCode:   netproto.NetErrNone,
+	}
+	sendResp(msg.SenderSID, respRing, netproto.EncodeBindUDPResp(&resp))
+	fmt.Printf("[gvisor:netipc] BindUDP SID=%d connID=%d port=%d\n",
+		msg.SenderSID, connID, bound.Port)
+}
+
+func bindUDPError(targetSID int16, respRing uint8, reqID uint32, code int16, connID uint32) {
+	resp := netproto.BindUDPResp{ReqID: reqID, ConnID: connID, ErrCode: code}
+	sendResp(targetSID, respRing, netproto.EncodeBindUDPResp(&resp))
 }

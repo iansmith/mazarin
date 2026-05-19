@@ -95,8 +95,8 @@ func MazarinMain() {
 	}
 	sys.UartWriteString(tag + "PASS ShareNetPageWithClient clientVA=0x" + sys.Hex64(uint64(clientVA)) + "\n")
 
-	// --- Test 3: NetIPCConnect round-trip against net.elf ---
-	testNetIPCConnect()
+	// --- Test 3: NetIPC round-trip against net.elf (Connect + BindUDP) ---
+	testNetIPC()
 
 	sys.UartWriteString(tag + "all checks done\n")
 
@@ -114,13 +114,13 @@ func MazarinMain() {
 
 func main() { MazarinMain() }
 
-// testNetIPCConnect sends a NetIPCConnect to net.elf and verifies the
-// returned ConnectResp. The client requests Watermark=0 (default) and
-// declares RespRing=0 (we just registered a dispatcher there).
+// testNetIPC runs a Connect + BindUDP round-trip against net.elf and
+// logs PASS / FAIL per stage. Stops at the first FAIL.
 //
-// Returns true on PASS, false on FAIL. On FAIL, a FAIL line is already
-// logged.
-func testNetIPCConnect() bool {
+// All responses arrive on ring 0 (xfertest has no other listeners),
+// through a single shared channel; stages run serially so ReqID
+// disambiguation isn't needed.
+func testNetIPC() bool {
 	if err := sys.WaitForShepherdReady("net", 5); err != nil {
 		sys.UartWriteString(tag + "FAIL: net not ready: " + err.Error() + "\n")
 		return false
@@ -131,61 +131,95 @@ func testNetIPCConnect() bool {
 		return false
 	}
 
-	// Use ring 0 for responses — xfertest doesn't have any other ring
-	// listener, no head-of-line concern.
 	respCh := make(chan any, 1)
 	disp := uring.NewDispatcher()
 	disp.On(ipc.ProtoNetIPCResp, decodeNetIPCResp, respCh)
 	disp.Start()
 
-	const reqID = 0xC0FFEE
-	req := netproto.NetIPCConnectReq{
-		ReqID:    reqID,
-		RespRing: 0,
-		// Watermark=0 → expect default (DefaultTxWatermark)
-	}
-	msg := netproto.EncodeConnect(&req, int16(os.Getpid()))
-	if err := uring.Send(int(netSID), &msg); err != nil {
-		sys.UartWriteString(tag + "FAIL: NetIPCConnect send: " + err.Error() + "\n")
+	if !stageConnect(netSID, respCh) {
 		return false
 	}
+	if !stageBindUDP(netSID, respCh) {
+		return false
+	}
+	return true
+}
 
+func stageConnect(netSID int, respCh <-chan any) bool {
+	const reqID = 0xC0FFEE
+	req := netproto.NetIPCConnectReq{ReqID: reqID, RespRing: 0}
+	msg := netproto.EncodeConnect(&req, int16(os.Getpid()))
+	if err := uring.Send(netSID, &msg); err != nil {
+		sys.UartWriteString(tag + "FAIL: Connect send: " + err.Error() + "\n")
+		return false
+	}
 	select {
 	case v := <-respCh:
 		resp, ok := v.(*netproto.NetIPCConnectResp)
 		if !ok {
-			sys.UartWriteString(tag + "FAIL: NetIPCConnect resp wrong type\n")
+			sys.UartWriteString(tag + "FAIL: Connect resp wrong type\n")
 			return false
 		}
-		if resp.ReqID != reqID {
-			sys.UartWriteString(tag + "FAIL: NetIPCConnect reqID mismatch got=" + sys.Itoa(int64(resp.ReqID)) + "\n")
-			return false
-		}
-		if resp.ErrCode != netproto.NetErrNone {
-			sys.UartWriteString(tag + "FAIL: NetIPCConnect ErrCode=" + sys.Itoa(int64(resp.ErrCode)) + "\n")
-			return false
-		}
-		if resp.Watermark != netproto.DefaultTxWatermark {
-			sys.UartWriteString(tag + "FAIL: NetIPCConnect Watermark got=" + sys.Itoa(int64(resp.Watermark)) +
-				" want=" + sys.Itoa(int64(netproto.DefaultTxWatermark)) + "\n")
+		if resp.ReqID != reqID || resp.ErrCode != netproto.NetErrNone ||
+			resp.Watermark != netproto.DefaultTxWatermark {
+			sys.UartWriteString(tag + "FAIL: Connect bad fields reqID=" + sys.Itoa(int64(resp.ReqID)) +
+				" err=" + sys.Itoa(int64(resp.ErrCode)) +
+				" wm=" + sys.Itoa(int64(resp.Watermark)) + "\n")
 			return false
 		}
 		sys.UartWriteString(tag + "PASS NetIPCConnect netSID=" + sys.Itoa(int64(netSID)) +
 			" watermark=" + sys.Itoa(int64(resp.Watermark)) + "\n")
 		return true
 	case <-time.After(2 * time.Second):
-		sys.UartWriteString(tag + "FAIL: NetIPCConnect response timeout\n")
+		sys.UartWriteString(tag + "FAIL: Connect response timeout\n")
+		return false
+	}
+}
+
+func stageBindUDP(netSID int, respCh <-chan any) bool {
+	const reqID = 0xBADBEEF
+	req := netproto.BindUDPReq{
+		ReqID:     reqID,
+		LocalPort: 0, // ephemeral
+		LocalIP:   [4]byte{0, 0, 0, 0},
+	}
+	msg := netproto.EncodeBindUDP(&req, int16(os.Getpid()))
+	if err := uring.Send(netSID, &msg); err != nil {
+		sys.UartWriteString(tag + "FAIL: BindUDP send: " + err.Error() + "\n")
+		return false
+	}
+	select {
+	case v := <-respCh:
+		resp, ok := v.(*netproto.BindUDPResp)
+		if !ok {
+			sys.UartWriteString(tag + "FAIL: BindUDP resp wrong type\n")
+			return false
+		}
+		if resp.ReqID != reqID || resp.ErrCode != netproto.NetErrNone || resp.ConnID == 0 || resp.LocalPort == 0 {
+			sys.UartWriteString(tag + "FAIL: BindUDP bad fields reqID=" + sys.Itoa(int64(resp.ReqID)) +
+				" err=" + sys.Itoa(int64(resp.ErrCode)) +
+				" connID=" + sys.Itoa(int64(resp.ConnID)) +
+				" port=" + sys.Itoa(int64(resp.LocalPort)) + "\n")
+			return false
+		}
+		sys.UartWriteString(tag + "PASS NetIPCBindUDP connID=" + sys.Itoa(int64(resp.ConnID)) +
+			" port=" + sys.Itoa(int64(resp.LocalPort)) + "\n")
+		return true
+	case <-time.After(2 * time.Second):
+		sys.UartWriteString(tag + "FAIL: BindUDP response timeout\n")
 		return false
 	}
 }
 
 // decodeNetIPCResp is the uring Dispatcher decoder for ProtoNetIPCResp.
-// For this smoke test we only care about NetIPCConnectResp; other types
-// are returned untyped (caller's type-switch handles).
+// Copy-by-value so the slot can be reused after the callback returns.
 func decodeNetIPCResp(msg *ipc.UringIPCMsg) any {
-	if netproto.MsgTypeOf(msg) == netproto.NetMsgConnectResp {
-		// Copy by value — the dispatcher's slot may be reused after we return.
+	switch netproto.MsgTypeOf(msg) {
+	case netproto.NetMsgConnectResp:
 		r := *netproto.DecodeConnectResp(msg)
+		return &r
+	case netproto.NetMsgBindUDPResp:
+		r := *netproto.DecodeBindUDPResp(msg)
 		return &r
 	}
 	return nil
