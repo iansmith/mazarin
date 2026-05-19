@@ -9,15 +9,20 @@ func Itoa(v int64) string {
 		return "0"
 	}
 	neg := v < 0
+	// Operate on the unsigned absolute value so MinInt64 doesn't
+	// overflow the negation (`-MinInt64` doesn't fit in int64).
+	var u uint64
 	if neg {
-		v = -v
+		u = uint64(-(v + 1)) + 1
+	} else {
+		u = uint64(v)
 	}
 	var buf [20]byte
 	i := len(buf)
-	for v > 0 {
+	for u > 0 {
 		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
+		buf[i] = byte('0' + u%10)
+		u /= 10
 	}
 	if neg {
 		i--

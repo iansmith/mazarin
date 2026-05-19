@@ -15,8 +15,6 @@
 package main
 
 import (
-	"time"
-
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/netclient"
@@ -47,18 +45,35 @@ const (
 //go:noinline
 func MazarinMain() {
 	sys.UartWriteString(tag + "start\n")
+	if runSmokeTests() {
+		sys.UartWriteString(tag + "all checks done\n")
+	} else {
+		sys.UartWriteString(tag + "checks failed; staying alive\n")
+	}
+	// MUST reach this unconditionally. xfertest can have live clump
+	// entries in linux's address space (post-TransferDMAClump) or pages
+	// shared into linux (post-ShareNetPageWithClient) at this point. The
+	// kernel's CleanupShepherdDMAClumps BuddyFreeTyped's clump pages
+	// without consulting PageDescriptor.RefCount, so exiting would yank
+	// linux's mappings (use-after-free). Tracked as a separate ticket.
+	sys.SetReady(true)
+	select {}
+}
 
+// runSmokeTests returns true if every stage passed. Early returns are
+// fine; MazarinMain's keep-alive loop runs regardless of outcome.
+func runSmokeTests() bool {
 	// Wait for the target shepherd to be ready. Without this the smoke test
 	// races the launcher; targetSym is a key shepherd brought up early but
 	// the user-program group may still beat it on a fast boot.
 	if err := sys.WaitForShepherdReady(targetSym, 5); err != nil {
 		sys.UartWriteString(tag + "FAIL: " + targetSym + " not ready: " + err.Error() + "\n")
-		return
+		return false
 	}
 	targetSID, err := sys.GetShepherdByName(targetSym)
 	if err != nil {
 		sys.UartWriteString(tag + "FAIL: GetShepherdByName(" + targetSym + "): " + err.Error() + "\n")
-		return
+		return false
 	}
 	sys.UartWriteString(tag + "target " + targetSym + " sid=" + sys.Itoa(int64(targetSID)) + "\n")
 
@@ -66,7 +81,7 @@ func MazarinMain() {
 	clump1, err := mem.AllocContiguous(4096)
 	if err != nil {
 		sys.UartWriteString(tag + "FAIL: AllocContiguous#1: " + err.Error() + "\n")
-		return
+		return false
 	}
 	for i := range clump1.Buf {
 		clump1.Buf[i] = patternA
@@ -74,11 +89,11 @@ func MazarinMain() {
 	dstVA, err := sys.TransferDMAClump(targetSID, clump1.Addr, 0)
 	if err != nil {
 		sys.UartWriteString(tag + "FAIL: TransferDMAClump: " + err.Error() + "\n")
-		return
+		return false
 	}
 	if dstVA == 0 {
 		sys.UartWriteString(tag + "FAIL: TransferDMAClump returned VA=0\n")
-		return
+		return false
 	}
 	sys.UartWriteString(tag + "PASS TransferDMAClump dstVA=0x" + sys.Hex64(uint64(dstVA)) + "\n")
 
@@ -88,7 +103,7 @@ func MazarinMain() {
 	clump2, err := mem.AllocContiguous(4096)
 	if err != nil {
 		sys.UartWriteString(tag + "FAIL: AllocContiguous#2: " + err.Error() + "\n")
-		return
+		return false
 	}
 	for i := range clump2.Buf {
 		clump2.Buf[i] = patternB
@@ -96,29 +111,16 @@ func MazarinMain() {
 	clientVA, err := sys.ShareNetPageWithClient(targetSID, clump2.Addr, 0)
 	if err != nil {
 		sys.UartWriteString(tag + "FAIL: ShareNetPageWithClient: " + err.Error() + "\n")
-		return
+		return false
 	}
 	if clientVA == 0 {
 		sys.UartWriteString(tag + "FAIL: ShareNetPageWithClient returned VA=0\n")
-		return
+		return false
 	}
 	sys.UartWriteString(tag + "PASS ShareNetPageWithClient clientVA=0x" + sys.Hex64(uint64(clientVA)) + "\n")
 
 	// --- Test 3: NetIPC round-trip against net.elf via NetClient ---
-	testNetClient()
-
-	sys.UartWriteString(tag + "all checks done\n")
-
-	// Stay alive regardless of test outcome. The kernel's
-	// CleanupShepherdDMAClumps currently BuddyFreeTyped's clump pages
-	// without consulting PageDescriptor.RefCount, which would yank
-	// linux's mapping out from under it (use-after-free) if we exit.
-	// Fixing that is a separate ticket — see MAZ-29 findings — and is
-	// orthogonal to whether the syscalls themselves work.
-	sys.SetReady(true)
-	for {
-		time.Sleep(time.Hour)
-	}
+	return testNetClient()
 }
 
 func main() { MazarinMain() }
@@ -200,10 +202,11 @@ func testNetClient() bool {
 // udpRoundTrip sends a patterned payload via nc.SendTo and asserts the
 // matching RecvDgram arrives on expectRecvConn from expectSrcPort.
 // Verifies length, src port, and the byte pattern; releases the loaned
-// RX page before returning.
+// RX page before returning. ok is the named return so the ReleaseRX
+// defer can flip it to false if the release itself errors.
 func udpRoundTrip(nc netclient.NetClient, label string, senderConn uint32,
 	dst netproto.Addr, expectRecvConn uint32, expectSrcPort uint16,
-	payloadSz int, pattern byte) bool {
+	payloadSz int, pattern byte) (ok bool) {
 
 	payload := make([]byte, payloadSz)
 	for i := range payload {
@@ -221,6 +224,7 @@ func udpRoundTrip(nc netclient.NetClient, label string, senderConn uint32,
 	defer func() {
 		if relErr := nc.ReleaseRX(expectRecvConn, rx.Page); relErr != nil {
 			sys.UartWriteString(tag + "FAIL: " + label + " ReleaseRX: " + relErr.Error() + "\n")
+			ok = false
 		}
 	}()
 
