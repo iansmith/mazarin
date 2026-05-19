@@ -15,16 +15,25 @@
 package main
 
 import (
-	"os"
 	"time"
 
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
+	"mazzy/mazarin/netclient"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
 	"mazzy/shared/ipc"
 	"mazzy/shared/netproto"
 )
+
+// loopbackV4 matches gvisor's IPv4Loopback; declared here so xfertest
+// doesn't need the gvisor import path.
+var loopbackV4 = [4]byte{127, 0, 0, 1}
+
+// stageSendDgramDst aims at a known-unbound port so gvisor accepts the
+// Write and discards at the local UDP demux — keeps the next stage's
+// recv queue free of unsolicited deliveries from this stage's send.
+var stageSendDgramDst = netproto.Addr{IP4: loopbackV4, Port: 9999}
 
 func init() { mazhost.PinEntry(MazarinMain, nil) }
 
@@ -95,8 +104,8 @@ func MazarinMain() {
 	}
 	sys.UartWriteString(tag + "PASS ShareNetPageWithClient clientVA=0x" + sys.Hex64(uint64(clientVA)) + "\n")
 
-	// --- Test 3: NetIPC round-trip against net.elf (Connect + BindUDP) ---
-	testNetIPC()
+	// --- Test 3: NetIPC round-trip against net.elf via NetClient ---
+	testNetClient()
 
 	sys.UartWriteString(tag + "all checks done\n")
 
@@ -114,13 +123,10 @@ func MazarinMain() {
 
 func main() { MazarinMain() }
 
-// testNetIPC runs a Connect + BindUDP round-trip against net.elf and
-// logs PASS / FAIL per stage. Stops at the first FAIL.
-//
-// All responses arrive on ring 0 (xfertest has no other listeners),
-// through a single shared channel; stages run serially so ReqID
-// disambiguation isn't needed.
-func testNetIPC() bool {
+// testNetClient drives the Phase 4 NetClient against net.elf and prints
+// PASS/FAIL per stage. NetClient's pending-map handles ReqID matching;
+// stages just call ergonomic methods.
+func testNetClient() bool {
 	if err := sys.WaitForShepherdReady("net", 5); err != nil {
 		sys.UartWriteString(tag + "FAIL: net not ready: " + err.Error() + "\n")
 		return false
@@ -131,96 +137,114 @@ func testNetIPC() bool {
 		return false
 	}
 
-	respCh := make(chan any, 1)
+	nc := netclient.New(netSID)
 	disp := uring.NewDispatcher()
-	disp.On(ipc.ProtoNetIPCResp, decodeNetIPCResp, respCh)
+	disp.OnFunc(ipc.ProtoNetIPCResp, netclient.DecodeAny, nc.HandleResp)
 	disp.Start()
 
-	if !stageConnect(netSID, respCh) {
+	if err := nc.Connect(0, 0); err != nil {
+		sys.UartWriteString(tag + "FAIL: Connect: " + err.Error() + "\n")
 		return false
 	}
-	if !stageBindUDP(netSID, respCh) {
+	sys.UartWriteString(tag + "PASS NetIPCConnect netSID=" + sys.Itoa(int64(netSID)) + "\n")
+
+	connA, portA, err := nc.BindUDP([4]byte{}, 0)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: BindUDP A: " + err.Error() + "\n")
 		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCBindUDP connID=" + sys.Itoa(int64(connA)) +
+		" port=" + sys.Itoa(int64(portA)) + "\n")
+
+	if err := nc.SendTo(connA, stageSendDgramDst, []byte("xfertest sendto")); err != nil {
+		sys.UartWriteString(tag + "FAIL: SendTo (no-listener): " + err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCSendDgram connID=" + sys.Itoa(int64(connA)) + "\n")
+
+	connB, portB, err := nc.BindUDP([4]byte{}, 0)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: BindUDP B: " + err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCBindUDP connID=" + sys.Itoa(int64(connB)) +
+		" port=" + sys.Itoa(int64(portB)) + "\n")
+
+	if !udpRoundTrip(nc, "RecvDgram", connA,
+		netproto.Addr{IP4: loopbackV4, Port: portB}, connB, portA, 24, 'R') {
+		return false
+	}
+
+	connC, _, err := nc.BindUDP([4]byte{}, 0)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: BindUDP C: " + err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCBindUDP connID=" + sys.Itoa(int64(connC)) + "\n")
+	const echoPort uint16 = 7
+	if !udpRoundTrip(nc, "UDPEcho", connC,
+		netproto.Addr{IP4: loopbackV4, Port: echoPort}, connC, echoPort, 32, 'E') {
+		return false
+	}
+
+	for _, c := range []uint32{connA, connB, connC} {
+		if err := nc.Close(c); err != nil {
+			sys.UartWriteString(tag + "FAIL: Close connID=" + sys.Itoa(int64(c)) + ": " + err.Error() + "\n")
+			return false
+		}
+		sys.UartWriteString(tag + "PASS NetIPCClose connID=" + sys.Itoa(int64(c)) + "\n")
 	}
 	return true
 }
 
-func stageConnect(netSID int, respCh <-chan any) bool {
-	const reqID = 0xC0FFEE
-	req := netproto.NetIPCConnectReq{ReqID: reqID, RespRing: 0}
-	msg := netproto.EncodeConnect(&req, int16(os.Getpid()))
-	if err := uring.Send(netSID, &msg); err != nil {
-		sys.UartWriteString(tag + "FAIL: Connect send: " + err.Error() + "\n")
-		return false
-	}
-	select {
-	case v := <-respCh:
-		resp, ok := v.(*netproto.NetIPCConnectResp)
-		if !ok {
-			sys.UartWriteString(tag + "FAIL: Connect resp wrong type\n")
-			return false
-		}
-		if resp.ReqID != reqID || resp.ErrCode != netproto.NetErrNone ||
-			resp.Watermark != netproto.DefaultTxWatermark {
-			sys.UartWriteString(tag + "FAIL: Connect bad fields reqID=" + sys.Itoa(int64(resp.ReqID)) +
-				" err=" + sys.Itoa(int64(resp.ErrCode)) +
-				" wm=" + sys.Itoa(int64(resp.Watermark)) + "\n")
-			return false
-		}
-		sys.UartWriteString(tag + "PASS NetIPCConnect netSID=" + sys.Itoa(int64(netSID)) +
-			" watermark=" + sys.Itoa(int64(resp.Watermark)) + "\n")
-		return true
-	case <-time.After(2 * time.Second):
-		sys.UartWriteString(tag + "FAIL: Connect response timeout\n")
-		return false
-	}
-}
+// udpRoundTrip sends a patterned payload via nc.SendTo and asserts the
+// matching RecvDgram arrives on expectRecvConn from expectSrcPort.
+// Verifies length, src port, and the byte pattern; releases the loaned
+// RX page before returning.
+func udpRoundTrip(nc netclient.NetClient, label string, senderConn uint32,
+	dst netproto.Addr, expectRecvConn uint32, expectSrcPort uint16,
+	payloadSz int, pattern byte) bool {
 
-func stageBindUDP(netSID int, respCh <-chan any) bool {
-	const reqID = 0xBADBEEF
-	req := netproto.BindUDPReq{
-		ReqID:     reqID,
-		LocalPort: 0, // ephemeral
-		LocalIP:   [4]byte{0, 0, 0, 0},
+	payload := make([]byte, payloadSz)
+	for i := range payload {
+		payload[i] = pattern + byte(i)
 	}
-	msg := netproto.EncodeBindUDP(&req, int16(os.Getpid()))
-	if err := uring.Send(netSID, &msg); err != nil {
-		sys.UartWriteString(tag + "FAIL: BindUDP send: " + err.Error() + "\n")
+	if err := nc.SendTo(senderConn, dst, payload); err != nil {
+		sys.UartWriteString(tag + "FAIL: " + label + " SendTo: " + err.Error() + "\n")
 		return false
 	}
-	select {
-	case v := <-respCh:
-		resp, ok := v.(*netproto.BindUDPResp)
-		if !ok {
-			sys.UartWriteString(tag + "FAIL: BindUDP resp wrong type\n")
-			return false
-		}
-		if resp.ReqID != reqID || resp.ErrCode != netproto.NetErrNone || resp.ConnID == 0 || resp.LocalPort == 0 {
-			sys.UartWriteString(tag + "FAIL: BindUDP bad fields reqID=" + sys.Itoa(int64(resp.ReqID)) +
-				" err=" + sys.Itoa(int64(resp.ErrCode)) +
-				" connID=" + sys.Itoa(int64(resp.ConnID)) +
-				" port=" + sys.Itoa(int64(resp.LocalPort)) + "\n")
-			return false
-		}
-		sys.UartWriteString(tag + "PASS NetIPCBindUDP connID=" + sys.Itoa(int64(resp.ConnID)) +
-			" port=" + sys.Itoa(int64(resp.LocalPort)) + "\n")
-		return true
-	case <-time.After(2 * time.Second):
-		sys.UartWriteString(tag + "FAIL: BindUDP response timeout\n")
+	rx, err := nc.RecvFrom(expectRecvConn)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: " + label + " RecvFrom: " + err.Error() + "\n")
 		return false
 	}
-}
+	defer func() {
+		if relErr := nc.ReleaseRX(expectRecvConn, rx.Page); relErr != nil {
+			sys.UartWriteString(tag + "FAIL: " + label + " ReleaseRX: " + relErr.Error() + "\n")
+		}
+	}()
 
-// decodeNetIPCResp is the uring Dispatcher decoder for ProtoNetIPCResp.
-// Copy-by-value so the slot can be reused after the callback returns.
-func decodeNetIPCResp(msg *ipc.UringIPCMsg) any {
-	switch netproto.MsgTypeOf(msg) {
-	case netproto.NetMsgConnectResp:
-		r := *netproto.DecodeConnectResp(msg)
-		return &r
-	case netproto.NetMsgBindUDPResp:
-		r := *netproto.DecodeBindUDPResp(msg)
-		return &r
+	if int(rx.Length) != payloadSz {
+		sys.UartWriteString(tag + "FAIL: " + label + " wrong Length=" +
+			sys.Itoa(int64(rx.Length)) + "\n")
+		return false
 	}
-	return nil
+	if rx.Src.Port != expectSrcPort {
+		sys.UartWriteString(tag + "FAIL: " + label + " wrong Src.Port=" +
+			sys.Itoa(int64(rx.Src.Port)) + " want=" + sys.Itoa(int64(expectSrcPort)) + "\n")
+		return false
+	}
+	for i, b := range rx.Payload() {
+		if b != pattern+byte(i) {
+			sys.UartWriteString(tag + "FAIL: " + label + " payload mismatch at i=" +
+				sys.Itoa(int64(i)) + " got=" + sys.Itoa(int64(b)) + "\n")
+			return false
+		}
+	}
+	sys.UartWriteString(tag + "PASS NetIPC" + label +
+		" connID=" + sys.Itoa(int64(expectRecvConn)) +
+		" len=" + sys.Itoa(int64(rx.Length)) +
+		" srcPort=" + sys.Itoa(int64(rx.Src.Port)) +
+		" pageVA=0x" + sys.Hex64(rx.Page) + "\n")
+	return true
 }

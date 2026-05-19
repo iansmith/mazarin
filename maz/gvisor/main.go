@@ -73,6 +73,7 @@ func MazarinMain() {
 	globalStack = s
 	fmt.Println("[gvisor] stack up; entering RX dispatch loop")
 	go runEchoTest(s)
+	go runUDPEchoServer(s)
 	runRxDispatcher()
 }
 

@@ -14,16 +14,21 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 
+	"mazzy/mazarin/mem"
+	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
+	"mazzy/shared/constants"
 	"mazzy/shared/ipc"
 	"mazzy/shared/netproto"
 )
@@ -47,16 +52,30 @@ type clientState struct {
 	// watermark on SendDgram; bumped on accept, decremented in the
 	// virtio TX-completion path.
 	txInFlight int32
+
+	// rxLoaned is the count of RX pages net.elf currently shares with
+	// the client. Bumped by the RX bridge before SendWithRing; step 6's
+	// Release handler decrements after the client returns the page.
+	// Counts against the same watermark as txInFlight.
+	rxLoaned int32
 }
 
 // clientConn pairs a per-client connID with the gvisor endpoint it
-// resolves to. The waiter.Queue is what the per-endpoint RX reader
-// goroutine sleeps on once Phase 3 step 4 lands.
+// resolves to. rxClosed is set under rxMu so a racing deliverOneRxDgram
+// either observes the close and frees its own copy, or gets its page
+// tracked in rxPages for Close's drain — no orphan mappings.
 type clientConn struct {
 	connID uint32
 	sid    int16
 	ep     tcpip.Endpoint
 	wq     *waiter.Queue
+
+	rxStop  chan struct{}
+	rxRearm chan struct{}
+
+	rxMu     sync.Mutex
+	rxPages  map[uint64]uintptr
+	rxClosed bool
 }
 
 var (
@@ -64,14 +83,22 @@ var (
 	clients   = make(map[int16]*clientState)
 )
 
-// Debug counters bumped via atomic.AddUint64.
 var (
 	dbgNetIPCReceived uint64
 	dbgNetIPCUnknown  uint64
 	dbgConnects       uint64
 	dbgBinds          uint64
-	dbgNotConnected   uint64
+	dbgSendDgrams     uint64
+	dbgSendDgramOK    uint64
+	dbgRecvDgrams     uint64
+	dbgRecvDropped    uint64
+	dbgRxAllocFail    uint64
+	dbgRxShareFail    uint64
+	dbgReleases       uint64
+	dbgReleaseMisses  uint64
+	dbgCloses         uint64
 	dbgSendRespFail   uint64
+	dbgMunmapFail     uint64
 )
 
 func handleNetIPC(msg *ipc.UringIPCMsg) {
@@ -82,14 +109,11 @@ func handleNetIPC(msg *ipc.UringIPCMsg) {
 	case netproto.NetMsgBindUDP:
 		handleBindUDP(msg)
 	case netproto.NetMsgSendDgram:
-		rejectNotConnected(msg, "SendDgram")
+		handleSendDgram(msg)
 	case netproto.NetMsgRelease:
-		// Release has no response; just log if unconnected (drop).
-		if !clientConnected(msg.SenderSID) {
-			fmt.Printf("[gvisor:netipc] Release from unconnected SID=%d, dropping\n", msg.SenderSID)
-		}
+		handleRelease(msg)
 	case netproto.NetMsgClose:
-		rejectNotConnected(msg, "Close")
+		handleClose(msg)
 	default:
 		atomic.AddUint64(&dbgNetIPCUnknown, 1)
 		fmt.Printf("[gvisor:netipc] unknown type=%d SID=%d\n",
@@ -134,30 +158,6 @@ func handleConnect(msg *ipc.UringIPCMsg) {
 		msg.SenderSID, respRing, watermark)
 }
 
-// clientConnected reports whether the client has sent NetMsgConnect.
-// Used by stub handlers in this step; later steps will look up
-// per-endpoint state under the same lock.
-func clientConnected(sid int16) bool {
-	clientsMu.Lock()
-	_, ok := clients[sid]
-	clientsMu.Unlock()
-	return ok
-}
-
-// rejectNotConnected is a placeholder for Bind/Send/Close while their
-// real handlers are still being wired in. Once each lands, the
-// corresponding case in handleNetIPC stops calling this and synthesizes
-// a typed response (BindUDPResp / SendDgramResp / CloseResp) with
-// ErrCode=NetErrInvalid on the unconnected path.
-func rejectNotConnected(msg *ipc.UringIPCMsg, op string) {
-	atomic.AddUint64(&dbgNotConnected, 1)
-	if !clientConnected(msg.SenderSID) {
-		fmt.Printf("[gvisor:netipc] %s from unconnected SID=%d, dropping\n", op, msg.SenderSID)
-		return
-	}
-	fmt.Printf("[gvisor:netipc] %s from connected SID=%d (handler stub)\n", op, msg.SenderSID)
-}
-
 // sendResp routes a typed response back via the client's declared
 // response ring. Logs on failure so a wrong respRing or a dead client
 // shows up in serial output.
@@ -186,8 +186,12 @@ func handleBindUDP(msg *ipc.UringIPCMsg) {
 	cs, ok := clients[msg.SenderSID]
 	clientsMu.Unlock()
 	if !ok {
-		bindUDPError(msg.SenderSID, 0, req.ReqID, netproto.NetErrInvalid, 0)
-		fmt.Printf("[gvisor:netipc] BindUDP from unconnected SID=%d\n", msg.SenderSID)
+		// No Connect ⇒ no declared respRing. Sending to a guessed ring
+		// would route into the void; the client wouldn't see the error.
+		// Drop+log so the client's request times out — same shape as
+		// SendDgram/Close on unconnected SIDs.
+		fmt.Printf("[gvisor:netipc] BindUDP from unconnected SID=%d, dropping\n",
+			msg.SenderSID)
 		return
 	}
 
@@ -230,9 +234,20 @@ func handleBindUDP(msg *ipc.UringIPCMsg) {
 	if cs.conns == nil {
 		cs.conns = make(map[uint32]*clientConn)
 	}
-	cs.conns[connID] = &clientConn{connID: connID, sid: msg.SenderSID, ep: ep, wq: wq}
+	conn := &clientConn{
+		connID:  connID,
+		sid:     msg.SenderSID,
+		ep:      ep,
+		wq:      wq,
+		rxStop:  make(chan struct{}),
+		rxRearm: make(chan struct{}, 1),
+		rxPages: make(map[uint64]uintptr),
+	}
+	cs.conns[connID] = conn
 	respRing := cs.respRing
 	clientsMu.Unlock()
+
+	go runRxBridge(conn, cs)
 
 	resp := netproto.BindUDPResp{
 		ReqID:     req.ReqID,
@@ -248,4 +263,306 @@ func handleBindUDP(msg *ipc.UringIPCMsg) {
 func bindUDPError(targetSID int16, respRing uint8, reqID uint32, code int16, connID uint32) {
 	resp := netproto.BindUDPResp{ReqID: reqID, ConnID: connID, ErrCode: code}
 	sendResp(targetSID, respRing, netproto.EncodeBindUDPResp(&resp))
+}
+
+// handleSendDgram sends one UDP datagram from a page the client just
+// transferred via sys.TransferDMAClump. The unconnected-SID path can't
+// route a response, so it drops + logs instead of replying; every other
+// path replies. Every path frees the page — net.elf owns it after the
+// transfer and the buddy allocator must get it back.
+//
+// gvisor's Endpoint.Write copies the payload into its own PacketBuffer
+// (see MAZ-29 findings — accepted for v1), so the page is unreferenced
+// the instant Write returns.
+func handleSendDgram(msg *ipc.UringIPCMsg) {
+	atomic.AddUint64(&dbgSendDgrams, 1)
+	req := netproto.DecodeSendDgramReq(msg)
+
+	clientsMu.Lock()
+	cs, ok := clients[msg.SenderSID]
+	if !ok {
+		clientsMu.Unlock()
+		fmt.Printf("[gvisor:netipc] SendDgram from unconnected SID=%d (dropping; freeing page)\n",
+			msg.SenderSID)
+		freeTransferredPage(req.PageVA)
+		return
+	}
+	respRing := cs.respRing
+	watermark := cs.watermark
+	var conn *clientConn
+	if cs.conns != nil {
+		conn = cs.conns[req.ConnID]
+	}
+	clientsMu.Unlock()
+
+	fail := func(code int16) {
+		resp := netproto.SendDgramResp{ReqID: req.ReqID, ConnID: req.ConnID, ErrCode: code}
+		sendResp(msg.SenderSID, respRing, netproto.EncodeSendDgramResp(&resp))
+		freeTransferredPage(req.PageVA)
+	}
+
+	if conn == nil {
+		fail(netproto.NetErrNoConn)
+		return
+	}
+	if uint32(req.Offset)+uint32(req.Length) > constants.PAGE_SIZE {
+		fail(netproto.NetErrInvalid)
+		return
+	}
+
+	if cur := atomic.AddInt32(&cs.txInFlight, 1); cur > int32(watermark) {
+		atomic.AddInt32(&cs.txInFlight, -1)
+		fail(netproto.NetErrTryAgain)
+		return
+	}
+	defer atomic.AddInt32(&cs.txInFlight, -1)
+
+	payload := unsafe.Slice(
+		(*byte)(unsafe.Pointer(uintptr(req.PageVA)+uintptr(req.Offset))),
+		int(req.Length),
+	)
+	to := tcpip.FullAddress{
+		Addr: tcpip.AddrFrom4(req.Dst.IP4),
+		Port: req.Dst.Port,
+	}
+	_, terr := conn.ep.Write(bytes.NewReader(payload), tcpip.WriteOptions{To: &to})
+	freeTransferredPage(req.PageVA)
+
+	code := netproto.NetErrNone
+	if terr != nil {
+		code = mapGvisorWriteErr(terr)
+		fmt.Printf("[gvisor:netipc] SendDgram Write err=%v SID=%d connID=%d\n",
+			terr, msg.SenderSID, req.ConnID)
+	} else {
+		atomic.AddUint64(&dbgSendDgramOK, 1)
+	}
+	resp := netproto.SendDgramResp{ReqID: req.ReqID, ConnID: req.ConnID, ErrCode: code}
+	sendResp(msg.SenderSID, respRing, netproto.EncodeSendDgramResp(&resp))
+}
+
+// freeTransferredPage returns a net.elf-owned transferred page to the
+// kernel via munmap. pageVA must be the base VA returned by
+// sys.TransferDMAClump; munmap will fail loudly otherwise.
+func freeTransferredPage(pageVA uint64) {
+	if err := mem.Munmap(uintptr(pageVA), constants.PAGE_SIZE); err != nil {
+		atomic.AddUint64(&dbgMunmapFail, 1)
+		fmt.Printf("[gvisor:netipc] Munmap(0x%x) failed: %v\n", pageVA, err)
+	}
+}
+
+// runRxBridge drains inbound datagrams from conn.ep until rxStop closes.
+// gvisor's depth-1 ChannelNotifier coalesces bursts, so each wake-up
+// must drain to ErrWouldBlock or packets get stuck behind a missed edge.
+// rxRearm is the Release-side wake when the bridge had been parked at
+// the watermark.
+func runRxBridge(conn *clientConn, cs *clientState) {
+	waitEntry, notifyCh := waiter.NewChannelEntry(waiter.ReadableEvents)
+	conn.wq.EventRegister(&waitEntry)
+	defer conn.wq.EventUnregister(&waitEntry)
+	respRing := cs.respRing
+
+	// Initial drain in case a packet landed between Bind and EventRegister.
+	for deliverOneRxDgram(conn, cs, respRing) {
+	}
+	for {
+		select {
+		case <-conn.rxStop:
+			return
+		case <-conn.rxRearm:
+		case <-notifyCh:
+		}
+		for deliverOneRxDgram(conn, cs, respRing) {
+		}
+	}
+}
+
+func deliverOneRxDgram(conn *clientConn, cs *clientState, respRing uint8) bool {
+	if atomic.LoadInt32(&cs.rxLoaned) >= int32(cs.watermark) {
+		return false
+	}
+
+	pageBytes, err := mem.AllocPagesSlice(1, mem.PageShared)
+	if err != nil {
+		atomic.AddUint64(&dbgRxAllocFail, 1)
+		fmt.Printf("[gvisor:netipc] RX AllocPagesSlice failed: %v\n", err)
+		return false
+	}
+	pagePtr := unsafe.Pointer(&pageBytes[0])
+	sw := tcpip.SliceWriter(pageBytes)
+	res, terr := conn.ep.Read(&sw, tcpip.ReadOptions{NeedRemoteAddr: true})
+	if terr != nil {
+		_ = mem.FreePages(pagePtr, 1)
+		if _, ok := terr.(*tcpip.ErrWouldBlock); !ok {
+			atomic.AddUint64(&dbgRecvDropped, 1)
+			fmt.Printf("[gvisor:netipc] RX Read err=%v connID=%d\n", terr, conn.connID)
+		}
+		return false
+	}
+
+	clientVA, err := sys.SharePagesWithTarget(int(conn.sid), uintptr(pagePtr), 1)
+	if err != nil {
+		atomic.AddUint64(&dbgRxShareFail, 1)
+		fmt.Printf("[gvisor:netipc] RX SharePagesWithTarget(sid=%d) failed: %v\n",
+			conn.sid, err)
+		_ = mem.FreePages(pagePtr, 1)
+		return false
+	}
+
+	conn.rxMu.Lock()
+	if conn.rxClosed {
+		conn.rxMu.Unlock()
+		// Close raced ahead of us; drop our side. The client's side is
+		// an orphan that lives until shepherd death.
+		_ = mem.FreePages(pagePtr, 1)
+		return false
+	}
+	conn.rxPages[uint64(clientVA)] = uintptr(pagePtr)
+	conn.rxMu.Unlock()
+	atomic.AddInt32(&cs.rxLoaned, 1)
+
+	src := netproto.Addr{Port: res.RemoteAddr.Port}
+	if res.RemoteAddr.Addr.Len() == 4 {
+		src.IP4 = res.RemoteAddr.Addr.As4()
+	}
+	notif := netproto.RecvDgram{
+		ConnID: conn.connID,
+		Length: uint16(res.Count),
+		Src:    src,
+		PageVA: uint64(clientVA),
+	}
+	notifyMsg := netproto.EncodeRecvDgram(&notif)
+	if err := uring.SendWithRing(int(conn.sid), &notifyMsg, int(respRing)); err != nil {
+		atomic.AddUint64(&dbgSendRespFail, 1)
+		fmt.Printf("[gvisor:netipc] RecvDgram send failed: sid=%d ring=%d err=%v\n",
+			conn.sid, respRing, err)
+		// Page is recorded; Close (or shepherd death) will reclaim.
+		return true
+	}
+	atomic.AddUint64(&dbgRecvDgrams, 1)
+	return true
+}
+
+func handleRelease(msg *ipc.UringIPCMsg) {
+	atomic.AddUint64(&dbgReleases, 1)
+	req := netproto.DecodeReleaseReq(msg)
+
+	clientsMu.Lock()
+	cs, ok := clients[msg.SenderSID]
+	if !ok {
+		clientsMu.Unlock()
+		atomic.AddUint64(&dbgReleaseMisses, 1)
+		fmt.Printf("[gvisor:netipc] Release from unconnected SID=%d, dropping\n",
+			msg.SenderSID)
+		return
+	}
+	var conn *clientConn
+	if cs.conns != nil {
+		conn = cs.conns[req.ConnID]
+	}
+	clientsMu.Unlock()
+	if conn == nil {
+		atomic.AddUint64(&dbgReleaseMisses, 1)
+		fmt.Printf("[gvisor:netipc] Release unknown connID=%d SID=%d, dropping\n",
+			req.ConnID, msg.SenderSID)
+		return
+	}
+
+	conn.rxMu.Lock()
+	netPtr, found := conn.rxPages[req.PageVA]
+	if found {
+		delete(conn.rxPages, req.PageVA)
+	}
+	conn.rxMu.Unlock()
+	if !found {
+		atomic.AddUint64(&dbgReleaseMisses, 1)
+		fmt.Printf("[gvisor:netipc] Release unknown PageVA=0x%x connID=%d, dropping\n",
+			req.PageVA, req.ConnID)
+		return
+	}
+
+	if err := mem.FreePages(unsafe.Pointer(netPtr), 1); err != nil {
+		fmt.Printf("[gvisor:netipc] Release FreePages(0x%x) failed: %v\n",
+			uint64(netPtr), err)
+	}
+	// Only wake the bridge when we transition out of the watermark — at
+	// any other depth the bridge is either running or will be woken by
+	// gvisor's own notifyCh on the next inbound packet.
+	if atomic.AddInt32(&cs.rxLoaned, -1) == int32(cs.watermark)-1 {
+		select {
+		case conn.rxRearm <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// handleClose tears down a connID. Unconnected SID = drop+log (no
+// respRing to route a reply through).
+func handleClose(msg *ipc.UringIPCMsg) {
+	atomic.AddUint64(&dbgCloses, 1)
+	req := netproto.DecodeCloseReq(msg)
+
+	clientsMu.Lock()
+	cs, ok := clients[msg.SenderSID]
+	if !ok {
+		clientsMu.Unlock()
+		fmt.Printf("[gvisor:netipc] Close from unconnected SID=%d, dropping\n",
+			msg.SenderSID)
+		return
+	}
+	respRing := cs.respRing
+	var conn *clientConn
+	if cs.conns != nil {
+		conn = cs.conns[req.ConnID]
+		if conn != nil {
+			delete(cs.conns, req.ConnID)
+		}
+	}
+	clientsMu.Unlock()
+	if conn == nil {
+		resp := netproto.CloseResp{ReqID: req.ReqID, ErrCode: netproto.NetErrNoConn}
+		sendResp(msg.SenderSID, respRing, netproto.EncodeCloseResp(&resp))
+		return
+	}
+
+	close(conn.rxStop)
+	conn.ep.Close()
+
+	conn.rxMu.Lock()
+	conn.rxClosed = true
+	freed := 0
+	for _, netPtr := range conn.rxPages {
+		if err := mem.FreePages(unsafe.Pointer(netPtr), 1); err != nil {
+			fmt.Printf("[gvisor:netipc] Close FreePages(0x%x) failed: %v\n",
+				uint64(netPtr), err)
+			continue
+		}
+		freed++
+	}
+	conn.rxPages = nil
+	conn.rxMu.Unlock()
+	if freed > 0 {
+		atomic.AddInt32(&cs.rxLoaned, -int32(freed))
+	}
+
+	resp := netproto.CloseResp{ReqID: req.ReqID, ErrCode: netproto.NetErrNone}
+	sendResp(msg.SenderSID, respRing, netproto.EncodeCloseResp(&resp))
+	fmt.Printf("[gvisor:netipc] Close SID=%d connID=%d (reclaimed %d RX pages)\n",
+		msg.SenderSID, req.ConnID, freed)
+}
+
+func mapGvisorWriteErr(terr tcpip.Error) int16 {
+	switch terr.(type) {
+	case *tcpip.ErrInvalidEndpointState,
+		*tcpip.ErrInvalidOptionValue,
+		*tcpip.ErrMessageTooLong,
+		*tcpip.ErrBadBuffer,
+		*tcpip.ErrDestinationRequired:
+		return netproto.NetErrInvalid
+	case *tcpip.ErrNoBufferSpace:
+		return netproto.NetErrNoMemory
+	case *tcpip.ErrWouldBlock:
+		return netproto.NetErrTryAgain
+	default:
+		return netproto.NetErrUnknown
+	}
 }

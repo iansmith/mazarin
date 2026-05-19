@@ -48,6 +48,22 @@
 // (DefaultTxWatermark). Watermark is a per-client policy that applies
 // across all of the client's endpoints, not per-endpoint.
 //
+// # Request / response correlation
+//
+// Every request type carries a uint32 ReqID at body offset 0; net.elf
+// MUST echo that ReqID verbatim in the corresponding response. Clients
+// drain a single uring response ring across all in-flight requests
+// (BindUDP, SendDgram, Close are independently pipelineable) and a
+// response is matched to its request by ReqID, not by arrival order.
+// Unsolicited messages (currently only RecvDgram) carry no ReqID and
+// are demuxed by MsgType + ConnID instead.
+//
+// Failing to echo ReqID or routing a response to a guessed ring (e.g.
+// before Connect has declared one) silently strands the client —
+// responses go into the void and the client times out. Handlers that
+// can't resolve a respRing (no Connect state) MUST drop+log rather than
+// guess.
+//
 // # Wire format
 //
 // All messages fit in the 112-byte UringIPCMsg.Payload. Layout per slot:

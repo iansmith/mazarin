@@ -6,6 +6,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/ethernet"
+	"gvisor.dev/gvisor/pkg/tcpip/link/loopback"
 	"gvisor.dev/gvisor/pkg/tcpip/network/arp"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -16,8 +17,12 @@ import (
 )
 
 // nicID is the gvisor NIC identifier we attach our LinkEndpoint to.
-// One NIC per shepherd — multi-NIC isn't a thing in mazarin yet.
-const nicID tcpip.NICID = 1
+// loopbackNICID is a second internal NIC bound to 127.0.0.0/8 so
+// app-shepherds can talk to themselves without going through SLIRP.
+const (
+	nicID         tcpip.NICID = 1
+	loopbackNICID tcpip.NICID = 2
+)
 
 // v4PrefixLen is the /24 prefix for the SLIRP subnet.
 const v4PrefixLen = 24
@@ -70,12 +75,22 @@ func buildStack(dev linksurface.Device, alloc linksurface.Allocator) (*stack.Sta
 		return nil, fmt.Errorf("AddProtocolAddress(IPv4): %v", err)
 	}
 
-	s.SetRouteTable([]tcpip.Route{
-		{
-			Destination: header.IPv4EmptySubnet,
-			Gateway:     gwV4,
-			NIC:         nicID,
+	if err := s.CreateNIC(loopbackNICID, loopback.New()); err != nil {
+		return nil, fmt.Errorf("CreateNIC(loopback): %v", err)
+	}
+	if err := s.AddProtocolAddress(loopbackNICID, tcpip.ProtocolAddress{
+		Protocol: ipv4.ProtocolNumber,
+		AddressWithPrefix: tcpip.AddressWithPrefix{
+			Address:   header.IPv4Loopback,
+			PrefixLen: 8,
 		},
+	}, stack.AddressProperties{}); err != nil {
+		return nil, fmt.Errorf("AddProtocolAddress(loopback): %v", err)
+	}
+
+	s.SetRouteTable([]tcpip.Route{
+		{Destination: header.IPv4LoopbackSubnet, NIC: loopbackNICID},
+		{Destination: header.IPv4EmptySubnet, Gateway: gwV4, NIC: nicID},
 	})
 	return s, nil
 }

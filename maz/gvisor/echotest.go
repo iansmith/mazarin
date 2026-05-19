@@ -9,8 +9,13 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 )
+
+// udpEchoPort is the classic inetd echo port. QEMU SLIRP doesn't ship a
+// UDP echo so we run one in-stack; xfertest's stageUDPEcho hits it.
+const udpEchoPort uint16 = 7
 
 // runEchoTest sends a single ICMPv4 echo request to the SLIRP gateway
 // (10.0.2.2) and waits for the reply. Phase B step 6 — exercises the
@@ -92,4 +97,45 @@ func runEchoTest(s *stack.Stack) {
 	latency := time.Since(t0)
 	fmt.Printf("[gvisor/echo] reply: %d bytes from %v in %v\n",
 		res.Count, res.RemoteAddr.Addr, latency)
+}
+
+// runUDPEchoServer is the in-stack UDP echo on udpEchoPort. xfertest's
+// stageUDPEcho is the round-trip test client.
+func runUDPEchoServer(s *stack.Stack) {
+	wq := &waiter.Queue{}
+	ep, terr := s.NewEndpoint(udp.ProtocolNumber, header.IPv4ProtocolNumber, wq)
+	if terr != nil {
+		fmt.Printf("[gvisor/udp-echo] NewEndpoint: %v\n", terr)
+		return
+	}
+	defer ep.Close()
+	if terr := ep.Bind(tcpip.FullAddress{Port: udpEchoPort}); terr != nil {
+		fmt.Printf("[gvisor/udp-echo] Bind(:%d): %v\n", udpEchoPort, terr)
+		return
+	}
+
+	waitEntry, notifyCh := waiter.NewChannelEntry(waiter.ReadableEvents)
+	wq.EventRegister(&waitEntry)
+	defer wq.EventUnregister(&waitEntry)
+
+	fmt.Printf("[gvisor/udp-echo] listening on 0.0.0.0:%d\n", udpEchoPort)
+	for {
+		<-notifyCh
+		for {
+			var buf bytes.Buffer
+			res, rerr := ep.Read(&buf, tcpip.ReadOptions{NeedRemoteAddr: true})
+			if rerr != nil {
+				if _, ok := rerr.(*tcpip.ErrWouldBlock); !ok {
+					fmt.Printf("[gvisor/udp-echo] Read: %v\n", rerr)
+				}
+				break
+			}
+			payload := buf.Bytes()[:res.Count]
+			to := res.RemoteAddr
+			if _, werr := ep.Write(bytes.NewReader(payload), tcpip.WriteOptions{To: &to}); werr != nil {
+				fmt.Printf("[gvisor/udp-echo] Write to %v:%d: %v\n",
+					to.Addr, to.Port, werr)
+			}
+		}
+	}
 }

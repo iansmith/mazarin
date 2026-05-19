@@ -146,11 +146,12 @@ type CloseResp struct {
 // PageVA) when done; otherwise net.elf reclaims the page lazily, but
 // holding pages indefinitely counts against the per-client watermark.
 //
-// Layout (24 bytes): ConnID(4) + _pad(4) + Src(8) + PageVA(8). Note: no
-// ReqID — this is unsolicited, not a response.
+// Layout (24 bytes): ConnID(4) + Offset(2) + Length(2) + Src(8) +
+// PageVA(8). Note: no ReqID — this is unsolicited, not a response.
 type RecvDgram struct {
 	ConnID uint32
-	_pad   [4]byte
+	Offset uint16
+	Length uint16
 	Src    Addr
 	PageVA uint64
 }
