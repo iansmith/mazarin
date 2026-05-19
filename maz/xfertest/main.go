@@ -196,6 +196,98 @@ func testNetClient() bool {
 		}
 		sys.UartWriteString(tag + "PASS NetIPCClose connID=" + sys.Itoa(int64(c)) + "\n")
 	}
+
+	return testNetClientTCP(nc)
+}
+
+// testNetClientTCP exercises the Phase 6 step-3 TCP handshake surface:
+// BindTCP+Listen, TCPConnect to the in-stack echo server, and an
+// Accept against a self-bound listener (using a goroutine to drive the
+// inbound TCPConnect). No data flow yet — that lands in step 4-5.
+func testNetClientTCP(nc netclient.NetClient) bool {
+	const echoPort uint16 = 7
+	const tcpBacklog uint16 = 4
+
+	// Stage A: BindTCP + Listen + Close (listener plumbing).
+	listenA, listenPortA, err := nc.BindTCP([4]byte{}, 0)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: BindTCP A: " + err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCBindTCP connID=" + sys.Itoa(int64(listenA)) +
+		" port=" + sys.Itoa(int64(listenPortA)) + "\n")
+	if err := nc.Listen(listenA, tcpBacklog); err != nil {
+		sys.UartWriteString(tag + "FAIL: Listen A: " + err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCListen connID=" + sys.Itoa(int64(listenA)) + "\n")
+	if err := nc.Close(listenA); err != nil {
+		sys.UartWriteString(tag + "FAIL: Close listener A: " + err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCClose listener connID=" + sys.Itoa(int64(listenA)) + "\n")
+
+	// Stage B: TCPConnect to the in-stack echo server.
+	echoDst := netproto.Addr{IP4: loopbackV4, Port: echoPort}
+	streamB, localPortB, err := nc.TCPConnect([4]byte{}, 0, echoDst)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: TCPConnect to echo: " + err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCTCPConnect connID=" + sys.Itoa(int64(streamB)) +
+		" localPort=" + sys.Itoa(int64(localPortB)) + "\n")
+	if err := nc.Close(streamB); err != nil {
+		sys.UartWriteString(tag + "FAIL: Close stream B: " + err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCClose stream connID=" + sys.Itoa(int64(streamB)) + "\n")
+
+	// Stage C: BindTCP + Listen + concurrent TCPConnect-to-self + Accept.
+	listenC, listenPortC, err := nc.BindTCP([4]byte{}, 0)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: BindTCP C: " + err.Error() + "\n")
+		return false
+	}
+	if err := nc.Listen(listenC, tcpBacklog); err != nil {
+		sys.UartWriteString(tag + "FAIL: Listen C: " + err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCBindTCP+Listen self connID=" + sys.Itoa(int64(listenC)) +
+		" port=" + sys.Itoa(int64(listenPortC)) + "\n")
+
+	// Connector goroutine drives the inbound TCPConnect; main path Accepts.
+	type connectResult struct {
+		connID uint32
+		err    error
+	}
+	resCh := make(chan connectResult, 1)
+	go func() {
+		dst := netproto.Addr{IP4: loopbackV4, Port: listenPortC}
+		cid, _, cerr := nc.TCPConnect([4]byte{}, 0, dst)
+		resCh <- connectResult{connID: cid, err: cerr}
+	}()
+
+	acceptedID, peer, err := nc.Accept(listenC)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: Accept C: " + err.Error() + "\n")
+		return false
+	}
+	cres := <-resCh
+	if cres.err != nil {
+		sys.UartWriteString(tag + "FAIL: connector TCPConnect: " + cres.err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCAccept connID=" + sys.Itoa(int64(acceptedID)) +
+		" peer.port=" + sys.Itoa(int64(peer.Port)) +
+		" connector.connID=" + sys.Itoa(int64(cres.connID)) + "\n")
+
+	for _, c := range []uint32{listenC, acceptedID, cres.connID} {
+		if err := nc.Close(c); err != nil {
+			sys.UartWriteString(tag + "FAIL: Close TCP connID=" + sys.Itoa(int64(c)) + ": " + err.Error() + "\n")
+			return false
+		}
+	}
+	sys.UartWriteString(tag + "PASS NetIPC TCP self-accept teardown\n")
 	return true
 }
 

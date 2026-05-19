@@ -11,6 +11,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 
 	"mazzy/mazarin/linksurface"
@@ -46,6 +47,7 @@ func buildStack(dev linksurface.Device, alloc linksurface.Allocator) (*stack.Sta
 		TransportProtocols: []stack.TransportProtocolFactory{
 			icmp.NewProtocol4,
 			udp.NewProtocol,
+			tcp.NewProtocol,
 		},
 	})
 

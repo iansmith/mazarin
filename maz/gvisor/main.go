@@ -74,6 +74,7 @@ func MazarinMain() {
 	fmt.Println("[gvisor] stack up; entering RX dispatch loop")
 	go runEchoTest(s)
 	go runUDPEchoServer(s)
+	go runTCPEchoServer(s)
 	runRxDispatcher()
 }
 

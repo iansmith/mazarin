@@ -64,6 +64,14 @@ type clientState struct {
 // resolves to. rxClosed is set under rxMu so a racing deliverOneRxDgram
 // either observes the close and frees its own copy, or gets its page
 // tracked in rxPages for Close's drain — no orphan mappings.
+//
+// One struct serves three flavors:
+//   - UDP datagram conn (BindUDP): rx bridge fields used; listener
+//     fields nil.
+//   - TCP listener (BindTCP+Listen): listener fields used; rx bridge
+//     fields unused but stay zero-valued.
+//   - TCP stream (Accept / TCPConnect): rx bridge fields used (RX
+//     bridge lights up in step 5); listener fields nil.
 type clientConn struct {
 	connID uint32
 	sid    int16
@@ -76,6 +84,68 @@ type clientConn struct {
 	rxMu     sync.Mutex
 	rxPages  map[uint64]uintptr
 	rxClosed bool
+
+	// TCP listener state — populated when this conn is a listener.
+	// acceptStop is closed by handleClose to unblock the accept bridge
+	// and any awaitAccept goroutines parked on acceptCh. acceptCh is
+	// unbuffered so the bridge naturally throttles gvisor's accept loop
+	// to one-at-a-time.
+	isListener bool
+	acceptStop chan struct{}
+	acceptCh   chan acceptedEP
+}
+
+// acceptedEP carries one accepted gvisor endpoint from the accept
+// bridge to awaitAccept. Peer is filled in by gvisor's ep.Accept call.
+type acceptedEP struct {
+	ep   tcpip.Endpoint
+	wq   *waiter.Queue
+	peer tcpip.FullAddress
+}
+
+// allocConnID allocates the next per-client ConnID. ConnID 0 is the
+// "invalid" sentinel — on uint32 wraparound, jump straight to 1.
+// Caller must hold clientsMu.
+func (cs *clientState) allocConnID() uint32 {
+	cs.nextConnID++
+	if cs.nextConnID == 0 {
+		cs.nextConnID = 1
+	}
+	if cs.conns == nil {
+		cs.conns = make(map[uint32]*clientConn)
+	}
+	return cs.nextConnID
+}
+
+// createBoundEndpoint creates a gvisor endpoint of the given transport
+// protocol, binds it to (localIP, localPort), and returns the endpoint,
+// its waiter queue, and the actually-bound port (ephemeral if the
+// caller passed 0). On failure returns nil + a NetErr* code; the
+// endpoint is already Close()d on the error path so callers just
+// reply and return.
+func createBoundEndpoint(proto tcpip.TransportProtocolNumber, localIP [4]byte, localPort uint16) (tcpip.Endpoint, *waiter.Queue, uint16, int16) {
+	if globalStack == nil {
+		return nil, nil, 0, netproto.NetErrUnknown
+	}
+	wq := &waiter.Queue{}
+	ep, terr := globalStack.NewEndpoint(proto, ipv4.ProtocolNumber, wq)
+	if terr != nil {
+		return nil, nil, 0, netproto.NetErrUnknown
+	}
+	addr := tcpip.FullAddress{Port: localPort}
+	if localIP != [4]byte{} {
+		addr.Addr = tcpip.AddrFrom4(localIP)
+	}
+	if terr := ep.Bind(addr); terr != nil {
+		ep.Close()
+		return nil, nil, 0, netproto.NetErrAddrInUse
+	}
+	bound, terr := ep.GetLocalAddress()
+	if terr != nil {
+		ep.Close()
+		return nil, nil, 0, netproto.NetErrUnknown
+	}
+	return ep, wq, bound.Port, netproto.NetErrNone
 }
 
 var (
@@ -114,6 +184,14 @@ func handleNetIPC(msg *ipc.UringIPCMsg) {
 		handleRelease(msg)
 	case netproto.NetMsgClose:
 		handleClose(msg)
+	case netproto.NetMsgBindTCP:
+		handleBindTCP(msg)
+	case netproto.NetMsgListen:
+		handleListen(msg)
+	case netproto.NetMsgAccept:
+		handleAccept(msg)
+	case netproto.NetMsgTCPConnect:
+		handleTCPConnect(msg)
 	default:
 		atomic.AddUint64(&dbgNetIPCUnknown, 1)
 		fmt.Printf("[gvisor:netipc] unknown type=%d SID=%d\n",
@@ -195,45 +273,14 @@ func handleBindUDP(msg *ipc.UringIPCMsg) {
 		return
 	}
 
-	if globalStack == nil {
-		bindUDPError(msg.SenderSID, cs.respRing, req.ReqID, netproto.NetErrUnknown, 0)
-		return
-	}
-
-	wq := &waiter.Queue{}
-	ep, terr := globalStack.NewEndpoint(udp.ProtocolNumber, ipv4.ProtocolNumber, wq)
-	if terr != nil {
-		bindUDPError(msg.SenderSID, cs.respRing, req.ReqID, netproto.NetErrUnknown, 0)
-		fmt.Printf("[gvisor:netipc] BindUDP NewEndpoint err=%v SID=%d\n", terr, msg.SenderSID)
-		return
-	}
-
-	addr := tcpip.FullAddress{Port: req.LocalPort}
-	if req.LocalIP != [4]byte{} {
-		addr.Addr = tcpip.AddrFrom4(req.LocalIP)
-	}
-	if terr := ep.Bind(addr); terr != nil {
-		ep.Close()
-		bindUDPError(msg.SenderSID, cs.respRing, req.ReqID, netproto.NetErrAddrInUse, 0)
-		fmt.Printf("[gvisor:netipc] BindUDP Bind err=%v SID=%d\n", terr, msg.SenderSID)
-		return
-	}
-	bound, terr := ep.GetLocalAddress()
-	if terr != nil {
-		ep.Close()
-		bindUDPError(msg.SenderSID, cs.respRing, req.ReqID, netproto.NetErrUnknown, 0)
+	ep, wq, boundPort, errCode := createBoundEndpoint(udp.ProtocolNumber, req.LocalIP, req.LocalPort)
+	if errCode != netproto.NetErrNone {
+		bindUDPError(msg.SenderSID, cs.respRing, req.ReqID, errCode, 0)
 		return
 	}
 
 	clientsMu.Lock()
-	cs.nextConnID++
-	if cs.nextConnID == 0 {
-		cs.nextConnID = 1
-	}
-	connID := cs.nextConnID
-	if cs.conns == nil {
-		cs.conns = make(map[uint32]*clientConn)
-	}
+	connID := cs.allocConnID()
 	conn := &clientConn{
 		connID:  connID,
 		sid:     msg.SenderSID,
@@ -252,12 +299,12 @@ func handleBindUDP(msg *ipc.UringIPCMsg) {
 	resp := netproto.BindUDPResp{
 		ReqID:     req.ReqID,
 		ConnID:    connID,
-		LocalPort: bound.Port,
+		LocalPort: boundPort,
 		ErrCode:   netproto.NetErrNone,
 	}
 	sendResp(msg.SenderSID, respRing, netproto.EncodeBindUDPResp(&resp))
 	fmt.Printf("[gvisor:netipc] BindUDP SID=%d connID=%d port=%d\n",
-		msg.SenderSID, connID, bound.Port)
+		msg.SenderSID, connID, boundPort)
 }
 
 func bindUDPError(targetSID int16, respRing uint8, reqID uint32, code int16, connID uint32) {
@@ -524,7 +571,13 @@ func handleClose(msg *ipc.UringIPCMsg) {
 		return
 	}
 
-	close(conn.rxStop)
+	if conn.isListener {
+		if conn.acceptStop != nil {
+			close(conn.acceptStop)
+		}
+	} else {
+		close(conn.rxStop)
+	}
 	conn.ep.Close()
 
 	conn.rxMu.Lock()
