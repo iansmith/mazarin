@@ -66,9 +66,38 @@ type RxDgram struct {
 // Payload returns a slice over the datagram's payload bytes. The slice
 // is valid until ReleaseRX is called on Page.
 func (r RxDgram) Payload() []byte {
+	return pageSlice(r.Page, r.Offset, r.Length)
+}
+
+// StreamChunk is one chunk of inbound stream data delivered by
+// ReadStream. Page is the client-side VA where the chunk bytes live;
+// callers MUST eventually pass it to ReleaseRX *unless* this is an
+// EOF-only chunk (EOF=true, Length=0, Page=0). EOF reports the peer
+// half-closing the write side; subsequent ReadStream calls return
+// "stream closed" once any buffered chunks are drained.
+type StreamChunk struct {
+	Page   uint64
+	Offset uint16
+	Length uint16
+	EOF    bool
+}
+
+// Payload returns a slice over the chunk's bytes. Empty if Length=0.
+// The slice is valid until ReleaseRX is called on Page.
+func (s StreamChunk) Payload() []byte {
+	return pageSlice(s.Page, s.Offset, s.Length)
+}
+
+// pageSlice maps a (page-VA, offset, length) triple onto a Go slice
+// over the mapped page memory. The single audited unsafe spelling for
+// all client-side reads of net.elf-shared pages.
+func pageSlice(page uint64, offset, length uint16) []byte {
+	if length == 0 {
+		return nil
+	}
 	return unsafe.Slice(
-		(*byte)(unsafe.Pointer(uintptr(r.Page)+uintptr(r.Offset))),
-		int(r.Length),
+		(*byte)(unsafe.Pointer(uintptr(page)+uintptr(offset))),
+		int(length),
 	)
 }
 
@@ -77,9 +106,23 @@ func (r RxDgram) Payload() []byte {
 // other.
 type NetClient interface {
 	Connect(respRing uint8, watermark uint8) error
+
+	// UDP
 	BindUDP(localIP [4]byte, localPort uint16) (connID uint32, boundPort uint16, err error)
 	SendTo(connID uint32, dst netproto.Addr, payload []byte) error
 	RecvFrom(connID uint32) (RxDgram, error)
+
+	// TCP
+	BindTCP(localIP [4]byte, localPort uint16) (connID uint32, boundPort uint16, err error)
+	Listen(connID uint32, backlog uint16) error
+	Accept(connID uint32) (newConnID uint32, peer netproto.Addr, err error)
+	TCPConnect(localIP [4]byte, localPort uint16, dst netproto.Addr) (connID uint32, boundPort uint16, err error)
+	StreamSend(connID uint32, payload []byte) (n int, err error)
+	ReadStream(connID uint32) (StreamChunk, error)
+	Shutdown(connID uint32, how uint8) error
+
+	// Page reclaim — works for both UDP datagram pages and TCP stream
+	// chunks; net.elf demuxes by (ConnID, PageVA).
 	ReleaseRX(connID uint32, pageVA uint64) error
 	Close(connID uint32) error
 
@@ -104,11 +147,20 @@ type clientImpl struct {
 }
 
 type conn struct {
+	// recvCh is non-nil for UDP datagram conns (BindUDP), nil otherwise.
 	recvCh chan *netproto.RecvDgram
-	// stop is closed by Close to wake any RecvFrom blocked on this conn.
-	// We never close recvCh: a racing deliverRecv could still hold the
-	// conn pointer (looked up before Close took connsMu) and the
-	// non-blocking send at deliverRecv would panic on a closed channel.
+	// streamRxCh is non-nil for TCP stream conns (post-Accept /
+	// post-TCPConnect), nil otherwise.
+	streamRxCh chan *netproto.StreamRx
+	// sendPageVA is the client-side VA of the per-stream send page net.elf
+	// mapped RW into this client at Accept/Connect time. Zero for UDP
+	// conns and TCP listeners.
+	sendPageVA uint64
+	// stop is closed by Close to wake any RecvFrom/ReadStream blocked on
+	// this conn. We never close recvCh / streamRxCh: a racing
+	// deliverRecv / deliverStreamRx could still hold the conn pointer
+	// (looked up before Close took connsMu) and the non-blocking send
+	// would panic on a closed channel.
 	stop chan struct{}
 }
 
@@ -147,8 +199,12 @@ func (c *clientImpl) clearPending(reqID uint32) {
 }
 
 // HandleResp demuxes incoming NetIPC messages: typed responses go to
-// the matching pending-call channel; unsolicited RecvDgrams go to the
-// destination conn's buffered recvCh.
+// the matching pending-call channel; unsolicited RecvDgrams /
+// StreamRxs go to the destination conn's buffered recv channel.
+//
+// AcceptResp and TCPConnectResp register their new stream conn under
+// connsMu *before* delivering to the pending caller, so a StreamRx that
+// races behind the response on the same ring will find its conn ready.
 func (c *clientImpl) HandleResp(v any) {
 	msg, ok := v.(*ipc.UringIPCMsg)
 	if !ok {
@@ -170,7 +226,53 @@ func (c *clientImpl) HandleResp(v any) {
 	case netproto.NetMsgRecvDgram:
 		r := *netproto.DecodeRecvDgram(msg)
 		c.deliverRecv(&r)
+	case netproto.NetMsgBindTCPResp:
+		r := *netproto.DecodeBindTCPResp(msg)
+		c.deliverSync(r.ReqID, &r)
+	case netproto.NetMsgListenResp:
+		r := *netproto.DecodeListenResp(msg)
+		c.deliverSync(r.ReqID, &r)
+	case netproto.NetMsgAcceptResp:
+		r := *netproto.DecodeAcceptResp(msg)
+		if r.ErrCode == netproto.NetErrNone {
+			c.registerStreamConn(r.NewConnID, r.SendPageVA)
+		}
+		c.deliverSync(r.ReqID, &r)
+	case netproto.NetMsgTCPConnectResp:
+		r := *netproto.DecodeTCPConnectResp(msg)
+		if r.ErrCode == netproto.NetErrNone {
+			c.registerStreamConn(r.ConnID, r.SendPageVA)
+		}
+		c.deliverSync(r.ReqID, &r)
+	case netproto.NetMsgStreamSendResp:
+		r := *netproto.DecodeStreamSendResp(msg)
+		c.deliverSync(r.ReqID, &r)
+	case netproto.NetMsgStreamShutdownResp:
+		r := *netproto.DecodeStreamShutdownResp(msg)
+		c.deliverSync(r.ReqID, &r)
+	case netproto.NetMsgStreamRx:
+		r := *netproto.DecodeStreamRx(msg)
+		c.deliverStreamRx(&r)
 	}
+}
+
+// registerStreamConn allocates the per-conn state for a newly-accepted
+// or newly-connected TCP stream. Idempotent — a duplicate response from
+// a buggy server is logged + ignored rather than overwriting state.
+func (c *clientImpl) registerStreamConn(connID uint32, sendPageVA uint64) {
+	cn := &conn{
+		streamRxCh: make(chan *netproto.StreamRx, recvChanBuffer),
+		sendPageVA: sendPageVA,
+		stop:       make(chan struct{}),
+	}
+	c.connsMu.Lock()
+	if _, dup := c.conns[connID]; dup {
+		c.connsMu.Unlock()
+		fmt.Printf("[netclient] duplicate stream conn registration connID=%d, ignoring\n", connID)
+		return
+	}
+	c.conns[connID] = cn
+	c.connsMu.Unlock()
 }
 
 func (c *clientImpl) deliverSync(reqID uint32, v any) {
@@ -192,8 +294,8 @@ func (c *clientImpl) deliverRecv(r *netproto.RecvDgram) {
 	c.connsMu.Lock()
 	conn, ok := c.conns[r.ConnID]
 	c.connsMu.Unlock()
-	if !ok {
-		fmt.Printf("[netclient] RecvDgram for unknown connID=%d, dropping\n", r.ConnID)
+	if !ok || conn.recvCh == nil {
+		fmt.Printf("[netclient] RecvDgram for unknown/non-UDP connID=%d, dropping\n", r.ConnID)
 		return
 	}
 	select {
@@ -203,6 +305,21 @@ func (c *clientImpl) deliverRecv(r *netproto.RecvDgram) {
 		// preserves dispatcher liveness; the loaned page stays mapped
 		// at the client side and counts against the watermark.
 		fmt.Printf("[netclient] recvCh full for connID=%d, dropping\n", r.ConnID)
+	}
+}
+
+func (c *clientImpl) deliverStreamRx(r *netproto.StreamRx) {
+	c.connsMu.Lock()
+	conn, ok := c.conns[r.ConnID]
+	c.connsMu.Unlock()
+	if !ok || conn.streamRxCh == nil {
+		fmt.Printf("[netclient] StreamRx for unknown/non-TCP connID=%d, dropping\n", r.ConnID)
+		return
+	}
+	select {
+	case conn.streamRxCh <- r:
+	default:
+		fmt.Printf("[netclient] streamRxCh full for connID=%d, dropping\n", r.ConnID)
 	}
 }
 
@@ -363,15 +480,197 @@ func (c *clientImpl) Close(connID uint32) error {
 		return fmt.Errorf("netclient: Close failed: %d", resp.ErrCode)
 	}
 	// Drop the conn from the table and signal stop so any blocked
-	// RecvFrom returns "closed". Leaving recvCh open (rather than
-	// closing it) avoids a send-on-closed panic if a deliverRecv is
-	// in-flight with a stale conn pointer from before the map delete.
+	// RecvFrom / ReadStream returns "closed". Leaving the recv channels
+	// open (rather than closing them) avoids a send-on-closed panic if
+	// a deliver is in-flight with a stale conn pointer from before the
+	// map delete.
 	c.connsMu.Lock()
 	cn := c.conns[connID]
 	delete(c.conns, connID)
 	c.connsMu.Unlock()
 	if cn != nil {
 		close(cn.stop)
+	}
+	return nil
+}
+
+// --- TCP surface ---
+
+// BindTCP creates a TCP listener-shaped conn bound to (localIP,
+// localPort). localPort=0 requests an ephemeral assignment. The
+// returned connID identifies the listener for Listen/Accept/Close.
+// There's no client-side conn registration for listeners — they
+// receive no data.
+func (c *clientImpl) BindTCP(localIP [4]byte, localPort uint16) (uint32, uint16, error) {
+	v, err := c.callSync("BindTCP", func(reqID uint32) ipc.UringIPCMsg {
+		req := netproto.BindTCPReq{ReqID: reqID, LocalPort: localPort, LocalIP: localIP}
+		return netproto.EncodeBindTCP(&req, int16(os.Getpid()))
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	resp, ok := v.(*netproto.BindTCPResp)
+	if !ok {
+		return 0, 0, fmt.Errorf("netclient: BindTCP wrong resp type %T", v)
+	}
+	if resp.ErrCode != netproto.NetErrNone {
+		return 0, 0, fmt.Errorf("netclient: BindTCP failed: %d", resp.ErrCode)
+	}
+	return resp.ConnID, resp.LocalPort, nil
+}
+
+// Listen activates a listener-conn created by BindTCP with the given
+// backlog (gvisor's accept queue depth).
+func (c *clientImpl) Listen(connID uint32, backlog uint16) error {
+	v, err := c.callSync("Listen", func(reqID uint32) ipc.UringIPCMsg {
+		req := netproto.ListenReq{ReqID: reqID, ConnID: connID, Backlog: backlog}
+		return netproto.EncodeListen(&req, int16(os.Getpid()))
+	})
+	if err != nil {
+		return err
+	}
+	resp, ok := v.(*netproto.ListenResp)
+	if !ok {
+		return fmt.Errorf("netclient: Listen wrong resp type %T", v)
+	}
+	if resp.ErrCode != netproto.NetErrNone {
+		return fmt.Errorf("netclient: Listen failed: %d", resp.ErrCode)
+	}
+	return nil
+}
+
+// Accept blocks until a new inbound stream arrives on the listener
+// identified by connID. Returns the new stream's connID and the peer
+// address. The per-stream send page is recorded in client-side state
+// during HandleResp; subsequent StreamSend calls use it implicitly.
+func (c *clientImpl) Accept(connID uint32) (uint32, netproto.Addr, error) {
+	v, err := c.callSync("Accept", func(reqID uint32) ipc.UringIPCMsg {
+		req := netproto.AcceptReq{ReqID: reqID, ConnID: connID}
+		return netproto.EncodeAccept(&req, int16(os.Getpid()))
+	})
+	if err != nil {
+		return 0, netproto.Addr{}, err
+	}
+	resp, ok := v.(*netproto.AcceptResp)
+	if !ok {
+		return 0, netproto.Addr{}, fmt.Errorf("netclient: Accept wrong resp type %T", v)
+	}
+	if resp.ErrCode != netproto.NetErrNone {
+		return 0, netproto.Addr{}, fmt.Errorf("netclient: Accept failed: %d", resp.ErrCode)
+	}
+	return resp.NewConnID, resp.Peer, nil
+}
+
+// TCPConnect performs an active open against dst. localIP/localPort
+// are usually zero (let net.elf pick an ephemeral source). On success
+// returns the new stream's connID and the bound source port.
+func (c *clientImpl) TCPConnect(localIP [4]byte, localPort uint16, dst netproto.Addr) (uint32, uint16, error) {
+	v, err := c.callSync("TCPConnect", func(reqID uint32) ipc.UringIPCMsg {
+		req := netproto.TCPConnectReq{
+			ReqID:     reqID,
+			Dst:       dst,
+			LocalIP:   localIP,
+			LocalPort: localPort,
+		}
+		return netproto.EncodeTCPConnect(&req, int16(os.Getpid()))
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	resp, ok := v.(*netproto.TCPConnectResp)
+	if !ok {
+		return 0, 0, fmt.Errorf("netclient: TCPConnect wrong resp type %T", v)
+	}
+	if resp.ErrCode != netproto.NetErrNone {
+		return 0, 0, fmt.Errorf("netclient: TCPConnect failed: %d", resp.ErrCode)
+	}
+	return resp.ConnID, resp.LocalPort, nil
+}
+
+// MaxStreamSendSize is the largest payload StreamSend accepts in one
+// call.
+const MaxStreamSendSize = 4096
+
+// StreamSend writes payload onto the stream identified by connID.
+// Returns the number of bytes gvisor's Endpoint.Write accepted (may be
+// less than len(payload); callers re-send the tail). For v1 at most
+// one StreamSend may be in flight per connID — the client waits for
+// the response before reusing the send page.
+func (c *clientImpl) StreamSend(connID uint32, payload []byte) (int, error) {
+	if len(payload) == 0 {
+		return 0, nil
+	}
+	if len(payload) > MaxStreamSendSize {
+		return 0, fmt.Errorf("netclient: StreamSend payload too large (%d > %d)",
+			len(payload), MaxStreamSendSize)
+	}
+	c.connsMu.Lock()
+	cn, ok := c.conns[connID]
+	c.connsMu.Unlock()
+	if !ok || cn.sendPageVA == 0 {
+		return 0, fmt.Errorf("netclient: StreamSend unknown or non-stream connID=%d", connID)
+	}
+	copy(pageSlice(cn.sendPageVA, 0, MaxStreamSendSize), payload)
+
+	v, err := c.callSync("StreamSend", func(reqID uint32) ipc.UringIPCMsg {
+		req := netproto.StreamSendReq{
+			ReqID:  reqID,
+			ConnID: connID,
+			Length: uint16(len(payload)),
+		}
+		return netproto.EncodeStreamSend(&req, int16(os.Getpid()))
+	})
+	if err != nil {
+		return 0, err
+	}
+	resp, ok := v.(*netproto.StreamSendResp)
+	if !ok {
+		return 0, fmt.Errorf("netclient: StreamSend wrong resp type %T", v)
+	}
+	if resp.ErrCode != netproto.NetErrNone {
+		return int(resp.BytesWritten), fmt.Errorf("netclient: StreamSend failed: %d", resp.ErrCode)
+	}
+	return int(resp.BytesWritten), nil
+}
+
+// ReadStream blocks until the next StreamRx chunk arrives on connID
+// or the conn is Closed. See StreamChunk for EOF semantics.
+func (c *clientImpl) ReadStream(connID uint32) (StreamChunk, error) {
+	c.connsMu.Lock()
+	cn, ok := c.conns[connID]
+	c.connsMu.Unlock()
+	if !ok || cn.streamRxCh == nil {
+		return StreamChunk{}, fmt.Errorf("netclient: ReadStream unknown or non-stream connID=%d", connID)
+	}
+	select {
+	case rx := <-cn.streamRxCh:
+		return StreamChunk{
+			Page:   rx.PageVA,
+			Offset: rx.Offset,
+			Length: rx.Length,
+			EOF:    rx.Flags&netproto.StreamRxFlagEOF != 0,
+		}, nil
+	case <-cn.stop:
+		return StreamChunk{}, fmt.Errorf("netclient: ReadStream on closed connID=%d", connID)
+	}
+}
+
+// Shutdown half-closes a TCP stream. how is a bitmap of
+// netproto.ShutdownRead / netproto.ShutdownWrite.
+func (c *clientImpl) Shutdown(connID uint32, how uint8) error {
+	v, err := c.callSync("Shutdown", func(reqID uint32) ipc.UringIPCMsg {
+		req := netproto.StreamShutdownReq{ReqID: reqID, ConnID: connID, How: how}
+		return netproto.EncodeStreamShutdown(&req, int16(os.Getpid()))
+	})
+	if err != nil {
+		return err
+	}
+	resp, ok := v.(*netproto.StreamShutdownResp)
+	if !ok {
+		return fmt.Errorf("netclient: Shutdown wrong resp type %T", v)
+	}
+	if resp.ErrCode != netproto.NetErrNone {
+		return fmt.Errorf("netclient: Shutdown failed: %d", resp.ErrCode)
 	}
 	return nil
 }

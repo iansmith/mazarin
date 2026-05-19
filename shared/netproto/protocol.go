@@ -1,7 +1,7 @@
 // Package netproto defines the uring IPC protocol between client shepherds
-// and net.elf for socket-shaped networking. Phase 3 of MAZ-29 lights up the
-// UDP path; TCP-shaped types (Listen, Accept, Connect, Shutdown, SetOption)
-// land in Phase 6.
+// and net.elf for socket-shaped networking. Phase 3 of MAZ-29 lit up the
+// UDP path; Phase 6 adds the TCP surface (BindTCP/Listen/Accept/TCPConnect/
+// StreamSend/StreamRx/StreamShutdown).
 //
 // # Page lifetimes
 //
@@ -33,11 +33,36 @@
 // IPC ring index on its own side that net.elf should write responses to
 // (RespRing). Net.elf records that index in per-client state and uses
 // uring.SendWithRing(clientSID, msg, respRing) for every subsequent
-// response and unsolicited RecvDgram delivery. This mirrors fs's OpConnect
-// pattern exactly — the server doesn't care which ring the client picked,
-// it just stores the number. NetMsgConnect must precede NetMsgBindUDP for
-// a given client; later Connects re-arm the ring index and re-grant the
-// watermark.
+// response and unsolicited RecvDgram / StreamRx delivery. This mirrors
+// fs's OpConnect pattern exactly — the server doesn't care which ring the
+// client picked, it just stores the number. NetMsgConnect must precede
+// NetMsgBindUDP/NetMsgBindTCP/NetMsgTCPConnect for a given client; later
+// Connects re-arm the ring index and re-grant the watermark. NetMsgConnect
+// is the NetIPC handshake; NetMsgTCPConnect is the unrelated TCP active
+// open.
+//
+// # TCP stream send page
+//
+// At Accept-success and TCPConnect-success net.elf maps a 1-page RW send
+// scratch into the client (via SyscallShareNetPageWithClient). Its
+// client-side VA rides back in AcceptResp.SendPageVA /
+// TCPConnectResp.SendPageVA. To transmit, the client writes payload bytes
+// into the page starting at offset 0, then sends StreamSendReq carrying
+// the byte length. Net.elf reads those bytes and hands them to gvisor's
+// Endpoint.Write. For v1 there is at most one StreamSend in flight per
+// stream — the client must await StreamSendResp before reusing the page.
+// Real ring semantics (producer/consumer cursors on the shared page) are
+// a future optimization.
+//
+// # TCP stream RX
+//
+// Stream-side RX uses the same page-loan shape as UDP. Net.elf allocates
+// an RX page, reads up to one page of stream bytes into it via gvisor's
+// Endpoint.Read, maps it into the client via SharePagesWithTarget, and
+// sends an unsolicited StreamRx{ConnID, PageVA, Offset, Length, Flags}.
+// The client must Release(ConnID, PageVA) when done. Flags bit 0
+// (StreamRxFlagEOF) means the peer half-closed the write side; an
+// EOF-only delivery may carry Length=0 and PageVA=0 (no Release needed).
 //
 // # Watermark
 //
@@ -98,13 +123,18 @@ const (
 // read them as int16 (sign-preserving).
 
 const (
-	NetErrNone      int16 = 0
-	NetErrInvalid   int16 = -22 // EINVAL
-	NetErrNoConn    int16 = -2  // ENOENT — unknown ConnID for this client
-	NetErrNoMemory  int16 = -12 // ENOMEM
-	NetErrTryAgain  int16 = -11 // EAGAIN — TX watermark reached, retry after a release/completion
-	NetErrAddrInUse int16 = -98 // EADDRINUSE
-	NetErrUnknown   int16 = -1  // generic
+	NetErrNone        int16 = 0
+	NetErrInvalid     int16 = -22  // EINVAL
+	NetErrNoConn      int16 = -2   // ENOENT — unknown ConnID for this client
+	NetErrNoMemory    int16 = -12  // ENOMEM
+	NetErrTryAgain    int16 = -11  // EAGAIN — TX watermark reached, retry after a release/completion
+	NetErrAddrInUse   int16 = -98  // EADDRINUSE
+	NetErrPipe        int16 = -32  // EPIPE — write on a stream whose write side is closed
+	NetErrConnReset   int16 = -104 // ECONNRESET — peer reset the connection
+	NetErrConnAborted int16 = -103 // ECONNABORTED — accept-side abort
+	NetErrNotConn     int16 = -107 // ENOTCONN — operation on a not-yet-established stream
+	NetErrConnRefused int16 = -111 // ECONNREFUSED — peer refused the connect
+	NetErrUnknown     int16 = -1   // generic
 )
 
 // --- MsgType discriminators ---
@@ -114,20 +144,33 @@ const (
 
 // Request types (client → net.elf, via ProtoNetIPCReq).
 const (
-	NetMsgConnect   uint32 = 1
-	NetMsgBindUDP   uint32 = 2
-	NetMsgSendDgram uint32 = 3
-	NetMsgRelease   uint32 = 4
-	NetMsgClose     uint32 = 5
+	NetMsgConnect        uint32 = 1
+	NetMsgBindUDP        uint32 = 2
+	NetMsgSendDgram      uint32 = 3
+	NetMsgRelease        uint32 = 4
+	NetMsgClose          uint32 = 5
+	NetMsgBindTCP        uint32 = 6
+	NetMsgListen         uint32 = 7
+	NetMsgAccept         uint32 = 8
+	NetMsgTCPConnect     uint32 = 9
+	NetMsgStreamSend     uint32 = 10
+	NetMsgStreamShutdown uint32 = 11
 )
 
 // Response / unsolicited types (net.elf → client, via ProtoNetIPCResp).
 const (
-	NetMsgConnectResp   uint32 = 50
-	NetMsgBindUDPResp   uint32 = 51
-	NetMsgSendDgramResp uint32 = 52
-	NetMsgCloseResp     uint32 = 53
-	NetMsgRecvDgram     uint32 = 60 // unsolicited (RX delivery)
+	NetMsgConnectResp        uint32 = 50
+	NetMsgBindUDPResp        uint32 = 51
+	NetMsgSendDgramResp      uint32 = 52
+	NetMsgCloseResp          uint32 = 53
+	NetMsgBindTCPResp        uint32 = 54
+	NetMsgListenResp         uint32 = 55
+	NetMsgAcceptResp         uint32 = 56
+	NetMsgTCPConnectResp     uint32 = 57
+	NetMsgStreamSendResp     uint32 = 58
+	NetMsgStreamShutdownResp uint32 = 59
+	NetMsgRecvDgram          uint32 = 60 // unsolicited (UDP RX delivery)
+	NetMsgStreamRx           uint32 = 61 // unsolicited (TCP RX delivery)
 )
 
 // --- Encode helpers (request side) ---
@@ -177,6 +220,60 @@ func EncodeClose(r *CloseReq, senderSID int16) ipc.UringIPCMsg {
 	return msg
 }
 
+func EncodeBindTCP(r *BindTCPReq, senderSID int16) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCReq
+	msg.SenderSID = senderSID
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgBindTCP
+	*(*BindTCPReq)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeListen(r *ListenReq, senderSID int16) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCReq
+	msg.SenderSID = senderSID
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgListen
+	*(*ListenReq)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeAccept(r *AcceptReq, senderSID int16) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCReq
+	msg.SenderSID = senderSID
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgAccept
+	*(*AcceptReq)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeTCPConnect(r *TCPConnectReq, senderSID int16) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCReq
+	msg.SenderSID = senderSID
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgTCPConnect
+	*(*TCPConnectReq)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeStreamSend(r *StreamSendReq, senderSID int16) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCReq
+	msg.SenderSID = senderSID
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgStreamSend
+	*(*StreamSendReq)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeStreamShutdown(r *StreamShutdownReq, senderSID int16) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCReq
+	msg.SenderSID = senderSID
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgStreamShutdown
+	*(*StreamShutdownReq)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
 // --- Encode helpers (response / notification side) ---
 
 func EncodeConnectResp(r *NetIPCConnectResp) ipc.UringIPCMsg {
@@ -216,6 +313,62 @@ func EncodeRecvDgram(n *RecvDgram) ipc.UringIPCMsg {
 	msg.Protocol = ipc.ProtoNetIPCResp
 	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgRecvDgram
 	*(*RecvDgram)(unsafe.Pointer(&msg.Payload[4])) = *n
+	return msg
+}
+
+func EncodeBindTCPResp(r *BindTCPResp) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCResp
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgBindTCPResp
+	*(*BindTCPResp)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeListenResp(r *ListenResp) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCResp
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgListenResp
+	*(*ListenResp)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeAcceptResp(r *AcceptResp) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCResp
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgAcceptResp
+	*(*AcceptResp)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeTCPConnectResp(r *TCPConnectResp) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCResp
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgTCPConnectResp
+	*(*TCPConnectResp)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeStreamSendResp(r *StreamSendResp) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCResp
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgStreamSendResp
+	*(*StreamSendResp)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeStreamShutdownResp(r *StreamShutdownResp) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCResp
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgStreamShutdownResp
+	*(*StreamShutdownResp)(unsafe.Pointer(&msg.Payload[4])) = *r
+	return msg
+}
+
+func EncodeStreamRx(n *StreamRx) ipc.UringIPCMsg {
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoNetIPCResp
+	*(*uint32)(unsafe.Pointer(&msg.Payload[0])) = NetMsgStreamRx
+	*(*StreamRx)(unsafe.Pointer(&msg.Payload[4])) = *n
 	return msg
 }
 
@@ -270,4 +423,56 @@ func DecodeCloseResp(msg *ipc.UringIPCMsg) *CloseResp {
 
 func DecodeRecvDgram(msg *ipc.UringIPCMsg) *RecvDgram {
 	return (*RecvDgram)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeBindTCPReq(msg *ipc.UringIPCMsg) *BindTCPReq {
+	return (*BindTCPReq)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeListenReq(msg *ipc.UringIPCMsg) *ListenReq {
+	return (*ListenReq)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeAcceptReq(msg *ipc.UringIPCMsg) *AcceptReq {
+	return (*AcceptReq)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeTCPConnectReq(msg *ipc.UringIPCMsg) *TCPConnectReq {
+	return (*TCPConnectReq)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeStreamSendReq(msg *ipc.UringIPCMsg) *StreamSendReq {
+	return (*StreamSendReq)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeStreamShutdownReq(msg *ipc.UringIPCMsg) *StreamShutdownReq {
+	return (*StreamShutdownReq)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeBindTCPResp(msg *ipc.UringIPCMsg) *BindTCPResp {
+	return (*BindTCPResp)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeListenResp(msg *ipc.UringIPCMsg) *ListenResp {
+	return (*ListenResp)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeAcceptResp(msg *ipc.UringIPCMsg) *AcceptResp {
+	return (*AcceptResp)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeTCPConnectResp(msg *ipc.UringIPCMsg) *TCPConnectResp {
+	return (*TCPConnectResp)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeStreamSendResp(msg *ipc.UringIPCMsg) *StreamSendResp {
+	return (*StreamSendResp)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeStreamShutdownResp(msg *ipc.UringIPCMsg) *StreamShutdownResp {
+	return (*StreamShutdownResp)(unsafe.Pointer(&msg.Payload[4]))
+}
+
+func DecodeStreamRx(msg *ipc.UringIPCMsg) *StreamRx {
+	return (*StreamRx)(unsafe.Pointer(&msg.Payload[4]))
 }

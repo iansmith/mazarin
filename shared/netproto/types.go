@@ -156,6 +156,193 @@ type RecvDgram struct {
 	PageVA uint64
 }
 
+// --- TCP request structs (client → net.elf) ---
+
+// BindTCPReq creates a TCP endpoint at (LocalIP, LocalPort) and registers
+// it as a listener-shaped conn (not yet listening — Listen flips it).
+//
+// Layout (12 bytes): ReqID(4) + LocalPort(2) + _pad(2) + LocalIP(4).
+type BindTCPReq struct {
+	ReqID     uint32
+	LocalPort uint16
+	_pad      [2]byte
+	LocalIP   [4]byte
+}
+
+// ListenReq turns a TCP listener-conn on with the given backlog. ConnID
+// must reference a conn created by BindTCP. Backlog is the gvisor accept
+// queue depth; clients typically pass a small value (≤ 128).
+//
+// Layout (12 bytes): ReqID(4) + ConnID(4) + Backlog(2) + _pad(2).
+type ListenReq struct {
+	ReqID   uint32
+	ConnID  uint32
+	Backlog uint16
+	_pad    [2]byte
+}
+
+// AcceptReq blocks (server-side, up to net.elf's accept timeout) waiting
+// for an inbound connection on the listener identified by ConnID. The
+// response carries a fresh ConnID for the new stream, the peer's address,
+// and the per-stream send-page VA mapped RW into the client.
+//
+// Layout (8 bytes): ReqID(4) + ConnID(4).
+type AcceptReq struct {
+	ReqID  uint32
+	ConnID uint32
+}
+
+// TCPConnectReq performs an active open against Dst. LocalIP/LocalPort
+// are usually zero (let net.elf pick an ephemeral source). The response
+// carries the new ConnID, the actual bound port, and the per-stream
+// send-page VA. Distinct from NetIPCConnectReq, which is the
+// once-per-client NetIPC handshake.
+//
+// Layout (20 bytes): ReqID(4) + Dst(8) + LocalIP(4) + LocalPort(2) + _pad(2).
+type TCPConnectReq struct {
+	ReqID     uint32
+	Dst       Addr
+	LocalIP   [4]byte
+	LocalPort uint16
+	_pad      [2]byte
+}
+
+// StreamSendReq submits Length bytes for transmission on the stream
+// identified by ConnID. The bytes live at offset 0 of the per-stream
+// send page that net.elf mapped RW into the client at Accept/Connect
+// time. For v1, at most one StreamSend is in flight per stream — the
+// client waits for StreamSendResp before reusing the send page.
+//
+// Layout (12 bytes): ReqID(4) + ConnID(4) + Length(2) + _pad(2).
+type StreamSendReq struct {
+	ReqID  uint32
+	ConnID uint32
+	Length uint16
+	_pad   [2]byte
+}
+
+// StreamShutdownReq half-closes a stream. How is a bitmap of
+// ShutdownRead / ShutdownWrite. Maps to gvisor's
+// tcpip.Endpoint.Shutdown.
+//
+// Layout (12 bytes): ReqID(4) + ConnID(4) + How(1) + _pad(3).
+type StreamShutdownReq struct {
+	ReqID  uint32
+	ConnID uint32
+	How    uint8
+	_pad   [3]byte
+}
+
+// --- TCP response structs (net.elf → client) ---
+
+// BindTCPResp echoes the new listener's ConnID and bound LocalPort. The
+// client drives the listener via Listen + Accept.
+//
+// Layout (12 bytes): ReqID(4) + ConnID(4) + LocalPort(2) + ErrCode(2).
+type BindTCPResp struct {
+	ReqID     uint32
+	ConnID    uint32
+	LocalPort uint16
+	ErrCode   int16
+}
+
+// ListenResp acks the Listen transition.
+//
+// Layout (8 bytes): ReqID(4) + ErrCode(2) + _pad(2).
+type ListenResp struct {
+	ReqID   uint32
+	ErrCode int16
+	_pad    [2]byte
+}
+
+// AcceptResp delivers a freshly-accepted stream to the client. NewConnID
+// is the stream's per-client ConnID (distinct from the listener's);
+// SendPageVA is the client-side VA where net.elf mapped the per-stream
+// send page. Peer is the remote endpoint's address.
+//
+// Layout (32 bytes): ReqID(4) + NewConnID(4) + Peer(8) + SendPageVA(8) +
+// ErrCode(2) + _pad(6).
+type AcceptResp struct {
+	ReqID      uint32
+	NewConnID  uint32
+	Peer       Addr
+	SendPageVA uint64
+	ErrCode    int16
+	_pad       [6]byte
+}
+
+// TCPConnectResp completes an active open. ConnID identifies the new
+// stream; LocalPort is the ephemeral source port net.elf picked;
+// SendPageVA is the per-stream send page mapped RW into the client.
+//
+// Layout (24 bytes): ReqID(4) + ConnID(4) + SendPageVA(8) + LocalPort(2)
+// + ErrCode(2) + _pad(4).
+type TCPConnectResp struct {
+	ReqID      uint32
+	ConnID     uint32
+	SendPageVA uint64
+	LocalPort  uint16
+	ErrCode    int16
+	_pad       [4]byte
+}
+
+// StreamSendResp completes a StreamSend. BytesWritten is what gvisor's
+// Endpoint.Write accepted (may be less than the requested Length if its
+// segment queue is bounded; clients should re-send the tail).
+//
+// Layout (12 bytes): ReqID(4) + ConnID(4) + BytesWritten(2) + ErrCode(2).
+type StreamSendResp struct {
+	ReqID        uint32
+	ConnID       uint32
+	BytesWritten uint16
+	ErrCode      int16
+}
+
+// StreamShutdownResp acks the half-close.
+//
+// Layout (12 bytes): ReqID(4) + ConnID(4) + ErrCode(2) + _pad(2).
+type StreamShutdownResp struct {
+	ReqID   uint32
+	ConnID  uint32
+	ErrCode int16
+	_pad    [2]byte
+}
+
+// --- TCP unsolicited (net.elf → client) ---
+
+// StreamRx delivers one chunk of inbound stream data. PageVA is the
+// client-side VA where net.elf mapped the chunk page (via
+// SharePagesWithTarget); Offset/Length delimit the bytes within the
+// page. Flags bit 0 = EOF: peer has closed the write side; subsequent
+// reads return no data. EOF deliveries with Length=0 are allowed (and
+// don't loan a page; PageVA may be 0).
+//
+// Layout (24 bytes): ConnID(4) + Offset(2) + Length(2) + PageVA(8) +
+// Flags(1) + _pad(7). Unsolicited — no ReqID.
+type StreamRx struct {
+	ConnID uint32
+	Offset uint16
+	Length uint16
+	PageVA uint64
+	Flags  uint8
+	_pad   [7]byte
+}
+
+// --- TCP stream flag bitmaps ---
+
+// StreamRx.Flags bits. The client should treat the stream as fully read
+// once an EOF notification is consumed.
+const (
+	StreamRxFlagEOF uint8 = 1 << 0
+)
+
+// StreamShutdownReq.How bits. Analogous to POSIX SHUT_RD / SHUT_WR; a
+// write-side shutdown triggers a FIN to the peer.
+const (
+	ShutdownRead  uint8 = 1 << 0
+	ShutdownWrite uint8 = 1 << 1
+)
+
 // --- Compile-time size assertions ---
 //
 // Each message struct occupies Payload[4:108] (108 bytes after the 4-byte
@@ -176,3 +363,16 @@ var _ [maxNetIPCMsgBody - unsafe.Sizeof(BindUDPResp{})]byte
 var _ [maxNetIPCMsgBody - unsafe.Sizeof(SendDgramResp{})]byte
 var _ [maxNetIPCMsgBody - unsafe.Sizeof(CloseResp{})]byte
 var _ [maxNetIPCMsgBody - unsafe.Sizeof(RecvDgram{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(BindTCPReq{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(ListenReq{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(AcceptReq{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(TCPConnectReq{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(StreamSendReq{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(StreamShutdownReq{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(BindTCPResp{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(ListenResp{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(AcceptResp{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(TCPConnectResp{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(StreamSendResp{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(StreamShutdownResp{})]byte
+var _ [maxNetIPCMsgBody - unsafe.Sizeof(StreamRx{})]byte
