@@ -51,6 +51,7 @@ func ForceLinkSurfaceItab(v any) {
 	alloc := inj.GetAllocator()
 	inj.GetRecvChan()
 	inj.RegisterTxChan(nil)
+	inj.RegisterNetIPCHandler(nil)
 
 	// Force Device + Allocator method itabs to stay reachable. The host
 	// always populates both (NewLinkSurfaceInit requires non-nil dev +

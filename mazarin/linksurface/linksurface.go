@@ -29,6 +29,20 @@
 // the plugin fills its side from inside MazarinShepherd.
 package linksurface
 
+import "mazzy/shared/ipc"
+
+// NetIPCRequestHandler is the plugin's callback for incoming
+// ProtoNetIPCReq messages. The plugin registers one via
+// LinkSurfaceInjector.RegisterNetIPCHandler before its MazarinShepherd
+// returns; net.elf then wires it into a uring dispatcher on net.elf's
+// default IPC ring 0.
+//
+// The handler runs in net.elf's NetIPC reader goroutine. msg points
+// into the reader's slot buffer and is only valid for the lifetime of
+// the call; handlers that need to dispatch async work must copy
+// what they need first.
+type NetIPCRequestHandler func(msg *ipc.UringIPCMsg)
+
 // ReceivePacket is a shallow view into a net.elf-owned page. It must not
 // outlive the RxEnvelope that carries it; the L3 plugin returns the page to
 // the pool by passing this back to Allocator.Release.
@@ -96,17 +110,19 @@ type LinkSurfaceInjector interface {
 	GetAllocator() Allocator
 	GetRecvChan() chan RxEnvelope
 	RegisterTxChan(ch chan TxEnvelope)
+	RegisterNetIPCHandler(h NetIPCRequestHandler)
 }
 
 // LinkSurfaceInit implements LinkSurfaceInjector and is the host's concrete
 // bag. Net.elf fills Device, Allocator, and RecvChan; the L3 plugin calls
-// RegisterTxChan from inside its MazarinShepherd. Net.elf reads TxChan back
-// after MazarinShepherd returns.
+// RegisterTxChan and RegisterNetIPCHandler from inside its MazarinShepherd.
+// Net.elf reads TxChan and NetIPCHandler back after MazarinShepherd returns.
 type LinkSurfaceInit struct {
-	Device    Device
-	Allocator Allocator
-	RecvChan  chan RxEnvelope
-	TxChan    chan TxEnvelope
+	Device         Device
+	Allocator      Allocator
+	RecvChan       chan RxEnvelope
+	TxChan         chan TxEnvelope
+	NetIPCHandler  NetIPCRequestHandler
 }
 
 // GetDevice implements LinkSurfaceInjector.
@@ -120,3 +136,6 @@ func (l *LinkSurfaceInit) GetRecvChan() chan RxEnvelope { return l.RecvChan }
 
 // RegisterTxChan implements LinkSurfaceInjector.
 func (l *LinkSurfaceInit) RegisterTxChan(ch chan TxEnvelope) { l.TxChan = ch }
+
+// RegisterNetIPCHandler implements LinkSurfaceInjector.
+func (l *LinkSurfaceInit) RegisterNetIPCHandler(h NetIPCRequestHandler) { l.NetIPCHandler = h }

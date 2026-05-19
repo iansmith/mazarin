@@ -55,6 +55,7 @@ func MazarinShepherd(arg any) error {
 	globalRecvChan = inj.GetRecvChan()
 	globalTxChan = make(chan linksurface.TxEnvelope, txChanBuffer)
 	inj.RegisterTxChan(globalTxChan)
+	inj.RegisterNetIPCHandler(handleNetIPC)
 	return nil
 }
 
