@@ -7,7 +7,7 @@ import (
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
 // Indexed by (syscallNum - mazzy.MazzySyscallBase).
-var mazzySyscallTable = [68]SyscallHandler{
+var mazzySyscallTable = [70]SyscallHandler{
 	0: SyscallGetTime,              // GetTime = 0x1000
 	1: SyscallSubscribeDeaths,      // SubscribeDeaths = 0x1001
 	2: SyscallFreePages,            // FreePages = 0x1002
@@ -74,6 +74,8 @@ var mazzySyscallTable = [68]SyscallHandler{
 	65: SyscallReleaseDelegatePage, // ReleaseDelegatePage = 0x1041 (pipe-buffered Write cleanup)
 	66: SyscallRegisterStdioWriteRing, // RegisterStdioWriteRing = 0x1042 (split stdio onto its own ring)
 	67: SyscallNetReadRxLatencyUs,    // NetReadRxLatencyUs = 0x1043 (MAZ-28 step 2)
+	68: SyscallTransferDMAClump,     // TransferDMAClump = 0x1044 (MAZ-29 client→net.elf page handoff)
+	69: SyscallShareNetPageWithClient, // ShareNetPageWithClient = 0x1045 (MAZ-29 net.elf→client per-stream send ring)
 }
 
 // EpochStatusDumpFn, if non-nil, is invoked when userspace sends a

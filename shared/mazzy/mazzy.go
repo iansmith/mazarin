@@ -73,5 +73,7 @@ const (
 	SysGetOwnExports          = MazzySyscallBase + 64 // 0x1040 - Serialize caller's ELF symbol table into user buffer (mazdl.RegisterHost)
 	SysReleaseDelegatePage    = MazzySyscallBase + 65 // 0x1041 - Release data page from pipe-buffered Write delegate (handler → kernel)
 	SysRegisterStdioWriteRing = MazzySyscallBase + 66 // 0x1042 - Set ring index for pipe-buffered Write delegation (Write fd<=2)
-	SysNetReadRxLatencyUs     = MazzySyscallBase + 67 // 0x1043 - Read kernel→net latency for an RX descIdx (MAZ-28 step 2)
+	SysNetReadRxLatencyUs        = MazzySyscallBase + 67 // 0x1043 - Read kernel→net latency for an RX descIdx (MAZ-28 step 2)
+	SysTransferDMAClump          = MazzySyscallBase + 68 // 0x1044 - Transfer one whole DMA clump to a target shepherd (MAZ-29 page handoff)
+	SysShareNetPageWithClient    = MazzySyscallBase + 69 // 0x1045 - Map caller's page into a client shepherd (MAZ-29 per-stream send ring)
 )

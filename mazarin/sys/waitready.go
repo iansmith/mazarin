@@ -34,10 +34,10 @@ func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 			sawShepherd = true
 			// Only print first 3 polls — after that, silence.
 			if polls <= 3 {
-				UartWriteString("[waitready] " + name + " sid=" + itoa(int64(sid)) + " not ready yet (poll " + itoa(int64(polls)) + ")\n")
+				UartWriteString("[waitready] " + name + " sid=" + Itoa(int64(sid)) + " not ready yet (poll " + Itoa(int64(polls)) + ")\n")
 			}
 		} else if polls <= 3 {
-			UartWriteString("[waitready] " + name + " not found (poll " + itoa(int64(polls)) + ")\n")
+			UartWriteString("[waitready] " + name + " not found (poll " + Itoa(int64(polls)) + ")\n")
 		}
 
 		// Sleep 200-500ms with jitter (LCG: next = a*prev + c mod 2^32)
@@ -71,24 +71,3 @@ func WaitForCoreServices(maxWaitSeconds int) error {
 	return nil
 }
 
-func itoa(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	neg := v < 0
-	if neg {
-		v = -v
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
-}

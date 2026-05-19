@@ -91,6 +91,100 @@ func SyscallMapSharedPage(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	return int64(callerVA)
 }
 
+// SyscallShareNetPageWithClient maps a page owned by the caller (intended to be
+// net.elf) into a client shepherd's address space. The caller retains ownership;
+// the page's RefCount is incremented and both PD_SHARED and PD_NET_OWNED_SHARED
+// are set on the PageDescriptor. The client can read/write the page, but it
+// survives the client's death: as long as the caller holds its own mapping,
+// RefCount remains ≥ 1 and the page is not buddy-freed.
+//
+// PD_NET_OWNED_SHARED distinguishes net.elf-owned shared pages from regular
+// PD_SHARED mappings so a future client-death notification path can route a
+// reclaim callback to net.elf. In v1 the bit is informational only.
+//
+// Direction is flipped from SyscallMapSharedPage: caller is the *owner*, arg0
+// is the *receiving* client. The page is resolved via the caller's own L0.
+//
+// Args:
+//
+//	arg0 = clientSID  (shepherd to share the page into)
+//	arg1 = ownerVA    (VA of the page in the caller's address space)
+//	arg2 = elfFlags   (ELF permission flags for client's mapping; 0 = RW)
+//
+// Returns: client VA on success, or negative errno on failure.
+func SyscallShareNetPageWithClient(arg0, arg1, arg2, _, _, _ uint64) int64 {
+	clientSID := int16(arg0)
+	ownerVA := uintptr(arg1)
+	elfFlags := uint32(arg2)
+
+	if ownerVA&(kmem.PageSize-1) != 0 {
+		return -22 // EINVAL
+	}
+
+	callerShepherd := proc.CurrentShepherd()
+	if callerShepherd == nil {
+		return -1 // EPERM — kernel context
+	}
+	callerSID := int16(callerShepherd.PID)
+
+	if clientSID == callerSID {
+		return -22 // EINVAL — sharing with self is meaningless
+	}
+
+	clientShepherd := proc.FindShepherdBySID(proc.ShepherdId(clientSID))
+	if clientShepherd == nil {
+		return -3 // ESRCH
+	}
+	if clientShepherd.PageTableL0PA == 0 {
+		return -3 // ESRCH
+	}
+
+	// Resolve PA from caller's (owner's) page table.
+	pa := kmem.WalkUserPageTableWithL0(ownerVA, callerShepherd.PageTableL0PA)
+	if pa == 0 {
+		klog.Errf("[IPC] ShareNetPageWithClient: page not mapped in caller at VA %x\n", uint64(ownerVA))
+		return -14 // EFAULT
+	}
+	pa = pa &^ (kmem.PageSize - 1)
+
+	desc := kmem.GetPageDescriptor(pa)
+	if desc == nil || desc.Owner != callerSID {
+		klog.Errf("[IPC] ShareNetPageWithClient: page not owned by caller at PA %x\n", uint64(pa))
+		return -1 // EPERM
+	}
+
+	const sharedFlags = uint8(kmem.PD_SHARED | kmem.PD_NET_OWNED_SHARED)
+	desc.RefCount++
+	desc.Flags |= sharedFlags
+
+	clientVA := bumpAllocForShepherd(clientShepherd, uint64(kmem.PageSize))
+	if clientVA == 0 {
+		unrefShared(desc, sharedFlags)
+		return -12 // ENOMEM
+	}
+
+	clientShepherd.Spans.Add(clientVA, uint64(kmem.PageSize))
+
+	if !kmem.MapPageInProcess(clientSID, uintptr(clientVA), pa, elfFlags) {
+		clientShepherd.Spans.Remove(clientVA, uint64(kmem.PageSize))
+		unrefShared(desc, sharedFlags)
+		return -12 // ENOMEM
+	}
+
+	return int64(clientVA)
+}
+
+// unrefShared rolls back the RefCount bump + flag set performed at the start
+// of a share path when a subsequent step fails. The flags are only cleared
+// once the page is no longer shared (RefCount back to 1, the owner's own
+// mapping).
+func unrefShared(desc *kmem.PageDescriptor, flags uint8) {
+	desc.RefCount--
+	if desc.RefCount <= 1 {
+		desc.Flags &^= flags
+	}
+}
+
 // SyscallSharePagesWithTarget maps a range of the caller's pages into a target
 // shepherd's address space as shared pages. The caller retains ownership; refcounts
 // are incremented and PD_SHARED is set on each page. Physical pages need not be
