@@ -13,6 +13,7 @@ import (
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/index/scorch"
 
+	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
 	"mazzy/shared/fti"
@@ -36,14 +37,11 @@ func decodeFTIReqWithSID(msg *ipc.UringIPCMsg) any {
 	return taggedFTIReq{payload: decoded, senderSID: msg.SenderSID}
 }
 
+func init() { mazhost.PinEntry(MazarinMain, nil) }
+
 // MazarinMain is the .maz plugin entry point. Identical semantics to main();
 // the dual spelling lets fti build both as legacy ET_EXEC (uses main) and
 // as a .maz plugin (uses MazarinMain via mazdl).
-//
-// MazEntryPoint keeps the symbol alive in plugin builds — without this
-// reference the linker would drop it.
-var MazEntryPoint func() = MazarinMain
-
 func MazarinMain() { main() }
 
 func main() {
@@ -72,7 +70,7 @@ func main() {
 
 	// Create bleve index with per-type document mappings.
 	mapping := buildIndexMapping()
-	index, err := bleve.NewUsing(blevePath, mapping, "scorch", "scorch", map[string]interface{}{
+	index, err := bleve.NewUsing(blevePath, mapping, "scorch", "scorch", map[string]any{
 		"asyncErrorCallbackName": "log",
 	})
 	if err != nil {

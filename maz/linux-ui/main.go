@@ -13,6 +13,7 @@ import (
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/linuxapp"
 	"mazzy/mazarin/mancini/std"
+	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
 	mfont "mazzy/shared/font"
 )
@@ -22,20 +23,7 @@ const (
 	consoleRows = 12
 )
 
-// MazEntryPoint holds a reference to MazarinMain to prevent DCE.
-var MazEntryPoint func() = MazarinMain
-
-// MazarinShepherdAddr holds a reference to MazarinShepherd to prevent DCE.
-var MazarinShepherdAddr func(interface{}) error = MazarinShepherd
-
-func init() {
-	if MazEntryPoint == nil {
-		panic("unreachable")
-	}
-	if MazarinShepherdAddr == nil {
-		panic("unreachable")
-	}
-}
+func init() { mazhost.PinEntry(MazarinMain, MazarinShepherd) }
 
 // inj holds the injection result from MazarinShepherd.
 var inj *linuxapp.Injection[linuxio.LinuxIO]
@@ -43,7 +31,7 @@ var inj *linuxapp.Injection[linuxio.LinuxIO]
 // MazarinShepherd receives the LinuxIO injection from the linux shepherd.
 //
 //go:noinline
-func MazarinShepherd(injected interface{}) error {
+func MazarinShepherd(injected any) error {
 	var err error
 	inj, err = linuxapp.HandleInjection[linuxio.LinuxIO](injected, func(io linuxio.LinuxIO) linuxapp.SetupResult {
 		wmRawCh := make(chan []byte, 8)
@@ -80,10 +68,10 @@ func MazarinMain() {
 	}
 
 	linuxapp.Bootstrap(inj, linuxapp.AppConfig[linuxio.LinuxIO]{
-		Title: "Linux Console",
-		WinW:  800,
-		WinH:  400,
-		Place: func(_, sh, _, wh int) (int, int) { return 0, sh/2 - wh/2 },
+		Title:   "Linux Console",
+		WinW:    800,
+		WinH:    400,
+		Place:   func(_, sh, _, wh int) (int, int) { return 0, sh/2 - wh/2 },
 		BuildUI: buildUI,
 	})
 }

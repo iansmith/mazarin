@@ -295,17 +295,17 @@ func (c *NS16550Console) KWriteString(s string) {
 	c.uart.WriteString(s)
 }
 
-func (c *NS16550Console) KPrintf(format string, args ...interface{}) {
+func (c *NS16550Console) KPrintf(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	c.uart.WriteString(s)
 }
 
-func (c *NS16550Console) KErrPrintf(format string, args ...interface{}) {
+func (c *NS16550Console) KErrPrintf(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
 	c.uart.WriteString(s)
 }
 
-func (c *NS16550Console) KPrintHex(value interface{}) {
+func (c *NS16550Console) KPrintHex(value any) {
 	s := fmt.Sprintf("0x%X", value)
 	c.uart.WriteString(s)
 }

@@ -52,7 +52,10 @@ func QueueDeferredRecord(rec DeferredPageRecord) bool {
 		return false
 	}
 
-	deferredQueue[tail] = rec
+	// Index with the mask to give the compiler a provable bound: avoids
+	// the bounds-check chain on the nosplit stack-budget path from
+	// SyscallWrite → CopyFromUser → ... → allocPTPage → QueueDeferredRecord.
+	deferredQueue[tail&(MaxDeferredRecords-1)] = rec
 	atomic.StoreUint32(&deferredTail, next)
 
 	// Signal the event poller
@@ -71,7 +74,7 @@ func ProcessDeferredRecords() {
 			return // Empty
 		}
 
-		rec := deferredQueue[head]
+		rec := deferredQueue[head&(MaxDeferredRecords-1)]
 		atomic.StoreUint32(&deferredHead, (head+1)&(MaxDeferredRecords-1))
 
 		TrackPage(PageAllocInfo{

@@ -698,7 +698,7 @@ func roundUpMB(bytes int64) int64 {
 	return ((bytes + 1024*1024 - 1) / (1024 * 1024)) * 1024 * 1024
 }
 
-func fatalf(format string, args ...interface{}) {
+func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format, args...)
 	os.Exit(1)
 }

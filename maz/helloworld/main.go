@@ -4,21 +4,11 @@
 package main
 
 import (
+	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
 )
 
-// MazEntryPoint holds a reference to MazarinMain to prevent DCE.
-var MazEntryPoint func() = MazarinMain
-
-// init forces the linker to keep MazarinMain alive. With thin stubs,
-// runtime.main never reaches main.main, so MazarinMain would be DCE'd.
-// Reading MazEntryPoint in init prevents the linker from treating it as
-// write-only.
-func init() {
-	if MazEntryPoint == nil {
-		panic("unreachable")
-	}
-}
+func init() { mazhost.PinEntry(MazarinMain, nil) }
 
 // MazarinMain is the entry point called by the shepherd when this .maz is loaded.
 // The shepherd finds this symbol in the ELF symbol table and launches it as a goroutine.

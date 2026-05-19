@@ -31,3 +31,7 @@ path = "/maildb.maz"
 name = "mail"
 path = "/mail.maz"
 gc_percent = 5
+
+[[shepherd]]
+name = "net"
+path = "/net.elf"

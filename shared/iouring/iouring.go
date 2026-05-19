@@ -27,7 +27,61 @@ const (
 	IOUringOpNop   uint8 = 0
 	IOUringOpRead  uint8 = 1
 	IOUringOpWrite uint8 = 2
+
+	// IOUringOpNetRearmDesc re-arms a specific VirtIO-net RX descriptor
+	// with a fresh DMA page. Used by net.elf after consuming an RX frame
+	// (CQE delivered the descIdx; net.elf hands back a new pagePA for
+	// the same slot). Slot-pinned: descIdx ↔ net.elf page mapping is
+	// stable across the round trip.
+	//
+	// SQEntry usage: FD = descIdx (uint16), Addr = pagePA (uintptr).
+	// Handler runs in full Go context (not nosplit).
+	IOUringOpNetRearmDesc uint8 = 3
+
+	// IOUringOpNetSubmitTx submits a single raw Ethernet frame for TX
+	// (MAZ-28 step 3). The kernel builds a 1-descriptor TX chain and
+	// hands it to the device; the frame leaves the wire and a TX
+	// completion CQE arrives later.
+	//
+	// SQEntry usage: Addr = pageVA, Off = frame offset within the page,
+	// Len = frame length in bytes, UserData = caller-chosen txTag
+	// (echoed back in the completion CQE). Handler runs in full Go
+	// context with a sync.Mutex serializing concurrent submitters.
+	IOUringOpNetSubmitTx uint8 = 4
 )
+
+// Net CQE encoding (MAZ-28 step 2/3): the kernel pushes one io_uring
+// ring with both RX completions and TX completions. The high bit of
+// UserData distinguishes them so net.elf's consumer can dispatch
+// without a per-tag side table.
+//
+//	RX CQE: UserData = (0 << 63) | descIdx   Res = frame bytes
+//	TX CQE: UserData = (1 << 63) | txTag     Res = 0
+//
+// Tag fits in the low bits — RX descIdx ≤ 127, txTag is whatever the
+// submitter chose (typically small).
+const NetUserDataTxFlag uint64 = 1 << 63
+
+// NetEncodeRxUserData packs an RX descIdx into UserData.
+func NetEncodeRxUserData(descIdx uint16) uint64 {
+	return uint64(descIdx)
+}
+
+// NetEncodeTxUserData packs a TX tag into UserData with the TX flag set.
+func NetEncodeTxUserData(txTag uint16) uint64 {
+	return NetUserDataTxFlag | uint64(txTag)
+}
+
+// NetIsTxCQE reports whether the CQE is a TX completion.
+func NetIsTxCQE(userData uint64) bool {
+	return userData&NetUserDataTxFlag != 0
+}
+
+// NetDecodeTag extracts the low-bits tag from a net CQE's UserData.
+// Works for both RX and TX (caller uses NetIsTxCQE to dispatch).
+func NetDecodeTag(userData uint64) uint16 {
+	return uint16(userData)
+}
 
 // SQEntry is a submission queue entry. Userspace writes these to the SQ ring
 // to request I/O operations. 40 bytes, matching the Linux io_uring_sqe layout

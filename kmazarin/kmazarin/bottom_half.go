@@ -6,7 +6,6 @@ import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/gpu"
-	"mazzy/kmazarin/device/virtio/net"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/hid"
@@ -125,11 +124,29 @@ var blockIRQNum uint32
 var blockISRBase uintptr
 var blockIOComplete *uint32
 
-// Net device IRQ state — set by SetNetIRQ during init (MAZ-26). Only the
-// IRQ number is cached here; the rest of net's top-half state (ISRBase, the
-// device pointer for DrainRx) lives in the net package, accessed via
-// net.NetIRQTopHalf() which operates on net.virtioNetDevice directly.
-var netIRQNum uint32
+// Net device IRQ state — set by SetNetIRQ during init.
+//
+// MAZ-26 cached only the IRQ number; the top-half delegated to
+// net.NetIRQTopHalf() (deferred drain via RxPending flag). MAZ-28 step 2
+// caches the full set of pointers needed for the inline RX drain +
+// CQE-push path: ISR ack, RX engine for PopUsedNoFree, device pointer
+// for RxIRQTimestamps writeback.
+var (
+	netIRQNum       uint32
+	netISRBase      uintptr // ISR register VA for ack
+	netRxEnginePtr  uintptr // *virtio.Engine stored as uintptr (nosplit-safe)
+	netTxEnginePtr  uintptr // *virtio.Engine stored as uintptr (TX completions)
+	netDevicePtr    uintptr // *net.VirtIONetDevice stored as uintptr (for RxIRQTimestamps writeback)
+)
+
+// Net IRQ debug counters — bumped from nosplit top-half.
+var (
+	dbgNetIRQCount      uint32 // total net IRQs received (mirrors net.dbgNetIRQCount; this is the bottom_half copy)
+	dbgNetRxDrained     uint32 // total RX completions drained from RxEng (cumulative)
+	dbgNetTxDrained     uint32 // total TX completions drained from TxEng (cumulative)
+	dbgNetCQEWritten    uint32 // RX+TX completions written to io_uring CQ
+	dbgNetCQEMissed     uint32 // RX+TX completions dropped because no io_uring ring registered
+)
 
 // Debug counters for block IRQ instrumentation
 var dbgBlockIRQCount uint32       // total block IRQs received
@@ -192,12 +209,15 @@ func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32, enginePtr u
 	blockSidecarFreePtr = sidecarFreePtr
 }
 
-// SetNetIRQ registers the net device's IRQ number with the top-half
-// dispatcher (MAZ-26). The handler itself (net.NetIRQTopHalf) lives in the
-// net package and operates on net.virtioNetDevice directly, so unlike block
-// only the IRQ number needs to be cached here.
-func SetNetIRQ(irqNum uint32) {
+// SetNetIRQ registers the net device's IRQ number and the pointers the
+// top-half RX drain needs (ISR ack, RX engine, device for timestamps).
+// MAZ-28 step 2: extended from MAZ-26's single-arg form.
+func SetNetIRQ(irqNum uint32, isrBase uintptr, rxEnginePtr uintptr, txEnginePtr uintptr, devicePtr uintptr) {
 	netIRQNum = irqNum
+	netISRBase = isrBase
+	netRxEnginePtr = rxEnginePtr
+	netTxEnginePtr = txEnginePtr
+	netDevicePtr = devicePtr
 }
 
 // SetBlockAsyncSlot stores per-tag metadata for async completion.
@@ -524,13 +544,13 @@ func NonTimerIRQTopHalf() {
 		return
 	}
 
-	// Net device (MAZ-26): the handler lives in the net package and operates
-	// on net.virtioNetDevice directly. It acks the ISR, DmaRmbs, then runs
-	// DrainRx (MAZ-22's purpose-built nosplit drain). TX completions are NOT
-	// drained here — SendTx polls TxEng itself (with WFI); the TX interrupt
-	// only wakes that WFI. RxEng/TxEng are disjoint so this is race-free.
+	// Net device (MAZ-28 steps 2+3): inline RX+TX drain + io_uring CQE
+	// push. The body lives in netTopHalf() so the dispatcher's frame
+	// stays small (nosplit budget). See netTopHalf for the full
+	// shape — RX uses slot-pinned PopUsedNoFree, TX uses PopUsed with
+	// dev.TxTagByDescIdx lookup for CQE encoding.
 	if irqNum == netIRQNum && netIRQNum != 0 {
-		net.NetIRQTopHalf()
+		netTopHalf()
 		return
 	}
 

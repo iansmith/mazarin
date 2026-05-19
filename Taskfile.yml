@@ -42,6 +42,7 @@ includes:
   rachel:       {taskfile: ./maz/rachel/Taskfile.yml}
   linux:        {taskfile: ./maz/linux/Taskfile.yml}
   fs:           {taskfile: ./maz/fs/Taskfile.yml}
+  net:          {taskfile: ./maz/net/Taskfile.yml}
   maildb:       {taskfile: ./maz/maildb/Taskfile.yml}
   fti:          {taskfile: ./maz/fti/Taskfile.yml}
   # .maz programs
@@ -50,6 +51,7 @@ includes:
   prefs:        {taskfile: ./maz/prefs/Taskfile.yml}
   fontsvc:      {taskfile: ./maz/fontsvc/Taskfile.yml}
   keymapper:    {taskfile: ./maz/keymapper/Taskfile.yml}
+  gvisor:       {taskfile: ./maz/gvisor/Taskfile.yml}
   linux-ui:     {taskfile: ./maz/linux-ui/Taskfile.yml}
   # .maz programs (continued)
   clocks:       {taskfile: ./maz/clocks/Taskfile.yml}
@@ -106,6 +108,7 @@ vars:
   PREFS_MAZ: '{{.BUILD_DIR}}/prefs.maz'
   FONTSVC_MAZ: '{{.BUILD_DIR}}/fontsvc.maz'
   KEYMAPPER_MAZ: '{{.BUILD_DIR}}/keymapper.maz'
+  GVISOR_MAZ: '{{.BUILD_DIR}}/gvisor.maz'
   LINUX_UI_MAZ: '{{.BUILD_DIR}}/linux-ui.maz'
   MAIL_UI_MAZ: '{{.BUILD_DIR}}/mail-ui.maz'
   CLOCKS_MAZ_AMD64: '{{.BUILD_DIR}}/clocks-amd64.maz'
@@ -115,6 +118,7 @@ vars:
   PREFS_MAZ_AMD64: '{{.BUILD_DIR}}/prefs-amd64.maz'
   FONTSVC_MAZ_AMD64: '{{.BUILD_DIR}}/fontsvc-amd64.maz'
   KEYMAPPER_MAZ_AMD64: '{{.BUILD_DIR}}/keymapper-amd64.maz'
+  GVISOR_MAZ_AMD64: '{{.BUILD_DIR}}/gvisor-amd64.maz'
   LINUX_UI_MAZ_AMD64: '{{.BUILD_DIR}}/linux-ui-amd64.maz'
   MAIL_UI_MAZ_AMD64: '{{.BUILD_DIR}}/mail-ui-amd64.maz'
   SHEPHERD_ELF: '{{.BUILD_DIR}}/shepherd.elf'
@@ -125,6 +129,7 @@ vars:
   MAILDB_MAZ: '{{.BUILD_DIR}}/maildb.maz'
   FTI_MAZ: '{{.BUILD_DIR}}/fti.maz'
   FS_ELF: '{{.BUILD_DIR}}/fs.elf'
+  NET_ELF: '{{.BUILD_DIR}}/net.elf'
   DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
 
   # x86_64 userspace programs
@@ -136,6 +141,7 @@ vars:
   MAILDB_MAZ_AMD64: '{{.BUILD_DIR}}/maildb-amd64.maz'
   FTI_MAZ_AMD64: '{{.BUILD_DIR}}/fti-amd64.maz'
   FS_AMD64_ELF: '{{.BUILD_DIR}}/fs-amd64.elf'
+  NET_AMD64_ELF: '{{.BUILD_DIR}}/net-amd64.elf'
   MAIL_MAZ_AMD64: '{{.BUILD_DIR}}/mail-amd64.maz'
   DISK_AMD64_IMAGE: '{{.BUILD_DIR}}/disk-amd64.img'
 
@@ -509,11 +515,11 @@ tasks:
 
   userspace-build:
     desc: Build all ARM64 userspace programs (shepherds, .maz modules, test programs)
-    deps: [rachel:arm64, linux:arm64, fs:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64]
+    deps: [rachel:arm64, linux:arm64, fs:arm64, net:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, gvisor:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64]
 
   userspace-build-x86_64:
     desc: Build all x86_64 userspace programs (shepherds + test programs)
-    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, clocks:amd64, versai:amd64, calc:amd64, mail-app:x86_64, fti:x86_64, maildb:x86_64, mail-ui:amd64]
+    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, net:x86_64, clocks:amd64, versai:amd64, calc:amd64, mail-app:x86_64, gvisor:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64]
 
   # ===========================================================================
   # Disk Image
@@ -540,7 +546,7 @@ tasks:
 
   disk-arm64:
     desc: Create ext2 disk image with ARM64 maz binaries and kmazarin kernel
-    deps: [shepherd:arm64, rachel:arm64, linux:arm64, fs:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, kmazarin:arm64, convert-boot-image]
+    deps: [shepherd:arm64, rachel:arm64, linux:arm64, fs:arm64, net:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, gvisor:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, kmazarin:arm64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -550,6 +556,7 @@ tasks:
       - '{{.RACHEL_MAZ}}'
       - '{{.LINUX_MAZ}}'
       - '{{.FS_ELF}}'
+      - '{{.NET_ELF}}'
       - '{{.CLOCKS_MAZ}}'
       - '{{.VERSAI_MAZ}}'
       - '{{.CALC_MAZ}}'
@@ -558,6 +565,7 @@ tasks:
       - '{{.PREFS_MAZ}}'
       - '{{.FONTSVC_MAZ}}'
       - '{{.KEYMAPPER_MAZ}}'
+      - '{{.GVISOR_MAZ}}'
       - '{{.LINUX_UI_MAZ}}'
       - '{{.FTI_MAZ}}'
       - '{{.MAILDB_MAZ}}'
@@ -576,12 +584,12 @@ tasks:
       - '{{.GO}} tool go-cp config/startup.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/startup.toml'
       - '{{.GO}} tool go-cp config/rachel.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.SHEPHERD_ELF}} {{.RACHEL_MAZ}} {{.LINUX_MAZ}} {{.FS_ELF}} {{.CLOCKS_MAZ}} {{.VERSAI_MAZ}} {{.CALC_MAZ}} {{.MAIL_MAZ}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.LINUX_UI_MAZ}} {{.FTI_MAZ}} {{.MAILDB_MAZ}} {{.MAIL_UI_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
+      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.SHEPHERD_ELF}} {{.RACHEL_MAZ}} {{.LINUX_MAZ}} {{.FS_ELF}} {{.NET_ELF}} {{.CLOCKS_MAZ}} {{.VERSAI_MAZ}} {{.CALC_MAZ}} {{.MAIL_MAZ}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.GVISOR_MAZ}} {{.LINUX_UI_MAZ}} {{.FTI_MAZ}} {{.MAILDB_MAZ}} {{.MAIL_UI_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
     desc: Create ext2 disk image with x86_64 maz binaries and kmazarin kernel
-    deps: [shepherd:x86_64, rachel:x86_64, linux:x86_64, fs:x86_64, clocks:amd64, versai:amd64, calc:amd64, mail-app:x86_64, helloworld:amd64, prefs:amd64, fontsvc:amd64, keymapper:amd64, linux-ui:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64, kmazarin:x86_64, convert-boot-image]
+    deps: [shepherd:x86_64, rachel:x86_64, linux:x86_64, fs:x86_64, net:x86_64, clocks:amd64, versai:amd64, calc:amd64, mail-app:x86_64, helloworld:amd64, prefs:amd64, fontsvc:amd64, keymapper:amd64, gvisor:amd64, linux-ui:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64, kmazarin:x86_64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -591,6 +599,7 @@ tasks:
       - '{{.RACHEL_MAZ_AMD64}}'
       - '{{.LINUX_MAZ_AMD64}}'
       - '{{.FS_AMD64_ELF}}'
+      - '{{.NET_AMD64_ELF}}'
       - '{{.CLOCKS_MAZ_AMD64}}'
       - '{{.VERSAI_MAZ_AMD64}}'
       - '{{.CALC_MAZ_AMD64}}'
@@ -599,6 +608,7 @@ tasks:
       - '{{.PREFS_MAZ_AMD64}}'
       - '{{.FONTSVC_MAZ_AMD64}}'
       - '{{.KEYMAPPER_MAZ_AMD64}}'
+      - '{{.GVISOR_MAZ_AMD64}}'
       - '{{.LINUX_UI_MAZ_AMD64}}'
       - '{{.FTI_MAZ_AMD64}}'
       - '{{.MAILDB_MAZ_AMD64}}'
@@ -618,6 +628,7 @@ tasks:
       - '{{.GO}} tool go-cp {{.RACHEL_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/rachel.maz'
       - '{{.GO}} tool go-cp {{.LINUX_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/linux.maz'
       - '{{.GO}} tool go-cp {{.FS_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/fs.elf'
+      - '{{.GO}} tool go-cp {{.NET_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/net.elf'
       - '{{.GO}} tool go-cp {{.CLOCKS_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/clocks.maz'
       - '{{.GO}} tool go-cp {{.VERSAI_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/versai.maz'
       - '{{.GO}} tool go-cp {{.CALC_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/calc.maz'
@@ -625,6 +636,7 @@ tasks:
       - '{{.GO}} tool go-cp {{.PREFS_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz'
       - '{{.GO}} tool go-cp {{.FONTSVC_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz'
       - '{{.GO}} tool go-cp {{.KEYMAPPER_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz'
+      - '{{.GO}} tool go-cp {{.GVISOR_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/gvisor.maz'
       - '{{.GO}} tool go-cp {{.LINUX_UI_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz'
       - '{{.GO}} tool go-cp {{.MAIL_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/mail.maz'
       - '{{.GO}} tool go-cp {{.FTI_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fti.maz'
@@ -633,7 +645,7 @@ tasks:
       - '{{.GO}} tool go-cp config/startup.amd64.toml {{.BUILD_DIR}}/disk-staging-amd64/startup.toml'
       - '{{.GO}} tool go-cp config/rachel.amd64.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml'
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_AMD64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.BUILD_DIR}}/disk-staging-amd64/shepherd.elf {{.BUILD_DIR}}/disk-staging-amd64/rachel.maz {{.BUILD_DIR}}/disk-staging-amd64/linux.maz {{.BUILD_DIR}}/disk-staging-amd64/fs.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.maz {{.BUILD_DIR}}/disk-staging-amd64/versai.maz {{.BUILD_DIR}}/disk-staging-amd64/calc.maz {{.BUILD_DIR}}/disk-staging-amd64/mail.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/fti.maz {{.BUILD_DIR}}/disk-staging-amd64/maildb.maz {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/startup.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkext2 -o {{.DISK_AMD64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data {{.BUILD_DIR}}/disk-staging-amd64/shepherd.elf {{.BUILD_DIR}}/disk-staging-amd64/rachel.maz {{.BUILD_DIR}}/disk-staging-amd64/linux.maz {{.BUILD_DIR}}/disk-staging-amd64/fs.elf {{.BUILD_DIR}}/disk-staging-amd64/net.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.maz {{.BUILD_DIR}}/disk-staging-amd64/versai.maz {{.BUILD_DIR}}/disk-staging-amd64/calc.maz {{.BUILD_DIR}}/disk-staging-amd64/mail.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz {{.BUILD_DIR}}/disk-staging-amd64/gvisor.maz {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/fti.maz {{.BUILD_DIR}}/disk-staging-amd64/maildb.maz {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/startup.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   # ===========================================================================

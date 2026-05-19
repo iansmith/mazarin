@@ -1,0 +1,63 @@
+version: '3'
+
+# net.elf is built like shepherd.elf: mazgo + mazlink with -tags
+# mazhost + -dynlink + -dlopen-host-exports so it can serve as the
+# dlopen host for gvisor.maz / future protocol plugins. The plain
+# `go build` from Phase A worked while net.elf only ran raw L2;
+# Phase B adds plugin loading which needs the full dlopen-host setup
+# (RegisterHost via SysGetOwnExports, host symbols in dynsym for
+# plugin PLT resolution).
+tasks:
+  arm64:
+    desc: Build net shepherd (eth-layer .elf plugin host, ARM64)
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/**/*.go'
+      - '{{.ROOT_DIR}}/maz/**/*.s'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.NET_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building net.elf for ARM64 (mazgo + mazlink, plugin-host)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -tags mazhost \
+          "-gcflags=all=-dynlink" "-asmflags=all=-dynlink" \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-exports={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.NET_ELF}} ./maz/net
+      - '{{.GO}} tool go-echo "Net ARM64 built at {{.NET_ELF}}"'
+
+  x86_64:
+    desc: Build net shepherd (eth-layer .elf plugin host, x86_64)
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/**/*.go'
+      - '{{.ROOT_DIR}}/maz/**/*.s'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.NET_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building net.elf for x86_64 (mazgo + mazlink, plugin-host)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -tags mazhost \
+          "-gcflags=all=-dynlink" "-asmflags=all=-dynlink" \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-exports={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.NET_AMD64_ELF}} ./maz/net
+      - '{{.GO}} tool go-echo "Net x86_64 built at {{.NET_AMD64_ELF}}"'

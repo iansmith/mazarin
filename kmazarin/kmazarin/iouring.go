@@ -22,6 +22,7 @@ const MaxIORings = 4
 const (
 	IOUringDeviceBlock uint8 = 0 // block device (fs shepherd)
 	IOUringDeviceInput uint8 = 1 // HID input devices (window manager)
+	IOUringDeviceNet   uint8 = 2 // VirtIO-net (net shepherd, MAZ-28 step 2)
 )
 
 // IOUringSlot holds kernel-side state for one io_uring instance.
@@ -65,6 +66,8 @@ var (
 	dbgTimeoutBlkNE     uint32 // block device timeout not enough
 	dbgTimeoutInpOK     uint32 // input device timeout had enough
 	dbgTimeoutInpNE     uint32 // input device timeout not enough
+	dbgTimeoutNetOK     uint32 // net device timeout had enough
+	dbgTimeoutNetNE     uint32 // net device timeout not enough
 )
 
 // InitIOUringTimeout computes the timeout ticks from the system timer frequency.
@@ -239,16 +242,22 @@ func checkIOUringTimeoutFromTimer() {
 			atomic.AddUint32(&dbgTimeoutWakes, 1)
 			if tmoAvail >= slot.MinComplete {
 				atomic.AddUint32(&dbgTimeoutHadEnough, 1)
-				if slot.DeviceType == IOUringDeviceBlock {
+				switch slot.DeviceType {
+				case IOUringDeviceBlock:
 					atomic.AddUint32(&dbgTimeoutBlkOK, 1)
-				} else {
+				case IOUringDeviceNet:
+					atomic.AddUint32(&dbgTimeoutNetOK, 1)
+				default:
 					atomic.AddUint32(&dbgTimeoutInpOK, 1)
 				}
 			} else {
 				atomic.AddUint32(&dbgTimeoutNotEnough, 1)
-				if slot.DeviceType == IOUringDeviceBlock {
+				switch slot.DeviceType {
+				case IOUringDeviceBlock:
 					atomic.AddUint32(&dbgTimeoutBlkNE, 1)
-				} else {
+				case IOUringDeviceNet:
+					atomic.AddUint32(&dbgTimeoutNetNE, 1)
+				default:
 					atomic.AddUint32(&dbgTimeoutInpNE, 1)
 				}
 			}
@@ -292,6 +301,23 @@ func GetIOUringSlotForInputIRQ() (*IOUringSlot, *iouring.IORing) {
 	for i := 0; i < MaxIORings; i++ {
 		slot := &IOUringTable[i]
 		if slot.KVA != 0 && slot.DeviceType == IOUringDeviceInput {
+			ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
+			return slot, ring
+		}
+	}
+	return nil, nil
+}
+
+// GetIOUringSlotForNetIRQ returns the net device ring slot and IORing
+// pointer for writing RX completion CQEs from the IRQ top-half (MAZ-28
+// step 2). Returns nil, nil if no net ring is set up (net.elf not yet
+// started, or shut down).
+//
+//go:nosplit
+func GetIOUringSlotForNetIRQ() (*IOUringSlot, *iouring.IORing) {
+	for i := 0; i < MaxIORings; i++ {
+		slot := &IOUringTable[i]
+		if slot.KVA != 0 && slot.DeviceType == IOUringDeviceNet {
 			ring := (*iouring.IORing)(unsafe.Pointer(slot.KVA))
 			return slot, ring
 		}

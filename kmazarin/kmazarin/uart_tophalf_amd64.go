@@ -9,7 +9,7 @@ import (
 
 // StoreUartTxDriver is a no-op on x86_64. COM1 TX ring buffer lives
 // in the serial package; no driver instance is needed.
-func StoreUartTxDriver(v interface{}) {}
+func StoreUartTxDriver(v any) {}
 
 // uartTopHalf drains COM1 RX via I/O port reads, pushes each byte into
 // topHalfUartRing as an HIDEvent, drains the COM1 TX ring buffer, and

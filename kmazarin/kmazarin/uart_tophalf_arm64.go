@@ -11,15 +11,15 @@ import (
 
 // PL011 register offsets for direct MMIO access in the top-half.
 const (
-	pl011DR    = 0x000    // Data register
-	pl011FR    = 0x018    // Flag register
-	pl011IMSC  = 0x038    // Interrupt mask set/clear
-	pl011MIS   = 0x040    // Masked interrupt status
-	pl011ICR   = 0x044    // Interrupt clear register
-	pl011RXFE  = 1 << 4   // RX FIFO empty flag
-	pl011TXFF  = 1 << 5   // TX FIFO full flag
-	pl011IRQRX = 1 << 4   // RX interrupt bit
-	pl011IRQTX = 1 << 5   // TX interrupt bit
+	pl011DR    = 0x000  // Data register
+	pl011FR    = 0x018  // Flag register
+	pl011IMSC  = 0x038  // Interrupt mask set/clear
+	pl011MIS   = 0x040  // Masked interrupt status
+	pl011ICR   = 0x044  // Interrupt clear register
+	pl011RXFE  = 1 << 4 // RX FIFO empty flag
+	pl011TXFF  = 1 << 5 // TX FIFO full flag
+	pl011IRQRX = 1 << 4 // RX interrupt bit
+	pl011IRQTX = 1 << 5 // TX interrupt bit
 )
 
 // uartTxDriver holds the PL011 instance for TX drain from the top-half.
@@ -27,7 +27,7 @@ const (
 var uartTxDriver *uart.PL011
 
 // StoreUartTxDriver stores the PL011 driver reference for top-half TX drain.
-func StoreUartTxDriver(v interface{}) {
+func StoreUartTxDriver(v any) {
 	if d, ok := v.(*uart.PL011); ok {
 		uartTxDriver = d
 	}

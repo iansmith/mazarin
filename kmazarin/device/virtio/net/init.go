@@ -78,23 +78,14 @@ func Init() bool {
 		return false
 	}
 
-	// Allocate the TX payload DMA buffer (MAZ-20). The TX Engine and sidecar
-	// pool are already up (virtioNetInit); txInit only adds the payload buffer.
-	if !txInit(dev) {
-		klog.Errf("[VirtIO Net] TX init failed\n")
-		return false
-	}
+	// MAZ-28: net.elf owns the TX payload buffers and the RX pool,
+	// allocates them via mem.AllocContiguous, and arms RX descriptors
+	// via IOUringOpNetRearmDesc SQEs. The kernel only brings the
+	// device up; nothing is armed at boot. Inbound frames before
+	// net.elf is up are dropped by the device (the boot sequence
+	// doesn't need RX).
 
-	// Allocate the RX buffer pool and pre-post every buffer (MAZ-22). The RX
-	// Engine itself (virtqueue 0) is already up (virtioNetInit).
-	if !rxInit(dev) {
-		klog.Errf("[VirtIO Net] RX init failed\n")
-		return false
-	}
-
-	// Register with the device manager (MAZ-23) — mirrors block.Init's
-	// device.RegisterBlockDevice. *VirtIONetDevice satisfies device.NetDevice
-	// (compile-checked in device.go).
+	// Register with the device manager.
 	device.RegisterNetDevice(dev)
 
 	klog.Logf("[VirtIO Net] init OK: MAC=%02x:%02x:%02x:%02x:%02x:%02x status=%#x\n",

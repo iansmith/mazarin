@@ -161,6 +161,26 @@ func (e *Engine) PopUsed() CompletionInfo {
 	}
 }
 
+// PopUsedNoFree pops one entry from the used ring WITHOUT freeing the
+// descriptor chain. The slot stays "owned" by the caller — used by the
+// slot-pinned net RX path where net.elf re-arms the same descIdx with a
+// fresh page PA via IOUringOpNetRearmDesc. The freelist is bypassed
+// entirely; the slot lives across the round trip.
+//
+// Returns {InvalidIOTag, 0} if the used ring is empty.
+//
+//go:nosplit
+func (e *Engine) PopUsedNoFree() CompletionInfo {
+	descIdx, usedLen := VirtqueueGetUsed(&e.VQ)
+	if uint16(descIdx) == 0xFFFF {
+		return CompletionInfo{Tag: InvalidIOTag}
+	}
+	return CompletionInfo{
+		Tag:     IOTag(descIdx),
+		UsedLen: usedLen,
+	}
+}
+
 // InFlight returns the number of in-flight descriptor slots.
 //
 //go:nosplit

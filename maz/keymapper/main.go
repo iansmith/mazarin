@@ -6,30 +6,18 @@ package main
 import (
 	"fmt"
 	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mazhost"
 	"strings"
 )
 
-// MazEntryPoint holds a reference to MazarinMain to prevent DCE.
-var MazEntryPoint func() = MazarinMain
-
-// MazarinShepherdAddr holds a reference to MazarinShepherd to prevent DCE.
-var MazarinShepherdAddr func(interface{}) error = MazarinShepherd
-
-func init() {
-	if MazEntryPoint == nil {
-		panic("unreachable")
-	}
-	if MazarinShepherdAddr == nil {
-		panic("unreachable")
-	}
-}
+func init() { mazhost.PinEntry(MazarinMain, MazarinShepherd) }
 
 // MazarinShepherd receives a KeyMapperInjector from rachel. It reads the
 // keymap name, constructs the appropriate KeyMapper, and passes it back
 // via SetKeyMapper.
 //
 //go:noinline
-func MazarinShepherd(arg interface{}) error {
+func MazarinShepherd(arg any) error {
 	inj, ok := arg.(mancini.KeyMapperInjector)
 	if !ok {
 		return fmt.Errorf("keymapper: expected KeyMapperInjector, got %T", arg)

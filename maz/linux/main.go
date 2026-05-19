@@ -432,7 +432,7 @@ func decodeRawPayload(msg *ipc.UringIPCMsg) any {
 // descriptor and all method wrappers for *LinuxIOInit.
 //
 //go:noinline
-func forceLinuxIOItab(v interface{}) {
+func forceLinuxIOItab(v any) {
 	io, ok := v.(linuxio.LinuxIO)
 	if !ok {
 		return
@@ -500,13 +500,7 @@ func lineAccumulator(serialCh <-chan serial.SerialByte, delegateCh <-chan delega
 	}
 }
 
-// MazEntryPoint holds a reference to MazarinMain to prevent DCE of the
-// plugin entry point. The generic shepherd host looks up MazarinMain via
-// mazdl; without this reference the linker would drop the symbol.
-var MazEntryPoint func() = MazarinMain
-
-// MazarinShepherdAddr prevents DCE of MazarinShepherd.
-var MazarinShepherdAddr func(interface{}) error = MazarinShepherd
+func init() { mazhost.PinEntry(MazarinMain, MazarinShepherd) }
 
 // shepherdInit holds the injection from the generic shepherd.
 var shepherdInit mazhost.ShepherdInjector
@@ -514,7 +508,7 @@ var shepherdInit mazhost.ShepherdInjector
 // MazarinShepherd receives ring and fsclient info from the generic shepherd.
 //
 //go:noinline
-func MazarinShepherd(injected interface{}) error {
+func MazarinShepherd(injected any) error {
 	init, ok := injected.(mazhost.ShepherdInjector)
 	if !ok {
 		return fmt.Errorf("linux: expected mazhost.ShepherdInjector, got %T", injected)
@@ -586,7 +580,7 @@ func MazarinMain() {
 	if uiInitAddr != 0 {
 		type funcval struct{ fn uintptr }
 		fv := &funcval{fn: uiInitAddr}
-		shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+		shepherdInit := *(*func(any) error)(unsafe.Pointer(&fv))
 		if err := shepherdInit(ioInit); err != nil {
 			fmt.Printf("[linux] linux-ui MazarinShepherd failed: %v\n", err)
 		}

@@ -12,6 +12,7 @@ import (
 	"mazarin/textshape"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/fsclient"
+	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/uring"
@@ -21,19 +22,8 @@ import (
 	goFont "github.com/go-text/typesetting/font"
 )
 
-// MazEntryPoint holds a reference to MazarinMain to prevent DCE.
-var MazEntryPoint func() = MazarinMain
-
-// MazarinShepherdAddr holds a reference to MazarinShepherd to prevent DCE.
-var MazarinShepherdAddr func(interface{}) error = MazarinShepherd
-
 func init() {
-	if MazEntryPoint == nil {
-		panic("unreachable")
-	}
-	if MazarinShepherdAddr == nil {
-		panic("unreachable")
-	}
+	mazhost.PinEntry(MazarinMain, MazarinShepherd)
 	for i := range tempFontOwner {
 		tempFontOwner[i] = -1
 	}
@@ -48,7 +38,7 @@ func init() {
 var fc fsclient.FSClient
 
 //go:noinline
-func MazarinShepherd(injected interface{}) error {
+func MazarinShepherd(injected any) error {
 	if injected == nil {
 		rawPuts("[fontsvc] MazarinShepherd: nil injection\n")
 		return nil

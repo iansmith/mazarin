@@ -1,10 +1,9 @@
-
 package ksyscall
 
 import (
 	"mazzy/kmazarin/console"
-	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kirq"
+	"mazzy/kmazarin/klog"
 	"mazzy/shared/constants"
 	"mazzy/shared/mazzy"
 	"sync/atomic"
@@ -114,8 +113,8 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 			// shepherd doesn't know about them and would return errors.
 			callerSID := getCurrentThreadSID()
 			if IsDelegated(sysID, callerSID) && !IsMagicFdSyscall(sysID, arg0) {
-					atomic.AddUint64(&SysIDDelegated[sysIdx], 1)
-					result = DelegateSyscall(sysID, arg0, arg1, arg2, arg3, arg4, arg5)
+				atomic.AddUint64(&SysIDDelegated[sysIdx], 1)
+				result = DelegateSyscall(sysID, arg0, arg1, arg2, arg3, arg4, arg5)
 			} else {
 				handler := syscallTable[sysIdx]
 				if handler == nil {
@@ -250,8 +249,6 @@ func earlyMmap(addr, length, prot, flags uint64) int64 {
 		// CAS failed, retry
 	}
 }
-
-
 
 // syscallPanic handles syscall-specific panics with the syscall number
 // Uses console abstraction which provides spinlock protection

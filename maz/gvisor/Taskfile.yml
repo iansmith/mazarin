@@ -1,0 +1,52 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build gvisor.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
+    run: once
+    deps: [':check-env', ':build-dir', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/gvisor/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.GVISOR_MAZ}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building gvisor.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.GVISOR_MAZ}} ./maz/gvisor
+      - '{{.GO}} tool go-echo "gvisor.maz ready at {{.GVISOR_MAZ}}"'
+
+  amd64:
+    desc: Build gvisor.maz for x86_64 via mazgo
+    run: once
+    deps: [':check-env', ':build-dir', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/gvisor/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.GVISOR_MAZ_AMD64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building gvisor.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.GVISOR_MAZ_AMD64}} ./maz/gvisor
+      - '{{.GO}} tool go-echo "gvisor.maz (x86_64) ready at {{.GVISOR_MAZ_AMD64}}"'

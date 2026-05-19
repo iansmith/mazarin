@@ -81,6 +81,28 @@ func currentShepherdSpanContains(addr uint64) bool {
 	return p.Spans.Contains(addr)
 }
 
+// inAllocatedUserRegion returns true if va falls within a region the
+// current shepherd has been granted: the MAP_FIXED slot below
+// userMmapStart, the bump-allocated mmap region, or any registered
+// span. Used as the gate before demand-mapping a frame so a crafted
+// address can't force the kernel to materialize a mapping outside the
+// shepherd's allocations.
+//
+//go:nosplit
+func inAllocatedUserRegion(va uint64) bool {
+	const minUserAddr = 0x10000
+	if va < minUserAddr {
+		return false
+	}
+	if va < userMmapStart {
+		return true
+	}
+	if va < currentShepherdBumpEnd() {
+		return true
+	}
+	return currentShepherdSpanContains(va)
+}
+
 // debugPrint conditionally outputs a character if debugging is enabled.
 //
 //go:nosplit
@@ -416,11 +438,13 @@ func allocPTPage() uintptr {
 	// Convert PA to VA using kernel VA offset (use constant to avoid deep config chain)
 	va := pa + constants.KernelVAOffset
 
-	// Zero the page
+	// Zero the page. clear() compiles to memclr without a bounds-check
+	// chain — important here because allocPTPage sits on the nosplit
+	// stack-budget path from SyscallWrite via CopyFromUser fault-on-miss,
+	// and a manual indexed loop pulls panicBounds/panicBounds64 into the
+	// reachable set (~224 bytes), blowing the 792-byte limit.
 	ptr := (*[512]uint64)(unsafe.Pointer(va))
-	for i := 0; i < 512; i++ {
-		ptr[i] = 0
-	}
+	clear(ptr[:])
 
 	// Queue deferred record for bottom-half page tracking.
 	// Use cached IDs from the current page fault context (set by HandlePageFault
@@ -744,21 +768,11 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 		return false
 	}
 
-	// Get the current mmap allocation end (addresses >= this were NOT allocated)
-	allocEnd := currentShepherdBumpEnd()
-
-	// For UNMAPPED pages, validate the address is in a known allocation region:
-	// 1. MAP_FIXED region: 0x10000 to userMmapStart — ELF, thread stacks, Go heap arenas, etc.
-	// 2. Bump-allocated region: userMmapStart to allocEnd — file-backed mmaps, anon mmaps
-	// 3. Hint-based allocations: tracked in the span list (can be anywhere in userspace range)
-	const minUserAddr = 0x10000 // Minimum userspace address (64KB, above NULL guard)
-	inMapFixedRegion := uint64(faultAddr) >= minUserAddr && uint64(faultAddr) < userMmapStart
-	inBumpRegion := uint64(faultAddr) >= userMmapStart && uint64(faultAddr) < allocEnd
-	inSpanRegion := currentShepherdSpanContains(uint64(faultAddr))
-
-	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
-		// Debug: if fault is below 0x10000, log shepherd and file mapping info
-		if uint64(faultAddr) < minUserAddr {
+	// Validate the unmapped fault address is in an allocated region:
+	// MAP_FIXED slot (ELF/stacks/Go heap), bump-allocated mmap, or a
+	// registered span (hint-based mmaps).
+	if !inAllocatedUserRegion(uint64(faultAddr)) {
+		if uint64(faultAddr) < 0x10000 {
 			logLowFaultDebug(faultAddr)
 		}
 		serial.RawUART('!')
@@ -910,14 +924,7 @@ func DemandMapUserPage(va uintptr, l0PA uintptr) uintptr {
 	pfContextShepherdID = currentShepherdID()
 	pfContextThreadID = getCurrentThreadTID()
 
-	// Validate address is in a known allocation region
-	allocEnd := currentShepherdBumpEnd()
-	const minUserAddr = 0x10000
-	inMapFixedRegion := uint64(va) >= minUserAddr && uint64(va) < userMmapStart
-	inBumpRegion := uint64(va) >= userMmapStart && uint64(va) < allocEnd
-	inSpanRegion := currentShepherdSpanContains(uint64(va))
-
-	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
+	if !inAllocatedUserRegion(uint64(va)) {
 		klog.Errf("[DemandMap] VA 0x%x not in valid region\n", va)
 		return 0
 	}
@@ -2751,50 +2758,117 @@ func ZeroUserMemoryWithL0(va uintptr, n uintptr, l0PA uintptr) bool {
 	return true
 }
 
-// EnsureUserPageMappedWithL0 ensures that the 4KB page containing userVA is
+// EnsureUserPageMappedWithL0 ensures the 4KB page containing userVA is
 // backed by a physical frame in the page table rooted at l0PA.
-// If the page is already mapped, returns true immediately.
-// If not mapped, allocates a frame, maps it with RWX permissions, zeros it,
-// and invalidates TLBs.
+// Returns the page-aligned PA of the (possibly newly-allocated) frame.
+// If allocation/mapping fails, returns (0, false).
 //
-// This is safe to call from nosplit context (signal delivery, exception handlers).
-// It uses the same allocation path as HandleUserPageFault.
+// Safe to call from nosplit context (signal delivery, exception handlers,
+// CopyToUser fault retry). Uses the same allocation path as HandleUserPageFault.
 //
 //go:nosplit
-func EnsureUserPageMappedWithL0(userVA uintptr, l0PA uintptr) bool {
+func EnsureUserPageMappedWithL0(userVA uintptr, l0PA uintptr) (uintptr, bool) {
 	pageAddr := userVA &^ (PageSize - 1)
 
-	// Check if already mapped
-	pa := WalkUserPTLean(pageAddr, l0PA)
-	if pa != 0 {
-		return true
+	if pa := WalkUserPTLean(pageAddr, l0PA); pa != 0 {
+		return pa, true
 	}
 
-	// Not mapped — demand-allocate a physical frame
+	// Refuse to demand-map outside the shepherd's allocated regions —
+	// without this, a crafted syscall-buffer pointer routed through
+	// CopyFromUser/CopyToUser fault-on-miss can force the kernel to
+	// materialize a mapping anywhere in the VA space.
+	if !inAllocatedUserRegion(uint64(pageAddr)) {
+		return 0, false
+	}
+
 	pfContextShepherdID = currentShepherdID()
 	framePA := AllocUserFrame()
 	if framePA == 0 {
-		return false
+		return 0, false
 	}
 
-	// Map with RWX permissions (signal stack needs RW at minimum)
+	// Map RWX (signal stack needs RW at minimum).
 	elfFlags := uint32(ELF_PF_R | ELF_PF_W | ELF_PF_X)
 	if !mapUserPageWithL0(pageAddr, framePA, elfFlags, l0PA) {
-		return false
+		return 0, false
 	}
 
-	// Zero the page via kernel linear map
 	scratchVA := framePA + constants.KernelVAOffset
 	zeroPageSlow(scratchVA)
-
-	// Cache clean + TLB invalidate
 	CleanPageCache(scratchVA)
 	dsbSY()
 	tlbiVMALLE1IS()
 	dsbSY()
 	isbSY()
 
-	return true
+	// Track the allocation so the page is reclaimed on shepherd exit. The
+	// helper is non-nosplit to keep its DeferredPageRecord struct literal
+	// off this function's nosplit chain — same pattern as HandleUserPageFault's
+	// repeatFaultDiagnostic call.
+	queueEnsuredUserPageRecord(framePA, pageAddr)
+
+	return framePA, true
+}
+
+// queueEnsuredUserPageRecord is the deferred-record enqueue path lifted out of
+// EnsureUserPageMappedWithL0. Non-nosplit on purpose so its struct literal
+// doesn't count against the nosplit caller chain.
+//
+//go:noinline
+func queueEnsuredUserPageRecord(framePA, pageAddr uintptr) {
+	QueueDeferredRecord(DeferredPageRecord{
+		PA:         framePA,
+		VA:         pageAddr,
+		Type:       PageAllocUser,
+		ShepherdID: pfContextShepherdID,
+		ThreadID:   getCurrentThreadTID(),
+		Order:      0,
+	})
+}
+
+// resolveUserPageWithFallback returns the byte-offset PA for userVA,
+// demand-paging if the PTE is missing. Used by CopyFromUser/CopyToUser to
+// open-code Linux's fault-on-miss copy_to_user/copy_from_user semantics:
+// walk → if miss, dispatch to the file-mapped fault handler if the page is
+// file-backed, otherwise fall back to anonymous-zero demand allocation via
+// EnsureUserPageMappedWithL0. The file-mapping branch is what stops the
+// anonymous fallback from silently zeroing a file-backed mmap page on first
+// access. Returns (0, false) on failure; caller propagates as a user fault.
+//
+// Non-nosplit on purpose: its own stack frame plus the chain through
+// EnsureUserPageMappedWithL0 would push SyscallWrite's nosplit budget over
+// the 792-byte limit. Same pattern as HandleUserPageFault →
+// repeatFaultDiagnostic.
+//
+//go:noinline
+func resolveUserPageWithFallback(va, l0PA uintptr) (uintptr, bool) {
+	// Walk via the caller's captured l0PA, not the live TTBR0. The active
+	// page table can change under preemption between the caller's snapshot
+	// and this walk; using l0PA keeps the lookup consistent with what the
+	// caller intends to copy from/to.
+	if pa := WalkUserPageTableWithL0(va, l0PA); pa != 0 {
+		return pa, true
+	}
+	if l0PA == 0 {
+		return 0, false
+	}
+	pageAddr := va &^ (PageSize - 1)
+	if fm := currentShepherdFindFileMapping(uint64(pageAddr)); fm != nil {
+		if OnFileMappedPageFault == nil || !OnFileMappedPageFault(va, fm) {
+			return 0, false
+		}
+		pa := WalkUserPageTableWithL0(va, l0PA)
+		if pa == 0 {
+			return 0, false
+		}
+		return pa, true
+	}
+	pagePA, ok := EnsureUserPageMappedWithL0(va, l0PA)
+	if !ok {
+		return 0, false
+	}
+	return pagePA | (va & (PageSize - 1)), true
 }
 
 // CopyFromUser copies n bytes from a VA into dst.
@@ -2810,10 +2884,12 @@ func CopyFromUser(dst []byte, userVA uintptr, n int) bool {
 		}
 		return true
 	}
+	l0PA := uintptr(readCurrentL0PA())
 	copied := 0
 	for copied < n {
-		pa := WalkUserPageTable(userVA + uintptr(copied))
-		if pa == 0 {
+		va := userVA + uintptr(copied)
+		pa, ok := resolveUserPageWithFallback(va, l0PA)
+		if !ok {
 			return false
 		}
 		pagePA := pa &^ (PageSize - 1)
@@ -2850,10 +2926,15 @@ func CopyToUser(userVA uintptr, src []byte) bool {
 		}
 		return true
 	}
+	// CopyToUserWithL0 keeps the original "fail on miss" semantics because
+	// it runs in delegation-reply context where the L0 doesn't match the
+	// current TTBR0 and faulting would install pages in the wrong process.
+	l0PA := uintptr(readCurrentL0PA())
 	copied := 0
 	for copied < n {
-		pa := WalkUserPageTable(userVA + uintptr(copied))
-		if pa == 0 {
+		va := userVA + uintptr(copied)
+		pa, ok := resolveUserPageWithFallback(va, l0PA)
+		if !ok {
 			return false
 		}
 		pagePA := pa &^ (PageSize - 1)

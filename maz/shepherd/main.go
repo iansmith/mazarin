@@ -66,7 +66,7 @@ func main() {
 
 	// Inject ShepherdInit before MazMain so the replacement gets rings + fsclient.
 	if mazShepherdAddr != 0 {
-		shepherdInit := mazdl.Funcval[func(interface{}) error](mazShepherdAddr)
+		shepherdInit := mazdl.Funcval[func(any) error](mazShepherdAddr)
 		init := &mazhost.ShepherdInit{
 			Ring0:    mazhost.RingInfo{Number: 0},
 			Ring1:    mazhost.RingInfo{Number: fsRing},
