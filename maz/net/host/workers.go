@@ -210,18 +210,26 @@ func (d *Dispatcher) Run() {
 			}
 		}
 
-		if len(pending) > 0 {
+		// Flush if either this pass produced re-arms OR a prior failed kick
+		// left unkickedSQEs queued in the ring. Gating only on
+		// len(pending) > 0 would let queued rearm SQEs sit indefinitely
+		// during a steady-state RX flow with no slot churn. Snapshot
+		// unkickedSQEs with Load to decide; the authoritative Swap happens
+		// inside sqMu, matching SubmitTx's pattern.
+		if len(pending) > 0 || d.unkickedSQEs.Load() > 0 {
 			d.sqMu.Lock()
 			for _, p := range pending {
 				writeRearmSQE(d.Ring, p.tag, p.pageVA)
 			}
 			toSubmit := uint32(len(pending)) + d.unkickedSQEs.Swap(0)
-			if _, err := sys.IOUringEnter(d.RingID, toSubmit, 0, 0); err != nil {
-				// SQEs are queued in the ring (writeRearmSQE advanced
-				// SQTail); the next successful kick from any path will
-				// flush them.
-				d.unkickedSQEs.Add(toSubmit)
-				atomic.AddUint64(&d.DbgKickFailed, 1)
+			if toSubmit > 0 {
+				if _, err := sys.IOUringEnter(d.RingID, toSubmit, 0, 0); err != nil {
+					// SQEs are queued in the ring (writeRearmSQE advanced
+					// SQTail); the next successful kick from any path will
+					// flush them.
+					d.unkickedSQEs.Add(toSubmit)
+					atomic.AddUint64(&d.DbgKickFailed, 1)
+				}
 			}
 			d.sqMu.Unlock()
 		}

@@ -2843,7 +2843,11 @@ func queueEnsuredUserPageRecord(framePA, pageAddr uintptr) {
 //
 //go:noinline
 func resolveUserPageWithFallback(va, l0PA uintptr) (uintptr, bool) {
-	if pa := WalkUserPageTable(va); pa != 0 {
+	// Walk via the caller's captured l0PA, not the live TTBR0. The active
+	// page table can change under preemption between the caller's snapshot
+	// and this walk; using l0PA keeps the lookup consistent with what the
+	// caller intends to copy from/to.
+	if pa := WalkUserPageTableWithL0(va, l0PA); pa != 0 {
 		return pa, true
 	}
 	if l0PA == 0 {
@@ -2854,7 +2858,7 @@ func resolveUserPageWithFallback(va, l0PA uintptr) (uintptr, bool) {
 		if OnFileMappedPageFault == nil || !OnFileMappedPageFault(va, fm) {
 			return 0, false
 		}
-		pa := WalkUserPageTable(va)
+		pa := WalkUserPageTableWithL0(va, l0PA)
 		if pa == 0 {
 			return 0, false
 		}
