@@ -82,6 +82,9 @@ func main() {
 	go dispatcher.Run()
 	go host.RunTxWorkers(host.TxWorkers, dispatcher, linkInit.TxChan)
 
+	sys.SetReady(true)
+	fmt.Println("[net] ready")
+
 	// Block forever; the Dispatcher / TxWorkers / gvisor.maz goroutines
 	// own the lifetime from here.
 	select {}

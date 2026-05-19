@@ -15,11 +15,15 @@
 package main
 
 import (
+	"os"
 	"time"
 
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
+	"mazzy/shared/ipc"
+	"mazzy/shared/netproto"
 )
 
 func init() { mazhost.PinEntry(MazarinMain, nil) }
@@ -91,14 +95,17 @@ func MazarinMain() {
 	}
 	sys.UartWriteString(tag + "PASS ShareNetPageWithClient clientVA=0x" + sys.Hex64(uint64(clientVA)) + "\n")
 
-	sys.UartWriteString(tag + "all checks passed\n")
+	// --- Test 3: NetIPCConnect round-trip against net.elf ---
+	testNetIPCConnect()
 
-	// Stay alive so the kernel doesn't run death-cleanup on a shepherd holding
-	// shared pages. CleanupShepherdDMAClumps currently BuddyFreeTyped's clump
-	// pages without consulting PageDescriptor.RefCount, which would yank
-	// linux's mapping out from under it (use-after-free). Fixing that is a
-	// separate ticket — see MAZ-29 findings — and is orthogonal to whether the
-	// two syscalls themselves work.
+	sys.UartWriteString(tag + "all checks done\n")
+
+	// Stay alive regardless of test outcome. The kernel's
+	// CleanupShepherdDMAClumps currently BuddyFreeTyped's clump pages
+	// without consulting PageDescriptor.RefCount, which would yank
+	// linux's mapping out from under it (use-after-free) if we exit.
+	// Fixing that is a separate ticket — see MAZ-29 findings — and is
+	// orthogonal to whether the syscalls themselves work.
 	sys.SetReady(true)
 	for {
 		time.Sleep(time.Hour)
@@ -106,3 +113,80 @@ func MazarinMain() {
 }
 
 func main() { MazarinMain() }
+
+// testNetIPCConnect sends a NetIPCConnect to net.elf and verifies the
+// returned ConnectResp. The client requests Watermark=0 (default) and
+// declares RespRing=0 (we just registered a dispatcher there).
+//
+// Returns true on PASS, false on FAIL. On FAIL, a FAIL line is already
+// logged.
+func testNetIPCConnect() bool {
+	if err := sys.WaitForShepherdReady("net", 5); err != nil {
+		sys.UartWriteString(tag + "FAIL: net not ready: " + err.Error() + "\n")
+		return false
+	}
+	netSID, err := sys.GetShepherdByName("net")
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: GetShepherdByName(net): " + err.Error() + "\n")
+		return false
+	}
+
+	// Use ring 0 for responses — xfertest doesn't have any other ring
+	// listener, no head-of-line concern.
+	respCh := make(chan any, 1)
+	disp := uring.NewDispatcher()
+	disp.On(ipc.ProtoNetIPCResp, decodeNetIPCResp, respCh)
+	disp.Start()
+
+	const reqID = 0xC0FFEE
+	req := netproto.NetIPCConnectReq{
+		ReqID:    reqID,
+		RespRing: 0,
+		// Watermark=0 → expect default (DefaultTxWatermark)
+	}
+	msg := netproto.EncodeConnect(&req, int16(os.Getpid()))
+	if err := uring.Send(int(netSID), &msg); err != nil {
+		sys.UartWriteString(tag + "FAIL: NetIPCConnect send: " + err.Error() + "\n")
+		return false
+	}
+
+	select {
+	case v := <-respCh:
+		resp, ok := v.(*netproto.NetIPCConnectResp)
+		if !ok {
+			sys.UartWriteString(tag + "FAIL: NetIPCConnect resp wrong type\n")
+			return false
+		}
+		if resp.ReqID != reqID {
+			sys.UartWriteString(tag + "FAIL: NetIPCConnect reqID mismatch got=" + sys.Itoa(int64(resp.ReqID)) + "\n")
+			return false
+		}
+		if resp.ErrCode != netproto.NetErrNone {
+			sys.UartWriteString(tag + "FAIL: NetIPCConnect ErrCode=" + sys.Itoa(int64(resp.ErrCode)) + "\n")
+			return false
+		}
+		if resp.Watermark != netproto.DefaultTxWatermark {
+			sys.UartWriteString(tag + "FAIL: NetIPCConnect Watermark got=" + sys.Itoa(int64(resp.Watermark)) +
+				" want=" + sys.Itoa(int64(netproto.DefaultTxWatermark)) + "\n")
+			return false
+		}
+		sys.UartWriteString(tag + "PASS NetIPCConnect netSID=" + sys.Itoa(int64(netSID)) +
+			" watermark=" + sys.Itoa(int64(resp.Watermark)) + "\n")
+		return true
+	case <-time.After(2 * time.Second):
+		sys.UartWriteString(tag + "FAIL: NetIPCConnect response timeout\n")
+		return false
+	}
+}
+
+// decodeNetIPCResp is the uring Dispatcher decoder for ProtoNetIPCResp.
+// For this smoke test we only care about NetIPCConnectResp; other types
+// are returned untyped (caller's type-switch handles).
+func decodeNetIPCResp(msg *ipc.UringIPCMsg) any {
+	if netproto.MsgTypeOf(msg) == netproto.NetMsgConnectResp {
+		// Copy by value — the dispatcher's slot may be reused after we return.
+		r := *netproto.DecodeConnectResp(msg)
+		return &r
+	}
+	return nil
+}
