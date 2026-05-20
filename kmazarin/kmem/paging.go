@@ -2350,6 +2350,13 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 // are attributed to the target shepherd.
 // If elfFlags is 0, defaults to ELF_PF_R | ELF_PF_W.
 // Returns true on success.
+//
+// Nosplit so callers in IRQ-off critical sections (e.g. transferDMAClumpInner,
+// transferPagesChunkInner) don't have to rely on transitive linker analysis
+// alone — the entire reachable graph (FindShepherdBySID, mapUserPageWithL0,
+// etc.) is already nosplit-safe, as proven by MapContiguousUserPages.
+//
+//go:nosplit
 func MapPageInProcess(shepherdID int16, va, pa uintptr, elfFlags uint32) bool {
 	if ConsumeMapFailInjection() {
 		return false
