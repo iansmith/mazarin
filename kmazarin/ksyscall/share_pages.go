@@ -69,6 +69,12 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	}
 
 	sourceL0PA := callerShepherd.PageTableL0PA
+	// targetShepherd is a stable pointer for the duration of this syscall
+	// (we hold a reference via the local var, and CleanupShepherdPages is
+	// gated by the same IRQ-disable / refcount discipline). Capture
+	// PageTableL0PA once so the inner and rollback paths don't have to
+	// re-walk targetShepherd while IRQs are masked.
+	targetL0PA := targetShepherd.PageTableL0PA
 
 	// Allocate the entire target VA range up front so the caller sees a
 	// single contiguous region. bumpAllocForShepherd is monotonic, so we
@@ -98,7 +104,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			chunkN = numPages - chunkStart
 		}
 		errCode, failVA := transferPagesChunkInner(
-			targetPID, callerSID, sourceL0PA,
+			targetPID, callerSID, sourceL0PA, targetL0PA,
 			sourceVA, uintptr(targetVABase), chunkStart, chunkN, pas, elfFlags,
 		)
 		if errCode != 0 {
@@ -131,19 +137,27 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 // runtime locks or trigger GC work that is unsafe to run while DAIF.I is
 // masked and we're mid-mutation of page tables and ownership descriptors.
 //
-// pas is the outer's heap-allocated scratch; only the first chunkN slots
-// are touched. Fail-stop: on Pass 1 error the chunk's IRQ-off section is
-// torn down with no pages transferred yet; rollback is out of scope.
+// pas is the outer's heap-allocated scratch sized to numPages. Slots
+// [chunkStart, chunkStart+chunkN) are written on success; they remain
+// readable by the outer's cross-chunk rollback walk on later failures.
+//
+// On Pass 1 error the chunk's IRQ-off section is torn down with no pages
+// transferred yet. On Pass 2 MapPageInProcess failure at index i, the
+// chunk-local prefix [chunkStart, chunkStart+i) is rolled back here
+// (target unmapped, ownership returned, caller re-mapped) before
+// returning. Cross-chunk rollback for fully-completed prior chunks is
+// the outer's responsibility (rollbackPagesChunkInner).
 //
 // Returns (errCode int64, failVA uintptr). errCode is 0 on success or a
 // negative errno; failVA is the address the caller wants to log (source VA
-// for EFAULT, source PA for EPERM).
+// for EFAULT, source PA for EPERM, target VA for ENOMEM).
 //
 //go:nosplit
 func transferPagesChunkInner(
 	targetPID int16,
 	callerSID int16,
 	sourceL0PA uintptr,
+	targetL0PA uintptr,
 	sourceVA uintptr,
 	targetVABase uintptr,
 	chunkStart int,
@@ -171,20 +185,39 @@ func transferPagesChunkInner(
 			restoreIRQs(savedDAIF)
 			return -1, pa // EPERM
 		}
-		pas[i] = pa
+		pas[chunkStart+i] = pa
 	}
 
-	// Pass 2: unmap from source, transfer ownership, map into target. Fail-stop
-	// on MapPageInProcess failure — the prior indices in this chunk plus all
-	// completed chunks are orphaned (target-owned, no syscall return). Rollback
-	// is MAZ-37; until then the caller's PR-visible signal is the -ENOMEM.
+	// Pass 2: unmap from source, transfer ownership, map into target. On
+	// MapPageInProcess failure at index i, roll back the chunk-local prefix
+	// [0..i] in reverse: index i had ownership transferred but no target
+	// mapping committed (the map call that just failed); j < i had both, so
+	// the target mapping must be dropped first. The outer wrapper handles
+	// any fully-completed prior chunks via rollbackPagesChunkInner.
+	//
+	// NOTE: rollback restores caller mappings with `elfFlags` (the target's
+	// intended flags), not the caller's original PTE flags. Benign today
+	// because every TransferPages caller in tree is R+W and elfFlags
+	// defaults to R+W when 0 — so rollback delivers the same permissions
+	// the caller had. Real fix tracked as MAZ-39 (requires a kmem helper
+	// to extract PTE flags by VA + parallel origFlags scratch in Pass 1).
 	for i := 0; i < chunkN; i++ {
 		va := sourceVA + uintptr(chunkStart+i)*kmem.PageSize
-		pa := pas[i]
+		pa := pas[chunkStart+i]
 		kmem.UnmapUserPageWithL0(va, sourceL0PA)
 		kmem.TransferPageOwnership(pa, callerSID, targetPID)
 		targetVA := targetVABase + uintptr(chunkStart+i)*kmem.PageSize
 		if !kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags) {
+			for j := i; j >= 0; j-- {
+				if j < i {
+					kmem.UnmapUserPageWithL0(targetVABase+uintptr(chunkStart+j)*kmem.PageSize, targetL0PA)
+				}
+				kmem.TransferPageOwnership(pas[chunkStart+j], targetPID, callerSID)
+				if !kmem.MapPageInProcess(callerSID, sourceVA+uintptr(chunkStart+j)*kmem.PageSize, pas[chunkStart+j], elfFlags) {
+					restoreIRQs(savedDAIF)
+					KernelPanic("transferPagesChunkInner: rollback restore-mapping failed")
+				}
+			}
 			restoreIRQs(savedDAIF)
 			return -12, targetVA // ENOMEM
 		}
