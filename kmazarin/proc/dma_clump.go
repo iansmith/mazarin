@@ -56,6 +56,23 @@ func (s *Shepherd) FindClumpByVA(va uintptr) *DMAClump {
 	return nil
 }
 
+// FindClumpIndexByVA returns the index of the clump whose StartVA exactly
+// matches va, or -1 if not found. Differs from FindClumpByVA (range match
+// via ContainsVA) — used by syscalls that operate on a whole clump and
+// need the index for RemoveClump. Caller must hold LockClumps if another
+// CPU might mutate the array concurrently. Nosplit-safe.
+//
+//go:nosplit
+func (s *Shepherd) FindClumpIndexByVA(va uintptr) int32 {
+	n := s.NumDMAClumps
+	for i := int32(0); i < n; i++ {
+		if s.DMAClumps[i].StartVA == va {
+			return i
+		}
+	}
+	return -1
+}
+
 // AddClump registers a new DMA clump for this shepherd.
 // Returns a pointer to the new clump, or nil if the array is full. Nosplit-safe.
 //

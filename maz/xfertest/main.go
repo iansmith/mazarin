@@ -15,6 +15,7 @@
 package main
 
 import (
+	"syscall"
 	"time"
 
 	"mazzy/mazarin/mazhost"
@@ -98,6 +99,40 @@ func runSmokeTests() bool {
 		return false
 	}
 	sys.UartWriteString(tag + "PASS TransferDMAClump dstVA=0x" + sys.Hex64(uint64(dstVA)) + "\n")
+
+	// --- Test 1b: TransferDMAClump rollback on MapPageInProcess failure ---
+	// Arm a one-shot MapPageInProcess failure via the kernel debug knob,
+	// then attempt a transfer that must fail mid-Pass-2 and roll back. The
+	// rollback restores caller ownership + mapping; the source clump entry
+	// stays intact, so CleanupShepherdDMAClumps remains safe on caller exit.
+	clumpRB, err := mem.AllocContiguous(4096)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: AllocContiguous#1b: " + err.Error() + "\n")
+		return false
+	}
+	for i := range clumpRB.Buf {
+		clumpRB.Buf[i] = patternA
+	}
+	sys.SetMapFailInjection(true)
+	_, rbErr := sys.TransferDMAClump(targetSID, clumpRB.Addr, 0)
+	sys.SetMapFailInjection(false)
+	if rbErr == nil {
+		sys.UartWriteString(tag + "FAIL: rollback test — TransferDMAClump should have returned ENOMEM (got nil)\n")
+		return false
+	}
+	if rbErr != syscall.ENOMEM {
+		sys.UartWriteString(tag + "FAIL: rollback test — expected ENOMEM, got: " + rbErr.Error() + "\n")
+		return false
+	}
+	// Caller-side rollback verification: clump page is remapped and readable,
+	// and the pattern we wrote pre-transfer is intact (page wasn't zeroed or
+	// replaced during the transfer→rollback round-trip).
+	if clumpRB.Buf[0] != patternA {
+		sys.UartWriteString(tag + "FAIL: rollback test — source page content corrupted (got 0x" +
+			sys.Hex64(uint64(clumpRB.Buf[0])) + ")\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS TransferDMAClump rollback on MapPageInProcess failure\n")
 
 	// --- Test 2: SyscallShareNetPageWithClient ---
 	// The first clump's table entry is gone after the transfer, so we can

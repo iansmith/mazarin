@@ -72,7 +72,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 	// Allocate the entire target VA range up front so the caller sees a
 	// single contiguous region. bumpAllocForShepherd is monotonic, so we
-	// cannot recover this range on partial failure (see rollback note below).
+	// cannot recover this range on partial failure (fail-stop semantics).
 	totalSize := uint64(numPages) * uint64(kmem.PageSize)
 	targetVABase := bumpAllocForShepherd(targetShepherd, totalSize)
 	if targetVABase == 0 {
@@ -81,7 +81,9 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	targetShepherd.Spans.Add(targetVABase, totalSize)
 
 	// Reusable PA scratch buffer for per-chunk Pass 1 → Pass 2 hand-off.
-	// Heap-allocated (this function is not nosplit) to avoid a large stack array.
+	// Heap-allocated by this (splittable) outer; the nosplit per-chunk inner
+	// only sees the slice header (24 B) on its frame and indexes into the
+	// caller-owned backing array — no morestack risk inside the IRQ-off region.
 	pas := make([]uintptr, transferChunkPages)
 
 	for chunkStart := 0; chunkStart < numPages; chunkStart += transferChunkPages {
@@ -89,51 +91,101 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		if chunkStart+chunkN > numPages {
 			chunkN = numPages - chunkStart
 		}
-
-		// Disable IRQs across this chunk's two passes to prevent async preemption
-		// from letting another goroutine call exit_group between validate and
-		// transfer — CleanupShepherdPages would free pages that Pass 1 already
-		// validated, causing use-after-free in Pass 2.
-		savedDAIF := saveAndDisableIRQs()
-
-		// Pass 1: validate every page in this chunk is mapped and owned by caller.
-		for i := 0; i < chunkN; i++ {
-			va := sourceVA + uintptr(chunkStart+i)*kmem.PageSize
-			pa := kmem.DemandMapUserPage(va, sourceL0PA)
-			if pa == 0 {
-				restoreIRQs(savedDAIF)
-				klog.Errf("[IPC] TransferPages: page not mapped at VA %x (chunk %d)\n", uint64(va), chunkStart)
-				// Fail-stop: target VA range and any already-transferred chunks
-				// are leaked. TODO: best-effort rollback.
-				return -14 // EFAULT
+		errCode, failVA := transferPagesChunkInner(
+			targetPID, callerSID, sourceL0PA,
+			sourceVA, uintptr(targetVABase), chunkStart, chunkN, pas, elfFlags,
+		)
+		if errCode != 0 {
+			switch errCode {
+			case -14:
+				klog.Errf("[IPC] TransferPages: page not mapped at VA %x (chunk %d)\n",
+					uint64(failVA), chunkStart)
+			case -1:
+				klog.Errf("[IPC] TransferPages: page not owned by caller at PA %x (chunk %d)\n",
+					uint64(failVA), chunkStart)
+			case -12:
+				klog.Errf("[IPC] TransferPages: MapPageInProcess failed at target VA %x (chunk %d) — chunk prefix + prior chunks orphaned\n",
+					uint64(failVA), chunkStart)
 			}
-			pa = pa &^ (kmem.PageSize - 1)
-			desc := kmem.GetPageDescriptor(pa)
-			if desc == nil || desc.Owner != callerSID {
-				restoreIRQs(savedDAIF)
-				klog.Errf("[IPC] TransferPages: page not owned by caller at PA %x (chunk %d)\n", uint64(pa), chunkStart)
-				return -1 // EPERM
-			}
-			pas[i] = pa
+			// Fail-stop: target VA range, the target Spans entry, and any
+			// already-transferred chunks are leaked. Rollback tracked as MAZ-37.
+			return errCode
 		}
-
-		// Pass 2: unmap from source, transfer ownership, map into target.
-		for i := 0; i < chunkN; i++ {
-			va := sourceVA + uintptr(chunkStart+i)*kmem.PageSize
-			pa := pas[i]
-			kmem.UnmapUserPageWithL0(va, sourceL0PA)
-			kmem.TransferPageOwnership(pa, callerSID, targetPID)
-			targetVA := uintptr(targetVABase) + uintptr(chunkStart+i)*kmem.PageSize
-			kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags)
-		}
-
-		restoreIRQs(savedDAIF)
 	}
 
 	// Remove the source span once after all chunks succeed.
 	callerShepherd.Spans.Remove(uint64(sourceVA), totalSize)
 
 	return int64(targetVABase)
+}
+
+// transferPagesChunkInner runs one chunk of SyscallTransferPages with IRQs
+// disabled. The nosplit boundary keeps morestack from firing inside the
+// IRQ-off region — important because Go's stack-growth machinery may take
+// runtime locks or trigger GC work that is unsafe to run while DAIF.I is
+// masked and we're mid-mutation of page tables and ownership descriptors.
+//
+// pas is the outer's heap-allocated scratch; only the first chunkN slots
+// are touched. Fail-stop: on Pass 1 error the chunk's IRQ-off section is
+// torn down with no pages transferred yet; rollback is out of scope.
+//
+// Returns (errCode int64, failVA uintptr). errCode is 0 on success or a
+// negative errno; failVA is the address the caller wants to log (source VA
+// for EFAULT, source PA for EPERM).
+//
+//go:nosplit
+func transferPagesChunkInner(
+	targetPID int16,
+	callerSID int16,
+	sourceL0PA uintptr,
+	sourceVA uintptr,
+	targetVABase uintptr,
+	chunkStart int,
+	chunkN int,
+	pas []uintptr,
+	elfFlags uint32,
+) (int64, uintptr) {
+	// Disable IRQs across this chunk's two passes to prevent async preemption
+	// from letting another goroutine call exit_group between validate and
+	// transfer — CleanupShepherdPages would free pages that Pass 1 already
+	// validated, causing use-after-free in Pass 2.
+	savedDAIF := saveAndDisableIRQs()
+
+	// Pass 1: validate every page in this chunk is mapped and owned by caller.
+	for i := 0; i < chunkN; i++ {
+		va := sourceVA + uintptr(chunkStart+i)*kmem.PageSize
+		pa := kmem.DemandMapUserPage(va, sourceL0PA)
+		if pa == 0 {
+			restoreIRQs(savedDAIF)
+			return -14, va // EFAULT
+		}
+		pa = pa &^ (kmem.PageSize - 1)
+		desc := kmem.GetPageDescriptor(pa)
+		if desc == nil || desc.Owner != callerSID {
+			restoreIRQs(savedDAIF)
+			return -1, pa // EPERM
+		}
+		pas[i] = pa
+	}
+
+	// Pass 2: unmap from source, transfer ownership, map into target. Fail-stop
+	// on MapPageInProcess failure — the prior indices in this chunk plus all
+	// completed chunks are orphaned (target-owned, no syscall return). Rollback
+	// is MAZ-37; until then the caller's PR-visible signal is the -ENOMEM.
+	for i := 0; i < chunkN; i++ {
+		va := sourceVA + uintptr(chunkStart+i)*kmem.PageSize
+		pa := pas[i]
+		kmem.UnmapUserPageWithL0(va, sourceL0PA)
+		kmem.TransferPageOwnership(pa, callerSID, targetPID)
+		targetVA := targetVABase + uintptr(chunkStart+i)*kmem.PageSize
+		if !kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags) {
+			restoreIRQs(savedDAIF)
+			return -12, targetVA // ENOMEM
+		}
+	}
+
+	restoreIRQs(savedDAIF)
+	return 0, 0
 }
 
 // SyscallTransferDMAClump transfers ownership of one whole DMA clump from the
@@ -168,18 +220,15 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 //	ESRCH   target shepherd does not exist or has no address space
 //	ENOENT  no clump at clumpStartVA, or VA is in the middle of a clump
 //	EBUSY   clump has in-flight I/O (cannot transfer until completion)
-//	ENOMEM  target VA allocation failed
+//	ENOMEM  target mapping failed mid-transfer; rollback restored caller's
+//	        mappings; source clump entry preserved
 //	EFAULT  source page unexpectedly unmapped (caller misuse / race)
 //	EPERM   page not owned by caller (caller misuse / race)
 //
-// NOTE: this function calls assembly (saveAndDisableIRQs / restoreIRQs)
-// but lacks //go:nosplit because adding it overflows the 792-byte
-// nosplit stack budget — the on-stack `var pas [MaxDMAClumpPages]uintptr`
-// scratch (512 B at 64 pages) plus the klog.Errf call frames push the
-// total over the limit. The existing SyscallTransferPages has the same
-// shape and the same gap; a future refactor would split the
-// IRQ-disabled section into a nosplit-able helper. Tracked as a
-// follow-up.
+// The IRQ-disabled critical section lives in transferDMAClumpInner (//go:nosplit).
+// This wrapper holds the on-stack `var pas` scratch, the clump-table mutations,
+// and all klog.Errf calls; the inner helper returns distinct errnos for each
+// failure point along with the failing index for logging.
 func SyscallTransferDMAClump(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	targetPID := int16(arg0)
 	clumpStartVA := uintptr(arg1)
@@ -212,13 +261,7 @@ func SyscallTransferDMAClump(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	// runs IRQs-disabled (same as SyscallTransferPages) and the clump entry is
 	// removed at the end under the lock again.
 	callerShepherd.LockClumps()
-	clumpIdx := int32(-1)
-	for i := int32(0); i < callerShepherd.NumDMAClumps; i++ {
-		if callerShepherd.DMAClumps[i].StartVA == clumpStartVA {
-			clumpIdx = i
-			break
-		}
-	}
+	clumpIdx := callerShepherd.FindClumpIndexByVA(clumpStartVA)
 	if clumpIdx < 0 {
 		callerShepherd.UnlockClumps()
 		klog.Errf("[IPC] TransferDMAClump: no clump at VA %x for SID=%d\n",
@@ -240,6 +283,7 @@ func SyscallTransferDMAClump(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	}
 
 	sourceL0PA := callerShepherd.PageTableL0PA
+	targetL0PA := targetShepherd.PageTableL0PA
 
 	// Allocate the entire target VA range up front.
 	totalSize := uint64(numPages) * uint64(kmem.PageSize)
@@ -249,75 +293,133 @@ func SyscallTransferDMAClump(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	}
 	targetShepherd.Spans.Add(targetVABase, totalSize)
 
-	// Stack-allocated PA scratch — fits because numPages ≤ MaxDMAClumpPages.
-	// The full transfer runs inside one IRQ-disabled section: bounded clump size
-	// means we don't need the chunked loop SyscallTransferPages uses to keep
-	// timer IRQs responsive on multi-MB transfers.
+	// Stack-allocated PA scratch lives in this (splittable) frame; inner takes
+	// it by pointer so it doesn't charge its own nosplit budget for 512 B.
 	var pas [MaxDMAClumpPages]uintptr
 
-	savedDAIF := saveAndDisableIRQs()
-
-	// Pass 1: validate every page is mapped and owned by caller.
-	for i := 0; i < numPages; i++ {
-		va := clumpStartVA + uintptr(i)*kmem.PageSize
-		pa := kmem.DemandMapUserPage(va, sourceL0PA)
-		if pa == 0 {
-			restoreIRQs(savedDAIF)
-			klog.Errf("[IPC] TransferDMAClump: page not mapped at VA %x\n", uint64(va))
-			return -14 // EFAULT
+	errCode, failIdx := transferDMAClumpInner(
+		targetPID, callerSID, sourceL0PA, targetL0PA,
+		&pas, numPages, clumpStartVA, uintptr(targetVABase), elfFlags,
+	)
+	if errCode != 0 {
+		// Inner already rolled back any partial Pass-2 progress (ENOMEM path) and
+		// restored IRQs. Drop the target Spans entry — no pages remain mapped
+		// in the target's address space at this range. The bumpAlloc'd VA is
+		// monotonic and not recoverable, but the Spans bookkeeping is.
+		targetShepherd.Spans.Remove(targetVABase, totalSize)
+		switch errCode {
+		case -14:
+			klog.Errf("[IPC] TransferDMAClump: page not mapped at VA %x (idx %d of %d)\n",
+				uint64(clumpStartVA+uintptr(failIdx)*kmem.PageSize), failIdx, numPages)
+		case -1:
+			klog.Errf("[IPC] TransferDMAClump: page not owned by caller at PA %x (idx %d of %d)\n",
+				uint64(pas[failIdx]), failIdx, numPages)
+		case -12:
+			klog.Errf("[IPC] TransferDMAClump: MapPageInProcess failed at target VA %x (idx %d of %d) — rolled back\n",
+				uint64(targetVABase)+uint64(failIdx)*uint64(kmem.PageSize), failIdx, numPages)
 		}
-		pa = pa &^ (kmem.PageSize - 1)
-		desc := kmem.GetPageDescriptor(pa)
-		if desc == nil || desc.Owner != callerSID {
-			restoreIRQs(savedDAIF)
-			klog.Errf("[IPC] TransferDMAClump: page not owned by caller at PA %x\n", uint64(pa))
-			return -1 // EPERM
-		}
-		pas[i] = pa
+		return errCode
 	}
-
-	// Pass 2: unmap from source, transfer ownership, map into target.
-	// Fail-stop on partial failure (matches SyscallTransferPages semantics):
-	// pages already transferred up to the failing index are target-owned but
-	// the source's clump entry has not been removed yet, so the caller's
-	// CleanupShepherdDMAClumps would still try to BuddyFree them. The clump
-	// removal at the bottom of this function is skipped on the error return
-	// to keep that bookkeeping consistent.
-	for i := 0; i < numPages; i++ {
-		va := clumpStartVA + uintptr(i)*kmem.PageSize
-		pa := pas[i]
-		kmem.UnmapUserPageWithL0(va, sourceL0PA)
-		kmem.TransferPageOwnership(pa, callerSID, targetPID)
-		targetVA := uintptr(targetVABase) + uintptr(i)*kmem.PageSize
-		if !kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags) {
-			restoreIRQs(savedDAIF)
-			klog.Errf("[IPC] TransferDMAClump: MapPageInProcess failed at target VA %x (page %d of %d)\n",
-				uint64(targetVA), i, numPages)
-			return -12 // ENOMEM
-		}
-	}
-
-	restoreIRQs(savedDAIF)
 
 	// Remove the source clump entry. The clump's pages are now owned by the
 	// target, and the caller's Spans entry for this region is removed so
 	// CleanupShepherdPages won't try to release pages we no longer own.
 	callerShepherd.LockClumps()
-	// Re-find the clump by VA since the index may have shifted if another
-	// clump was removed during the (IRQ-disabled but lock-released) transfer.
-	idx := int32(-1)
-	for i := int32(0); i < callerShepherd.NumDMAClumps; i++ {
-		if callerShepherd.DMAClumps[i].StartVA == clumpStartVA {
-			idx = i
-			break
-		}
-	}
-	if idx >= 0 {
+	// Re-find by VA: another CPU may have done RemoveClump on a different
+	// entry during the lock-released transfer, shifting our entry's index.
+	if idx := callerShepherd.FindClumpIndexByVA(clumpStartVA); idx >= 0 {
 		callerShepherd.RemoveClump(idx)
 	}
 	callerShepherd.UnlockClumps()
 	callerShepherd.Spans.Remove(uint64(clumpStartVA), totalSize)
 
 	return int64(targetVABase)
+}
+
+// transferDMAClumpInner runs the IRQ-disabled critical section of
+// SyscallTransferDMAClump. Pass 1 validates source pages; Pass 2 unmaps source,
+// transfers ownership, and maps target. On Pass-2 MapPageInProcess failure at
+// index i, indices [0..i-1] are rolled back: target mapping dropped, ownership
+// returned to caller, source mapping restored. If the rollback-side
+// MapPageInProcess fails (orphan-page edge case), the kernel panics — silently
+// leaking a page would let CleanupShepherdDMAClumps later BuddyFree an
+// unowned page (the very UAF this rollback exists to prevent).
+//
+// Returns (errCode, failIdx). errCode is 0 on success or a negative errno;
+// failIdx is the index where the failure occurred (meaningful only on error).
+//
+//go:nosplit
+func transferDMAClumpInner(
+	targetPID int16,
+	callerSID int16,
+	sourceL0PA uintptr,
+	targetL0PA uintptr,
+	pas *[MaxDMAClumpPages]uintptr,
+	numPages int,
+	clumpStartVA uintptr,
+	targetVABase uintptr,
+	elfFlags uint32,
+) (int64, int) {
+	savedDAIF := saveAndDisableIRQs()
+
+	// Pass 1: validate every page is mapped and owned by caller. pas[i] is
+	// stored before the ownership check so the outer wrapper's klog.Errf can
+	// read pas[failIdx] for the EPERM case (else it would log PA 0x0).
+	for i := 0; i < numPages; i++ {
+		va := clumpStartVA + uintptr(i)*kmem.PageSize
+		pa := kmem.DemandMapUserPage(va, sourceL0PA)
+		if pa == 0 {
+			restoreIRQs(savedDAIF)
+			return -14, i // EFAULT
+		}
+		pa = pa &^ (kmem.PageSize - 1)
+		pas[i] = pa
+		desc := kmem.GetPageDescriptor(pa)
+		if desc == nil || desc.Owner != callerSID {
+			restoreIRQs(savedDAIF)
+			return -1, i // EPERM
+		}
+	}
+
+	// Pass 2: unmap from source, transfer ownership, map into target. On failure,
+	// roll back indices [0..i-1] to caller-owned + caller-mapped before
+	// returning ENOMEM. The source clump entry stays intact so the caller's
+	// CleanupShepherdDMAClumps continues to see correct ownership.
+	for i := 0; i < numPages; i++ {
+		va := clumpStartVA + uintptr(i)*kmem.PageSize
+		pa := pas[i]
+		kmem.UnmapUserPageWithL0(va, sourceL0PA)
+		kmem.TransferPageOwnership(pa, callerSID, targetPID)
+		targetVA := targetVABase + uintptr(i)*kmem.PageSize
+		if !kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags) {
+			// Roll back indices [0..i] in reverse. Index i had ownership
+			// transferred but no target mapping committed (the map call
+			// that just failed); j < i had both. The j<i guard handles the
+			// asymmetry — we unmap target only where a forward map succeeded.
+			//
+			// NOTE: rollback restores caller mappings with `elfFlags` (the
+			// target's intended flags), not the caller's original PTE flags.
+			// Benign today because every DMA clump in tree is R+W and
+			// elfFlags defaults to R+W when 0 — so rollback delivers the
+			// same permissions the caller had. Real fix tracked as MAZ-39
+			// (requires a kmem helper to extract PTE flags by VA + parallel
+			// origFlags scratch in Pass 1).
+			for j := i; j >= 0; j-- {
+				if j < i {
+					kmem.UnmapUserPageWithL0(targetVABase+uintptr(j)*kmem.PageSize, targetL0PA)
+				}
+				kmem.TransferPageOwnership(pas[j], targetPID, callerSID)
+				if !kmem.MapPageInProcess(callerSID, clumpStartVA+uintptr(j)*kmem.PageSize, pas[j], elfFlags) {
+					restoreIRQs(savedDAIF)
+					KernelPanic("transferDMAClumpInner: rollback restore-mapping failed")
+				}
+			}
+			restoreIRQs(savedDAIF)
+			return -12, i // ENOMEM
+		}
+	}
+
+	restoreIRQs(savedDAIF)
+	return 0, 0
 }
 
