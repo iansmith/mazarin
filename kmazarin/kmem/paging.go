@@ -2345,6 +2345,88 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 	return pa
 }
 
+// GetUserPTEFlags walks a specific shepherd's L0 page table to the L3 leaf for
+// va and returns the page's ELF permission flags (ELF_PF_R/W/X). Returns
+// (0, false) if va is not mapped at L3 in this address space.
+//
+// Used by the TransferPages / TransferDMAClump rollback path to capture the
+// caller's *original* PTE flags in Pass 1 so the rollback can restore them
+// exactly. The syscall's elfFlags argument controls the target's mapping
+// permissions, not the caller's — so a non-default elfFlags would silently
+// change caller permissions on rollback if we used it. See MAZ-39.
+//
+// Walks an explicit l0PA rather than the hardware register so the helper is
+// also usable for inspecting non-active address spaces (mirrors the pattern
+// in UnmapUserPageWithL0). Nosplit because the only caller is the IRQ-off
+// inner of SyscallTransferPages / SyscallTransferDMAClump.
+//
+//go:nosplit
+func GetUserPTEFlags(va, l0PAParam uintptr) (uint32, bool) {
+	if !pagingInitialized {
+		InitPaging()
+	}
+
+	if (va>>63)&1 != 0 {
+		return 0, false
+	}
+
+	pageVA := va &^ (PageSize - 1)
+
+	l0Idx := (pageVA >> L0Shift) & 0x1FF
+	l1Idx := (pageVA >> L1Shift) & 0x1FF
+	l2Idx := (pageVA >> L2Shift) & 0x1FF
+	l3Idx := (pageVA >> L3Shift) & 0x1FF
+
+	l0PA := l0PAParam
+	if l0PA == 0 {
+		l0PA = readCurrentL0PA()
+	}
+	if l0PA == 0 {
+		l0PA = ttbr0L0PA
+	}
+	l0VA := paToVAOrCache(l0PA)
+	if l0VA == 0 {
+		return 0, false
+	}
+
+	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+	if !pteIsValid(l0Entry) {
+		return 0, false
+	}
+
+	l1PA := pteExtractPA(l0Entry)
+	l1VA := paToVAOrCache(l1PA)
+	if l1VA == 0 {
+		return 0, false
+	}
+	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+	if !pteIsValid(l1Entry) {
+		return 0, false
+	}
+
+	l2PA := pteExtractPA(l1Entry)
+	l2VA := paToVAOrCache(l2PA)
+	if l2VA == 0 {
+		return 0, false
+	}
+	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+	if !pteIsValid(l2Entry) {
+		return 0, false
+	}
+
+	l3PA := pteExtractPA(l2Entry)
+	l3VA := paToVAOrCache(l3PA)
+	if l3VA == 0 {
+		return 0, false
+	}
+	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+	if !pteIsValid(l3Entry) {
+		return 0, false
+	}
+
+	return ElfFlagsFromPTEFlags(platformPTEToFlags(l3Entry)), true
+}
+
 // MapPageInProcess maps a physical page into a specific shepherd's address space.
 // Saves/restores pfContext so page table pages allocated during the mapping
 // are attributed to the target shepherd.

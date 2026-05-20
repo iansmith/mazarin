@@ -62,3 +62,18 @@ func SetMapFailInjection(arm bool) {
 func SetMapFailAfter(n int32) {
 	RawSyscall(mazzy.SysDebugPrint, 0xDB9, uintptr(uint32(n)), 0, 0, 0, 0)
 }
+
+// GetPTEFlags returns the caller's L3 PTE permission flags for va as ELF
+// permission bits: bit 0 = ELF_PF_X (execute), bit 1 = ELF_PF_W (write),
+// bit 2 = ELF_PF_R (read — always set for a valid mapping). Returns 0 if
+// the page is unmapped at L3 in the caller's address space.
+//
+// Test-only — used by xfertest to verify the TransferPages /
+// TransferDMAClump rollback restores caller permissions exactly (MAZ-39).
+// Marker 0xDBA is reserved by ksyscall.DebugMarkerGetPTEFlags.
+//
+//go:nosplit
+func GetPTEFlags(va uintptr) uint32 {
+	r1, _, _ := RawSyscall(mazzy.SysDebugPrint, 0xDBA, va, 0, 0, 0, 0)
+	return uint32(r1)
+}
