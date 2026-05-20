@@ -41,6 +41,8 @@ const (
 	ProtoFTIReq          uint32 = 15 // shepherd → fti request (IndexDocument)
 	ProtoFTIResp         uint32 = 16 // fti → shepherd response (IndexingCompleted, IndexError)
 	ProtoIdleFlushHint   uint32 = 17 // kernel → linux shepherd: flush one write buffer (fire-and-forget)
+	ProtoNetIPCReq       uint32 = 18 // client → net.elf NetIPC request (BindUDP, SendDgram, Release, Close, ...)
+	ProtoNetIPCResp      uint32 = 19 // net.elf → client NetIPC response or unsolicited delivery (BindUDPResp, RecvDgram, ...)
 )
 
 // UringIPCRingHeader is the metadata at offset 0 of the ring's first page.

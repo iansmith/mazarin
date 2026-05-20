@@ -55,6 +55,7 @@ func MazarinShepherd(arg any) error {
 	globalRecvChan = inj.GetRecvChan()
 	globalTxChan = make(chan linksurface.TxEnvelope, txChanBuffer)
 	inj.RegisterTxChan(globalTxChan)
+	inj.RegisterNetIPCHandler(handleNetIPC)
 	return nil
 }
 
@@ -69,8 +70,11 @@ func MazarinMain() {
 		fmt.Printf("[gvisor] buildStack failed: %v\n", err)
 		return
 	}
+	globalStack = s
 	fmt.Println("[gvisor] stack up; entering RX dispatch loop")
 	go runEchoTest(s)
+	go runUDPEchoServer(s)
+	go runTCPEchoServer(s)
 	runRxDispatcher()
 }
 

@@ -35,3 +35,9 @@ gc_percent = 5
 [[shepherd]]
 name = "net"
 path = "/net.elf"
+
+# Boot-time smoke test for the MAZ-29 ownership-primitive syscalls
+# (SyscallTransferDMAClump + SyscallShareNetPageWithClient + PD_NET_OWNED_SHARED).
+[[shepherd]]
+name = "xfertest"
+path = "/xfertest.maz"

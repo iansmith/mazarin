@@ -21,6 +21,7 @@ import (
 
 	"mazzy/maz/net/host"
 	"mazzy/mazarin/fsclient"
+	"mazzy/mazarin/linksurface"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
@@ -70,6 +71,8 @@ func main() {
 	}
 	fmt.Printf("[net] gvisor.maz loaded; Device.Headroom=%d\n", alloc.Headroom())
 
+	startNetIPCDispatcher(linkInit.NetIPCHandler)
+
 	dispatcher := host.NewDispatcher(ring, netRingID, rxArmedCount, alloc, linkInit.RecvChan)
 	if err := dispatcher.PreArm(); err != nil {
 		fmt.Printf("[net] dispatcher.PreArm failed: %v\n", err)
@@ -78,6 +81,9 @@ func main() {
 	fmt.Printf("[net] pre-armed %d RX descriptors\n", rxArmedCount)
 	go dispatcher.Run()
 	go host.RunTxWorkers(host.TxWorkers, dispatcher, linkInit.TxChan)
+
+	sys.SetReady(true)
+	fmt.Println("[net] ready")
 
 	// Block forever; the Dispatcher / TxWorkers / gvisor.maz goroutines
 	// own the lifetime from here.
@@ -107,6 +113,28 @@ func setupFSClient() fsclient.FSClient {
 	fmt.Printf("[net] fsclient connected on ring %d (fsSID=%d)\n", fsRing, fsSID)
 	mazhost.HostFSClient = fc
 	return fc
+}
+
+// startNetIPCDispatcher wires the gvisor.maz-registered NetIPC handler
+// into a uring dispatcher on net.elf's default IPC ring 0. Mirrors fs's
+// "serve client requests on the default ring" convention; per-client
+// response routing is encoded in the NetIPCConnect message (clients
+// declare their own respRing index, recorded in the plugin's per-client
+// state map). If the plugin didn't register a handler (no NetIPC
+// support compiled in), this is a no-op.
+func startNetIPCDispatcher(handler linksurface.NetIPCRequestHandler) {
+	if handler == nil {
+		fmt.Println("[net] plugin did not register a NetIPC handler; NetIPC disabled")
+		return
+	}
+	disp := uring.NewDispatcher()
+	disp.OnFunc(
+		ipc.ProtoNetIPCReq,
+		func(msg *ipc.UringIPCMsg) any { return msg },
+		func(v any) { handler(v.(*ipc.UringIPCMsg)) },
+	)
+	disp.Start()
+	fmt.Println("[net] NetIPC dispatcher started on ring 0")
 }
 
 // setupAllocator allocates the contiguous DMA pool. Headroom=12 leaves

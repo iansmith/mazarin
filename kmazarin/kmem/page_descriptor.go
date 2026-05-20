@@ -33,11 +33,12 @@ type PageDescriptor struct {
 
 // PageDescriptor flag bits
 const (
-	PD_PINNED      = 1 << 0 // Do not evict (kernel pages, MMIO, page tables)
-	PD_DIRTY       = 1 << 1 // Software dirty tracking (mirrors HW dirty)
-	PD_SWAPPED     = 1 << 2 // Page is swapped out
-	PD_SHARED      = 1 << 3 // Page mapped in multiple address spaces
-	PD_FILE_BACKED = 1 << 4 // File-backed mmap: dual-mapped in caller + handler; CleanupShepherdPages Phase 1 skips release so the handler can flush before freeing
+	PD_PINNED           = 1 << 0 // Do not evict (kernel pages, MMIO, page tables)
+	PD_DIRTY            = 1 << 1 // Software dirty tracking (mirrors HW dirty)
+	PD_SWAPPED          = 1 << 2 // Page is swapped out
+	PD_SHARED           = 1 << 3 // Page mapped in multiple address spaces
+	PD_FILE_BACKED      = 1 << 4 // File-backed mmap: dual-mapped in caller + handler; CleanupShepherdPages Phase 1 skips release so the handler can flush before freeing
+	PD_NET_OWNED_SHARED = 1 << 5 // Net.elf-owned page shared into a client (per-stream send ring). Distinguishes net.elf's mappings from regular PD_SHARED so a future reclaim path can notify net.elf when the client dies; v1 relies on RefCount alone.
 )
 
 // PageShift is log2(PageSize) for PFN calculation.
