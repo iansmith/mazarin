@@ -23,23 +23,29 @@ import (
 
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/uring"
 	"mazzy/shared/constants"
 	"mazzy/shared/ipc"
 	"mazzy/shared/netproto"
 )
 
 var (
-	dbgBindTCP         uint64
-	dbgListen          uint64
-	dbgAccept          uint64
-	dbgAcceptDelivers  uint64
-	dbgAcceptAborts    uint64
-	dbgTCPConnect      uint64
-	dbgTCPConnectAOK   uint64
-	dbgStreamSend      uint64
-	dbgStreamSendOK    uint64
-	dbgStreamSendFail  uint64
+	dbgBindTCP           uint64
+	dbgListen            uint64
+	dbgAccept            uint64
+	dbgAcceptDelivers    uint64
+	dbgAcceptAborts      uint64
+	dbgTCPConnect        uint64
+	dbgTCPConnectAOK     uint64
+	dbgStreamSend        uint64
+	dbgStreamSendOK      uint64
+	dbgStreamSendFail    uint64
 	dbgSendPageAllocFail uint64
+	dbgStreamRxChunks    uint64
+	dbgStreamRxAllocFail uint64
+	dbgStreamRxShareFail uint64
+	dbgStreamRxEOF       uint64
+	dbgShutdowns         uint64
 )
 
 // allocStreamSendPage allocates one net.elf-owned page and maps it RW
@@ -294,6 +300,7 @@ func awaitAccept(cs *clientState, listener *clientConn, sid int16, reqID uint32,
 		atomic.AddUint64(&dbgAcceptDelivers, 1)
 		fmt.Printf("[gvisor:netipc] Accept SID=%d listener=%d → connID=%d peer=%v:%d sendPageVA=0x%x\n",
 			sid, listener.connID, newConnID, peer.IP4, peer.Port, sendPageVA)
+		go runStreamRxBridge(newConn, cs)
 	case <-listener.acceptStop:
 		atomic.AddUint64(&dbgAcceptAborts, 1)
 		acceptError(sid, respRing, reqID, netproto.NetErrConnAborted)
@@ -432,11 +439,195 @@ func completeTCPConnect(cs *clientState, sid int16, respRing uint8, reqID uint32
 	atomic.AddUint64(&dbgTCPConnectAOK, 1)
 	fmt.Printf("[gvisor:netipc] TCPConnect SID=%d connID=%d localPort=%d sendPageVA=0x%x\n",
 		sid, connID, bound.Port, sendPageVA)
+	go runStreamRxBridge(conn, cs)
 }
 
 func tcpConnectError(sid int16, respRing uint8, reqID uint32, code int16) {
 	resp := netproto.TCPConnectResp{ReqID: reqID, ErrCode: code}
 	sendResp(sid, respRing, netproto.EncodeTCPConnectResp(&resp))
+}
+
+// drainResult tells runStreamRxBridge what to do next after one
+// deliverOneStreamRx call: keep draining, park on notifyCh/rxRearm,
+// or exit the bridge entirely (after EOF or a terminal error).
+type drainResult int
+
+const (
+	drainMore  drainResult = iota // delivered a chunk; try Read again immediately
+	drainEmpty                    // ErrWouldBlock, watermark, or a transient alloc/share failure
+	drainStop                     // EOF emitted or terminal error; bridge must exit
+)
+
+// runStreamRxBridge drains a TCP stream into client-shared pages and
+// surfaces peer FIN as an EOF StreamRx. Spawn only after the
+// connID-bearing reply (AcceptResp / TCPConnectResp) has been sent so
+// the client's HandleResp can register the stream conn before any
+// StreamRx racing behind it on the same response ring.
+func runStreamRxBridge(conn *clientConn, cs *clientState) {
+	waitEntry, notifyCh := waiter.NewChannelEntry(waiter.ReadableEvents | waiter.EventHUp)
+	conn.wq.EventRegister(&waitEntry)
+	defer conn.wq.EventUnregister(&waitEntry)
+	respRing := cs.respRing
+
+	for {
+	drain:
+		for {
+			switch deliverOneStreamRx(conn, cs, respRing) {
+			case drainMore:
+				continue
+			case drainEmpty:
+				break drain
+			case drainStop:
+				return
+			}
+		}
+		select {
+		case <-conn.rxStop:
+			return
+		case <-conn.rxRearm:
+		case <-notifyCh:
+		}
+	}
+}
+
+// deliverOneStreamRx pulls at most one page of stream bytes out of
+// gvisor and delivers them to the client via SharePagesWithTarget +
+// StreamRx. The watermark gate matches the UDP RX path: if the client
+// is already holding cs.watermark pages, the bridge parks until
+// handleRelease fires rxRearm.
+func deliverOneStreamRx(conn *clientConn, cs *clientState, respRing uint8) drainResult {
+	if atomic.LoadInt32(&cs.rxLoaned) >= int32(cs.watermark) {
+		return drainEmpty
+	}
+
+	pageBytes, err := mem.AllocPagesSlice(1, mem.PageShared)
+	if err != nil {
+		atomic.AddUint64(&dbgStreamRxAllocFail, 1)
+		fmt.Printf("[gvisor:netipc] StreamRx AllocPagesSlice failed: %v\n", err)
+		return drainEmpty
+	}
+	pagePtr := unsafe.Pointer(&pageBytes[0])
+	sw := tcpip.SliceWriter(pageBytes)
+	res, terr := conn.ep.Read(&sw, tcpip.ReadOptions{})
+	if terr != nil {
+		_ = mem.FreePages(pagePtr, 1)
+		if _, wb := terr.(*tcpip.ErrWouldBlock); wb {
+			return drainEmpty
+		}
+		// Any other error is terminal for this stream — peer FIN
+		// (ErrClosedForReceive) is the common case; treat anything
+		// else the same way and surface EOF so the client unblocks.
+		if _, eof := terr.(*tcpip.ErrClosedForReceive); !eof {
+			fmt.Printf("[gvisor:netipc] StreamRx Read terminal err=%v connID=%d\n",
+				terr, conn.connID)
+		}
+		emitStreamEOF(conn, respRing)
+		return drainStop
+	}
+
+	clientVA, err := sys.SharePagesWithTarget(int(conn.sid), uintptr(pagePtr), 1)
+	if err != nil {
+		atomic.AddUint64(&dbgStreamRxShareFail, 1)
+		fmt.Printf("[gvisor:netipc] StreamRx SharePagesWithTarget(sid=%d) failed: %v\n",
+			conn.sid, err)
+		_ = mem.FreePages(pagePtr, 1)
+		return drainEmpty
+	}
+
+	conn.rxMu.Lock()
+	if conn.rxClosed {
+		conn.rxMu.Unlock()
+		_ = mem.FreePages(pagePtr, 1)
+		return drainStop
+	}
+	conn.rxPages[uint64(clientVA)] = uintptr(pagePtr)
+	conn.rxMu.Unlock()
+	atomic.AddInt32(&cs.rxLoaned, 1)
+
+	notif := netproto.StreamRx{
+		ConnID: conn.connID,
+		Length: uint16(res.Count),
+		PageVA: uint64(clientVA),
+	}
+	notifyMsg := netproto.EncodeStreamRx(&notif)
+	if err := uring.SendWithRing(int(conn.sid), &notifyMsg, int(respRing)); err != nil {
+		fmt.Printf("[gvisor:netipc] StreamRx send failed: sid=%d ring=%d err=%v\n",
+			conn.sid, respRing, err)
+		// Page is recorded; Close (or shepherd death) will reclaim.
+		return drainMore
+	}
+	atomic.AddUint64(&dbgStreamRxChunks, 1)
+	return drainMore
+}
+
+// emitStreamEOF sends a single StreamRx with EOF=1 and no page loan,
+// signalling peer half-close to the client.
+func emitStreamEOF(conn *clientConn, respRing uint8) {
+	notif := netproto.StreamRx{
+		ConnID: conn.connID,
+		Flags:  netproto.StreamRxFlagEOF,
+	}
+	notifyMsg := netproto.EncodeStreamRx(&notif)
+	if err := uring.SendWithRing(int(conn.sid), &notifyMsg, int(respRing)); err != nil {
+		fmt.Printf("[gvisor:netipc] StreamRx EOF send failed: sid=%d ring=%d err=%v\n",
+			conn.sid, respRing, err)
+		return
+	}
+	atomic.AddUint64(&dbgStreamRxEOF, 1)
+}
+
+// handleShutdown half-closes a TCP stream. how bits map to gvisor's
+// tcpip.ShutdownRead / ShutdownWrite; both bits set = full close.
+func handleShutdown(msg *ipc.UringIPCMsg) {
+	atomic.AddUint64(&dbgShutdowns, 1)
+	req := *netproto.DecodeStreamShutdownReq(msg)
+	sid := msg.SenderSID
+
+	clientsMu.Lock()
+	cs, ok := clients[sid]
+	var conn *clientConn
+	if ok && cs.conns != nil {
+		conn = cs.conns[req.ConnID]
+	}
+	clientsMu.Unlock()
+	if !ok {
+		fmt.Printf("[gvisor:netipc] Shutdown from unconnected SID=%d, dropping\n", sid)
+		return
+	}
+	respRing := cs.respRing
+	if conn == nil {
+		shutdownReply(sid, respRing, req.ReqID, req.ConnID, netproto.NetErrNoConn)
+		return
+	}
+	if conn.isListener {
+		shutdownReply(sid, respRing, req.ReqID, req.ConnID, netproto.NetErrInvalid)
+		return
+	}
+
+	var flags tcpip.ShutdownFlags
+	if req.How&netproto.ShutdownRead != 0 {
+		flags |= tcpip.ShutdownRead
+	}
+	if req.How&netproto.ShutdownWrite != 0 {
+		flags |= tcpip.ShutdownWrite
+	}
+	if flags == 0 {
+		shutdownReply(sid, respRing, req.ReqID, req.ConnID, netproto.NetErrInvalid)
+		return
+	}
+
+	if terr := conn.ep.Shutdown(flags); terr != nil {
+		shutdownReply(sid, respRing, req.ReqID, req.ConnID, mapGvisorWriteErr(terr))
+		fmt.Printf("[gvisor:netipc] Shutdown ep.Shutdown err=%v SID=%d connID=%d\n",
+			terr, sid, req.ConnID)
+		return
+	}
+	shutdownReply(sid, respRing, req.ReqID, req.ConnID, netproto.NetErrNone)
+}
+
+func shutdownReply(sid int16, respRing uint8, reqID uint32, connID uint32, code int16) {
+	resp := netproto.StreamShutdownResp{ReqID: reqID, ConnID: connID, ErrCode: code}
+	sendResp(sid, respRing, netproto.EncodeStreamShutdownResp(&resp))
 }
 
 // handleStreamSend ships up to one page of bytes from the per-stream

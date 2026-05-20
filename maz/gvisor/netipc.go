@@ -203,6 +203,8 @@ func handleNetIPC(msg *ipc.UringIPCMsg) {
 		handleTCPConnect(msg)
 	case netproto.NetMsgStreamSend:
 		handleStreamSend(msg)
+	case netproto.NetMsgStreamShutdown:
+		handleShutdown(msg)
 	default:
 		atomic.AddUint64(&dbgNetIPCUnknown, 1)
 		fmt.Printf("[gvisor:netipc] unknown type=%d SID=%d\n",

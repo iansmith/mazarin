@@ -200,6 +200,78 @@ func testNetClient() bool {
 	return testNetClientTCP(nc)
 }
 
+// tcpEchoRoundTrip drives the full TCP echo exchange and EOF half-close
+// on a connected stream. Caller owns the Close. On failure logs FAIL
+// via UART and returns false (caller bails out without closing —
+// leaks acceptable for a boot smoke test).
+func tcpEchoRoundTrip(nc netclient.NetClient, connID uint32) bool {
+	streamPayload := []byte("hello tcp echo")
+	sent, err := nc.StreamSend(connID, streamPayload)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: StreamSend to echo: " + err.Error() + "\n")
+		return false
+	}
+	if sent != len(streamPayload) {
+		sys.UartWriteString(tag + "FAIL: StreamSend short write sent=" +
+			sys.Itoa(int64(sent)) + " want=" + sys.Itoa(int64(len(streamPayload))) + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCStreamSend connID=" + sys.Itoa(int64(connID)) +
+		" sent=" + sys.Itoa(int64(sent)) + "\n")
+
+	// Drain echo bytes — gvisor on loopback typically delivers the
+	// full 14 bytes in one chunk, but loop in case it fragments.
+	gotBytes := 0
+	for gotBytes < len(streamPayload) {
+		chunk, err := nc.ReadStream(connID)
+		if err != nil {
+			sys.UartWriteString(tag + "FAIL: ReadStream: " + err.Error() + "\n")
+			return false
+		}
+		if chunk.EOF {
+			sys.UartWriteString(tag + "FAIL: unexpected EOF before all bytes (got=" +
+				sys.Itoa(int64(gotBytes)) + ")\n")
+			return false
+		}
+		payload := chunk.Payload()
+		for i, b := range payload {
+			if b != streamPayload[gotBytes+i] {
+				sys.UartWriteString(tag + "FAIL: echo mismatch at i=" +
+					sys.Itoa(int64(gotBytes+i)) + "\n")
+				return false
+			}
+		}
+		gotBytes += int(chunk.Length)
+		if err := nc.ReleaseRX(connID, chunk.Page); err != nil {
+			sys.UartWriteString(tag + "FAIL: ReleaseRX: " + err.Error() + "\n")
+			return false
+		}
+	}
+	sys.UartWriteString(tag + "PASS NetIPCStreamRx connID=" + sys.Itoa(int64(connID)) +
+		" bytes=" + sys.Itoa(int64(gotBytes)) + "\n")
+
+	// Half-close write side — peer's tcpEchoServe will see EOF and
+	// drop its end, sending FIN back so the bridge emits StreamRx EOF.
+	if err := nc.Shutdown(connID, netproto.ShutdownWrite); err != nil {
+		sys.UartWriteString(tag + "FAIL: Shutdown(Write): " + err.Error() + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCStreamShutdown connID=" + sys.Itoa(int64(connID)) + "\n")
+
+	eof, err := nc.ReadStream(connID)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: ReadStream EOF: " + err.Error() + "\n")
+		return false
+	}
+	if !eof.EOF {
+		sys.UartWriteString(tag + "FAIL: expected EOF, got Length=" +
+			sys.Itoa(int64(eof.Length)) + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCStreamRx EOF connID=" + sys.Itoa(int64(connID)) + "\n")
+	return true
+}
+
 // testNetClientTCP exercises the Phase 6 step-3 TCP handshake surface:
 // BindTCP+Listen, TCPConnect to the in-stack echo server, and an
 // Accept against a self-bound listener (using a goroutine to drive the
@@ -240,19 +312,9 @@ func testNetClientTCP(nc netclient.NetClient) bool {
 	sys.UartWriteString(tag + "PASS NetIPCTCPConnect connID=" + sys.Itoa(int64(streamB)) +
 		" localPort=" + sys.Itoa(int64(localPortB)) + "\n")
 
-	streamPayload := []byte("hello tcp echo")
-	sent, err := nc.StreamSend(streamB, streamPayload)
-	if err != nil {
-		sys.UartWriteString(tag + "FAIL: StreamSend to echo: " + err.Error() + "\n")
+	if !tcpEchoRoundTrip(nc, streamB) {
 		return false
 	}
-	if sent != len(streamPayload) {
-		sys.UartWriteString(tag + "FAIL: StreamSend short write sent=" +
-			sys.Itoa(int64(sent)) + " want=" + sys.Itoa(int64(len(streamPayload))) + "\n")
-		return false
-	}
-	sys.UartWriteString(tag + "PASS NetIPCStreamSend connID=" + sys.Itoa(int64(streamB)) +
-		" sent=" + sys.Itoa(int64(sent)) + "\n")
 
 	if err := nc.Close(streamB); err != nil {
 		sys.UartWriteString(tag + "FAIL: Close stream B: " + err.Error() + "\n")
