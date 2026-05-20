@@ -77,8 +77,9 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	targetL0PA := targetShepherd.PageTableL0PA
 
 	// Allocate the entire target VA range up front so the caller sees a
-	// single contiguous region. bumpAllocForShepherd is monotonic, so we
-	// cannot recover this range on partial failure (fail-stop semantics).
+	// single contiguous region. bumpAllocForShepherd is monotonic, so on
+	// rollback the target VA range itself is leaked (accepted); only the
+	// Spans bookkeeping and page ownership/mapping are recovered.
 	totalSize := uint64(numPages) * uint64(kmem.PageSize)
 	targetVABase := bumpAllocForShepherd(targetShepherd, totalSize)
 	if targetVABase == 0 {
@@ -108,19 +109,37 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			sourceVA, uintptr(targetVABase), chunkStart, chunkN, pas, elfFlags,
 		)
 		if errCode != 0 {
+			// Cross-chunk rollback: the failing chunk's prefix was already
+			// rolled back inside transferPagesChunkInner (or never started,
+			// for Pass-1 errors). Walk back through every fully-completed
+			// prior chunk and undo it. Prior chunks are always full-size
+			// transferChunkPages — only the trailing (= failing) chunk can
+			// be short, so every prior step uses transferChunkPages.
+			for priorStart := chunkStart - transferChunkPages; priorStart >= 0; priorStart -= transferChunkPages {
+				rollbackPagesChunkInner(
+					targetPID, callerSID, targetL0PA,
+					sourceVA, uintptr(targetVABase),
+					priorStart, transferChunkPages, pas, elfFlags,
+				)
+			}
+			// Drop the target Spans entry — no pages remain mapped in the
+			// target's address space at this range. The bumpAlloc'd VA is
+			// monotonic and not recoverable; that range is leaked (accepted).
+			targetShepherd.Spans.Remove(targetVABase, totalSize)
 			switch errCode {
 			case -14:
-				klog.Errf("[IPC] TransferPages: page not mapped at VA %x (chunk %d)\n",
+				klog.Errf("[IPC] TransferPages: page not mapped at VA %x (chunk %d) — rolled back\n",
 					uint64(failVA), chunkStart)
 			case -1:
-				klog.Errf("[IPC] TransferPages: page not owned by caller at PA %x (chunk %d)\n",
+				klog.Errf("[IPC] TransferPages: page not owned by caller at PA %x (chunk %d) — rolled back\n",
 					uint64(failVA), chunkStart)
 			case -12:
-				klog.Errf("[IPC] TransferPages: MapPageInProcess failed at target VA %x (chunk %d) — chunk prefix + prior chunks orphaned\n",
+				klog.Errf("[IPC] TransferPages: MapPageInProcess failed at target VA %x (chunk %d) — rolled back\n",
 					uint64(failVA), chunkStart)
 			}
-			// Fail-stop: target VA range, the target Spans entry, and any
-			// already-transferred chunks are leaked. Rollback tracked as MAZ-37.
+			// Rollback restored caller mappings across all completed chunks
+			// + the failing chunk's prefix; target Spans entry removed; the
+			// bumpAlloc'd target VA range is leaked (monotonic; accepted).
 			return errCode
 		}
 	}
