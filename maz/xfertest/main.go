@@ -17,6 +17,7 @@ package main
 import (
 	"syscall"
 	"time"
+	"unsafe"
 
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
@@ -157,7 +158,48 @@ func runSmokeTests() bool {
 	sys.UartWriteString(tag + "PASS ShareNetPageWithClient clientVA=0x" + sys.Hex64(uint64(clientVA)) + "\n")
 
 	// --- Test 3: NetIPC round-trip against net.elf via NetClient ---
-	return testNetClient()
+	if !testNetClient() {
+		return false
+	}
+
+	// --- Test 4: TransferPages partial-failure rollback (MAZ-37 Phase 0 red test) ---
+	// Allocate caller-owned pages, arm a one-shot MapPageInProcess failure,
+	// call sys.TransferPages, expect ENOMEM, then VERIFY THE SOURCE PAGES ARE
+	// STILL READABLE post-call. On current code (no rollback for TransferPages),
+	// the forward Pass-2 unmap drops the caller's mapping before the failing
+	// map call, so reading pagesTP[0] page-faults xfertest and we never reach
+	// the PASS line. After MAZ-37 lands, rollback restores caller mappings and
+	// this stage passes cleanly.
+	pagesTP, allocErr := mem.AllocPagesSlice(2, mem.PageShared)
+	if allocErr != nil {
+		sys.UartWriteString(tag + "FAIL: AllocPagesSlice#TP: " + allocErr.Error() + "\n")
+		return false
+	}
+	for i := range pagesTP {
+		pagesTP[i] = patternA
+	}
+	tpSourceVA := uintptr(unsafe.Pointer(&pagesTP[0]))
+	sys.SetMapFailInjection(true)
+	_, tpErr := sys.TransferPages(int(targetSID), tpSourceVA, 2, 0)
+	sys.SetMapFailInjection(false)
+	if tpErr == nil {
+		sys.UartWriteString(tag + "FAIL: TransferPages rollback — should have returned ENOMEM (got nil)\n")
+		return false
+	}
+	if tpErr != syscall.ENOMEM {
+		sys.UartWriteString(tag + "FAIL: TransferPages rollback — expected ENOMEM, got: " + tpErr.Error() + "\n")
+		return false
+	}
+	// The next read crashes xfertest on current code (no rollback). After
+	// MAZ-37, the rollback restores the mapping and the pattern survives.
+	if pagesTP[0] != patternA {
+		sys.UartWriteString(tag + "FAIL: TransferPages rollback — source page contents corrupted (got 0x" +
+			sys.Hex64(uint64(pagesTP[0])) + ")\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS TransferPages rollback on MapPageInProcess failure\n")
+
+	return true
 }
 
 func main() { MazarinMain() }
