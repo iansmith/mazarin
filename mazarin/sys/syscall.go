@@ -43,3 +43,22 @@ func SetMapFailInjection(arm bool) {
 	}
 	RawSyscall(mazzy.SysDebugPrint, 0xDB8, v, 0, 0, 0, 0)
 }
+
+// SetMapFailAfter arms the kernel's countdown MapPageInProcess failure
+// counter (kmem.MapPageInProcessFailAfter), sibling to SetMapFailInjection
+// above. n >= 1 fires on the Nth forward MapPageInProcess call after
+// arming (n=1 ⇒ next call, n=4 ⇒ four calls later); n <= 0 disarms the
+// counter. The kernel decrement-and-fire is race-free, and rollback
+// paths that re-enter MapPageInProcess will NOT re-fire — see
+// kmem.MapPageInProcessFailAfter for the full convention.
+//
+// The cast through uint32 then uintptr preserves the int32 bit pattern
+// across the syscall boundary; the kernel re-casts back via
+// int32(uint32(v1)). Test-only — used by xfertest to exercise
+// SyscallTransferPages mid-clump rollback (MAZ-37). Marker 0xDB9 is
+// reserved by ksyscall.DebugMarkerSetMapFailAfter.
+//
+//go:nosplit
+func SetMapFailAfter(n int32) {
+	RawSyscall(mazzy.SysDebugPrint, 0xDB9, uintptr(uint32(n)), 0, 0, 0, 0)
+}

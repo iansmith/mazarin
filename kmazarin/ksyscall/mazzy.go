@@ -96,6 +96,15 @@ const DebugMarkerStatusDump = 0xDB7
 // mazarin/sys.SetMapFailInjection.
 const DebugMarkerSetMapFailNext = 0xDB8
 
+// DebugMarkerSetMapFailAfter arms kmem.MapPageInProcessFailAfter from
+// userspace — sibling to DebugMarkerSetMapFailNext, but supports
+// firing on the Nth forward call rather than the very next one. v1 is
+// re-cast to int32 (sign-preserving) and stored verbatim; see
+// kmem.MapPageInProcessFailAfter for the arming convention. Used by
+// xfertest to exercise SyscallTransferPages mid-clump rollback (MAZ-37).
+// Userspace wrapper: mazarin/sys.SetMapFailAfter.
+const DebugMarkerSetMapFailAfter = 0xDB9
+
 // SyscallDebugPrint prints debug arguments from userspace.
 // arg0 = marker/id, arg1-arg5 = values to print
 // Special case: if v1-v5 are all 0 and marker < 256, print marker as a character
@@ -113,6 +122,14 @@ func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
 	}
 	if marker == DebugMarkerSetMapFailNext {
 		kmem.MapPageInProcessFailNext.Store(v1 != 0)
+		return 0
+	}
+	if marker == DebugMarkerSetMapFailAfter {
+		// Round-trip uint64 -> uint32 -> int32 to preserve the bit
+		// pattern of the int32 the userspace wrapper packed in. The
+		// counter convention treats values <= 0 as "disarmed", so
+		// negative arguments are explicit disarms — same as 0.
+		kmem.MapPageInProcessFailAfter.Store(int32(uint32(v1)))
 		return 0
 	}
 	// Full debug print — disabled during investigation
