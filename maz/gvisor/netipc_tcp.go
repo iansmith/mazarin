@@ -11,27 +11,61 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"sync/atomic"
+	"unsafe"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
 
+	"mazzy/mazarin/mem"
+	"mazzy/mazarin/sys"
+	"mazzy/shared/constants"
 	"mazzy/shared/ipc"
 	"mazzy/shared/netproto"
 )
 
 var (
-	dbgBindTCP        uint64
-	dbgListen         uint64
-	dbgAccept         uint64
-	dbgAcceptDelivers uint64
-	dbgAcceptAborts   uint64
-	dbgTCPConnect     uint64
-	dbgTCPConnectAOK  uint64
+	dbgBindTCP         uint64
+	dbgListen          uint64
+	dbgAccept          uint64
+	dbgAcceptDelivers  uint64
+	dbgAcceptAborts    uint64
+	dbgTCPConnect      uint64
+	dbgTCPConnectAOK   uint64
+	dbgStreamSend      uint64
+	dbgStreamSendOK    uint64
+	dbgStreamSendFail  uint64
+	dbgSendPageAllocFail uint64
 )
+
+// allocStreamSendPage allocates one net.elf-owned page and maps it RW
+// into the client via SyscallShareNetPageWithClient. Returns the
+// net.elf-side pointer (used by handleStreamSend to slice the bytes
+// the client wrote) and the client-side VA (returned to the client in
+// AcceptResp / TCPConnectResp). On any failure the net.elf-side page
+// is freed and (0, 0, NetErrNoMemory) is returned.
+func allocStreamSendPage(sid int16) (uintptr, uint64, int16) {
+	pageBytes, err := mem.AllocPagesSlice(1, mem.PageShared)
+	if err != nil {
+		atomic.AddUint64(&dbgSendPageAllocFail, 1)
+		fmt.Printf("[gvisor:netipc] send-page AllocPagesSlice failed: %v\n", err)
+		return 0, 0, netproto.NetErrNoMemory
+	}
+	pagePtr := unsafe.Pointer(&pageBytes[0])
+	clientVA, err := sys.ShareNetPageWithClient(int(sid), uintptr(pagePtr), 0)
+	if err != nil {
+		atomic.AddUint64(&dbgSendPageAllocFail, 1)
+		fmt.Printf("[gvisor:netipc] send-page ShareNetPageWithClient(sid=%d) failed: %v\n",
+			sid, err)
+		_ = mem.FreePages(pagePtr, 1)
+		return 0, 0, netproto.NetErrNoMemory
+	}
+	return uintptr(pagePtr), uint64(clientVA), netproto.NetErrNone
+}
 
 // handleBindTCP creates a TCP endpoint at (LocalIP, LocalPort), Binds
 // it, and registers it as a listener-shaped clientConn. The endpoint is
@@ -222,16 +256,25 @@ func handleAccept(msg *ipc.UringIPCMsg) {
 func awaitAccept(cs *clientState, listener *clientConn, sid int16, reqID uint32, respRing uint8) {
 	select {
 	case accepted := <-listener.acceptCh:
+		sendPagePtr, sendPageVA, errCode := allocStreamSendPage(sid)
+		if errCode != netproto.NetErrNone {
+			accepted.ep.Close()
+			acceptError(sid, respRing, reqID, errCode)
+			return
+		}
+
 		clientsMu.Lock()
 		newConnID := cs.allocConnID()
 		newConn := &clientConn{
-			connID:  newConnID,
-			sid:     sid,
-			ep:      accepted.ep,
-			wq:      accepted.wq,
-			rxStop:  make(chan struct{}),
-			rxRearm: make(chan struct{}, 1),
-			rxPages: make(map[uint64]uintptr),
+			connID:      newConnID,
+			sid:         sid,
+			ep:          accepted.ep,
+			wq:          accepted.wq,
+			rxStop:      make(chan struct{}),
+			rxRearm:     make(chan struct{}, 1),
+			rxPages:     make(map[uint64]uintptr),
+			sendPagePtr: sendPagePtr,
+			sendPageVA:  sendPageVA,
 		}
 		cs.conns[newConnID] = newConn
 		clientsMu.Unlock()
@@ -240,18 +283,17 @@ func awaitAccept(cs *clientState, listener *clientConn, sid int16, reqID uint32,
 		if accepted.peer.Addr.Len() == 4 {
 			peer.IP4 = accepted.peer.Addr.As4()
 		}
-		// SendPageVA is zero until per-stream send pages land; clients
-		// must wait on that mapping before calling StreamSend.
 		resp := netproto.AcceptResp{
-			ReqID:     reqID,
-			NewConnID: newConnID,
-			Peer:      peer,
-			ErrCode:   netproto.NetErrNone,
+			ReqID:      reqID,
+			NewConnID:  newConnID,
+			Peer:       peer,
+			SendPageVA: sendPageVA,
+			ErrCode:    netproto.NetErrNone,
 		}
 		sendResp(sid, respRing, netproto.EncodeAcceptResp(&resp))
 		atomic.AddUint64(&dbgAcceptDelivers, 1)
-		fmt.Printf("[gvisor:netipc] Accept SID=%d listener=%d → connID=%d peer=%v:%d\n",
-			sid, listener.connID, newConnID, peer.IP4, peer.Port)
+		fmt.Printf("[gvisor:netipc] Accept SID=%d listener=%d → connID=%d peer=%v:%d sendPageVA=0x%x\n",
+			sid, listener.connID, newConnID, peer.IP4, peer.Port, sendPageVA)
 	case <-listener.acceptStop:
 		atomic.AddUint64(&dbgAcceptAborts, 1)
 		acceptError(sid, respRing, reqID, netproto.NetErrConnAborted)
@@ -356,37 +398,113 @@ func completeTCPConnect(cs *clientState, sid int16, respRing uint8, reqID uint32
 		return
 	}
 
+	sendPagePtr, sendPageVA, errCode := allocStreamSendPage(sid)
+	if errCode != netproto.NetErrNone {
+		ep.Close()
+		tcpConnectError(sid, respRing, reqID, errCode)
+		return
+	}
+
 	clientsMu.Lock()
 	connID := cs.allocConnID()
 	conn := &clientConn{
-		connID:  connID,
-		sid:     sid,
-		ep:      ep,
-		wq:      wq,
-		rxStop:  make(chan struct{}),
-		rxRearm: make(chan struct{}, 1),
-		rxPages: make(map[uint64]uintptr),
+		connID:      connID,
+		sid:         sid,
+		ep:          ep,
+		wq:          wq,
+		rxStop:      make(chan struct{}),
+		rxRearm:     make(chan struct{}, 1),
+		rxPages:     make(map[uint64]uintptr),
+		sendPagePtr: sendPagePtr,
+		sendPageVA:  sendPageVA,
 	}
 	cs.conns[connID] = conn
 	clientsMu.Unlock()
 
-	// SendPageVA is zero until per-stream send pages land; clients
-	// must wait on that mapping before calling StreamSend.
 	resp := netproto.TCPConnectResp{
-		ReqID:     reqID,
-		ConnID:    connID,
-		LocalPort: bound.Port,
-		ErrCode:   netproto.NetErrNone,
+		ReqID:      reqID,
+		ConnID:     connID,
+		SendPageVA: sendPageVA,
+		LocalPort:  bound.Port,
+		ErrCode:    netproto.NetErrNone,
 	}
 	sendResp(sid, respRing, netproto.EncodeTCPConnectResp(&resp))
 	atomic.AddUint64(&dbgTCPConnectAOK, 1)
-	fmt.Printf("[gvisor:netipc] TCPConnect SID=%d connID=%d localPort=%d\n",
-		sid, connID, bound.Port)
+	fmt.Printf("[gvisor:netipc] TCPConnect SID=%d connID=%d localPort=%d sendPageVA=0x%x\n",
+		sid, connID, bound.Port, sendPageVA)
 }
 
 func tcpConnectError(sid int16, respRing uint8, reqID uint32, code int16) {
 	resp := netproto.TCPConnectResp{ReqID: reqID, ErrCode: code}
 	sendResp(sid, respRing, netproto.EncodeTCPConnectResp(&resp))
+}
+
+// handleStreamSend ships up to one page of bytes from the per-stream
+// send page into gvisor's Endpoint.Write. The client wrote payload
+// bytes at [sendPageVA : sendPageVA+Length] before sending this IPC;
+// the net.elf-side slice at [sendPagePtr : sendPagePtr+Length] is the
+// same physical page (mapped RW into both shepherds). Only one
+// StreamSend may be in flight per stream — the client must await
+// StreamSendResp before reusing the page.
+func handleStreamSend(msg *ipc.UringIPCMsg) {
+	atomic.AddUint64(&dbgStreamSend, 1)
+	req := *netproto.DecodeStreamSendReq(msg)
+	sid := msg.SenderSID
+
+	clientsMu.Lock()
+	cs, ok := clients[sid]
+	var conn *clientConn
+	if ok && cs.conns != nil {
+		conn = cs.conns[req.ConnID]
+	}
+	clientsMu.Unlock()
+	if !ok {
+		fmt.Printf("[gvisor:netipc] StreamSend from unconnected SID=%d, dropping\n", sid)
+		return
+	}
+	respRing := cs.respRing
+
+	fail := func(code int16) {
+		atomic.AddUint64(&dbgStreamSendFail, 1)
+		resp := netproto.StreamSendResp{ReqID: req.ReqID, ConnID: req.ConnID, ErrCode: code}
+		sendResp(sid, respRing, netproto.EncodeStreamSendResp(&resp))
+	}
+
+	if conn == nil {
+		fail(netproto.NetErrNoConn)
+		return
+	}
+	if conn.isListener {
+		fail(netproto.NetErrInvalid)
+		return
+	}
+	if conn.sendPagePtr == 0 {
+		// Stream conn exists but the per-stream send page wasn't set up
+		// (UDP datagram conn, or TCP stream still establishing).
+		fail(netproto.NetErrNotConn)
+		return
+	}
+	if uint32(req.Length) > constants.PAGE_SIZE {
+		fail(netproto.NetErrInvalid)
+		return
+	}
+
+	payload := unsafe.Slice((*byte)(unsafe.Pointer(conn.sendPagePtr)), int(req.Length))
+	n, terr := conn.ep.Write(bytes.NewReader(payload), tcpip.WriteOptions{})
+	if terr != nil {
+		fail(mapGvisorWriteErr(terr))
+		fmt.Printf("[gvisor:netipc] StreamSend Write err=%v SID=%d connID=%d\n",
+			terr, sid, req.ConnID)
+		return
+	}
+	atomic.AddUint64(&dbgStreamSendOK, 1)
+	resp := netproto.StreamSendResp{
+		ReqID:        req.ReqID,
+		ConnID:       req.ConnID,
+		BytesWritten: uint16(n),
+		ErrCode:      netproto.NetErrNone,
+	}
+	sendResp(sid, respRing, netproto.EncodeStreamSendResp(&resp))
 }
 
 // mapGvisorConnectErr translates the gvisor errors a TCP Connect can

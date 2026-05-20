@@ -93,6 +93,15 @@ type clientConn struct {
 	isListener bool
 	acceptStop chan struct{}
 	acceptCh   chan acceptedEP
+
+	// TCP stream send page — populated for accepted and active streams.
+	// sendPagePtr is the net.elf-side address (used by handleStreamSend
+	// to slice the bytes the client wrote); sendPageVA is the client-side
+	// VA reported back in AcceptResp/TCPConnectResp and used by the
+	// client's StreamSend to copy payload into the page. handleClose
+	// frees the page (mem.FreePages on sendPagePtr) when non-zero.
+	sendPagePtr uintptr
+	sendPageVA  uint64
 }
 
 // acceptedEP carries one accepted gvisor endpoint from the accept
@@ -192,6 +201,8 @@ func handleNetIPC(msg *ipc.UringIPCMsg) {
 		handleAccept(msg)
 	case netproto.NetMsgTCPConnect:
 		handleTCPConnect(msg)
+	case netproto.NetMsgStreamSend:
+		handleStreamSend(msg)
 	default:
 		atomic.AddUint64(&dbgNetIPCUnknown, 1)
 		fmt.Printf("[gvisor:netipc] unknown type=%d SID=%d\n",
@@ -597,6 +608,17 @@ func handleClose(msg *ipc.UringIPCMsg) {
 		atomic.AddInt32(&cs.rxLoaned, -int32(freed))
 	}
 
+	// Free the per-stream send page if this is a TCP stream conn.
+	// PD_NET_OWNED_SHARED keeps the client's mapping alive until shepherd
+	// death; net.elf-side FreePages just drops our own RefCount on the
+	// page, which is correct since we no longer need access.
+	if conn.sendPagePtr != 0 {
+		if err := mem.FreePages(unsafe.Pointer(conn.sendPagePtr), 1); err != nil {
+			fmt.Printf("[gvisor:netipc] Close send-page FreePages(0x%x) failed: %v\n",
+				uint64(conn.sendPagePtr), err)
+		}
+	}
+
 	resp := netproto.CloseResp{ReqID: req.ReqID, ErrCode: netproto.NetErrNone}
 	sendResp(msg.SenderSID, respRing, netproto.EncodeCloseResp(&resp))
 	fmt.Printf("[gvisor:netipc] Close SID=%d connID=%d (reclaimed %d RX pages)\n",
@@ -615,6 +637,12 @@ func mapGvisorWriteErr(terr tcpip.Error) int16 {
 		return netproto.NetErrNoMemory
 	case *tcpip.ErrWouldBlock:
 		return netproto.NetErrTryAgain
+	case *tcpip.ErrClosedForSend:
+		return netproto.NetErrPipe
+	case *tcpip.ErrConnectionReset:
+		return netproto.NetErrConnReset
+	case *tcpip.ErrNotConnected:
+		return netproto.NetErrNotConn
 	default:
 		return netproto.NetErrUnknown
 	}

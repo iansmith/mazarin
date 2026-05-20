@@ -227,7 +227,10 @@ func testNetClientTCP(nc netclient.NetClient) bool {
 	}
 	sys.UartWriteString(tag + "PASS NetIPCClose listener connID=" + sys.Itoa(int64(listenA)) + "\n")
 
-	// Stage B: TCPConnect to the in-stack echo server.
+	// Stage B: TCPConnect to the in-stack echo server, send a payload,
+	// confirm the per-stream send page round-trip lands the bytes in
+	// gvisor's send queue (BytesWritten == len(payload)). RX side is
+	// not yet exercised here — see the StreamRx round-trip stage.
 	echoDst := netproto.Addr{IP4: loopbackV4, Port: echoPort}
 	streamB, localPortB, err := nc.TCPConnect([4]byte{}, 0, echoDst)
 	if err != nil {
@@ -236,6 +239,21 @@ func testNetClientTCP(nc netclient.NetClient) bool {
 	}
 	sys.UartWriteString(tag + "PASS NetIPCTCPConnect connID=" + sys.Itoa(int64(streamB)) +
 		" localPort=" + sys.Itoa(int64(localPortB)) + "\n")
+
+	streamPayload := []byte("hello tcp echo")
+	sent, err := nc.StreamSend(streamB, streamPayload)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: StreamSend to echo: " + err.Error() + "\n")
+		return false
+	}
+	if sent != len(streamPayload) {
+		sys.UartWriteString(tag + "FAIL: StreamSend short write sent=" +
+			sys.Itoa(int64(sent)) + " want=" + sys.Itoa(int64(len(streamPayload))) + "\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS NetIPCStreamSend connID=" + sys.Itoa(int64(streamB)) +
+		" sent=" + sys.Itoa(int64(sent)) + "\n")
+
 	if err := nc.Close(streamB); err != nil {
 		sys.UartWriteString(tag + "FAIL: Close stream B: " + err.Error() + "\n")
 		return false
