@@ -227,6 +227,45 @@ func transferPagesChunkInner(
 	return 0, 0
 }
 
+// rollbackPagesChunkInner undoes a fully-completed prior chunk after a later
+// chunk failed. It walks indices [chunkStart, chunkStart+chunkN) in reverse:
+// unmap the target VA, return ownership to the caller, re-map the source VA.
+// pas[chunkStart..chunkStart+chunkN) MUST have been populated by an earlier
+// successful transferPagesChunkInner pass for this same window.
+//
+// Runs under its own saveAndDisableIRQs bracket so cross-chunk rollback
+// doesn't expose a half-rolled state to a concurrent CleanupShepherdPages
+// on another CPU.
+//
+// NOTE: rollback restores caller mappings with `elfFlags` (the target's
+// intended flags), not the caller's original PTE flags. Benign today for
+// the same reason as transferPagesChunkInner's inner rollback — every
+// TransferPages caller in tree is R+W. Real fix tracked as MAZ-39.
+//
+//go:nosplit
+func rollbackPagesChunkInner(
+	targetPID int16,
+	callerSID int16,
+	targetL0PA uintptr,
+	sourceVA uintptr,
+	targetVABase uintptr,
+	chunkStart int,
+	chunkN int,
+	pas []uintptr,
+	elfFlags uint32,
+) {
+	savedDAIF := saveAndDisableIRQs()
+	for j := chunkN - 1; j >= 0; j-- {
+		kmem.UnmapUserPageWithL0(targetVABase+uintptr(chunkStart+j)*kmem.PageSize, targetL0PA)
+		kmem.TransferPageOwnership(pas[chunkStart+j], targetPID, callerSID)
+		if !kmem.MapPageInProcess(callerSID, sourceVA+uintptr(chunkStart+j)*kmem.PageSize, pas[chunkStart+j], elfFlags) {
+			restoreIRQs(savedDAIF)
+			KernelPanic("rollbackPagesChunkInner: caller restore-mapping failed")
+		}
+	}
+	restoreIRQs(savedDAIF)
+}
+
 // SyscallTransferDMAClump transfers ownership of one whole DMA clump from the
 // calling shepherd to a target shepherd. The clump is a MAZARIN_CONTIGUOUS
 // allocation tracked in the caller's per-shepherd clump table; transferring it
