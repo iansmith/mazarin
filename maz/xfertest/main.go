@@ -15,6 +15,7 @@
 package main
 
 import (
+	"syscall"
 	"time"
 
 	"mazzy/mazarin/mazhost"
@@ -113,9 +114,14 @@ func runSmokeTests() bool {
 		clumpRB.Buf[i] = patternA
 	}
 	sys.SetMapFailInjection(true)
-	if _, err := sys.TransferDMAClump(targetSID, clumpRB.Addr, 0); err == nil {
-		sys.UartWriteString(tag + "FAIL: rollback test — TransferDMAClump should have returned ENOMEM\n")
-		sys.SetMapFailInjection(false)
+	_, rbErr := sys.TransferDMAClump(targetSID, clumpRB.Addr, 0)
+	sys.SetMapFailInjection(false)
+	if rbErr == nil {
+		sys.UartWriteString(tag + "FAIL: rollback test — TransferDMAClump should have returned ENOMEM (got nil)\n")
+		return false
+	}
+	if rbErr != syscall.ENOMEM {
+		sys.UartWriteString(tag + "FAIL: rollback test — expected ENOMEM, got: " + rbErr.Error() + "\n")
 		return false
 	}
 	// Caller-side rollback verification: clump page is remapped and readable,
@@ -124,10 +130,8 @@ func runSmokeTests() bool {
 	if clumpRB.Buf[0] != patternA {
 		sys.UartWriteString(tag + "FAIL: rollback test — source page content corrupted (got 0x" +
 			sys.Hex64(uint64(clumpRB.Buf[0])) + ")\n")
-		sys.SetMapFailInjection(false)
 		return false
 	}
-	sys.SetMapFailInjection(false)
 	sys.UartWriteString(tag + "PASS TransferDMAClump rollback on MapPageInProcess failure\n")
 
 	// --- Test 2: SyscallShareNetPageWithClient ---

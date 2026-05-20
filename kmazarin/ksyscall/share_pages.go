@@ -299,7 +299,7 @@ func SyscallTransferDMAClump(arg0, arg1, arg2, _, _, _ uint64) int64 {
 
 	errCode, failIdx := transferDMAClumpInner(
 		targetPID, callerSID, sourceL0PA, targetL0PA,
-		&pas, numPages, clumpStartVA, targetVABase, elfFlags,
+		&pas, numPages, clumpStartVA, uintptr(targetVABase), elfFlags,
 	)
 	if errCode != 0 {
 		// Inner already rolled back any partial Pass-2 progress (ENOMEM path) and
@@ -357,7 +357,7 @@ func transferDMAClumpInner(
 	pas *[MaxDMAClumpPages]uintptr,
 	numPages int,
 	clumpStartVA uintptr,
-	targetVABase uint64,
+	targetVABase uintptr,
 	elfFlags uint32,
 ) (int64, int) {
 	savedDAIF := saveAndDisableIRQs()
@@ -388,7 +388,7 @@ func transferDMAClumpInner(
 		pa := pas[i]
 		kmem.UnmapUserPageWithL0(va, sourceL0PA)
 		kmem.TransferPageOwnership(pa, callerSID, targetPID)
-		targetVA := uintptr(targetVABase) + uintptr(i)*kmem.PageSize
+		targetVA := targetVABase + uintptr(i)*kmem.PageSize
 		if !kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags) {
 			// Roll back indices [0..i] in reverse. Index i had ownership
 			// transferred but no target mapping committed (the map call
@@ -396,7 +396,7 @@ func transferDMAClumpInner(
 			// asymmetry — we unmap target only where a forward map succeeded.
 			for j := i; j >= 0; j-- {
 				if j < i {
-					kmem.UnmapUserPageWithL0(uintptr(targetVABase)+uintptr(j)*kmem.PageSize, targetL0PA)
+					kmem.UnmapUserPageWithL0(targetVABase+uintptr(j)*kmem.PageSize, targetL0PA)
 				}
 				kmem.TransferPageOwnership(pas[j], targetPID, callerSID)
 				if !kmem.MapPageInProcess(callerSID, clumpStartVA+uintptr(j)*kmem.PageSize, pas[j], elfFlags) {
