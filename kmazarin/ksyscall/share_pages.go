@@ -103,6 +103,9 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			case -1:
 				klog.Errf("[IPC] TransferPages: page not owned by caller at PA %x (chunk %d)\n",
 					uint64(failVA), chunkStart)
+			case -12:
+				klog.Errf("[IPC] TransferPages: MapPageInProcess failed at target VA %x (chunk %d) — chunk prefix + prior chunks orphaned\n",
+					uint64(failVA), chunkStart)
 			}
 			// Fail-stop: target VA range, the target Spans entry, and any
 			// already-transferred chunks are leaked. Rollback tracked as MAZ-37.
@@ -165,14 +168,20 @@ func transferPagesChunkInner(
 		pas[i] = pa
 	}
 
-	// Pass 2: unmap from source, transfer ownership, map into target.
+	// Pass 2: unmap from source, transfer ownership, map into target. Fail-stop
+	// on MapPageInProcess failure — the prior indices in this chunk plus all
+	// completed chunks are orphaned (target-owned, no syscall return). Rollback
+	// is MAZ-37; until then the caller's PR-visible signal is the -ENOMEM.
 	for i := 0; i < chunkN; i++ {
 		va := sourceVA + uintptr(chunkStart+i)*kmem.PageSize
 		pa := pas[i]
 		kmem.UnmapUserPageWithL0(va, sourceL0PA)
 		kmem.TransferPageOwnership(pa, callerSID, targetPID)
 		targetVA := targetVABase + uintptr(chunkStart+i)*kmem.PageSize
-		kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags)
+		if !kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags) {
+			restoreIRQs(savedDAIF)
+			return -12, targetVA // ENOMEM
+		}
 	}
 
 	restoreIRQs(savedDAIF)
