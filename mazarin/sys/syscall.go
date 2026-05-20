@@ -27,3 +27,19 @@ func DebugPutChar(c byte) {
 func DumpKernelStatus() {
 	RawSyscall(mazzy.SysDebugPrint, 0xDB7, 0, 0, 0, 0, 0)
 }
+
+// SetMapFailInjection arms (arm=true) or disarms (arm=false) the kernel's
+// one-shot MapPageInProcess failure flag. When armed, the next single call
+// to kmem.MapPageInProcess returns false without performing the mapping
+// and then disarms itself. Test-only — used by xfertest to provoke the
+// TransferDMAClump rollback path. Marker 0xDB8 is reserved by
+// ksyscall.DebugMarkerSetMapFailNext.
+//
+//go:nosplit
+func SetMapFailInjection(arm bool) {
+	var v uintptr
+	if arm {
+		v = 1
+	}
+	RawSyscall(mazzy.SysDebugPrint, 0xDB8, v, 0, 0, 0, 0)
+}

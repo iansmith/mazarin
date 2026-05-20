@@ -2351,6 +2351,9 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 // If elfFlags is 0, defaults to ELF_PF_R | ELF_PF_W.
 // Returns true on success.
 func MapPageInProcess(shepherdID int16, va, pa uintptr, elfFlags uint32) bool {
+	if ConsumeMapFailInjection() {
+		return false
+	}
 	p := proc.FindShepherdBySID(proc.ShepherdId(shepherdID))
 	if p == nil || p.PageTableL0PA == 0 {
 		return false

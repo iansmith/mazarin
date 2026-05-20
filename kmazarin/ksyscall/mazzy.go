@@ -2,6 +2,7 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/serial"
 )
 
@@ -89,6 +90,12 @@ var EpochStatusDumpFn func()
 // mazarin/sys.DumpKernelStatus.
 const DebugMarkerStatusDump = 0xDB7
 
+// DebugMarkerSetMapFailNext arms kmem.MapPageInProcessFailNext from
+// userspace — used by xfertest to exercise the TransferDMAClump rollback
+// path. v1 != 0 arms the one-shot, v1 == 0 disarms. Userspace wrapper:
+// mazarin/sys.SetMapFailInjection.
+const DebugMarkerSetMapFailNext = 0xDB8
+
 // SyscallDebugPrint prints debug arguments from userspace.
 // arg0 = marker/id, arg1-arg5 = values to print
 // Special case: if v1-v5 are all 0 and marker < 256, print marker as a character
@@ -102,6 +109,10 @@ func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
 	}
 	if marker == DebugMarkerStatusDump && EpochStatusDumpFn != nil {
 		EpochStatusDumpFn()
+		return 0
+	}
+	if marker == DebugMarkerSetMapFailNext {
+		kmem.MapPageInProcessFailNext.Store(v1 != 0)
 		return 0
 	}
 	// Full debug print — disabled during investigation
