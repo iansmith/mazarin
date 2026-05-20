@@ -199,6 +199,52 @@ func runSmokeTests() bool {
 	}
 	sys.UartWriteString(tag + "PASS TransferPages rollback on MapPageInProcess failure\n")
 
+	// --- Test 4b: TransferPages MULTI-CHUNK rollback ---
+	// Allocate transferChunkPages+8 = 4104 caller-owned pages (slightly larger
+	// than one kernel chunk so we exercise cross-chunk rollback). Arm
+	// SetMapFailAfter(4097) so the first 4096 forward maps (all of chunk 0)
+	// succeed, then call #4097 — chunk 1's first map — fails. Verify ENOMEM
+	// AND that EVERY page survived the rollback (cross-chunk walk-back must
+	// restore caller mappings for chunk 0's entire contents in addition to
+	// chunk 1's prefix).
+	//
+	// 4097 is hardcoded against kmazarin/ksyscall/share_pages.go's
+	// transferChunkPages = 4096. If that constant changes, this number must
+	// change too. Documented here so the linkage is discoverable.
+	const tpMultiPages = 4104
+	pagesTP2, allocErr2 := mem.AllocPagesSlice(tpMultiPages, mem.PageShared)
+	if allocErr2 != nil {
+		sys.UartWriteString(tag + "FAIL: AllocPagesSlice#TP2: " + allocErr2.Error() + "\n")
+		return false
+	}
+	for i := range pagesTP2 {
+		pagesTP2[i] = patternB
+	}
+	tpSourceVA2 := uintptr(unsafe.Pointer(&pagesTP2[0]))
+	sys.SetMapFailAfter(4097)
+	_, tpErr2 := sys.TransferPages(int(targetSID), tpSourceVA2, tpMultiPages, 0)
+	sys.SetMapFailAfter(-1) // explicit disarm (also clears any residual)
+	if tpErr2 == nil {
+		sys.UartWriteString(tag + "FAIL: TransferPages multi-chunk rollback — should have returned ENOMEM (got nil)\n")
+		return false
+	}
+	if tpErr2 != syscall.ENOMEM {
+		sys.UartWriteString(tag + "FAIL: TransferPages multi-chunk rollback — expected ENOMEM, got: " + tpErr2.Error() + "\n")
+		return false
+	}
+	// Spot-check the first byte of every page. If cross-chunk rollback worked,
+	// every page should still show patternB. A FAIL here would mean either a
+	// chunk-0 page wasn't rolled back (cross-chunk walk-back broken) or a
+	// chunk-1 prefix page wasn't restored (per-chunk-prefix rollback broken).
+	for i := 0; i < tpMultiPages; i++ {
+		if pagesTP2[i*4096] != patternB {
+			sys.UartWriteString(tag + "FAIL: TransferPages multi-chunk rollback — page " +
+				sys.Itoa(int64(i)) + " corrupted (got 0x" + sys.Hex64(uint64(pagesTP2[i*4096])) + ")\n")
+			return false
+		}
+	}
+	sys.UartWriteString(tag + "PASS TransferPages multi-chunk rollback (chunks restored)\n")
+
 	return true
 }
 
