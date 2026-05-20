@@ -15,6 +15,8 @@
 package main
 
 import (
+	"time"
+
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/netclient"
@@ -234,6 +236,14 @@ func tcpEchoRoundTrip(nc netclient.NetClient, connID uint32) bool {
 			return false
 		}
 		payload := chunk.Payload()
+		// Bounds-check before indexing streamPayload — a malformed/oversized
+		// chunk should fail with FAIL, not panic-on-out-of-bounds.
+		if gotBytes+len(payload) > len(streamPayload) {
+			sys.UartWriteString(tag + "FAIL: echo payload longer than expected (gotBytes=" +
+				sys.Itoa(int64(gotBytes)) + " chunk=" + sys.Itoa(int64(len(payload))) +
+				" want=" + sys.Itoa(int64(len(streamPayload))) + ")\n")
+			return false
+		}
 		for i, b := range payload {
 			if b != streamPayload[gotBytes+i] {
 				sys.UartWriteString(tag + "FAIL: echo mismatch at i=" +
@@ -241,7 +251,7 @@ func tcpEchoRoundTrip(nc netclient.NetClient, connID uint32) bool {
 				return false
 			}
 		}
-		gotBytes += int(chunk.Length)
+		gotBytes += len(payload)
 		if err := nc.ReleaseRX(connID, chunk.Page); err != nil {
 			sys.UartWriteString(tag + "FAIL: ReleaseRX: " + err.Error() + "\n")
 			return false
@@ -352,7 +362,16 @@ func testNetClientTCP(nc netclient.NetClient) bool {
 		sys.UartWriteString(tag + "FAIL: Accept C: " + err.Error() + "\n")
 		return false
 	}
-	cres := <-resCh
+	// Bound the wait on the connector goroutine — a wedged TCPConnect
+	// would otherwise hang the boot since xfertest is a serial smoke
+	// test with no other path to surface failure.
+	var cres connectResult
+	select {
+	case cres = <-resCh:
+	case <-time.After(5 * time.Second):
+		sys.UartWriteString(tag + "FAIL: connector TCPConnect timeout\n")
+		return false
+	}
 	if cres.err != nil {
 		sys.UartWriteString(tag + "FAIL: connector TCPConnect: " + cres.err.Error() + "\n")
 		return false

@@ -171,6 +171,15 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 //	ENOMEM  target VA allocation failed
 //	EFAULT  source page unexpectedly unmapped (caller misuse / race)
 //	EPERM   page not owned by caller (caller misuse / race)
+//
+// NOTE: this function calls assembly (saveAndDisableIRQs / restoreIRQs)
+// but lacks //go:nosplit because adding it overflows the 792-byte
+// nosplit stack budget — the on-stack `var pas [MaxDMAClumpPages]uintptr`
+// scratch (512 B at 64 pages) plus the klog.Errf call frames push the
+// total over the limit. The existing SyscallTransferPages has the same
+// shape and the same gap; a future refactor would split the
+// IRQ-disabled section into a nosplit-able helper. Tracked as a
+// follow-up.
 func SyscallTransferDMAClump(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	targetPID := int16(arg0)
 	clumpStartVA := uintptr(arg1)
@@ -268,13 +277,24 @@ func SyscallTransferDMAClump(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	}
 
 	// Pass 2: unmap from source, transfer ownership, map into target.
+	// Fail-stop on partial failure (matches SyscallTransferPages semantics):
+	// pages already transferred up to the failing index are target-owned but
+	// the source's clump entry has not been removed yet, so the caller's
+	// CleanupShepherdDMAClumps would still try to BuddyFree them. The clump
+	// removal at the bottom of this function is skipped on the error return
+	// to keep that bookkeeping consistent.
 	for i := 0; i < numPages; i++ {
 		va := clumpStartVA + uintptr(i)*kmem.PageSize
 		pa := pas[i]
 		kmem.UnmapUserPageWithL0(va, sourceL0PA)
 		kmem.TransferPageOwnership(pa, callerSID, targetPID)
 		targetVA := uintptr(targetVABase) + uintptr(i)*kmem.PageSize
-		kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags)
+		if !kmem.MapPageInProcess(targetPID, targetVA, pa, elfFlags) {
+			restoreIRQs(savedDAIF)
+			klog.Errf("[IPC] TransferDMAClump: MapPageInProcess failed at target VA %x (page %d of %d)\n",
+				uint64(targetVA), i, numPages)
+			return -12 // ENOMEM
+		}
 	}
 
 	restoreIRQs(savedDAIF)
