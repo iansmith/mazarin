@@ -80,11 +80,17 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	}
 	targetShepherd.Spans.Add(targetVABase, totalSize)
 
-	// Reusable PA scratch buffer for per-chunk Pass 1 → Pass 2 hand-off.
+	// PA scratch buffer sized for the full transfer (not just one chunk).
+	// Each forward-pass chunk fills its window [chunkStart, chunkStart+chunkN)
+	// and a cross-chunk rollback walks back through prior windows by the same
+	// index, so the per-page PA must outlive the chunk that recorded it.
+	//
 	// Heap-allocated by this (splittable) outer; the nosplit per-chunk inner
 	// only sees the slice header (24 B) on its frame and indexes into the
 	// caller-owned backing array — no morestack risk inside the IRQ-off region.
-	pas := make([]uintptr, transferChunkPages)
+	// Worst case is numPages == MaxTransferPages (32768) → 256 KB, allocated
+	// per-syscall and GCed promptly. Real workloads use 1..a-few-dozen.
+	pas := make([]uintptr, numPages)
 
 	for chunkStart := 0; chunkStart < numPages; chunkStart += transferChunkPages {
 		chunkN := transferChunkPages
