@@ -362,7 +362,9 @@ func transferDMAClumpInner(
 ) (int64, int) {
 	savedDAIF := saveAndDisableIRQs()
 
-	// Pass 1: validate every page is mapped and owned by caller.
+	// Pass 1: validate every page is mapped and owned by caller. pas[i] is
+	// stored before the ownership check so the outer wrapper's klog.Errf can
+	// read pas[failIdx] for the EPERM case (else it would log PA 0x0).
 	for i := 0; i < numPages; i++ {
 		va := clumpStartVA + uintptr(i)*kmem.PageSize
 		pa := kmem.DemandMapUserPage(va, sourceL0PA)
@@ -371,12 +373,12 @@ func transferDMAClumpInner(
 			return -14, i // EFAULT
 		}
 		pa = pa &^ (kmem.PageSize - 1)
+		pas[i] = pa
 		desc := kmem.GetPageDescriptor(pa)
 		if desc == nil || desc.Owner != callerSID {
 			restoreIRQs(savedDAIF)
 			return -1, i // EPERM
 		}
-		pas[i] = pa
 	}
 
 	// Pass 2: unmap from source, transfer ownership, map into target. On failure,
@@ -394,6 +396,14 @@ func transferDMAClumpInner(
 			// transferred but no target mapping committed (the map call
 			// that just failed); j < i had both. The j<i guard handles the
 			// asymmetry — we unmap target only where a forward map succeeded.
+			//
+			// NOTE: rollback restores caller mappings with `elfFlags` (the
+			// target's intended flags), not the caller's original PTE flags.
+			// Benign today because every DMA clump in tree is R+W and
+			// elfFlags defaults to R+W when 0 — so rollback delivers the
+			// same permissions the caller had. Real fix tracked as MAZ-39
+			// (requires a kmem helper to extract PTE flags by VA + parallel
+			// origFlags scratch in Pass 1).
 			for j := i; j >= 0; j-- {
 				if j < i {
 					kmem.UnmapUserPageWithL0(targetVABase+uintptr(j)*kmem.PageSize, targetL0PA)
