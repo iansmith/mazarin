@@ -95,9 +95,16 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	// Heap-allocated by this (splittable) outer; the nosplit per-chunk inner
 	// only sees the slice header (24 B) on its frame and indexes into the
 	// caller-owned backing array — no morestack risk inside the IRQ-off region.
-	// Worst case is numPages == MaxTransferPages (32768) → 256 KB, allocated
-	// per-syscall and GCed promptly. Real workloads use 1..a-few-dozen.
+	// Worst case is numPages == MaxTransferPages (32768) → 256 KB for pas plus
+	// 128 KB for origFlags, allocated per-syscall and GCed promptly. Real
+	// workloads use 1..a-few-dozen.
+	//
+	// origFlags is parallel to pas and holds each caller page's pre-transfer
+	// ELF flags so cross-chunk and per-chunk rollback can restore caller
+	// permissions exactly (rather than reusing elfFlags, which is the target's
+	// mapping permission). See MAZ-39.
 	pas := make([]uintptr, numPages)
+	origFlags := make([]uint32, numPages)
 
 	for chunkStart := 0; chunkStart < numPages; chunkStart += transferChunkPages {
 		chunkN := transferChunkPages
@@ -106,7 +113,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		}
 		errCode, failVA := transferPagesChunkInner(
 			targetPID, callerSID, sourceL0PA, targetL0PA,
-			sourceVA, uintptr(targetVABase), chunkStart, chunkN, pas, elfFlags,
+			sourceVA, uintptr(targetVABase), chunkStart, chunkN, pas, origFlags, elfFlags,
 		)
 		if errCode != 0 {
 			// Cross-chunk rollback: the failing chunk's prefix was already
@@ -119,7 +126,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 				rollbackPagesChunkInner(
 					targetPID, callerSID, targetL0PA,
 					sourceVA, uintptr(targetVABase),
-					priorStart, transferChunkPages, pas, elfFlags,
+					priorStart, transferChunkPages, pas, origFlags,
 				)
 			}
 			// Drop the target Spans entry — no pages remain mapped in the
@@ -156,9 +163,13 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 // runtime locks or trigger GC work that is unsafe to run while DAIF.I is
 // masked and we're mid-mutation of page tables and ownership descriptors.
 //
-// pas is the outer's heap-allocated scratch sized to numPages. Slots
-// [chunkStart, chunkStart+chunkN) are written on success; they remain
-// readable by the outer's cross-chunk rollback walk on later failures.
+// pas + origFlags are the outer's heap-allocated scratch sized to numPages
+// (the full transfer, not just this chunk). Slots [chunkStart, chunkStart+
+// chunkN) are written on success; they remain readable by the outer's
+// cross-chunk rollback walk on later failures. origFlags holds each caller
+// page's pre-transfer ELF flags so Pass-2 and cross-chunk rollback can
+// restore caller permissions exactly. elfFlags remains in the signature
+// because the forward Pass-2 map into the target uses it.
 //
 // On Pass 1 error the chunk's IRQ-off section is torn down with no pages
 // transferred yet. On Pass 2 MapPageInProcess failure at index i, the
@@ -182,6 +193,7 @@ func transferPagesChunkInner(
 	chunkStart int,
 	chunkN int,
 	pas []uintptr,
+	origFlags []uint32,
 	elfFlags uint32,
 ) (int64, uintptr) {
 	// Disable IRQs across this chunk's two passes to prevent async preemption
@@ -190,7 +202,13 @@ func transferPagesChunkInner(
 	// validated, causing use-after-free in Pass 2.
 	savedDAIF := saveAndDisableIRQs()
 
-	// Pass 1: validate every page in this chunk is mapped and owned by caller.
+	// Pass 1: validate every page in this chunk is mapped + owned by caller,
+	// and capture the caller's pre-transfer PTE flags. origFlags must be
+	// captured before any source unmap — by Pass 2's rollback point the L3
+	// entry has been cleared and the flags are no longer recoverable.
+	// The flag capture sits *after* the ownership check so an EPERM exit
+	// doesn't pay for an unused PTE walk (tightens the IRQ-off window on
+	// untrusted-caller paths).
 	for i := 0; i < chunkN; i++ {
 		va := sourceVA + uintptr(chunkStart+i)*kmem.PageSize
 		pa := kmem.DemandMapUserPage(va, sourceL0PA)
@@ -204,7 +222,13 @@ func transferPagesChunkInner(
 			restoreIRQs(savedDAIF)
 			return -1, pa // EPERM
 		}
+		flags, ok := kmem.GetUserPTEFlags(va, sourceL0PA)
+		if !ok {
+			restoreIRQs(savedDAIF)
+			return -14, va // EFAULT — page was mapped per DemandMap but its PTE vanished
+		}
 		pas[chunkStart+i] = pa
+		origFlags[chunkStart+i] = flags
 	}
 
 	// Pass 2: unmap from source, transfer ownership, map into target. On
@@ -212,14 +236,10 @@ func transferPagesChunkInner(
 	// [0..i] in reverse: index i had ownership transferred but no target
 	// mapping committed (the map call that just failed); j < i had both, so
 	// the target mapping must be dropped first. The outer wrapper handles
-	// any fully-completed prior chunks via rollbackPagesChunkInner.
-	//
-	// NOTE: rollback restores caller mappings with `elfFlags` (the target's
-	// intended flags), not the caller's original PTE flags. Benign today
-	// because every TransferPages caller in tree is R+W and elfFlags
-	// defaults to R+W when 0 — so rollback delivers the same permissions
-	// the caller had. Real fix tracked as MAZ-39 (requires a kmem helper
-	// to extract PTE flags by VA + parallel origFlags scratch in Pass 1).
+	// any fully-completed prior chunks via rollbackPagesChunkInner. Caller
+	// mappings are restored with their *original* PTE flags (captured in
+	// Pass 1), not the syscall's elfFlags (which is the target's intended
+	// permission).
 	for i := 0; i < chunkN; i++ {
 		va := sourceVA + uintptr(chunkStart+i)*kmem.PageSize
 		pa := pas[chunkStart+i]
@@ -232,7 +252,7 @@ func transferPagesChunkInner(
 					kmem.UnmapUserPageWithL0(targetVABase+uintptr(chunkStart+j)*kmem.PageSize, targetL0PA)
 				}
 				kmem.TransferPageOwnership(pas[chunkStart+j], targetPID, callerSID)
-				if !kmem.MapPageInProcess(callerSID, sourceVA+uintptr(chunkStart+j)*kmem.PageSize, pas[chunkStart+j], elfFlags) {
+				if !kmem.MapPageInProcess(callerSID, sourceVA+uintptr(chunkStart+j)*kmem.PageSize, pas[chunkStart+j], origFlags[chunkStart+j]) {
 					restoreIRQs(savedDAIF)
 					KernelPanic("transferPagesChunkInner: rollback restore-mapping failed")
 				}
@@ -248,18 +268,14 @@ func transferPagesChunkInner(
 
 // rollbackPagesChunkInner undoes a fully-completed prior chunk after a later
 // chunk failed. It walks indices [chunkStart, chunkStart+chunkN) in reverse:
-// unmap the target VA, return ownership to the caller, re-map the source VA.
-// pas[chunkStart..chunkStart+chunkN) MUST have been populated by an earlier
-// successful transferPagesChunkInner pass for this same window.
+// unmap the target VA, return ownership to the caller, re-map the source VA
+// with its *original* PTE flags from origFlags. pas[i] and origFlags[i] for
+// every i in [chunkStart, chunkStart+chunkN) MUST have been populated by an
+// earlier successful transferPagesChunkInner pass for this same window.
 //
 // Runs under its own saveAndDisableIRQs bracket so cross-chunk rollback
 // doesn't expose a half-rolled state to a concurrent CleanupShepherdPages
 // on another CPU.
-//
-// NOTE: rollback restores caller mappings with `elfFlags` (the target's
-// intended flags), not the caller's original PTE flags. Benign today for
-// the same reason as transferPagesChunkInner's inner rollback — every
-// TransferPages caller in tree is R+W. Real fix tracked as MAZ-39.
 //
 //go:nosplit
 func rollbackPagesChunkInner(
@@ -271,13 +287,13 @@ func rollbackPagesChunkInner(
 	chunkStart int,
 	chunkN int,
 	pas []uintptr,
-	elfFlags uint32,
+	origFlags []uint32,
 ) {
 	savedDAIF := saveAndDisableIRQs()
 	for j := chunkN - 1; j >= 0; j-- {
 		kmem.UnmapUserPageWithL0(targetVABase+uintptr(chunkStart+j)*kmem.PageSize, targetL0PA)
 		kmem.TransferPageOwnership(pas[chunkStart+j], targetPID, callerSID)
-		if !kmem.MapPageInProcess(callerSID, sourceVA+uintptr(chunkStart+j)*kmem.PageSize, pas[chunkStart+j], elfFlags) {
+		if !kmem.MapPageInProcess(callerSID, sourceVA+uintptr(chunkStart+j)*kmem.PageSize, pas[chunkStart+j], origFlags[chunkStart+j]) {
 			restoreIRQs(savedDAIF)
 			KernelPanic("rollbackPagesChunkInner: caller restore-mapping failed")
 		}
@@ -390,13 +406,18 @@ func SyscallTransferDMAClump(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	}
 	targetShepherd.Spans.Add(targetVABase, totalSize)
 
-	// Stack-allocated PA scratch lives in this (splittable) frame; inner takes
-	// it by pointer so it doesn't charge its own nosplit budget for 512 B.
+	// Stack-allocated PA + origFlags scratch lives in this (splittable) frame;
+	// inner takes them by pointer so it doesn't charge its own nosplit budget
+	// for ~768 B. origFlags is parallel to pas and holds each caller page's
+	// pre-transfer ELF flags so a rollback can restore caller permissions
+	// exactly (rather than reusing elfFlags, which is the target's mapping
+	// permission). See MAZ-39.
 	var pas [MaxDMAClumpPages]uintptr
+	var origFlags [MaxDMAClumpPages]uint32
 
 	errCode, failIdx := transferDMAClumpInner(
 		targetPID, callerSID, sourceL0PA, targetL0PA,
-		&pas, numPages, clumpStartVA, uintptr(targetVABase), elfFlags,
+		&pas, &origFlags, numPages, clumpStartVA, uintptr(targetVABase), elfFlags,
 	)
 	if errCode != 0 {
 		// Inner already rolled back any partial Pass-2 progress (ENOMEM path) and
@@ -452,6 +473,7 @@ func transferDMAClumpInner(
 	sourceL0PA uintptr,
 	targetL0PA uintptr,
 	pas *[MaxDMAClumpPages]uintptr,
+	origFlags *[MaxDMAClumpPages]uint32,
 	numPages int,
 	clumpStartVA uintptr,
 	targetVABase uintptr,
@@ -459,9 +481,15 @@ func transferDMAClumpInner(
 ) (int64, int) {
 	savedDAIF := saveAndDisableIRQs()
 
-	// Pass 1: validate every page is mapped and owned by caller. pas[i] is
-	// stored before the ownership check so the outer wrapper's klog.Errf can
-	// read pas[failIdx] for the EPERM case (else it would log PA 0x0).
+	// Pass 1: validate every page is mapped + owned by caller, and capture the
+	// caller's pre-transfer PTE flags so a Pass-2 rollback can restore them
+	// exactly. pas[i] is stored before the ownership check so the outer
+	// wrapper's klog.Errf can read pas[failIdx] for the EPERM case (else it
+	// would log PA 0x0). origFlags[i] is captured *after* the ownership
+	// check so an EPERM exit doesn't pay for an unused PTE walk; by the
+	// time we reach rollback the caller's L3 PTE has been cleared by
+	// UnmapUserPageWithL0 and the flags are no longer recoverable, so this
+	// capture is the only chance.
 	for i := 0; i < numPages; i++ {
 		va := clumpStartVA + uintptr(i)*kmem.PageSize
 		pa := kmem.DemandMapUserPage(va, sourceL0PA)
@@ -476,6 +504,12 @@ func transferDMAClumpInner(
 			restoreIRQs(savedDAIF)
 			return -1, i // EPERM
 		}
+		flags, ok := kmem.GetUserPTEFlags(va, sourceL0PA)
+		if !ok {
+			restoreIRQs(savedDAIF)
+			return -14, i // EFAULT — page was mapped per DemandMap but its PTE vanished
+		}
+		origFlags[i] = flags
 	}
 
 	// Pass 2: unmap from source, transfer ownership, map into target. On failure,
@@ -493,20 +527,15 @@ func transferDMAClumpInner(
 			// transferred but no target mapping committed (the map call
 			// that just failed); j < i had both. The j<i guard handles the
 			// asymmetry — we unmap target only where a forward map succeeded.
-			//
-			// NOTE: rollback restores caller mappings with `elfFlags` (the
-			// target's intended flags), not the caller's original PTE flags.
-			// Benign today because every DMA clump in tree is R+W and
-			// elfFlags defaults to R+W when 0 — so rollback delivers the
-			// same permissions the caller had. Real fix tracked as MAZ-39
-			// (requires a kmem helper to extract PTE flags by VA + parallel
-			// origFlags scratch in Pass 1).
+			// The caller's mapping is restored with its *original* PTE flags
+			// (captured in Pass 1), not the syscall's elfFlags (which is the
+			// target's intended permission).
 			for j := i; j >= 0; j-- {
 				if j < i {
 					kmem.UnmapUserPageWithL0(targetVABase+uintptr(j)*kmem.PageSize, targetL0PA)
 				}
 				kmem.TransferPageOwnership(pas[j], targetPID, callerSID)
-				if !kmem.MapPageInProcess(callerSID, clumpStartVA+uintptr(j)*kmem.PageSize, pas[j], elfFlags) {
+				if !kmem.MapPageInProcess(callerSID, clumpStartVA+uintptr(j)*kmem.PageSize, pas[j], origFlags[j]) {
 					restoreIRQs(savedDAIF)
 					KernelPanic("transferDMAClumpInner: rollback restore-mapping failed")
 				}

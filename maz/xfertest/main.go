@@ -135,6 +135,52 @@ func runSmokeTests() bool {
 	}
 	sys.UartWriteString(tag + "PASS TransferDMAClump rollback on MapPageInProcess failure\n")
 
+	// --- Test 1c: TransferDMAClump rollback preserves caller's PTE flags (MAZ-39) ---
+	// Pass a non-default elfFlags to the syscall (R+W+X = 7). With the buggy
+	// rollback this would restore the caller's mapping using elfFlags=7
+	// (mismatch with the caller's pre-transfer R+W = 6). With the fix, rollback
+	// uses origFlags captured in Pass 1 and the caller's mapping comes back
+	// with exactly its pre-transfer flags.
+	clumpFlags, err := mem.AllocContiguous(4096)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: AllocContiguous#1c: " + err.Error() + "\n")
+		return false
+	}
+	for i := range clumpFlags.Buf {
+		clumpFlags.Buf[i] = patternA
+	}
+	flagsBefore := sys.GetPTEFlags(clumpFlags.Addr)
+	if flagsBefore == 0 {
+		sys.UartWriteString(tag + "FAIL: flag-preserve test — caller page unmapped before transfer\n")
+		return false
+	}
+	const nonDefaultElfFlags uint32 = 0x7 // PF_R | PF_W | PF_X
+	sys.SetMapFailInjection(true)
+	_, fpErr := sys.TransferDMAClump(targetSID, clumpFlags.Addr, nonDefaultElfFlags)
+	sys.SetMapFailInjection(false)
+	if fpErr == nil {
+		sys.UartWriteString(tag + "FAIL: flag-preserve test — TransferDMAClump should have returned ENOMEM (got nil)\n")
+		return false
+	}
+	if fpErr != syscall.ENOMEM {
+		sys.UartWriteString(tag + "FAIL: flag-preserve test — expected ENOMEM, got: " + fpErr.Error() + "\n")
+		return false
+	}
+	flagsAfter := sys.GetPTEFlags(clumpFlags.Addr)
+	if flagsAfter != flagsBefore {
+		sys.UartWriteString(tag + "FAIL: flag-preserve test — caller flags drifted: before=0x" +
+			sys.Hex64(uint64(flagsBefore)) + " after=0x" + sys.Hex64(uint64(flagsAfter)) +
+			" (expected rollback to restore pre-transfer flags, not elfFlags=0x7)\n")
+		return false
+	}
+	if clumpFlags.Buf[0] != patternA {
+		sys.UartWriteString(tag + "FAIL: flag-preserve test — page contents corrupted (got 0x" +
+			sys.Hex64(uint64(clumpFlags.Buf[0])) + ")\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS TransferDMAClump rollback preserves caller PTE flags (flags=0x" +
+		sys.Hex64(uint64(flagsBefore)) + ")\n")
+
 	// --- Test 2: SyscallShareNetPageWithClient ---
 	// The first clump's table entry is gone after the transfer, so we can
 	// allocate a second clump without bumping into MaxDMAClumps.
@@ -244,6 +290,57 @@ func runSmokeTests() bool {
 		}
 	}
 	sys.UartWriteString(tag + "PASS TransferPages multi-chunk rollback (chunks restored)\n")
+
+	// --- Test 4c: TransferPages rollback preserves caller's PTE flags (MAZ-39) ---
+	// Sibling to Test 1c, exercising SyscallTransferPages's two rollback paths
+	// (transferPagesChunkInner Pass-2 prefix rollback AND
+	// rollbackPagesChunkInner cross-chunk rollback). Same shape: pass a
+	// non-default elfFlags to the syscall, arm injection, expect ENOMEM,
+	// verify caller's PTE flags are restored to their pre-transfer value (R+W)
+	// rather than the target's elfFlags (R+W+X).
+	//
+	// Use 2 pages: one-chunk rollback. tpMultiPages would also work but adds
+	// cost without testing anything new about the flag-preservation contract
+	// — the same origFlags slice feeds both rollback walks.
+	pagesFP, allocErrFP := mem.AllocPagesSlice(2, mem.PageShared)
+	if allocErrFP != nil {
+		sys.UartWriteString(tag + "FAIL: AllocPagesSlice#FP: " + allocErrFP.Error() + "\n")
+		return false
+	}
+	for i := range pagesFP {
+		pagesFP[i] = patternA
+	}
+	fpSourceVA := uintptr(unsafe.Pointer(&pagesFP[0]))
+	fpFlagsBefore := sys.GetPTEFlags(fpSourceVA)
+	if fpFlagsBefore == 0 {
+		sys.UartWriteString(tag + "FAIL: TransferPages flag-preserve — caller page unmapped before transfer\n")
+		return false
+	}
+	sys.SetMapFailInjection(true)
+	_, fpTpErr := sys.TransferPages(int(targetSID), fpSourceVA, 2, nonDefaultElfFlags)
+	sys.SetMapFailInjection(false)
+	if fpTpErr == nil {
+		sys.UartWriteString(tag + "FAIL: TransferPages flag-preserve — should have returned ENOMEM (got nil)\n")
+		return false
+	}
+	if fpTpErr != syscall.ENOMEM {
+		sys.UartWriteString(tag + "FAIL: TransferPages flag-preserve — expected ENOMEM, got: " + fpTpErr.Error() + "\n")
+		return false
+	}
+	fpFlagsAfter := sys.GetPTEFlags(fpSourceVA)
+	if fpFlagsAfter != fpFlagsBefore {
+		sys.UartWriteString(tag + "FAIL: TransferPages flag-preserve — caller flags drifted: before=0x" +
+			sys.Hex64(uint64(fpFlagsBefore)) + " after=0x" + sys.Hex64(uint64(fpFlagsAfter)) +
+			" (expected rollback to restore pre-transfer flags, not elfFlags=0x7)\n")
+		return false
+	}
+	if pagesFP[0] != patternA {
+		sys.UartWriteString(tag + "FAIL: TransferPages flag-preserve — page contents corrupted (got 0x" +
+			sys.Hex64(uint64(pagesFP[0])) + ")\n")
+		return false
+	}
+	sys.UartWriteString(tag + "PASS TransferPages rollback preserves caller PTE flags (flags=0x" +
+		sys.Hex64(uint64(fpFlagsBefore)) + ")\n")
 
 	return true
 }

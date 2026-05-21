@@ -105,6 +105,15 @@ const DebugMarkerSetMapFailNext = 0xDB8
 // Userspace wrapper: mazarin/sys.SetMapFailAfter.
 const DebugMarkerSetMapFailAfter = 0xDB9
 
+// DebugMarkerGetPTEFlags reads the caller's L3 PTE flags for a userspace VA
+// and returns ELF permission bits (ELF_PF_R/W/X) via the syscall's int64
+// return value. v1 = VA (page-aligned or anywhere within the page). Returns
+// 0 with no error if the page is unmapped; for a valid mapping returns the
+// flags with ELF_PF_R always set. Test-only — used by xfertest to verify
+// the TransferPages / TransferDMAClump rollback preserves caller PTE flags
+// (MAZ-39). Userspace wrapper: mazarin/sys.GetPTEFlags.
+const DebugMarkerGetPTEFlags = 0xDBA
+
 // SyscallDebugPrint prints debug arguments from userspace.
 // arg0 = marker/id, arg1-arg5 = values to print
 // Special case: if v1-v5 are all 0 and marker < 256, print marker as a character
@@ -131,6 +140,13 @@ func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
 		// negative arguments are explicit disarms — same as 0.
 		kmem.MapPageInProcessFailAfter.Store(int32(uint32(v1)))
 		return 0
+	}
+	if marker == DebugMarkerGetPTEFlags {
+		// v1 = userspace VA. Walk the active page table (the caller's,
+		// since we're in a syscall) and return its ELF permission flags.
+		// l0PA=0 makes GetUserPTEFlags fall back to readCurrentL0PA().
+		flags, _ := kmem.GetUserPTEFlags(uintptr(v1), 0)
+		return int64(flags)
 	}
 	// Full debug print — disabled during investigation
 	_ = marker
