@@ -685,13 +685,41 @@ func udpRoundTrip(nc netclient.NetClient, label string, senderConn uint32,
 // demux (loopbackV4 = 127.0.0.1); this stage is the only one that exercises
 // the device-boundary crossing.
 //
-// Performs an HTTP/1.1 GET against example.com, validates the response
-// (status, body marker, size), and prints PASS/FAIL. Reuses the caller's
-// NetClient + dispatcher rather than creating its own — a second dispatcher
-// on the same uring races for response delivery. Intentionally has no return
-// value so callers cannot accidentally promote a stage failure into a gate
-// on subsequent stages.
+// Reuses the caller's NetClient + dispatcher rather than creating its own —
+// a second dispatcher on the same uring races for response delivery.
+// Intentionally has no return value so callers cannot accidentally promote
+// a stage failure into a gate on subsequent stages.
+//
+// Wraps the body in a 10-second timeout. If the peer is unreachable (caught
+// earlier by netclient's 5s TCPConnect timeout) or hangs mid-response
+// (caught here), the FAIL line surfaces and boot continues. The inner
+// goroutine is allowed to leak per the package comment's "leaks acceptable
+// for a boot smoke test" rule.
+//
+// TODO: a leaked goroutine could still emit a delayed PASS/FAIL after the
+// wrapper has already printed "timed out", causing log-order confusion.
+// If this ever surfaces in practice, gate inner emissions on an atomic.Bool
+// the wrapper flips when it gives up.
 func testRealTCPExample(nc netclient.NetClient) {
+	done := make(chan struct{}, 1)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		runRealTCPExample(nc)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(10 * time.Second):
+		sys.UartWriteString(tag + "FAIL: realTcpExample timed out after 10s (peer hung or SLIRP unreachable)\n")
+		return
+	}
+}
+
+// runRealTCPExample performs an HTTP/1.1 GET against example.com, validates
+// the response (status, body marker, size), and prints PASS/FAIL via UART.
+// Invoked inside the goroutine spawned by testRealTCPExample; the parent
+// wrapper handles the 10s deadline.
+func runRealTCPExample(nc netclient.NetClient) {
 	// example.com Cloudflare anycast IP as of 2026-05-21 (verify with `dig
 	// example.com` if this stage starts FAILing). example.com moved from
 	// Edgecast (93.184.215.14, static) to Cloudflare in early 2026 — expect
