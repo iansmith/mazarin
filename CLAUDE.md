@@ -75,6 +75,14 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 - Every project should have at least one remote that can be used with CodeRabbit. `/simplify`'s pre-commit role is to preempt CodeRabbit findings, not to substitute for the actual review.
 - When the project has multiple remotes, **prefer the GitHub remote** for CodeRabbit. **CodeRabbit does not work on Bitbucket**; if Bitbucket is the only remote, factor that into the review plan separately.
 
+## 10. Adding a new rule — where it lives
+
+- **Project-specific operational tip or bug record** → `feedback_*.md` in this project's memory dir; index it in `MEMORY.md`. Default home for new learnings.
+- **Project-specific rule every session must follow** → the project-specific section of this `CLAUDE.md`. Delete the memory file if it would duplicate.
+- **Universal rule applying to every project of Ian's** → propose adding to the universal §1-§10 block of all four projects' `CLAUDE.md` files identically. Don't drift one project's universal block.
+
+Promotion is one-way: memory → project-specific → universal. Rules go up when they prove durable.
+
 ---
 
 # Mazzy-Specific Declarations
