@@ -21,7 +21,8 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 
 - **Tests-first for new behavior AND for fixes.** For new behavior, write the test describing the desired contract; confirm it's red **for the right reason** before implementing. For bug fixes, write a test that reproduces the bug — it must be red before the fix and green after. Trivial tweaks, copy changes, and pure refactors are exempt.
 - **A failing test is signal, not chore.** Investigate the root cause before changing anything. Never delete a test, narrow an assertion, call `Skip()`, or cite an unverified "flake" to silence it. "Known flake" is a label, not an explanation.
-- **During feature or bug work, run only the tests relevant to the change *if running the full suite takes a long time*.** Otherwise run the full suite.
+
+(Test scope before commit is covered by §1. Project-specific guidance on test runtime and scoping lives in each project's CLAUDE.md.)
 
 ## 3. Git
 
@@ -35,7 +36,7 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 - **Dedupe is in scope.** If you find 2+ near-identical code paths while working on a change, extract the helper and migrate the duplicates in the same PR.
 - **Structural changes are out of scope without discussion.** Renaming exported symbols, altering public signatures, moving files, or reshaping module boundaries must be raised separately.
 - When extending an existing system, study its types and patterns first. Mirror existing vocabulary; don't invent parallel terms for the same concept.
-- Foundational correctness over quick wins. Don't filter for "nearly passing" cases or chase low-hanging fruit; **solve the problem completely.**
+- Foundational correctness over quick wins. "Nearly passing" is failing. When working through a category of failures, **don't declare done by cherry-picking the easy cases** — solve the problem completely.
 
 ## 5. Source of truth
 
@@ -48,7 +49,7 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 
 - Commit and push before launching worktree agents — worktrees start from HEAD, not the working directory.
 - **Aim for fine-grained milestones** — frequent enough that progress is visible (rough target: a check-in every few minutes of work), but not so frequent that the output becomes noise. Every 10 seconds is too often; every 20 minutes is too long.
-- **Aim for parallelism that won't cause merge-back conflicts on the base branch.** If there's no way to launch multiple agents simultaneously without conflict risk, there's no reason to use agents at all — just do the work yourself.
+- **Aim for parallelism that won't cause merge-back conflicts on the base branch.** If the work can't be cleanly parallelized, consider whether sequential agent offload is actually worth the overhead — small tasks belong on your own plate; genuinely large offloads (long builds, multi-file refactors you'd otherwise wait on) can still be a win even when sequential.
 - **Never use `open` to display files unless the user explicitly asks.** Disruptive even from the main session.
 
 ### Agent instructions — what to include in every agent prompt
