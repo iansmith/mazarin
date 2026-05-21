@@ -66,6 +66,15 @@ func MazarinMain() {
 
 // runSmokeTests returns true if every stage passed. Early returns are
 // fine; MazarinMain's keep-alive loop runs regardless of outcome.
+//
+// Stages called from runSmokeTests follow one of two conventions:
+//   - `func testXxx() bool` — blocking; `false` halts subsequent stages.
+//     Use when later stages depend on this one succeeding.
+//   - `func testXxx()` — non-blocking; failure prints FAIL but stages continue.
+//     Use for loud-but-ignorable stages.
+//
+// The no-return signature is a contract; don't promote a non-blocking stage
+// to blocking without explicit ticket approval.
 func runSmokeTests() bool {
 	// Wait for the target shepherd to be ready. Without this the smoke test
 	// races the launcher; targetSym is a key shepherd brought up early but
