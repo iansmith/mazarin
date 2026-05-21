@@ -342,6 +342,12 @@ func runSmokeTests() bool {
 	sys.UartWriteString(tag + "PASS TransferPages rollback preserves caller PTE flags (flags=0x" +
 		sys.Hex64(uint64(fpFlagsBefore)) + ")\n")
 
+	// --- Test 5: MAZ-38 realTcpExample — real-network smoke test ---
+	// Non-blocking per MAZ-38 DoD: a FAIL inside testRealTCPExample MUST NOT
+	// prevent earlier stages from being trusted. The signature has no return,
+	// so runSmokeTests still returns true and MazarinMain prints "all checks done".
+	testRealTCPExample()
+
 	return true
 }
 
@@ -662,4 +668,18 @@ func udpRoundTrip(nc netclient.NetClient, label string, senderConn uint32,
 		" srcPort=" + sys.Itoa(int64(rx.Src.Port)) +
 		" pageVA=0x" + sys.Hex64(rx.Page) + "\n")
 	return true
+}
+
+// testRealTCPExample is the MAZ-38 boot-time smoke test for the actual outbound
+// data path: NetClient → net.elf → gvisor TX → virtio-net-pci → QEMU SLIRP NAT
+// → host network. All other xfertest stages terminate inside gvisor's local
+// demux (loopbackV4 = 127.0.0.1); this stage is the only one that exercises
+// the device-boundary crossing.
+//
+// Stub implementation — prints a FAIL line so the absence of real-network
+// coverage is visible in the serial log until the real connect/HTTP/recv flow
+// lands. Intentionally has no return value so callers cannot accidentally
+// promote a stage failure into a gate on subsequent stages.
+func testRealTCPExample() {
+	sys.UartWriteString(tag + "FAIL: realTcpExample — stub, not yet implemented (MAZ-38)\n")
 }
