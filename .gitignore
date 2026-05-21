@@ -117,8 +117,5 @@ data/mail/
 # Local API key config (never committed)
 enable-deepseek
 
-# Design documents (local only)
-design/
-
 # Local CLAUDE.md modifications
 CLAUDE.md
