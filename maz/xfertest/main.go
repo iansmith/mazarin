@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"syscall"
 	"time"
 	"unsafe"
@@ -66,6 +67,15 @@ func MazarinMain() {
 
 // runSmokeTests returns true if every stage passed. Early returns are
 // fine; MazarinMain's keep-alive loop runs regardless of outcome.
+//
+// Stages called from runSmokeTests follow one of two conventions:
+//   - `func testXxx() bool` — blocking; `false` halts subsequent stages.
+//     Use when later stages depend on this one succeeding.
+//   - `func testXxx()` — non-blocking; failure prints FAIL but stages continue.
+//     Use for loud-but-ignorable stages.
+//
+// The no-return signature is a contract; don't promote a non-blocking stage
+// to blocking without explicit ticket approval.
 func runSmokeTests() bool {
 	// Wait for the target shepherd to be ready. Without this the smoke test
 	// races the launcher; targetSym is a key shepherd brought up early but
@@ -419,7 +429,12 @@ func testNetClient() bool {
 		sys.UartWriteString(tag + "PASS NetIPCClose connID=" + sys.Itoa(int64(c)) + "\n")
 	}
 
-	return testNetClientTCP(nc)
+	ok := testNetClientTCP(nc)
+	// Real-network smoke test reuses the same nc + dispatcher — a fresh
+	// NetClient on the same uring races for response delivery and times
+	// out on Connect. Non-blocking: testRealTCPExample has no return value.
+	testRealTCPExample(nc)
+	return ok
 }
 
 // tcpEchoRoundTrip drives the full TCP echo exchange and EOF half-close
@@ -662,4 +677,146 @@ func udpRoundTrip(nc netclient.NetClient, label string, senderConn uint32,
 		" srcPort=" + sys.Itoa(int64(rx.Src.Port)) +
 		" pageVA=0x" + sys.Hex64(rx.Page) + "\n")
 	return true
+}
+
+// testRealTCPExample is the MAZ-38 boot-time smoke test for the actual outbound
+// data path: NetClient → net.elf → gvisor TX → virtio-net-pci → QEMU SLIRP NAT
+// → host network. All other xfertest stages terminate inside gvisor's local
+// demux (loopbackV4 = 127.0.0.1); this stage is the only one that exercises
+// the device-boundary crossing.
+//
+// Reuses the caller's NetClient + dispatcher rather than creating its own —
+// a second dispatcher on the same uring races for response delivery.
+// Intentionally has no return value so callers cannot accidentally promote
+// a stage failure into a gate on subsequent stages.
+//
+// Wraps the body in a 10-second timeout. If the peer is unreachable (caught
+// earlier by netclient's 5s TCPConnect timeout) or hangs mid-response
+// (caught here), the FAIL line surfaces and boot continues. The inner
+// goroutine is allowed to leak per the package comment's "leaks acceptable
+// for a boot smoke test" rule.
+//
+// TODO: a leaked goroutine could still emit a delayed PASS/FAIL after the
+// wrapper has already printed "timed out", causing log-order confusion.
+// If this ever surfaces in practice, gate inner emissions on an atomic.Bool
+// the wrapper flips when it gives up.
+func testRealTCPExample(nc netclient.NetClient) {
+	done := make(chan struct{}, 1)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		runRealTCPExample(nc)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(10 * time.Second):
+		sys.UartWriteString(tag + "FAIL: realTcpExample timed out after 10s (peer hung or SLIRP unreachable)\n")
+		return
+	}
+}
+
+// runRealTCPExample performs an HTTP/1.1 GET against example.com, validates
+// the response (status, body marker, size), and prints PASS/FAIL via UART.
+// Invoked inside the goroutine spawned by testRealTCPExample; the parent
+// wrapper handles the 10s deadline.
+func runRealTCPExample(nc netclient.NetClient) {
+	// example.com Cloudflare anycast IP as of 2026-05-21 (verify with `dig
+	// example.com` if this stage starts FAILing). example.com moved from
+	// Edgecast (93.184.215.14, static) to Cloudflare in early 2026 — expect
+	// more frequent IP rotation than before; refresh from dig as needed.
+	target := netproto.Addr{IP4: [4]byte{172, 66, 147, 243}, Port: 80}
+	connID, _, err := nc.TCPConnect([4]byte{}, 0, target)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: realTcpExample TCPConnect to example.com: " +
+			err.Error() + " — SLIRP unwired, peer unreachable, or IP stale?\n")
+		return
+	}
+
+	req := []byte("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+	sent, err := nc.StreamSend(connID, req)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: realTcpExample StreamSend: " + err.Error() + "\n")
+		return
+	}
+	if sent != len(req) {
+		sys.UartWriteString(tag + "FAIL: realTcpExample StreamSend short write sent=" +
+			sys.Itoa(int64(sent)) + " want=" + sys.Itoa(int64(len(req))) + "\n")
+		return
+	}
+
+	// Do NOT half-close the write side. Cloudflare-fronted servers treat the
+	// FIN as "client gave up" and may close without responding (verified
+	// against example.com 2026-05-21). Connection: close in the request
+	// header is contract enough: the server sends the response and then
+	// closes, surfacing as a StreamRx EOF on our side.
+
+	// Accumulate response in a fixed-size buffer. example.com is ~830 bytes
+	// (Cloudflare-hosted as of 2026-05); 8KB cap bounds boot-time memory and
+	// catches a runaway peer.
+	const maxResp = 8192
+	var buf [maxResp]byte
+	n := 0
+	for {
+		chunk, err := nc.ReadStream(connID)
+		if err != nil {
+			sys.UartWriteString(tag + "FAIL: realTcpExample ReadStream: " + err.Error() + "\n")
+			return
+		}
+		if chunk.Length > 0 {
+			payload := chunk.Payload()
+			cp := len(payload)
+			if n+cp > maxResp {
+				cp = maxResp - n
+			}
+			copy(buf[n:n+cp], payload[:cp])
+			n += cp
+			if err := nc.ReleaseRX(connID, chunk.Page); err != nil {
+				sys.UartWriteString(tag + "FAIL: realTcpExample ReleaseRX: " + err.Error() + "\n")
+				return
+			}
+		}
+		if chunk.EOF {
+			break
+		}
+		if n >= maxResp {
+			sys.UartWriteString(tag + "FAIL: realTcpExample response exceeded " +
+				sys.Itoa(int64(maxResp)) + " bytes (cap reached before EOF)\n")
+			return
+		}
+	}
+
+	resp := buf[:n]
+	httpVersion := ""
+	switch {
+	case bytes.HasPrefix(resp, []byte("HTTP/1.1 200 ")):
+		httpVersion = "HTTP/1.1"
+	case bytes.HasPrefix(resp, []byte("HTTP/1.0 200 ")):
+		httpVersion = "HTTP/1.0"
+	default:
+		end := 16
+		if end > n {
+			end = n
+		}
+		sys.UartWriteString(tag + "FAIL: realTcpExample response prefix mismatch (got: " +
+			string(resp[:end]) + ")\n")
+		return
+	}
+	if !bytes.Contains(resp, []byte("Example Domain")) {
+		sys.UartWriteString(tag + "FAIL: realTcpExample response missing 'Example Domain' marker (bytes=" +
+			sys.Itoa(int64(n)) + ")\n")
+		return
+	}
+	if n < 500 {
+		sys.UartWriteString(tag + "FAIL: realTcpExample response too small bytes=" +
+			sys.Itoa(int64(n)) + " (want >=500)\n")
+		return
+	}
+
+	if err := nc.Close(connID); err != nil {
+		sys.UartWriteString(tag + "FAIL: realTcpExample Close: " + err.Error() + "\n")
+		return
+	}
+
+	sys.UartWriteString(tag + "PASS realTcpExample bytes=" + sys.Itoa(int64(n)) +
+		" httpVersion=" + httpVersion + " status=200\n")
 }
