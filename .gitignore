@@ -119,3 +119,8 @@ enable-deepseek
 
 # Local CLAUDE.md modifications
 CLAUDE.md
+
+
+# sophie secrets (MAZ-43) — real API keys live locally; .example templates committed
+/sophie/secrets/**/*.toml
+!/sophie/secrets/**/*.toml.example
