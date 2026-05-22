@@ -59,14 +59,18 @@ func TestDispatchRxAcceptsValidLength(t *testing.T) {
 	}
 }
 
-// TestDispatchRxRejectsExactlyOnePastBound — boundary case. usedLen ==
-// VirtIONetHdrSize + PageSize is the largest valid value (fills the
-// page after the header); +1 is the smallest invalid value. Today the
-// +1 case sneaks past; after fix it must reject.
+// TestDispatchRxRejectsExactlyOnePastBound — boundary case. The kernel
+// writes vhdr at page base + frame at offset 12; the descriptor's DMA
+// target is the page base, so usedLen counts both. The largest valid
+// usedLen is PageSize (page completely full, vhdr + 4084 frame bytes);
+// PageSize+1 is the smallest invalid value. A bound of
+// VirtIONetHdrSize+PageSize (=4108) would be too loose — it'd let
+// usedLen=4097 through, and NewRxPacket would read one byte past the
+// page. Use the tight bound.
 func TestDispatchRxRejectsExactlyOnePastBound(t *testing.T) {
 	d := newTestDispatcher(1, nil)
 
-	const justOver = VirtIONetHdrSize + PageSize + 1
+	const justOver = PageSize + 1
 	const pageVA = uintptr(0x10000)
 
 	ok := d.dispatchRx(pageVA, justOver)

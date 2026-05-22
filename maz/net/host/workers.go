@@ -247,7 +247,10 @@ func (d *Dispatcher) Run() {
 // eth header at the start of its view; the plugin's link/ethernet
 // layer parses from there.
 func (d *Dispatcher) dispatchRx(pageVA uintptr, usedLen int) bool {
-	if usedLen <= VirtIONetHdrSize {
+	// Defense-in-depth: kernel top-half is trusted (MAZ-28), but a bad
+	// usedLen would make NewRxPacket read past the page. Mirrors the
+	// MaxTxPayload guard in SubmitTx on the egress side.
+	if usedLen <= VirtIONetHdrSize || usedLen-VirtIONetHdrSize > MaxRxPayload {
 		atomic.AddUint64(&d.DbgRxInvalid, 1)
 		return false
 	}
@@ -267,6 +270,11 @@ func (d *Dispatcher) dispatchRx(pageVA uintptr, usedLen int) bool {
 // virtio_net_hdr (12 B) followed by the plugin's bytes; oversize would
 // overflow the page on the wire side and corrupt the next clump slot.
 const MaxTxPayload = PageSize - VirtIONetHdrSize
+
+// MaxRxPayload caps the L3+ frame bytes the kernel may report on an RX
+// completion. Same math as MaxTxPayload — the page holds vhdr + frame,
+// so payload-after-vhdr can fill at most PageSize-VirtIONetHdrSize.
+const MaxRxPayload = PageSize - VirtIONetHdrSize
 
 // SubmitTx writes the 12-byte virtio_net_hdr at the front of the page,
 // emits a TX SQE for env, records the txTag→pageVA mapping in inflight,
