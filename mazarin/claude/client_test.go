@@ -71,9 +71,10 @@ func TestNewClientBuildsTLSConfig(t *testing.T) {
 // a JSON body matching the Anthropic Messages API shape (model,
 // max_tokens, messages array with {role, content}). Asserts via
 // substring rather than byte-equal so the encoder can choose key order
-// freely.
+// freely. max_tokens is hardcoded inside encodeMessagesRequest (see
+// the maxTokens package const); the test pins the resulting value.
 func TestEncodeMessagesRequest(t *testing.T) {
-	body, err := encodeMessagesRequest("claude-opus-4-5", "What is the capital?", 1024)
+	body, err := encodeMessagesRequest("claude-opus-4-5", "What is the capital?")
 	if err != nil {
 		t.Fatalf("encodeMessagesRequest err: %v", err)
 	}
