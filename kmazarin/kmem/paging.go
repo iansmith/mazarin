@@ -816,6 +816,7 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	currentL0PA := readCurrentL0PA()
 
 	if !mapUserPageWithL0(pageAddr, framePA, elfFlags, currentL0PA) {
+		FreeUserFrame(framePA)
 		return false
 	}
 
@@ -940,6 +941,7 @@ func DemandMapUserPage(va uintptr, l0PA uintptr) uintptr {
 	elfFlags := uint32(ELF_PF_R | ELF_PF_W | ELF_PF_X)
 	if !mapUserPageWithL0(pageAddr, framePA, elfFlags, l0PA) {
 		klog.Errf("[DemandMap] mapUserPageWithL0 failed\n")
+		FreeUserFrame(framePA)
 		return 0
 	}
 
@@ -2883,6 +2885,8 @@ func EnsureUserPageMappedWithL0(userVA uintptr, l0PA uintptr) (uintptr, bool) {
 	// Map RWX (signal stack needs RW at minimum).
 	elfFlags := uint32(ELF_PF_R | ELF_PF_W | ELF_PF_X)
 	if !mapUserPageWithL0(pageAddr, framePA, elfFlags, l0PA) {
+		// PT-page OOM is the realistic trigger here; rare.
+		FreeUserFrame(framePA)
 		return 0, false
 	}
 

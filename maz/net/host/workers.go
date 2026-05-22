@@ -98,14 +98,18 @@ func NewDispatcher(ring *iouring.IORing, ringID, armed int, alloc *Allocator, re
 
 // PreArm pulls `len(slotPages)` pages from the allocator, pins them to
 // RX descriptor slots 0..N-1, and submits the initial re-arm SQEs.
-// Must run once before Run.
+// Must run once before Run. Rolls back on failure — a partial PreArm
+// would leave the SQ ring, allocator outstanding count, and slotPages
+// inconsistent for retry/teardown.
 func (d *Dispatcher) PreArm() error {
 	d.sqMu.Lock()
 	defer d.sqMu.Unlock()
 
+	oldTail := atomic.LoadUint32(&d.Ring.SQTail)
 	for tag := range d.slotPages {
 		va, ok := d.Allocator.AllocRaw()
 		if !ok {
+			d.rollbackPreArm(tag, oldTail)
 			return fmt.Errorf("pre-arm: allocator empty at tag=%d", tag)
 		}
 		d.slotPages[tag] = va
@@ -116,11 +120,29 @@ func (d *Dispatcher) PreArm() error {
 		writeRearmSQE(d.Ring, uint32(tag), va)
 	}
 	n := uint32(len(d.slotPages))
-	atomic.StoreUint32(&d.Ring.SQTail, n)
+	// writeRearmSQE already advanced SQTail to oldTail+n.
 	if _, err := sys.IOUringEnter(d.RingID, n, 0, 0); err != nil {
+		d.rollbackPreArm(len(d.slotPages), oldTail)
 		return fmt.Errorf("pre-arm IOUringEnter: %w", err)
 	}
 	return nil
+}
+
+// rollbackPreArm undoes the partial work of a failed PreArm. allocatedTags
+// is the number of slots that successfully got an AllocRaw (the loop
+// index where allocation failed, or len(slotPages) if every AllocRaw
+// succeeded and IOUringEnter is what failed). oldTail is the SQTail
+// snapshot taken at PreArm entry. Caller MUST hold sqMu.
+//
+// SQE slots in the ring buffer that writeRearmSQE populated stay
+// populated; the kernel only reads up to SQTail, so restoring SQTail
+// is sufficient to make them invisible.
+func (d *Dispatcher) rollbackPreArm(allocatedTags int, oldTail uint32) {
+	for tag := range allocatedTags {
+		d.Allocator.ReleaseRaw(d.slotPages[tag])
+		d.slotPages[tag] = 0
+	}
+	atomic.StoreUint32(&d.Ring.SQTail, oldTail)
 }
 
 // pendingRearm is a deferred SQE write batched and flushed under sqMu after
@@ -247,7 +269,10 @@ func (d *Dispatcher) Run() {
 // eth header at the start of its view; the plugin's link/ethernet
 // layer parses from there.
 func (d *Dispatcher) dispatchRx(pageVA uintptr, usedLen int) bool {
-	if usedLen <= VirtIONetHdrSize {
+	// Defense-in-depth: kernel top-half is trusted (MAZ-28), but a bad
+	// usedLen would make NewRxPacket read past the page. Mirrors the
+	// MaxTxPayload guard in SubmitTx on the egress side.
+	if usedLen <= VirtIONetHdrSize || usedLen-VirtIONetHdrSize > MaxRxPayload {
 		atomic.AddUint64(&d.DbgRxInvalid, 1)
 		return false
 	}
@@ -267,6 +292,11 @@ func (d *Dispatcher) dispatchRx(pageVA uintptr, usedLen int) bool {
 // virtio_net_hdr (12 B) followed by the plugin's bytes; oversize would
 // overflow the page on the wire side and corrupt the next clump slot.
 const MaxTxPayload = PageSize - VirtIONetHdrSize
+
+// MaxRxPayload caps the L3+ frame bytes the kernel may report on an RX
+// completion. Same math as MaxTxPayload — the page holds vhdr + frame,
+// so payload-after-vhdr can fill at most PageSize-VirtIONetHdrSize.
+const MaxRxPayload = PageSize - VirtIONetHdrSize
 
 // SubmitTx writes the 12-byte virtio_net_hdr at the front of the page,
 // emits a TX SQE for env, records the txTag→pageVA mapping in inflight,
