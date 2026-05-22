@@ -126,6 +126,17 @@ func AllocUserFrame() uintptr {
 	return AllocPage(PageUserHeap, pfContextShepherdID)
 }
 
+// FreeUserFrame returns a single physical frame back to the unified pool.
+// Symmetric inverse of AllocUserFrame — used by the allocate-then-map
+// sites to release a freshly-allocated frame when mapping fails before
+// the frame is reachable from any page table.
+// Thread-safe via the unified pool's spinlock.
+//
+//go:nosplit
+func FreeUserFrame(pa uintptr) {
+	BuddyFreeTyped(pa, 0, PageUserHeap)
+}
+
 // GetUserFrameStats returns the current userspace frame allocator statistics.
 //
 //go:nosplit
