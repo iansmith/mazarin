@@ -1,0 +1,52 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build sophie.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/sophie/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.SOPHIE_MAZ}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building sophie.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.SOPHIE_MAZ}} ./maz/sophie
+      - '{{.GO}} tool go-echo "sophie.maz ready at {{.SOPHIE_MAZ}}"'
+
+  amd64:
+    desc: Build sophie.maz for x86_64 via mazgo (target defined for pattern parity; not gated by MAZ-43)
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/sophie/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.SOPHIE_MAZ_AMD64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building sophie.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.SOPHIE_MAZ_AMD64}} ./maz/sophie
+      - '{{.GO}} tool go-echo "sophie.maz (x86_64) ready at {{.SOPHIE_MAZ_AMD64}}"'
