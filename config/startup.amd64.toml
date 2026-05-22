@@ -26,3 +26,11 @@ path = "/mail.maz"
 [[shepherd]]
 name = "net"
 path = "/net.elf"
+
+# MAZ-43 boot-time smoke for end-to-end HTTPS+JSON connectivity to
+# api.anthropic.com via mazarin's network stack. Asks Claude one
+# question and asserts "Washington" in the response. amd64 entry
+# defined for pattern parity; not gated by MAZ-43's acceptance.
+[[shepherd]]
+name = "sophie"
+path = "/sophie.maz"
