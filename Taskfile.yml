@@ -582,6 +582,7 @@ tasks:
       - '{{.BUILD_DIR}}/boot-image.bin'
       - 'config/startup.arm64.toml'
       - 'config/rachel.arm64.toml'
+      - 'sophie/**/*'
       - 'user/**/*'
       - 'data/**/*'
     generates:
@@ -627,6 +628,7 @@ tasks:
       - '{{.KMAZARIN_AMD64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
       - 'config/startup.amd64.toml'
+      - 'sophie/**/*'
       - 'user/**/*'
       - 'data/**/*'
     generates:

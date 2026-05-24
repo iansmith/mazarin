@@ -202,6 +202,11 @@ func parseIPv4(s string) ([4]byte, error) {
 		return out, fmt.Errorf("want 4 octets, got %d", len(parts))
 	}
 	for i, p := range parts {
+		// Empty octet (e.g. "1..2.3") would otherwise silently parse as 0
+		// because the inner digit loop has nothing to consume.
+		if p == "" {
+			return out, fmt.Errorf("octet %d is empty", i)
+		}
 		var n int
 		for _, ch := range p {
 			if ch < '0' || ch > '9' {

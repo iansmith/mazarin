@@ -56,6 +56,9 @@ func NewClient(apiKey, model string, caPool *x509.CertPool) (*Client, error) {
 	if apiKey == "" {
 		return nil, errors.New("claude: empty API key")
 	}
+	if model == "" {
+		return nil, errors.New("claude: empty model")
+	}
 	if caPool == nil {
 		return nil, errors.New("claude: nil CA pool")
 	}

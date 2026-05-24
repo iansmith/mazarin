@@ -27,6 +27,18 @@ func TestNewClientRejectsEmptyAPIKey(t *testing.T) {
 	}
 }
 
+// TestNewClientRejectsEmptyModel — NewClient must reject an empty
+// model string. Anthropic would 400 the request at runtime; failing at
+// construction is the symmetric thing to do alongside the API key /
+// CA pool checks.
+func TestNewClientRejectsEmptyModel(t *testing.T) {
+	pool := x509.NewCertPool()
+	_, err := NewClient("sk-ant-test", "", pool)
+	if err == nil {
+		t.Fatal("NewClient should reject empty model, got nil error")
+	}
+}
+
 // TestNewClientRejectsNilCAPool — NewClient must reject a nil CA pool.
 // Without a trust store, TLS handshake against api.anthropic.com would
 // fail with x509: certificate signed by unknown authority. Surfacing
