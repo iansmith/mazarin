@@ -779,17 +779,15 @@ version: '3'
 tasks:
   arm64:
     desc: Build demo (constraint tutorial, ARM64)
-    deps: [':check-env', ':mazarin:userspace-overlay', ':mancini:compile-constraints']
+    deps: [':check-env', ':mancini:compile-constraints']
     sources:
       - 'maz/demo/**/*'
       - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.BUILD_DIR}}/demo.elf'
     cmds:
       - '{{.GO}} tool go-echo "Building demo..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.BUILD_DIR}}/demo.elf ./maz/demo'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -o {{.BUILD_DIR}}/demo.elf ./maz/demo'
       - '{{.GO}} tool go-echo "Demo built at {{.BUILD_DIR}}/demo.elf"'
 ```
 
