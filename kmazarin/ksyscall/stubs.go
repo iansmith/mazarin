@@ -4,6 +4,7 @@ import (
 	"mazzy/kmazarin/device/virtio/rng"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/constants"
 	"sync/atomic"
@@ -460,31 +461,33 @@ func SyscallTkill(_, _, _, _, _, _ uint64) int64 {
 // Time stubs
 // ============================================================================
 
+// ClockRealtime is the Linux clock_gettime clockid for RTC-backed wall
+// time. All other clockids fall through to raw ticks since boot — fine
+// for CLOCK_MONOTONIC and friends, since Linux only promises a monotonic
+// fixed-point reference, not zero-at-boot.
+const ClockRealtime = 0
+
 // SyscallClockGettime gets the current time
-// arg0: clockid (ignored - we only support one clock)
+// arg0: clockid (ClockRealtime → ktime.GetTime; others → raw counter ticks)
 // arg1: pointer to timespec structure (tv_sec, tv_nsec)
 //
 //go:nosplit
 func SyscallClockGettime(clockid, timespecPtr, _, _, _, _ uint64) int64 {
-	_ = clockid // Ignore clock ID for now
-
 	// Validate user buffer address - reject NULL and kernel addresses
 	if !isValidUserAddr(timespecPtr) {
 		return -14 // EFAULT - invalid pointer
 	}
 
-	// Read current timer counter value
-	counterValue := kirq.ReadCounterValue()
-
-	// Get timer frequency (Hz)
-	frequency := uint64(kirq.GetTimerFrequency())
-
-	// Convert to seconds and nanoseconds
-	// seconds = counterValue / frequency
-	// nanoseconds = (counterValue % frequency) * 1000000000 / frequency
-	seconds := counterValue / frequency
-	remainder := counterValue % frequency
-	nanoseconds := (remainder * 1000000000) / frequency
+	var seconds, nanoseconds uint64
+	if clockid == ClockRealtime {
+		seconds, nanoseconds = ktime.GetTime()
+	} else {
+		counterValue := kirq.ReadCounterValue()
+		frequency := uint64(kirq.GetTimerFrequency())
+		seconds = counterValue / frequency
+		remainder := counterValue % frequency
+		nanoseconds = (remainder * 1000000000) / frequency
+	}
 
 	// Write to timespec structure
 	// struct timespec { time_t tv_sec; long tv_nsec; }

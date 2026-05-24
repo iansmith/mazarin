@@ -17,7 +17,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -59,7 +58,6 @@ type config struct {
 	APIKey     string `toml:"api_key"`
 	Model      string `toml:"model"`
 	EndpointIP string `toml:"endpoint_ip"` // dig api.anthropic.com +short to refresh
-	TimeUnix   int64  `toml:"time_unix"`   // mazzy has no RTC yet; ops sets `date +%s`
 }
 
 func init() { mazhost.PinEntry(MazarinMain, nil) }
@@ -104,9 +102,6 @@ func run() error {
 	if cfg.EndpointIP == "" {
 		return fmt.Errorf("%s: endpoint_ip is empty (run `dig api.anthropic.com +short` and paste an IP)", apiKeyPath)
 	}
-	if cfg.TimeUnix == 0 {
-		return fmt.Errorf("%s: time_unix is empty (mazzy has no RTC; paste `date +%%s` output for cert validation)", apiKeyPath)
-	}
 	if cfg.Model == "" {
 		cfg.Model = defaultModel
 	}
@@ -128,12 +123,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("claude.NewClient: %w", err)
 	}
-	// mazzy doesn't have a real-time clock yet — time.Now() returns
-	// seconds-since-boot starting at Unix epoch 0. crypto/tls's cert
-	// validity check would reject every legitimate cert. Inject the
-	// ops-supplied wall-clock time so validation works.
-	wallTime := time.Unix(cfg.TimeUnix, 0)
-	client.TLSConfig().Time = func() time.Time { return wallTime }
 
 	nc, err := connectNet()
 	if err != nil {
