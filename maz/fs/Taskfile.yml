@@ -4,36 +4,31 @@ tasks:
   arm64:
     desc: Build fs shepherd (standalone filesystem server, ARM64)
     run: once
-    deps: [':check-env', ':mazarin:userspace-overlay']
+    deps: [':check-env']
     sources:
       - '{{.ROOT_DIR}}/maz/**/*.go'
       - '{{.ROOT_DIR}}/maz/**/*.s'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.FS_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building fs shepherd for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FS_ELF}} ./maz/fs'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -o {{.FS_ELF}} ./maz/fs'
       - '{{.GO}} tool go-echo "FS shepherd ARM64 built at {{.FS_ELF}}"'
 
   x86_64:
     desc: Build fs shepherd (standalone filesystem server, x86_64)
     run: once
-    deps: [':check-env', ':mazarin:userspace-overlay']
+    deps: [':check-env']
     sources:
       - '{{.ROOT_DIR}}/maz/**/*.go'
       - '{{.ROOT_DIR}}/maz/**/*.s'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.FS_AMD64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building fs shepherd for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FS_AMD64_ELF}} ./maz/fs'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build {{.GCFLAGS}} -o {{.FS_AMD64_ELF}} ./maz/fs'
       - '{{.GO}} tool go-echo "FS shepherd x86_64 built at {{.FS_AMD64_ELF}}"'
-
