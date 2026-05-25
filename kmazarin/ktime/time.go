@@ -54,6 +54,19 @@ func Init() bool {
 // Init() must have been called before this function.
 // Returns (0, 0) if not initialized.
 //
+// Two early-return checks below look redundant; they aren't, and the
+// difference is load-bearing on ARM64. The atomic load on state.initialized
+// pairs with Init's atomic.StoreUint32 release-store — it's an acquire-load
+// that publishes Init's three prior plain writes (baseTicks, baseSeconds,
+// frequency) to this caller's core. Without it, another core could observe
+// state.frequency != 0 (Init's third write) but still see baseTicks == 0
+// (write not yet visible) and return a wildly wrong time. The freq == 0
+// belt-and-suspenders is kept because kmazarin/ktimer/timer.go:16 defaults
+// timerFrequency to a non-zero platform value (62.5 MHz) deliberately, so
+// the initialized flag is the only signal that *ktime*.Init ran — without
+// it a pre-Init GetTime call would silently produce wrong-but-plausible
+// times instead of (0, 0).
+//
 //go:nosplit
 func GetTime() (seconds, nanoseconds uint64) {
 	if atomic.LoadUint32(&state.initialized) == 0 {

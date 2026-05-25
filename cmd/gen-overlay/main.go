@@ -36,7 +36,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Types:\n")
 		fmt.Fprintf(os.Stderr, "  kmazarin         - Kernel runtime patches (ARM64)\n")
 		fmt.Fprintf(os.Stderr, "  kmazarin-amd64   - Kernel runtime patches (x86_64)\n")
-		fmt.Fprintf(os.Stderr, "  userspace        - Userspace runtime patches\n")
+		fmt.Fprintf(os.Stderr, "  userspace        - Minimal userspace overlay (CNTVCT_EL0 fast path for nanotime/walltime, ARM64)\n")
 		fmt.Fprintf(os.Stderr, "  cardinal-linux   - Cardinal bootloader runtime patches (Linux ARM64→bare metal)\n")
 		fmt.Fprintf(os.Stderr, "  diplomat         - UEFI bootloader runtime patches (Windows→UEFI, deprecated)\n")
 		fmt.Fprintf(os.Stderr, "  diplomat-linux   - UEFI bootloader runtime patches (Linux→UEFI)\n")
@@ -219,20 +219,25 @@ func buildKmazarinAMD64Overlay(overlay *Overlay, goroot, patchesDir string) erro
 	return nil
 }
 
+// buildUserspaceOverlay wires the minimal userspace runtime overlay
+// (MAZ-46 Phase 2). Three files, each replacing exactly one stock Go
+// runtime file:
+//   - runtime/sys_linux_arm64.s — full file replacement; nanotime1 reads
+//     CNTVCT_EL0 directly instead of trapping into the kernel via SVC
+//   - runtime/timestub2.go — full file replacement; walltime reads
+//     CNTVCT_EL0 + boot epoch published by kmazarin via env vars,
+//     instead of the wasmimport forward decl the stock file provides
+//   - runtime/netpoll_maz_init.go — eager netpollGenericInit() so sysmon's
+//     10ms netpoll(0) and findRunnable's timer-waits actually fire
+//
+// Stock Go's walltime_mazzy.go split is folded into timestub2.go here.
+// On non-(linux/arm64) platforms the overlaid timestub2.go is excluded
+// by build tag; stock Go's native impls apply.
 func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
-	// Userspace patches
 	patches := map[string]string{
-		"syscall/syscall_linux.go":    "syscall_linux.go",
-		"syscall/asm_linux_arm64.s":   "asm_linux_arm64.s",
-		"syscall/asm_linux_amd64.s":   "asm_linux_amd64.s",
-		"runtime/cgo_mmap.go":         "runtime/cgo_mmap.go",
-
-		"runtime/maz_moduledata.go":     "runtime/maz_moduledata.go",
-
-		"runtime/sys_linux_arm64.s":       "runtime/sys_linux_arm64.s",
-		"runtime/netpoll_maz_init.go":    "runtime/netpoll_maz_init.go",
-		"runtime/walltime_mazzy.go":      "runtime/walltime_mazzy.go",
+		"runtime/sys_linux_arm64.s":   "runtime/sys_linux_arm64.s",
 		"runtime/timestub2.go":        "runtime/timestub2.go",
+		"runtime/netpoll_maz_init.go": "runtime/netpoll_maz_init.go",
 	}
 
 	for goFile, patchFile := range patches {

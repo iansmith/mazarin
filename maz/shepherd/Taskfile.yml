@@ -4,12 +4,13 @@ tasks:
   arm64:
     desc: Build generic shepherd (ARM64) — mazdl host for .maz plugins
     run: once
-    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mazarin:userspace-overlay']
     sources:
       - '{{.ROOT_DIR}}/maz/shepherd/**/*.go'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'
@@ -17,10 +18,11 @@ tasks:
     generates:
       - '{{.SHEPHERD_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building shepherd for ARM64 (mazgo + mazlink, -dlopen-host-exports, -dynlink)..."'
+      - '{{.GO}} tool go-echo "Building shepherd for ARM64 (mazgo + mazlink, -dlopen-host-exports, -dynlink, userspace-overlay)..."'
       - |
         CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
         {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} \
           -tags mazhost \
           "-gcflags=all=-dynlink" "-asmflags=all=-dynlink" \
           -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
@@ -31,12 +33,13 @@ tasks:
   x86_64:
     desc: Build generic shepherd (x86_64) — mazdl host for .maz plugins
     run: once
-    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mazarin:userspace-overlay']
     sources:
       - '{{.ROOT_DIR}}/maz/shepherd/**/*.go'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'
@@ -44,10 +47,11 @@ tasks:
     generates:
       - '{{.SHEPHERD_AMD64_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building shepherd for x86_64 (mazgo + mazlink, -dlopen-host-exports, -dynlink)..."'
+      - '{{.GO}} tool go-echo "Building shepherd for x86_64 (mazgo + mazlink, -dlopen-host-exports, -dynlink, userspace-overlay)..."'
       - |
         CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
         {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} \
           -tags mazhost \
           "-gcflags=all=-dynlink" "-asmflags=all=-dynlink" \
           -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \

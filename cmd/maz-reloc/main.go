@@ -213,7 +213,7 @@ func findPanicHelperAddresses(f *elf.File) []uint64 {
 
 // findStubAddresses looks up each stub symbol in the ELF's symbol table
 // and returns a map of name → VA address for symbols that exist AND are
-// actually thin stubs (not real functions from the userspace overlay).
+// actually thin stubs (not real functions resolved by the linker).
 // Stubs are identified by either:
 //   - Legacy: NOP + B.-4 (ARM64), INT3+JMP (x86_64), NOP+J.-4 (RISC-V)
 //   - Sentinel: ADRP+LDR targeting _thinStubSentinel (ARM64), etc.
