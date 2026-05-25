@@ -11,12 +11,14 @@ tasks:
   arm64:
     desc: Build net shepherd (eth-layer .elf plugin host, ARM64)
     run: once
-    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mazarin:userspace-overlay']
     sources:
       - '{{.ROOT_DIR}}/maz/**/*.go'
       - '{{.ROOT_DIR}}/maz/**/*.s'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'
@@ -24,10 +26,11 @@ tasks:
     generates:
       - '{{.NET_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building net.elf for ARM64 (mazgo + mazlink, plugin-host)..."'
+      - '{{.GO}} tool go-echo "Building net.elf for ARM64 (mazgo + mazlink, plugin-host, userspace-overlay)..."'
       - |
         CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
         {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} \
           -tags mazhost \
           "-gcflags=all=-dynlink" "-asmflags=all=-dynlink" \
           -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
@@ -38,12 +41,14 @@ tasks:
   x86_64:
     desc: Build net shepherd (eth-layer .elf plugin host, x86_64)
     run: once
-    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build', ':mazarin:userspace-overlay']
     sources:
       - '{{.ROOT_DIR}}/maz/**/*.go'
       - '{{.ROOT_DIR}}/maz/**/*.s'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
       - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
       - '{{.MAZLINK_BIN}}'
       - '{{.MAZGO_BIN}}'
       - '{{.MAZGO_TOOLEXEC_BIN}}'
@@ -51,10 +56,11 @@ tasks:
     generates:
       - '{{.NET_AMD64_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building net.elf for x86_64 (mazgo + mazlink, plugin-host)..."'
+      - '{{.GO}} tool go-echo "Building net.elf for x86_64 (mazgo + mazlink, plugin-host, userspace-overlay)..."'
       - |
         CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
         {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} \
           -tags mazhost \
           "-gcflags=all=-dynlink" "-asmflags=all=-dynlink" \
           -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \

@@ -66,8 +66,7 @@ includes:
   # Bootloader
   diplomat:     {taskfile: ./diplomat/Taskfile.yml}
   # Libraries
-  # mazarin: include removed in MAZ-46 Phase 1 — the only task it held was userspace-overlay.
-  # Phase 2 will re-introduce mazarin/Taskfile.yml + this include for the minimal CNTVCT_EL0 overlay.
+  mazarin:      {taskfile: ./mazarin/Taskfile.yml}
   mancini:      {taskfile: ./mazarin/mancini/Taskfile.yml}
 
 vars:
@@ -100,6 +99,7 @@ vars:
   # Output files
   KMAZARIN_ELF: '{{.BUILD_DIR}}/kmazarin.elf'
   KMAZARIN_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-overlay.json'
+  USERSPACE_OVERLAY_JSON: '{{.BUILD_DIR}}/userspace-overlay.json'
   MAIL_MAZ: '{{.BUILD_DIR}}/mail.maz'
 
   # .maz program build artifacts
@@ -173,6 +173,7 @@ vars:
 
   # Runtime patches directory
   RUNTIME_PATCHES_DIR: runtime-patches
+  USERSPACE_OVERLAY_DIR: mazarin/overlay/userspace
 
   # Mazlink — patched cmd/link that emits plugin-shape ELF without cgo.
   # mazgo is the companion patched cmd/go that stops auto-importing runtime/cgo
