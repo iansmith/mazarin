@@ -1,0 +1,52 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build transferprobe.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/transferprobe/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.TRANSFERPROBE_MAZ}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building transferprobe.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.TRANSFERPROBE_MAZ}} ./maz/transferprobe
+      - '{{.GO}} tool go-echo "transferprobe.maz ready at {{.TRANSFERPROBE_MAZ}}"'
+
+  amd64:
+    desc: Build transferprobe.maz for x86_64 via mazgo
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/transferprobe/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.TRANSFERPROBE_MAZ_AMD64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building transferprobe.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.TRANSFERPROBE_MAZ_AMD64}} ./maz/transferprobe
+      - '{{.GO}} tool go-echo "transferprobe.maz (x86_64) ready at {{.TRANSFERPROBE_MAZ_AMD64}}"'

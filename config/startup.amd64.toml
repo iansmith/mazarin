@@ -31,6 +31,17 @@ path = "/net.elf"
 # api.anthropic.com via mazarin's network stack. Asks Claude one
 # question and asserts "Washington" in the response. amd64 entry
 # defined for pattern parity; not gated by MAZ-43's acceptance.
+# MAZ-50 transfertest + transferprobe entries (amd64 path is defined-but-
+# not-gated; x86_64 disk doesn't bundle the binaries until the framework-
+# level nosplit overflow clears).
+[[shepherd]]
+name = "transfertest"
+path = "/transfertest.maz"
+
+[[shepherd]]
+name = "transferprobe"
+path = "/transferprobe.maz"
+
 [[shepherd]]
 name = "sophie"
 path = "/sophie.maz"

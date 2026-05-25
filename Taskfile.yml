@@ -54,6 +54,8 @@ includes:
   gvisor:       {taskfile: ./maz/gvisor/Taskfile.yml}
   linux-ui:     {taskfile: ./maz/linux-ui/Taskfile.yml}
   xfertest:     {taskfile: ./maz/xfertest/Taskfile.yml}
+  transfertest: {taskfile: ./maz/transfertest/Taskfile.yml}
+  transferprobe: {taskfile: ./maz/transferprobe/Taskfile.yml}
   sophie:       {taskfile: ./maz/sophie/Taskfile.yml}
   # .maz programs (continued)
   clocks:       {taskfile: ./maz/clocks/Taskfile.yml}
@@ -114,6 +116,8 @@ vars:
   LINUX_UI_MAZ: '{{.BUILD_DIR}}/linux-ui.maz'
   MAIL_UI_MAZ: '{{.BUILD_DIR}}/mail-ui.maz'
   XFERTEST_MAZ: '{{.BUILD_DIR}}/xfertest.maz'
+  TRANSFERTEST_MAZ: '{{.BUILD_DIR}}/transfertest.maz'
+  TRANSFERPROBE_MAZ: '{{.BUILD_DIR}}/transferprobe.maz'
   SOPHIE_MAZ: '{{.BUILD_DIR}}/sophie.maz'
   CLOCKS_MAZ_AMD64: '{{.BUILD_DIR}}/clocks-amd64.maz'
   VERSAI_MAZ_AMD64: '{{.BUILD_DIR}}/versai-amd64.maz'
@@ -126,6 +130,8 @@ vars:
   LINUX_UI_MAZ_AMD64: '{{.BUILD_DIR}}/linux-ui-amd64.maz'
   MAIL_UI_MAZ_AMD64: '{{.BUILD_DIR}}/mail-ui-amd64.maz'
   XFERTEST_MAZ_AMD64: '{{.BUILD_DIR}}/xfertest-amd64.maz'
+  TRANSFERTEST_MAZ_AMD64: '{{.BUILD_DIR}}/transfertest-amd64.maz'
+  TRANSFERPROBE_MAZ_AMD64: '{{.BUILD_DIR}}/transferprobe-amd64.maz'
   SOPHIE_MAZ_AMD64: '{{.BUILD_DIR}}/sophie-amd64.maz'
   SHEPHERD_ELF: '{{.BUILD_DIR}}/shepherd.elf'
   RACHEL_MAZ: '{{.BUILD_DIR}}/rachel.maz'
@@ -521,7 +527,7 @@ tasks:
 
   userspace-build:
     desc: Build all ARM64 userspace programs (shepherds, .maz modules, test programs)
-    deps: [rachel:arm64, linux:arm64, fs:arm64, net:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, gvisor:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, xfertest:arm64, sophie:arm64]
+    deps: [rachel:arm64, linux:arm64, fs:arm64, net:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, gvisor:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, xfertest:arm64, transfertest:arm64, transferprobe:arm64, sophie:arm64]
 
   userspace-build-x86_64:
     desc: Build all x86_64 userspace programs (shepherds + test programs)
@@ -552,7 +558,7 @@ tasks:
 
   disk-arm64:
     desc: Create ext2 disk image with ARM64 maz binaries and kmazarin kernel
-    deps: [shepherd:arm64, rachel:arm64, linux:arm64, fs:arm64, net:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, gvisor:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, xfertest:arm64, sophie:arm64, kmazarin:arm64, convert-boot-image]
+    deps: [shepherd:arm64, rachel:arm64, linux:arm64, fs:arm64, net:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, gvisor:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, xfertest:arm64, transfertest:arm64, transferprobe:arm64, sophie:arm64, kmazarin:arm64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -577,6 +583,8 @@ tasks:
       - '{{.MAILDB_MAZ}}'
       - '{{.MAIL_UI_MAZ}}'
       - '{{.XFERTEST_MAZ}}'
+      - '{{.TRANSFERTEST_MAZ}}'
+      - '{{.TRANSFERPROBE_MAZ}}'
       - '{{.SOPHIE_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
@@ -595,7 +603,7 @@ tasks:
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
       # Single -dir /sophie= so mkext2 doesn't create two competing /sophie inodes;
       # subdirectories ssl/ and secrets/ get recursed into automatically.
-      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data -dir /sophie=./sophie {{.SHEPHERD_ELF}} {{.RACHEL_MAZ}} {{.LINUX_MAZ}} {{.FS_ELF}} {{.NET_ELF}} {{.CLOCKS_MAZ}} {{.VERSAI_MAZ}} {{.CALC_MAZ}} {{.MAIL_MAZ}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.GVISOR_MAZ}} {{.LINUX_UI_MAZ}} {{.FTI_MAZ}} {{.MAILDB_MAZ}} {{.MAIL_UI_MAZ}} {{.XFERTEST_MAZ}} {{.SOPHIE_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
+      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data -dir /sophie=./sophie {{.SHEPHERD_ELF}} {{.RACHEL_MAZ}} {{.LINUX_MAZ}} {{.FS_ELF}} {{.NET_ELF}} {{.CLOCKS_MAZ}} {{.VERSAI_MAZ}} {{.CALC_MAZ}} {{.MAIL_MAZ}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.GVISOR_MAZ}} {{.LINUX_UI_MAZ}} {{.FTI_MAZ}} {{.MAILDB_MAZ}} {{.MAIL_UI_MAZ}} {{.XFERTEST_MAZ}} {{.TRANSFERTEST_MAZ}} {{.TRANSFERPROBE_MAZ}} {{.SOPHIE_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
