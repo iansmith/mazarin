@@ -58,8 +58,9 @@ func readCNTFRQ() uint64
 func walltime() (sec int64, nsec int32) {
 	ticks := readCNTVCT()
 
-	if mazzyBootReady == 0 {
-		// Before init: approximate using nsPerTickX256
+	if mazzyBootReady == 0 || mazzyFreq == 0 {
+		// Before init, or hardware reported a 0 frequency (would div-by-zero
+		// below): approximate using nsPerTickX256's default.
 		totalNs := (ticks * nsPerTickX256) >> 8
 		return int64(totalNs / 1000000000), int32(totalNs % 1000000000)
 	}
@@ -88,7 +89,10 @@ func init() {
 	bootTicks := gogetenv("MAZZY_BOOT_TICKS")
 	bootNsec := gogetenv("MAZZY_BOOT_NSEC")
 
-	if bootSec != "" && bootTicks != "" {
+	// Require mazzyFreq > 0 too — walltime's post-init branch divides by it,
+	// so a 0 frequency would cause an integer-divide panic. Falls through to
+	// the pre-init branch (which uses nsPerTickX256) when freq is 0.
+	if bootSec != "" && bootTicks != "" && mazzyFreq > 0 {
 		mazzyBootSec = mazzyAtoi64(bootSec)
 		mazzyBootTicks = uint64(mazzyAtoi64(bootTicks))
 		if bootNsec != "" {
