@@ -5,7 +5,6 @@ tasks:
     desc: Build generic shepherd (ARM64) — mazdl host for .maz plugins
     run: once
     deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
-    method: checksum
     sources:
       - '{{.ROOT_DIR}}/maz/shepherd/**/*.go'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
@@ -32,7 +31,6 @@ tasks:
     desc: Build generic shepherd (x86_64) — mazdl host for .maz plugins
     run: once
     deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
-    method: checksum
     sources:
       - '{{.ROOT_DIR}}/maz/shepherd/**/*.go'
       - '{{.ROOT_DIR}}/mazarin/**/*.go'
