@@ -12,6 +12,7 @@
 package main
 
 import (
+	"mazzy/maz/internal/transferpayload"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/transfer"
@@ -20,9 +21,6 @@ import (
 )
 
 const tag = "[transferprobe] "
-
-// magic must match transfertest's expected payload.
-var magic = []byte("hello mode-1 transfer\x00")
 
 func init() { mazhost.PinEntry(MazarinMain, nil) }
 
@@ -51,12 +49,12 @@ func MazarinMain() {
 
 	sys.SetReady(true)
 
-	h, err := transfer.Reserve(server, 0, len(magic))
+	h, err := transfer.Reserve(server, 0, len(transferpayload.Magic))
 	if err != nil {
 		sys.UartWriteString(tag + "FAIL Reserve: " + err.Error() + "\n")
 		select {}
 	}
-	if _, err := h.Writer().Write(magic); err != nil {
+	if _, err := h.Writer().Write(transferpayload.Magic); err != nil {
 		sys.UartWriteString(tag + "FAIL Write: " + err.Error() + "\n")
 		select {}
 	}

@@ -19,6 +19,12 @@ var ErrServerError = errors.New("transfer: server returned error")
 // or on a Handle that was never produced by Reserve.
 var ErrUnknownHandle = errors.New("transfer: unknown handle (already committed?)")
 
+// ErrReqIDMismatch is returned by Reserve when the response's ReqID doesn't
+// match the request's. Currently can only happen if the server misbehaves
+// or the IPC layer reorders responses; the per-server client mutex serializes
+// in-flight Reserves on the client side.
+var ErrReqIDMismatch = errors.New("transfer: response ReqID does not match request")
+
 // outstandingRecord tracks per-handle state the client needs at Commit time
 // but doesn't want to expose on the public Handle struct.
 type outstandingRecord struct {
@@ -111,6 +117,9 @@ func Reserve(server ShepherdID, kind uint32, size int) (Handle, error) {
 	if !ok {
 		return Handle{}, errors.New("transfer: unexpected response type on respCh")
 	}
+	if resp.ReqID != reqID {
+		return Handle{}, ErrReqIDMismatch
+	}
 	if resp.Err != 0 {
 		return Handle{}, ErrServerError
 	}
@@ -130,12 +139,13 @@ func Reserve(server ShepherdID, kind uint32, size int) (Handle, error) {
 //
 // Release-first: sys.TransferAndUnmap completes before the Commit IPC is
 // sent, so the server can't observe torn writes through a stale TLB.
+//
+// The outstanding-handle entry is retained until BOTH TransferAndUnmap and
+// the notify Send succeed. A transient failure on either step leaves the
+// entry in place so the caller can retry Commit.
 func (h Handle) Commit() error {
 	outstandingMu.Lock()
 	rec, ok := outstanding[h.VA]
-	if ok {
-		delete(outstanding, h.VA)
-	}
 	outstandingMu.Unlock()
 	if !ok {
 		return ErrUnknownHandle
@@ -156,5 +166,13 @@ func (h Handle) Commit() error {
 		ReqID: rec.reqID,
 	}
 	msg := ipc.EncodeTransferReq(&req, int16(os.Getpid()))
-	return uring.Send(int(rec.serverSID), &msg)
+	if err := uring.Send(int(rec.serverSID), &msg); err != nil {
+		return err
+	}
+
+	// Both irreversible steps succeeded — safe to drop the outstanding entry.
+	outstandingMu.Lock()
+	delete(outstanding, h.VA)
+	outstandingMu.Unlock()
+	return nil
 }

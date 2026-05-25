@@ -135,7 +135,7 @@ The hard cases. Each entry: who crashed, when, what the other side observes, and
 
 - **Kernel:** sees the client's process exit, reclaims its page mappings via `CleanupShepherdPages`. The physical pages return to the free list immediately, but the server doesn't know that yet — its Slab still references the (now-freed) page range.
 - **Server:** `Wait()` is blocked on `commitCh`. After the timeout (default 30s), `Wait` returns `ErrCommitTimeout`. The Slab transitions to `slabReleased`; calling `Release()` on it is idempotent and skips the `FreePages` call (kernel already reclaimed them).
-- **Followup:** future work could replace the timeout with a kernel-pushed "shepherd died" notification routed through the dispatcher. Tracked in the deferred list of MAZ-50's plan.
+- **Follow-up:** future work could replace the timeout with a kernel-pushed "shepherd died" notification routed through the dispatcher. Tracked in the deferred list of MAZ-50's plan.
 
 ### Server crash before Wait returns
 

@@ -69,11 +69,13 @@ type TransferRespPayload struct {
 	_pad  [4]byte
 }
 
-// Compile-time guarantee that both payloads fit in UringIPCMsg.Payload (112 bytes).
-// If a future field addition overflows, this fails to compile rather than corrupting
-// adjacent ring data at runtime.
-var _ [112 - unsafe.Sizeof(TransferReqPayload{})]byte
-var _ [112 - unsafe.Sizeof(TransferRespPayload{})]byte
+// Compile-time guarantee that both payloads fit in UringIPCMsg.Payload.
+// If a future field addition overflows, this fails to compile rather than
+// corrupting adjacent ring data at runtime. Self-updating: derived from the
+// container field's actual size, so a UringIPCMsg.Payload resize is also
+// re-checked against these payloads automatically.
+var _ [unsafe.Sizeof(UringIPCMsg{}.Payload) - unsafe.Sizeof(TransferReqPayload{})]byte
+var _ [unsafe.Sizeof(UringIPCMsg{}.Payload) - unsafe.Sizeof(TransferRespPayload{})]byte
 
 // EncodeTransferReq packs a request payload into a UringIPCMsg.
 func EncodeTransferReq(p *TransferReqPayload, senderSID int16) UringIPCMsg {

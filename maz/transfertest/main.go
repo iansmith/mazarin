@@ -13,6 +13,7 @@ package main
 import (
 	"bytes"
 
+	"mazzy/maz/internal/transferpayload"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/transfer"
@@ -20,9 +21,6 @@ import (
 )
 
 const tag = "[transfertest] "
-
-// Magic must match transferprobe's payload byte-for-byte.
-var magic = []byte("hello mode-1 transfer\x00")
 
 func init() { mazhost.PinEntry(MazarinMain, nil) }
 
@@ -47,7 +45,7 @@ func MazarinMain() {
 			continue
 		}
 		got := slab.Bytes()
-		if got == nil || !bytes.HasPrefix(got, magic) {
+		if got == nil || !bytes.HasPrefix(got, transferpayload.Magic) {
 			sys.UartWriteString(tag + "FAIL content mismatch\n")
 			slab.Release()
 			continue

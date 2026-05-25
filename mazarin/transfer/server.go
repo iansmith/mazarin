@@ -93,9 +93,14 @@ func (s *Server) handleReserve(tr taggedReq) {
 		s.sendErrorResp(tr.senderSID, tr.payload.ReqID, -14) // EFAULT
 		return
 	}
-	slab.state = slabMappedToClient
 
 	key := pendingKey{tr.senderSID, tr.payload.ReqID}
+	slab.mu.Lock()
+	slab.state = slabMappedToClient
+	slab.server = s
+	slab.serverKey = key
+	slab.mu.Unlock()
+
 	s.mu.Lock()
 	s.pending[key] = slab
 	s.mu.Unlock()
@@ -106,7 +111,12 @@ func (s *Server) handleReserve(tr taggedReq) {
 		Pages: uint32(slab.pages),
 	}
 	respMsg := ipc.EncodeTransferResp(&resp, int16(os.Getpid()))
-	_ = uring.Send(int(tr.senderSID), &respMsg)
+	if err := uring.Send(int(tr.senderSID), &respMsg); err != nil {
+		// Send failure leaves the client with no response. Roll back and
+		// don't hand to newSlabs — the main loop has no client to satisfy.
+		s.rollbackPending(key, slab)
+		return
+	}
 
 	// Hand the Slab to the server's main loop. Drop if the buffer is full —
 	// the main loop is too slow and the Slab would otherwise leak in pending.
@@ -114,11 +124,18 @@ func (s *Server) handleReserve(tr taggedReq) {
 	select {
 	case s.newSlabs <- slab:
 	default:
-		s.mu.Lock()
-		delete(s.pending, key)
-		s.mu.Unlock()
-		slab.Release()
+		s.rollbackPending(key, slab)
 	}
+}
+
+// rollbackPending drops a pending entry and releases its Slab. Used by
+// handleReserve when the post-Allocate path can't deliver the Slab to a
+// waiting client (response Send failed, or newSlabs buffer is full).
+func (s *Server) rollbackPending(key pendingKey, slab *Slab) {
+	s.mu.Lock()
+	delete(s.pending, key)
+	s.mu.Unlock()
+	_ = slab.Release()
 }
 
 func (s *Server) handleCommit(tr taggedReq) {
@@ -134,8 +151,16 @@ func (s *Server) handleCommit(tr taggedReq) {
 	}
 	// Client's TransferAndUnmap returned the new server-side VA in req.VA.
 	// Body pages now live at that VA in this server's address space.
+	slab.mu.Lock()
+	if slab.state == slabReleased {
+		// WaitTimeout fired first; the Slab is already released. Don't
+		// resurrect it — drop the late Commit on the floor.
+		slab.mu.Unlock()
+		return
+	}
 	slab.va = uintptr(tr.payload.VA)
 	slab.state = slabCommitted
+	slab.mu.Unlock()
 	select {
 	case slab.commitCh <- nil:
 	default:
@@ -157,14 +182,28 @@ func (s *Slab) Wait() error {
 
 // WaitTimeout is Wait with an explicit timeout.
 func (s *Slab) WaitTimeout(timeout time.Duration) error {
+	s.mu.Lock()
 	if s.state == slabCommitted {
+		s.mu.Unlock()
 		return nil
 	}
+	s.mu.Unlock()
 	select {
 	case err := <-s.commitCh:
 		return err
 	case <-time.After(timeout):
-		s.state = slabReleased // kernel reclaimed the orphaned mapping
+		// Client crashed mid-fill (kernel reclaimed the orphaned mapping)
+		// or the network/IPC layer dropped the Commit. Evict the pending
+		// entry on our side so the map doesn't grow unboundedly over
+		// long uptime, then mark the Slab released.
+		s.mu.Lock()
+		if s.server != nil {
+			s.server.mu.Lock()
+			delete(s.server.pending, s.serverKey)
+			s.server.mu.Unlock()
+		}
+		s.state = slabReleased
+		s.mu.Unlock()
 		return ErrCommitTimeout
 	}
 }

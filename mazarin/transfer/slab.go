@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"errors"
+	"sync"
 	"unsafe"
 
 	"mazzy/mazarin/mem"
@@ -51,11 +52,22 @@ const (
 //	            (e.g. protocol-http reserves one page for HTTP headers
 //	            it builds after the body is committed).
 type Slab struct {
+	// mu guards state + va across the dispatcher commit path and the
+	// waiter/reader paths. pages and extraPages are immutable after
+	// Allocate and can be read without the lock.
+	mu sync.Mutex
+
 	va         uintptr // start of the full allocation (includes extraPages)
 	pages      int     // total pages allocated (body + extraPages)
 	extraPages int     // server-only leading pages
 	state      slabState
 	commitCh   chan error // signalled by the dispatcher when Commit arrives
+
+	// server + serverKey are populated by the dispatcher after Allocate so
+	// the timeout path in WaitTimeout can evict the pending entry. Nil if
+	// the Slab wasn't produced by a Reserve handler (e.g. test fixtures).
+	server    *Server
+	serverKey pendingKey
 }
 
 // Allocate is the server-side entry point of mode 1.
@@ -109,6 +121,8 @@ func Allocate(size, extraPages int) (*Slab, error) {
 //
 // After Release, returns nil.
 func (s *Slab) Bytes() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.state == slabReleased || s.state == slabMappedToClient {
 		return nil
 	}
@@ -119,6 +133,8 @@ func (s *Slab) Bytes() []byte {
 // client will see after Reserve completes. Excludes the server-only
 // extraPages prefix.
 func (s *Slab) ClientView() (va uintptr, pages int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.state == slabReleased {
 		return 0, 0
 	}
@@ -128,10 +144,16 @@ func (s *Slab) ClientView() (va uintptr, pages int) {
 // Release returns the Slab's pages to the allocator. Idempotent: a second
 // Release returns nil.
 func (s *Slab) Release() error {
+	s.mu.Lock()
 	if s.state == slabReleased {
+		s.mu.Unlock()
 		return nil
 	}
-	err := mem.FreePages(unsafe.Pointer(s.va), s.pages)
+	va := s.va
+	pages := s.pages
 	s.state = slabReleased
-	return err
+	s.mu.Unlock()
+	// FreePages outside the lock — it's a syscall and shouldn't be held
+	// while other goroutines may be checking state.
+	return mem.FreePages(unsafe.Pointer(va), pages)
 }
