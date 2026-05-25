@@ -43,6 +43,8 @@ const (
 	ProtoIdleFlushHint   uint32 = 17 // kernel → linux shepherd: flush one write buffer (fire-and-forget)
 	ProtoNetIPCReq       uint32 = 18 // client → net.elf NetIPC request (BindUDP, SendDgram, Release, Close, ...)
 	ProtoNetIPCResp      uint32 = 19 // net.elf → client NetIPC response or unsolicited delivery (BindUDPResp, RecvDgram, ...)
+	ProtoTransferReq     uint32 = 20 // mazarin/transfer Mode 1 request (Reserve | Commit) — MAZ-50
+	ProtoTransferResp    uint32 = 21 // mazarin/transfer Mode 1 response — MAZ-50
 )
 
 // UringIPCRingHeader is the metadata at offset 0 of the ring's first page.
