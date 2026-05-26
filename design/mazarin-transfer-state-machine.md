@@ -156,37 +156,117 @@ The hard cases. Each entry: who crashed, when, what the other side observes, and
 
 Kernel reclaims both shepherds' page sets independently. No new failure mode.
 
-## How Modes 2 and 3 extend this
+## How Mode 2 extends this
 
-### Mode 2 — server-initiated handoff ([MAZ-53](https://linear.app/mazarin/issue/MAZ-53))
+> Note: The original framing (Mode 2 = ownership handoff / Mode 3 = sub-region
+> grant) was superseded during MAZ-53 planning. Both collapsed into a single
+> **shared-mapping** primitive. MAZ-54 is closed as a duplicate of MAZ-53.
 
-Adds two states / transitions to the foundation:
+### Mode 2 — shared mapping ([MAZ-53](https://linear.app/mazarin/issue/MAZ-53))
 
-- `slabCommitted` (or `slabAllocated`, for server-originated payloads) → `slabHandedOff` via `s.HandOff(clientSID)`. Kernel transfers the pages out of the server; the server can no longer touch them.
-- `slabHandedOff` is observed by the recipient as a freshly-allocated Slab via `ReceiveHandoff(serverSID)` — they enter their own state machine from a `slabAllocated`-equivalent state.
+Mode 2 adds a parallel sharing dimension on top of any `slabAllocated` or
+`slabCommitted` Slab. The Slab's main state does not change; the kernel tracks
+consumers separately via `PageDescriptor.RefCount`.
 
-The pre-posted-buffer pattern (protocol-claude pre-allocates response Slabs and grants them to protocol-http via Mode 3) means Mode 2 ends up being used only for the final hop (protocol-claude → sophie), where ownership genuinely changes hands. Chained handoffs (A → B → C) remain supported for cases like the fs page-loan path.
+**Sender-side state transitions:**
 
-### Mode 3 — sub-region write mapping ([MAZ-54](https://linear.app/mazarin/issue/MAZ-54))
+```
+slabAllocated (or slabCommitted)
+  │
+  ├── Slab.Share(consumer)        → kernel RefCount++ for all Slab pages
+  │   or Slab.ShareRange(…)         ProtoShareReq IPC sent to consumer
+  │                                 Outstanding-shares table entry added
+  │
+  │   [consumer mapping active — sender can still read/write; both sides see
+  │    the same physical frames via kernel-maintained shared PT entries]
+  │
+  └── on ProtoShareRelease from consumer →
+        sys.UnshareFromTarget(consumer, consumerVA, numPages)
+        RefCount-- for shared pages
+        PD_SHARED cleared when RefCount drops to owner-only (1)
+        Outstanding-shares table entry removed
+        releaseHook called (if registered)
+```
 
-Layers on top of any state. Adds a parallel sub-state for the granted region:
+Multiple consumers can hold shares of the same Slab simultaneously.
+RefCount is the kernel's authoritative count; the sender's outstanding-shares
+table is the source of truth for *who* owes a Release.
 
-- `s.GrantWrite(clientSID, offset, length)` produces a `Handle` for the client (over a *byte* range that overlaps one or more pages) without changing the Slab's main state. The server retains ownership; the client has R/W to the granted pages.
-- Client's `h.Release()` and the matching `s.RevokeWrite(h)` tear down the sub-region mapping; the Slab continues in whatever main state it was in.
+**Consumer-side lifecycle:**
 
-Trust model in v1: page-granularity protection means the client has R/W to whole pages that overlap the granted byte range, including bytes outside the logical grant. v1 accepts this for in-tree clients; VM-enforced isolation is deferred.
+```
+(RegisterShareConsumer wired into dispatcher before d.Start())
+  │
+  ├── ReceiveShare(sender) blocks on per-sender channel
+  │   dispatcher routes ProtoShareReq → channel → returns *Share
+  │
+  │   Share.VA   = byte-granular start in consumer's address space
+  │   Share.Bytes = logical byte count (may be sub-page for ShareRange)
+  │
+  ├── Share.AsBytes() → unsafe.Slice view over [VA, VA+Bytes)
+  │   R/W — writes propagate to sender's Slab view (same physical frames)
+  │
+  └── Share.Release() → fire-and-forget ProtoShareRelease IPC to sender
+        sets Share.released = true; subsequent Release() calls return nil
+        IPC sent only for kernel-established Shares (kernelMapped == true)
+```
+
+**Crash recovery:**
+
+| Crash scenario | Kernel behaviour | Sender state |
+|---|---|---|
+| Consumer dies mid-share | `CleanupShepherdPages` decrements RefCount for shared pages (Owner != dead); sender's mapping intact | Sender gets ProtoDeath; can remove consumer's entry from outstanding-shares table via death handler |
+| Sender dies mid-share | Kernel frees owner's pages; consumers' shared PT entries become dangling | Consumers register ProtoDeath handlers to invalidate in-flight Shares |
+| Both die | Each cleaned up independently; no new failure mode | — |
+
+**Chained shares (A → B → C):**
+
+`SyscallSharePagesWithTarget` permits sharing if the caller owns the page
+*or* has a valid shared mapping (`PD_SHARED` set and page is in caller's PT).
+This allows protocol-claude to re-share pages it received from protocol-http.
+The same relaxation applies to `SyscallUnshareFromTarget` so B can call
+`UnshareFromTarget(C, …)` when C's Release IPC arrives.
+
+RefCount tracks the total depth: A shares with B → RefCount=2; B shares with
+C → RefCount=3; C releases → RefCount=2 (B's mapping intact); B releases →
+RefCount=1 (PD_SHARED cleared, owner-only).
+
+**v1 trust model (boundary pages):**
+
+`SyscallSharePagesWithTarget` maps at page granularity (4 KiB on ARM64).
+A `ShareRange(consumer, offset, length)` whose offset or
+`offset+length` is not page-aligned exposes bytes outside `[offset,
+offset+length)` on the boundary pages. The consumer has R/W on the full
+exposed pages.
+
+v1 accepts this for in-tree consumers (protocol-http, protocol-claude, sophie)
+that are code-reviewed and won't scribble outside their grants. The boundary-
+page staging-copy enhancement (pre-zero or copy bytes outside the grant before
+sharing; restore after Release) is filed as a deferred follow-up.
+
+**fs page-loan decision (DoD §9):**
+
+The existing `fsclient` page-loan path (in `mazarin/fsclient`) predates the
+`transfer` library and uses `SysSharePagesWithClient` / `SysMapSharedPage`
+directly rather than going through `mazarin/transfer`. Decision (pinned during
+MAZ-53): **leave `fsclient` as-is for v1.** The `transfer.Share` library is
+the canonical path for new code; `fsclient` is the reference implementation
+showing the lower-level mechanics. A migration recipe for `fsclient` is a
+deferred enhancement — tracked in the MAZ-53 ticket out-of-scope list.
 
 ## Sanity checks for implementers
 
 - A Slab can only be in one `slabState` at a time. Concurrent IPC + Wait must be serialized via the dispatcher goroutine ordering — never read/write state from two goroutines without a synchronizing channel.
 - Never call `Slab.Bytes()` from a path that's also being driven by a uring dispatcher handler unless the state is verified `slabAllocated` or `slabCommitted`. Returning nil is a safety mechanism, not a correctness shield.
 - `Handle.Commit()` is **release-first**: `TransferAndUnmap` returns only when the kernel has atomically moved the pages back to the server. The IPC notification that wakes `Wait()` is sent *after* that SVC returns. This ordering is what guarantees the server can't observe torn writes through a stale TLB.
+- `Slab.Share` / `Slab.ShareRange` are map-first then notify: `sys.SharePagesWithTarget` completes before the `ProtoShareReq` IPC is sent. If sharetest crashes after mapping but before the IPC, the consumer never receives the share; the pages remain in the sender's address space with an elevated RefCount. The elevated RefCount is harmless — the consumer has no mapping and cannot access the pages. Kernel cleanup on sender death restores pages to single-owner state. If the IPC is lost in flight (consumer's ring full), the dropped `ProtoShareRelease` means the sender never revokes; pages stay in target's space until consumer exits and kernel's `CleanupShepherdPages` handles them.
 
 ## Cross-references
 
 - [MAZ-50](https://linear.app/mazarin/issue/MAZ-50) — foundation + Mode 1 (this doc).
-- [MAZ-53](https://linear.app/mazarin/issue/MAZ-53) — Mode 2: server-initiated handoff. Extends this state machine.
-- [MAZ-54](https://linear.app/mazarin/issue/MAZ-54) — Mode 3: sub-region write mapping. Extends this state machine.
+- [MAZ-53](https://linear.app/mazarin/issue/MAZ-53) — Mode 2: shared mapping. Fully implemented; state machine documented here.
+- [MAZ-54](https://linear.app/mazarin/issue/MAZ-54) — closed as duplicate of MAZ-53 (Share + ShareRange cover both whole-Slab and sub-region grants).
 - [MAZ-55](https://linear.app/mazarin/issue/MAZ-55) — umbrella ticket.
-- `mazarin/fsclient` — partial reference implementation for the cross-VA mapping mechanics; uses `SharePagesWithTarget` (share, not transfer). Reference for IPC dispatcher patterns, NOT for the page-ownership semantics described here.
+- `mazarin/fsclient` — reference implementation of the lower-level shared-mapping mechanics (predates the transfer library). See "fs page-loan decision" above.
 - `maz/maildb/mail_handler.go` — active producer-consumer reference using `TransferAndUnmap` (closest existing analogue to Mode 1's commit direction).
+- `maz/sharetest` / `maz/shareprobe` — boot integration smoke tests for Mode 2.

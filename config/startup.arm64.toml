@@ -53,6 +53,27 @@ path = "/transfertest.maz"
 name = "transferprobe"
 path = "/transferprobe.maz"
 
+# MAZ-53 boot-time smoke for mazarin/transfer Mode 2 (Share). Three shepherds:
+#   sharetest   = sender for stages 1–4 (whole-slab, sub-range, bidirectional,
+#                 multi-share); B-node for stage 5 (chained share A→B→C).
+#   shareprobe  = consumer for all stages (reads PatternA, writes PatternB,
+#                 releases).
+#   test-fixture-http = A-node for stage 5 only: allocates a Slab, fills
+#                 PatternA, shares with sharetest (B), then verifies PatternB
+#                 after the full A→B→C round-trip.
+# PASS = `[sharetest] all stages PASS` + `[test-fixture-http] PASS chain A→B→C`
+[[shepherd]]
+name = "test-fixture-http"
+path = "/test-fixture-http.maz"
+
+[[shepherd]]
+name = "sharetest"
+path = "/sharetest.maz"
+
+[[shepherd]]
+name = "shareprobe"
+path = "/shareprobe.maz"
+
 # MAZ-43 boot-time smoke for end-to-end HTTPS+JSON connectivity to
 # api.anthropic.com via mazarin's network stack. Asks Claude one
 # question and asserts "Washington" in the response.

@@ -63,6 +63,35 @@ func SharePagesWithTarget(targetPID int, va uintptr, numPages int) (uintptr, err
 	return r1, nil
 }
 
+// UnshareFromTarget revokes a previously-established shared mapping in a
+// target shepherd's address space. Inverse of SharePagesWithTarget. Only
+// the original page owner can unshare.
+//
+// The targetVA must be a page-aligned VA in the target's address space —
+// typically the value returned by an earlier SharePagesWithTarget call.
+// Unmaps numPages from the target's PT (with TLB flush) and decrements the
+// kernel RefCount; the caller's own mapping is left intact.
+//
+// MAZ-53 (Mode 2 Share) uses this for explicit consumer Release semantics
+// so we don't have to wait for process death to reclaim shared mappings.
+func UnshareFromTarget(targetPID int, targetVA uintptr, numPages int) error {
+	r1, _, errno := syscall.RawSyscall6(
+		mazzy.SysUnshareFromTarget,
+		uintptr(targetPID),
+		targetVA,
+		uintptr(numPages),
+		0, 0, 0,
+	)
+
+	if errno != 0 {
+		return errno
+	}
+	if int64(r1) < 0 {
+		return syscall.Errno(-int64(r1))
+	}
+	return nil
+}
+
 // TransferDMAClump transfers ownership of one whole MAZARIN_CONTIGUOUS clump
 // from the caller to a target shepherd. The clump is unmapped from the caller's
 // address space, its pages' PageDescriptor.Owner is updated to the target, and

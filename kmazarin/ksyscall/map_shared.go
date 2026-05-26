@@ -230,46 +230,39 @@ func SyscallSharePagesWithTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
 		return -12 // ENOMEM
 	}
 
+	// rollbackShare undoes the RefCount++/PD_SHARED bump for the first n
+	// pages already shared from the caller. We don't unmap from target here
+	// because demand-paging may not have instantiated all intermediate page
+	// table entries; orphaned target mappings are cleaned up on target exit.
+	rollbackShare := func(n int) {
+		for j := 0; j < n; j++ {
+			rollPA := kmem.WalkUserPageTableWithL0(
+				callerVA+uintptr(j)*kmem.PageSize, callerShepherd.PageTableL0PA)
+			rollPA = rollPA &^ (kmem.PageSize - 1)
+			if d := kmem.GetPageDescriptor(rollPA); d != nil {
+				unrefShared(d, kmem.PD_SHARED)
+			}
+		}
+	}
+
 	// Map each page from caller into target.
 	for i := 0; i < numPages; i++ {
 		srcVA := callerVA + uintptr(i)*kmem.PageSize
 		pa := kmem.WalkUserPageTableWithL0(srcVA, callerShepherd.PageTableL0PA)
 		if pa == 0 {
-			// Rollback pages mapped so far.
-			for j := 0; j < i; j++ {
-				rollPA := kmem.WalkUserPageTableWithL0(
-					callerVA+uintptr(j)*kmem.PageSize, callerShepherd.PageTableL0PA)
-				rollPA = rollPA &^ (kmem.PageSize - 1)
-				if d := kmem.GetPageDescriptor(rollPA); d != nil {
-					d.RefCount--
-					if d.RefCount <= 1 {
-						d.Flags &^= kmem.PD_SHARED
-					}
-				}
-				// Note: we don't unmap from target here because demand-paging
-				// may not have instantiated all intermediate page table entries.
-				// The pages will be cleaned up when the target exits.
-			}
+			rollbackShare(i)
 			klog.Errf("[IPC] SharePagesWithTarget: page not mapped in caller at VA %x\n", uint64(srcVA))
 			return -14 // EFAULT
 		}
 		pa = pa &^ (kmem.PageSize - 1)
 
 		desc := kmem.GetPageDescriptor(pa)
-		if desc == nil || desc.Owner != callerSID {
-			// Rollback.
-			for j := 0; j < i; j++ {
-				rollPA := kmem.WalkUserPageTableWithL0(
-					callerVA+uintptr(j)*kmem.PageSize, callerShepherd.PageTableL0PA)
-				rollPA = rollPA &^ (kmem.PageSize - 1)
-				if d := kmem.GetPageDescriptor(rollPA); d != nil {
-					d.RefCount--
-					if d.RefCount <= 1 {
-						d.Flags &^= kmem.PD_SHARED
-					}
-				}
-			}
-			klog.Errf("[IPC] SharePagesWithTarget: page not owned by caller at PA %x\n", uint64(pa))
+		// Allow sharing if the caller owns the page OR if the page is already
+		// shared and the caller has a valid mapping (chained share: A→B, B→C).
+		// WalkUserPageTableWithL0 above confirmed the page is in the caller's PT.
+		if desc == nil || (desc.Owner != callerSID && desc.Flags&kmem.PD_SHARED == 0) {
+			rollbackShare(i)
+			klog.Errf("[IPC] SharePagesWithTarget: caller has no share rights at PA %x\n", uint64(pa))
 			return -1 // EPERM
 		}
 
@@ -278,22 +271,8 @@ func SyscallSharePagesWithTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
 
 		dstVA := uintptr(targetVABase) + uintptr(i)*kmem.PageSize
 		if !kmem.MapPageInProcess(targetSID, dstVA, pa, 0) {
-			// Rollback this page and all prior.
-			desc.RefCount--
-			if desc.RefCount <= 1 {
-				desc.Flags &^= kmem.PD_SHARED
-			}
-			for j := 0; j < i; j++ {
-				rollPA := kmem.WalkUserPageTableWithL0(
-					callerVA+uintptr(j)*kmem.PageSize, callerShepherd.PageTableL0PA)
-				rollPA = rollPA &^ (kmem.PageSize - 1)
-				if d := kmem.GetPageDescriptor(rollPA); d != nil {
-					d.RefCount--
-					if d.RefCount <= 1 {
-						d.Flags &^= kmem.PD_SHARED
-					}
-				}
-			}
+			unrefShared(desc, kmem.PD_SHARED)
+			rollbackShare(i)
 			return -12 // ENOMEM
 		}
 	}
@@ -302,4 +281,133 @@ func SyscallSharePagesWithTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	targetShepherd.Spans.Add(targetVABase, totalSize)
 
 	return int64(targetVABase)
+}
+
+// SyscallUnshareFromTarget revokes a previously-established shared mapping
+// in a target shepherd's address space. Inverse of SyscallSharePagesWithTarget.
+// The page owner OR any intermediate holder (a shepherd with a valid shared
+// mapping — PD_SHARED set and page is in caller's PT) may call unshare. This
+// symmetry with SharePagesWithTarget's chained-share permission enables the
+// A→B→C release chain: when C releases to B, B calls UnshareFromTarget(C),
+// even though B is not the original owner. Unmaps from the target's PT (with
+// TLB flush), decrements RefCount, clears PD_SHARED when RefCount reaches the
+// owner-only floor. The caller's own mapping is left intact.
+//
+// MAZ-53: enables explicit Release semantics for Mode 2 shares so consumers
+// don't have to rely on process death for cleanup.
+//
+// Args:
+//
+//	arg0 = targetSID
+//	arg1 = targetVA   (page-aligned start of the consumer's shared region)
+//	arg2 = numPages
+//
+// Returns: 0 on success, or negative errno on failure. On per-page failure
+// mid-loop, prior unmaps are rolled back by re-mapping the pages into the
+// target via MapPageInProcess; if rollback itself fails the target is left
+// partially-unmapped and a klog error records the inconsistent state.
+func SyscallUnshareFromTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
+	targetSID := int16(arg0)
+	targetVA := uintptr(arg1)
+	numPages := int(arg2)
+
+	if numPages <= 0 || numPages > 4096 {
+		return -22 // EINVAL
+	}
+	if targetVA&(kmem.PageSize-1) != 0 {
+		return -22 // EINVAL
+	}
+
+	callerShepherd := proc.CurrentShepherd()
+	if callerShepherd == nil {
+		return -1 // EPERM
+	}
+	callerSID := int16(callerShepherd.PID)
+
+	if targetSID == callerSID {
+		return -22 // EINVAL — unshare-from-self is meaningless
+	}
+
+	targetShepherd := proc.FindShepherdBySID(proc.ShepherdId(targetSID))
+	if targetShepherd == nil {
+		return -3 // ESRCH
+	}
+	if targetShepherd.PageTableL0PA == 0 {
+		return -3 // ESRCH
+	}
+	targetL0PA := targetShepherd.PageTableL0PA
+
+	// Track each successfully-unmapped page so we can rollback on per-page
+	// failure mid-loop. Caps at the 4096-page hard limit from the EINVAL
+	// check above; ~32 bytes per entry.
+	type unmapped struct {
+		dstVA    uintptr
+		pa       uintptr
+		refCount int16
+		flags    uint8
+	}
+	rolled := make([]unmapped, 0, numPages)
+
+	rollback := func() {
+		// Re-map each prior unmap into the target. Best-effort: if a
+		// re-map fails the target is left inconsistent and a klog error
+		// records it; we don't recurse into rollback-of-rollback.
+		for _, u := range rolled {
+			if d := kmem.GetPageDescriptor(u.pa); d != nil {
+				d.RefCount = u.refCount
+				d.Flags = u.flags
+			}
+			if !kmem.MapPageInProcess(targetSID, u.dstVA, u.pa, 0) {
+				klog.Errf("[IPC] UnshareFromTarget: rollback re-map failed at VA %x PA %x — target left inconsistent\n",
+					uint64(u.dstVA), uint64(u.pa))
+			}
+		}
+	}
+
+	// Walk + unmap each page. Single-pass with rollback.
+	for i := 0; i < numPages; i++ {
+		dstVA := targetVA + uintptr(i)*kmem.PageSize
+
+		// Find the PA the target's PT maps this VA to.
+		pa := kmem.WalkUserPageTableWithL0(dstVA, targetL0PA)
+		if pa == 0 {
+			klog.Errf("[IPC] UnshareFromTarget: target has no mapping at VA %x\n", uint64(dstVA))
+			rollback()
+			return -14 // EFAULT
+		}
+		pa = pa &^ (kmem.PageSize - 1)
+
+		desc := kmem.GetPageDescriptor(pa)
+		// Allow unshare if caller owns the page OR is an intermediate holder
+		// (PD_SHARED set, caller has a valid mapping — chained share B unsharing C).
+		if desc == nil || (desc.Owner != callerSID && desc.Flags&kmem.PD_SHARED == 0) {
+			klog.Errf("[IPC] UnshareFromTarget: caller %d has no unshare rights at PA %x\n",
+				callerSID, uint64(pa))
+			rollback()
+			return -1 // EPERM
+		}
+
+		// Snapshot pre-state, then unmap. Snapshot before the descriptor mutation
+		// so rollback can restore RefCount/Flags exactly.
+		snap := unmapped{
+			dstVA:    dstVA,
+			pa:       pa,
+			refCount: desc.RefCount,
+			flags:    desc.Flags,
+		}
+
+		// Unmap from target's PT (handles TLB invalidation).
+		if kmem.UnmapUserPageWithL0(dstVA, targetL0PA) == 0 {
+			klog.Errf("[IPC] UnshareFromTarget: UnmapUserPageWithL0 failed at VA %x\n",
+				uint64(dstVA))
+			rollback()
+			return -14 // EFAULT
+		}
+		rolled = append(rolled, snap)
+
+		// Decrement RefCount; clear PD_SHARED if dropping to owner-only.
+		unrefShared(desc, kmem.PD_SHARED)
+	}
+
+	return 0
 }
