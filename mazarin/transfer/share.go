@@ -123,8 +123,10 @@ func (s *Slab) Share(with ShepherdID) (ShareID, error) {
 // count visible to the consumer.
 //
 // If the ProtoShareReq IPC cannot be delivered the kernel mapping is revoked
-// and the shareTable entry is removed before returning the error, so the
-// caller never sees a ShareID for a share the consumer cannot learn about.
+// and (on successful unshare) the shareTable entry is removed before returning
+// the error. The caller never sees a ShareID for a share the consumer cannot
+// learn about. If the unshare itself fails the entry is left intact so the
+// mapping can be cleaned up when the target dies.
 func publishShare(with ShepherdID, pageBase uintptr, numPages, intraOffset, bytes int) (ShareID, error) {
 	consumerVABase, err := sys.SharePagesWithTarget(int(with), pageBase, numPages)
 	if err != nil {
@@ -149,11 +151,14 @@ func publishShare(with ShepherdID, pageBase uintptr, numPages, intraOffset, byte
 	}
 	msg := ipc.EncodeShareReq(&p, int16(os.Getpid()))
 	if err := uring.Send(int(with), &msg); err != nil {
-		// Send failed: roll back per the doc comment above.
-		_ = sys.UnshareFromTarget(int(with), consumerVABase, numPages, pageBase)
-		shareTableMu.Lock()
-		delete(shareTable, id)
-		shareTableMu.Unlock()
+		// Send failed: roll back per the doc comment above. Only remove the
+		// table entry if UnshareFromTarget succeeds — on failure the entry
+		// stays so the mapping can be cleaned up on target death.
+		if sys.UnshareFromTarget(int(with), consumerVABase, numPages, pageBase) == nil {
+			shareTableMu.Lock()
+			delete(shareTable, id)
+			shareTableMu.Unlock()
+		}
 		return 0, err
 	}
 	return id, nil
