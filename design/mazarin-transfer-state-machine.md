@@ -170,7 +170,7 @@ consumers separately via `PageDescriptor.RefCount`.
 
 **Sender-side state transitions:**
 
-```
+```text
 slabAllocated (or slabCommitted)
   │
   ├── Slab.Share(consumer)        → kernel RefCount++ for all Slab pages
@@ -194,7 +194,7 @@ table is the source of truth for *who* owes a Release.
 
 **Consumer-side lifecycle:**
 
-```
+```text
 (RegisterShareConsumer wired into dispatcher before d.Start())
   │
   ├── ReceiveShare(sender) blocks on per-sender channel

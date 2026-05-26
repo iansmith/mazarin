@@ -121,6 +121,10 @@ func (s *Slab) Share(with ShepherdID) (ShareID, error) {
 // fires the ProtoShareReq notification. intraOffset is the byte offset into
 // the first shared page that bytes counts from; bytes is the logical byte
 // count visible to the consumer.
+//
+// If the ProtoShareReq IPC cannot be delivered the kernel mapping is revoked
+// and the shareTable entry is removed before returning the error, so the
+// caller never sees a ShareID for a share the consumer cannot learn about.
 func publishShare(with ShepherdID, pageBase uintptr, numPages, intraOffset, bytes int) (ShareID, error) {
 	consumerVABase, err := sys.SharePagesWithTarget(int(with), pageBase, numPages)
 	if err != nil {
@@ -144,7 +148,14 @@ func publishShare(with ShepherdID, pageBase uintptr, numPages, intraOffset, byte
 		VA:      uint64(consumerVA),
 	}
 	msg := ipc.EncodeShareReq(&p, int16(os.Getpid()))
-	_ = uring.Send(int(with), &msg) // fire-and-forget; consumer must be listening
+	if err := uring.Send(int(with), &msg); err != nil {
+		// Send failed: roll back per the doc comment above.
+		_ = sys.UnshareFromTarget(int(with), consumerVABase, numPages, pageBase)
+		shareTableMu.Lock()
+		delete(shareTable, id)
+		shareTableMu.Unlock()
+		return 0, err
+	}
 	return id, nil
 }
 
