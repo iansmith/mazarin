@@ -1,0 +1,54 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build sharetest.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/sharetest/**/*.go'
+      - '{{.ROOT_DIR}}/maz/internal/sharepayload/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.SHARETEST_MAZ}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building sharetest.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.SHARETEST_MAZ}} ./maz/sharetest
+      - '{{.GO}} tool go-echo "sharetest.maz ready at {{.SHARETEST_MAZ}}"'
+
+  amd64:
+    desc: Build sharetest.maz for x86_64 via mazgo
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/sharetest/**/*.go'
+      - '{{.ROOT_DIR}}/maz/internal/sharepayload/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.SHARETEST_MAZ_AMD64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building sharetest.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.SHARETEST_MAZ_AMD64}} ./maz/sharetest
+      - '{{.GO}} tool go-echo "sharetest.maz (x86_64) ready at {{.SHARETEST_MAZ_AMD64}}"'

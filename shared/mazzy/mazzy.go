@@ -76,4 +76,5 @@ const (
 	SysNetReadRxLatencyUs        = MazzySyscallBase + 67 // 0x1043 - Read kernel→net latency for an RX descIdx (MAZ-28 step 2)
 	SysTransferDMAClump          = MazzySyscallBase + 68 // 0x1044 - Transfer one whole DMA clump to a target shepherd (MAZ-29 page handoff)
 	SysShareNetPageWithClient    = MazzySyscallBase + 69 // 0x1045 - Map caller's page into a client shepherd (MAZ-29 per-stream send ring)
+	SysUnshareFromTarget         = MazzySyscallBase + 70 // 0x1046 - Revoke caller's shared mapping from target shepherd (MAZ-53 Mode 2 Release)
 )

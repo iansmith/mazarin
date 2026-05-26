@@ -1,12 +1,14 @@
 // Package transfer provides cross-shepherd page-backed payload transport.
 //
-// Three modes share a common foundation:
+// Two modes share a common foundation:
 //   - Mode 1 (Reserve/Commit): client → server. Implemented here (MAZ-50).
-//   - Mode 2 (HandOff): full Slab ownership transferred server → client (MAZ-53).
-//   - Mode 3 (GrantWrite): sub-region R/W mapping; server keeps ownership (MAZ-54).
+//   - Mode 2 (Share/Reshare):  sender publishes a R/W mapping into one or
+//     more consumers' address spaces; sender keeps ownership. Whole-Slab and
+//     sub-range variants live in share.go (MAZ-53). MAZ-54 was collapsed
+//     into MAZ-53.
 //
 // See design/mazarin-transfer-state-machine.md for the page-ownership state
-// machine, crash semantics, and how Modes 2/3 extend the foundation.
+// machine, crash semantics, and how Mode 2 extends the foundation.
 // Umbrella ticket: MAZ-55.
 package transfer
 

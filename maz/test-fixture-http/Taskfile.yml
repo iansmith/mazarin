@@ -1,0 +1,54 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build test-fixture-http.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/test-fixture-http/**/*.go'
+      - '{{.ROOT_DIR}}/maz/internal/sharepayload/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.TEST_FIXTURE_HTTP_MAZ}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building test-fixture-http.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.TEST_FIXTURE_HTTP_MAZ}} ./maz/test-fixture-http
+      - '{{.GO}} tool go-echo "test-fixture-http.maz ready at {{.TEST_FIXTURE_HTTP_MAZ}}"'
+
+  amd64:
+    desc: Build test-fixture-http.maz for x86_64 via mazgo
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/test-fixture-http/**/*.go'
+      - '{{.ROOT_DIR}}/maz/internal/sharepayload/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.TEST_FIXTURE_HTTP_MAZ_AMD64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building test-fixture-http.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.TEST_FIXTURE_HTTP_MAZ_AMD64}} ./maz/test-fixture-http
+      - '{{.GO}} tool go-echo "test-fixture-http.maz (x86_64) ready at {{.TEST_FIXTURE_HTTP_MAZ_AMD64}}"'

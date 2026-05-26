@@ -45,6 +45,9 @@ const (
 	ProtoNetIPCResp      uint32 = 19 // net.elf → client NetIPC response or unsolicited delivery (BindUDPResp, RecvDgram, ...)
 	ProtoTransferReq     uint32 = 20 // mazarin/transfer Mode 1 request (Reserve | Commit) — MAZ-50
 	ProtoTransferResp    uint32 = 21 // mazarin/transfer Mode 1 response — MAZ-50
+	ProtoShareReq        uint32 = 22 // mazarin/transfer Mode 2 Share publication (sender → consumer) — MAZ-53
+	ProtoShareRelease    uint32 = 23 // mazarin/transfer Mode 2 Release (consumer → sender) — MAZ-53
+	ProtoChainReq        uint32 = 24 // chained-share boot test: sharetest → test-fixture-http "allocate + share back" — MAZ-53
 )
 
 // UringIPCRingHeader is the metadata at offset 0 of the ring's first page.
