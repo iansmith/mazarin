@@ -71,6 +71,7 @@ type shareOutstanding struct {
 	consumerSID ShepherdID
 	consumerVA  uintptr // page-aligned base in consumer's address space
 	numPages    int
+	callerVA    uintptr // page-aligned base in the caller's own address space (proof-of-possession for UnshareFromTarget)
 }
 
 var (
@@ -133,6 +134,7 @@ func publishShare(with ShepherdID, pageBase uintptr, numPages, intraOffset, byte
 		consumerSID: with,
 		consumerVA:  consumerVABase,
 		numPages:    numPages,
+		callerVA:    pageBase,
 	}
 	shareTableMu.Unlock()
 
@@ -180,14 +182,21 @@ func handleShareRelease(v any) {
 
 	shareTableMu.Lock()
 	rec, ok := shareTable[id]
-	if ok {
-		delete(shareTable, id)
-	}
 	shareTableMu.Unlock()
 	if !ok {
 		return // already released or unknown — drop
 	}
-	_ = sys.UnshareFromTarget(int(rec.consumerSID), rec.consumerVA, rec.numPages)
+	// Auth: only the shepherd we originally shared with may release.
+	if tagged.senderSID != rec.consumerSID {
+		return
+	}
+
+	if err := sys.UnshareFromTarget(int(rec.consumerSID), rec.consumerVA, rec.numPages, rec.callerVA); err != nil {
+		return // unshare failed — leave table entry intact for retry or cleanup on death
+	}
+	shareTableMu.Lock()
+	delete(shareTable, id)
+	shareTableMu.Unlock()
 	if releaseHook != nil {
 		releaseHook(id)
 	}

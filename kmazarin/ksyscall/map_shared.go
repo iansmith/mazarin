@@ -230,12 +230,12 @@ func SyscallSharePagesWithTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
 		return -12 // ENOMEM
 	}
 
-	// rollbackShare undoes the RefCount++/PD_SHARED bump for the first n
-	// pages already shared from the caller. We don't unmap from target here
-	// because demand-paging may not have instantiated all intermediate page
-	// table entries; orphaned target mappings are cleaned up on target exit.
+	// rollbackShare undoes the mapping and RefCount++/PD_SHARED bump for the
+	// first n pages already shared into the target. Unwinds in reverse order.
 	rollbackShare := func(n int) {
-		for j := 0; j < n; j++ {
+		for j := n - 1; j >= 0; j-- {
+			dstVA := uintptr(targetVABase) + uintptr(j)*kmem.PageSize
+			kmem.UnmapUserPageWithL0(dstVA, targetShepherd.PageTableL0PA)
 			rollPA := kmem.WalkUserPageTableWithL0(
 				callerVA+uintptr(j)*kmem.PageSize, callerShepherd.PageTableL0PA)
 			rollPA = rollPA &^ (kmem.PageSize - 1)
@@ -301,15 +301,20 @@ func SyscallSharePagesWithTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
 //	arg0 = targetSID
 //	arg1 = targetVA   (page-aligned start of the consumer's shared region)
 //	arg2 = numPages
+//	arg3 = callerVA   (page-aligned start in caller's own address space;
+//	                   0 for page owners; non-owners must supply this as a
+//	                   proof-of-possession credential — kernel walks the
+//	                   caller's PT to confirm the PA matches the target's PA)
 //
 // Returns: 0 on success, or negative errno on failure. On per-page failure
 // mid-loop, prior unmaps are rolled back by re-mapping the pages into the
 // target via MapPageInProcess; if rollback itself fails the target is left
 // partially-unmapped and a klog error records the inconsistent state.
-func SyscallUnshareFromTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
+func SyscallUnshareFromTarget(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	targetSID := int16(arg0)
 	targetVA := uintptr(arg1)
 	numPages := int(arg2)
+	callerVA := uintptr(arg3)
 
 	if numPages <= 0 || numPages > 4096 {
 		return -22 // EINVAL
@@ -385,6 +390,28 @@ func SyscallUnshareFromTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
 				callerSID, uint64(pa))
 			rollback()
 			return -1 // EPERM
+		}
+
+		// Proof-of-possession for non-owners: verify the caller's own mapping
+		// covers the same physical page. This prevents a shepherd that merely
+		// knows a ShareID (or guesses PD_SHARED) from revoking a mapping it
+		// doesn't actually hold. Owners skip this — ownership is sufficient.
+		if desc.Owner != callerSID {
+			if callerVA == 0 {
+				klog.Errf("[IPC] UnshareFromTarget: non-owner caller %d supplied no callerVA at PA %x\n",
+					callerSID, uint64(pa))
+				rollback()
+				return -1 // EPERM
+			}
+			callerPageVA := callerVA + uintptr(i)*kmem.PageSize
+			callerPagePA := kmem.WalkUserPageTableWithL0(callerPageVA, callerShepherd.PageTableL0PA)
+			callerPagePA = callerPagePA &^ (kmem.PageSize - 1)
+			if callerPagePA != pa {
+				klog.Errf("[IPC] UnshareFromTarget: caller %d VA %x maps PA %x != target PA %x\n",
+					callerSID, uint64(callerPageVA), uint64(callerPagePA), uint64(pa))
+				rollback()
+				return -1 // EPERM
+			}
 		}
 
 		// Snapshot pre-state, then unmap. Snapshot before the descriptor mutation

@@ -64,23 +64,29 @@ func SharePagesWithTarget(targetPID int, va uintptr, numPages int) (uintptr, err
 }
 
 // UnshareFromTarget revokes a previously-established shared mapping in a
-// target shepherd's address space. Inverse of SharePagesWithTarget. Only
-// the original page owner can unshare.
+// target shepherd's address space. Inverse of SharePagesWithTarget.
+// The original page owner may unshare directly; intermediate holders in a
+// chained share (e.g. B in A→B→C) may also unshare provided they supply
+// callerVA — the page-aligned VA of the first shared page in the caller's
+// own address space — as a proof-of-possession credential.
 //
 // The targetVA must be a page-aligned VA in the target's address space —
 // typically the value returned by an earlier SharePagesWithTarget call.
 // Unmaps numPages from the target's PT (with TLB flush) and decrements the
 // kernel RefCount; the caller's own mapping is left intact.
 //
+// callerVA is the caller's own page-aligned VA for the first shared page.
+// Owners pass 0 (ownership is sufficient); non-owners must pass the actual VA.
+//
 // MAZ-53 (Mode 2 Share) uses this for explicit consumer Release semantics
 // so we don't have to wait for process death to reclaim shared mappings.
-func UnshareFromTarget(targetPID int, targetVA uintptr, numPages int) error {
+func UnshareFromTarget(targetPID int, targetVA uintptr, numPages int, callerVA uintptr) error {
 	r1, _, errno := syscall.RawSyscall6(
 		mazzy.SysUnshareFromTarget,
 		uintptr(targetPID),
 		targetVA,
 		uintptr(numPages),
-		0, 0, 0,
+		callerVA, 0, 0,
 	)
 
 	if errno != 0 {
