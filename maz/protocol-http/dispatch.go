@@ -121,7 +121,15 @@ func handleDo(v any) {
 		rs.fail(ipc.HttpDoErrGeneric, 0)
 		return
 	}
-	urlPath := string(p.URLPath[:p.URLLen])
+	// URL lives in the request Slab at [0:URLLen], not inline in the
+	// IPC payload — supports arbitrary-length paths (REST routes with
+	// embedded IDs, long query strings).
+	reqBytes := reqShare.AsBytes()
+	if int(p.URLLen) > len(reqBytes) {
+		rs.fail(ipc.HttpDoErrGeneric, 0)
+		return
+	}
+	urlPath := string(reqBytes[:p.URLLen])
 	headers := []internal.Header{
 		{Name: "Content-Type", Value: "application/json"},
 		{Name: "Content-Length", Value: strconv.FormatUint(uint64(p.ReqBodyLen), 10)},
@@ -139,14 +147,26 @@ func handleDo(v any) {
 	// at [HeadersMaxOffset : HeadersMaxOffset+ReqBodyLen]; we want the
 	// last header byte at HeadersMaxOffset-1, so headers start at
 	// HeadersMaxOffset - hdrLen.
-	reqBytes := reqShare.AsBytes()
 	hdrMax := int(p.HeadersMaxOffset)
+	// hdrStart must be >= URLLen so we don't clobber the URL bytes the
+	// caller wrote at reqBytes[0:URLLen]. (We've already read urlPath
+	// into a Go string above, so technically the URL bytes can be
+	// overwritten safely — but the assertion catches design errors
+	// where the prefix region is too small for both URL and headers.)
 	if hdrLen > hdrMax {
 		sys.UartWriteString(tag + "headers exceed prefix region\n")
 		rs.fail(ipc.HttpDoErrGeneric, 0)
 		return
 	}
 	hdrStart := hdrMax - hdrLen
+	if hdrStart < int(p.URLLen) {
+		// URL + headers don't both fit in the prefix region. Caller
+		// needs a bigger HeadersMax. v1 surfaces as generic; future
+		// dedicated error code if it shows up in practice.
+		sys.UartWriteString(tag + "URL + headers overflow prefix region\n")
+		rs.fail(ipc.HttpDoErrGeneric, 0)
+		return
+	}
 	copy(reqBytes[hdrStart:hdrMax], hdrScratch[:hdrLen])
 
 	// 5. Single TLS write: [headers ‖ body].

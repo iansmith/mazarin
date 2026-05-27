@@ -118,15 +118,24 @@ func (c *client) Do(req *Request, respDest *transfer.Slab) (*Response, error) {
 		return nil, fmt.Errorf("httpclient: ShareRange(respDest): %w", err)
 	}
 
-	// Build the IPC payload.
+	// Extract the path component of the URL and write it into the start
+	// of the request Slab. The URL travels in the Slab (not inline in
+	// the IPC) so paths longer than any fixed-size inline cap work.
 	urlPath := extractURLPath(req.URL)
-	if len(urlPath) > ipc.HttpURLMaxInline {
-		return nil, fmt.Errorf("httpclient: URL path %q exceeds %d-byte inline cap", urlPath, ipc.HttpURLMaxInline)
-	}
 	method, ok := methodToEnum(req.Method)
 	if !ok {
 		return nil, fmt.Errorf("httpclient: unsupported method %q", req.Method)
 	}
+	// The URL must fit in the prefix region before the body starts.
+	// protocol-http will overwrite some of those bytes with the
+	// right-aligned headers, but it knows to read the URL from offset
+	// 0..URLLen first.
+	if len(urlPath) > req.HeadersMax {
+		return nil, fmt.Errorf("httpclient: URL path %d bytes exceeds HeadersMax=%d (caller must reserve more prefix room)",
+			len(urlPath), req.HeadersMax)
+	}
+	bodyBytes := req.Body.Bytes()
+	copy(bodyBytes[:len(urlPath)], urlPath)
 
 	payload := ipc.HttpDoReqPayload{
 		Method:           method,
@@ -143,7 +152,6 @@ func (c *client) Do(req *Request, respDest *transfer.Slab) (*Response, error) {
 	}
 	copy(payload.EndpointAddr[:4], c.cfg.endpointIP[:])
 	copy(payload.Host[:], c.cfg.endpointHost)
-	copy(payload.URLPath[:], urlPath)
 
 	msg := ipc.EncodeHttpDoReq(&payload, int16(os.Getpid()))
 	if err := uring.Send(int(c.httpSID), &msg); err != nil {

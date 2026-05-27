@@ -19,7 +19,8 @@ func TestHttpDoReq_EncodeDecodeRoundtrip(t *testing.T) {
 	// IPv4: first 4 bytes of EndpointAddr; rest stays zero.
 	copy(want.EndpointAddr[:4], []byte{1, 2, 3, 4})
 	copy(want.Host[:], "api.anthropic.com")
-	copy(want.URLPath[:], "/v1/messages")
+	// URL no longer travels inline — it lives in the request Slab.
+	// URLLen is the only IPC-side data we track for the URL.
 
 	msg := EncodeHttpDoReq(&want, 17)
 	if msg.Protocol != ProtoHttpIPCReq {
@@ -32,8 +33,8 @@ func TestHttpDoReq_EncodeDecodeRoundtrip(t *testing.T) {
 	if *got != want {
 		t.Fatalf("roundtrip mismatch:\n  want %+v\n  got  %+v", want, *got)
 	}
-	if string(got.URLPath[:got.URLLen]) != "/v1/messages" {
-		t.Fatalf("URLPath: want /v1/messages got %q", string(got.URLPath[:got.URLLen]))
+	if got.URLLen != 12 {
+		t.Fatalf("URLLen: want 12 got %d", got.URLLen)
 	}
 	if string(got.Host[:got.HostLen]) != "api.anthropic.com" {
 		t.Fatalf("Host: want api.anthropic.com got %q", string(got.Host[:got.HostLen]))
@@ -83,7 +84,6 @@ func TestHttpDoReq_AllMethodsRoundtrip(t *testing.T) {
 	for _, m := range methods {
 		t.Run(methodName(m), func(t *testing.T) {
 			want := HttpDoReqPayload{Method: m, URLLen: 1}
-			want.URLPath[0] = '/'
 			msg := EncodeHttpDoReq(&want, 0)
 			got := DecodeHttpDoReq(&msg)
 			if got.Method != m {
@@ -93,19 +93,17 @@ func TestHttpDoReq_AllMethodsRoundtrip(t *testing.T) {
 	}
 }
 
-func TestHttpDoReq_MaxURLLengthInline(t *testing.T) {
-	// A URL exactly HttpURLMaxInline bytes long roundtrips without truncation.
-	want := HttpDoReqPayload{Method: HttpMethodGET, URLLen: HttpURLMaxInline}
-	for i := range HttpURLMaxInline {
-		want.URLPath[i] = byte('a' + (i % 26))
-	}
+func TestHttpDoReq_URLLenIsU16(t *testing.T) {
+	// URLLen is a uint16 — large URLs (REST paths with embedded IDs +
+	// query strings) are supported by writing them into the request
+	// Slab itself; only the length travels in the IPC. Verify a
+	// realistically long URLLen roundtrips intact.
+	const longURL = 4000 // ~4 KiB, what a real request Slab might hold
+	want := HttpDoReqPayload{Method: HttpMethodGET, URLLen: longURL}
 	msg := EncodeHttpDoReq(&want, 0)
 	got := DecodeHttpDoReq(&msg)
-	if got.URLLen != HttpURLMaxInline {
-		t.Fatalf("URLLen: want %d got %d", HttpURLMaxInline, got.URLLen)
-	}
-	if got.URLPath != want.URLPath {
-		t.Fatalf("URLPath mismatch at max length")
+	if got.URLLen != longURL {
+		t.Fatalf("URLLen: want %d got %d", longURL, got.URLLen)
 	}
 }
 
@@ -166,7 +164,6 @@ func TestHttpDoReq_DifferentSenderSIDsDoNotClobberPayload(t *testing.T) {
 	// SenderSID varies. Catches future regressions where Encode mistakenly
 	// writes into UringIPCMsg.Payload before the typed copy.
 	want := HttpDoReqPayload{Method: HttpMethodPOST, ReqID: 0xcafef00d, URLLen: 1}
-	want.URLPath[0] = '/'
 	for _, sid := range []int16{0, 1, -1, 32767, -32768} {
 		msg := EncodeHttpDoReq(&want, sid)
 		got := DecodeHttpDoReq(&msg)

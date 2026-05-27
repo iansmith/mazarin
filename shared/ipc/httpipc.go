@@ -57,14 +57,16 @@ const (
 	HttpDoErrTimeout    HttpDoErr = -6 // operation exceeded the configured timeout
 )
 
-// HttpURLMaxInline caps the inline URL path length carried in the request
-// payload. Longer URLs would require a separate share and are rejected by
-// protocol-http with HttpDoErrGeneric. 32 bytes covers realistic API
-// endpoint paths (e.g. Anthropic's "/v1/messages" is 12 chars).
-const HttpURLMaxInline = 32
-
 // HttpHostMaxInline caps the inline hostname length. 32 bytes covers
 // realistic hostnames (e.g. "api.anthropic.com" is 17 chars).
+//
+// Note: the URL path is intentionally NOT carried inline. The caller
+// writes the URL at offset 0 of the request Slab (Body.Bytes()[0:URLLen])
+// and only URLLen travels in the IPC. This lifts the URL-length cap
+// to whatever HeadersMax leaves room for — practically thousands of
+// bytes — without enlarging the fixed-size IPC payload. Plenty of
+// real-world API paths exceed any reasonable inline cap (REST routes
+// with embedded IDs, query strings, etc.) so we don't bound them here.
 const HttpHostMaxInline = 32
 
 // HttpEndpointAddrSize is the byte width of the endpoint address slot.
@@ -86,10 +88,16 @@ const (
 
 // HttpDoReqPayload is the payload for ProtoHttpIPCReq messages.
 //
+// The URL path travels NOT in this struct but in the request Slab
+// itself: the caller writes URL bytes at reqShare.AsBytes()[0:URLLen],
+// then protocol-http reads them from there when building the request
+// line. This lifts the URL length to whatever HeadersMax leaves room
+// for; lengthy REST paths and query strings work without an IPC change.
+//
 // Layout (112 bytes — exact fit for UringIPCMsg.Payload):
 //
 //	[0:2]    Method            HttpMethod
-//	[2:4]    URLLen            uint16   — number of valid bytes in URLPath
+//	[2:4]    URLLen            uint16   — bytes at reqShare[0:URLLen]
 //	[4:8]    ReqShareID        uint32   — sender's ShareID for the request Slab
 //	[8:12]   RespShareID       uint32   — sender's ShareID for the pre-posted response Slab
 //	[12:16]  HeadersMaxOffset  uint32   — byte offset within reqShare where body begins
@@ -103,7 +111,7 @@ const (
 //	[30:32]  _pad1             uint16   — align EndpointAddr to 4 bytes
 //	[32:48]  EndpointAddr      [16]byte — v4 uses first 4 bytes; v6 uses all 16
 //	[48:80]  Host              [32]byte — SNI + Host header value (Host[:HostLen] is valid)
-//	[80:112] URLPath           [32]byte — request-target path (URLPath[:URLLen] is valid)
+//	[80:112] _pad2             [32]byte — reserved (was URLPath; URL now lives in reqShare)
 type HttpDoReqPayload struct {
 	Method           HttpMethod
 	URLLen           uint16
@@ -120,7 +128,7 @@ type HttpDoReqPayload struct {
 	_pad1            uint16
 	EndpointAddr     [HttpEndpointAddrSize]byte
 	Host             [HttpHostMaxInline]byte
-	URLPath          [HttpURLMaxInline]byte
+	_pad2            [32]byte
 }
 
 // HttpDoRespPayload is the payload for ProtoHttpIPCResp messages.
