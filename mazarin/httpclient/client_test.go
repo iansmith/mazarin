@@ -10,7 +10,6 @@ package httpclient
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"strings"
 	"testing"
 )
 
@@ -42,15 +41,18 @@ func TestNew_ReturnsClientWhenRequiredOptionsProvided(t *testing.T) {
 	}
 }
 
-func TestNew_RejectsMissingRootCAs(t *testing.T) {
-	_, err := New(
+func TestNew_AcceptsMissingRootCAs(t *testing.T) {
+	// v1: WithRootCAs is optional. protocol-http has its own server-side
+	// CA pool; the client doesn't need to supply one. Future per-request
+	// trust anchors will exercise this option but it stays optional.
+	c, err := New(
 		WithEndpointIP("api.anthropic.com", [4]byte{1, 2, 3, 4}),
 	)
-	if err == nil {
-		t.Fatal("expected error when WithRootCAs omitted, got nil")
+	if err != nil {
+		t.Fatalf("New without WithRootCAs should succeed, got err: %v", err)
 	}
-	if !strings.Contains(err.Error(), "WithRootCAs") {
-		t.Fatalf("err should mention WithRootCAs, got: %v", err)
+	if c == nil {
+		t.Fatal("New returned nil client")
 	}
 }
 

@@ -50,9 +50,11 @@ func New(opts ...Option) (HttpProtocolClient, error) {
 	for _, o := range opts {
 		o(cfg)
 	}
-	if cfg.rootCAs == nil {
-		return nil, errors.New("httpclient: WithRootCAs is required")
-	}
+	// Note: WithRootCAs is intentionally NOT required in v1. The actual
+	// TLS handshake happens inside protocol-http against its own pool
+	// loaded from /protocol-http/ssl/cacert.pem; the client's pool is
+	// not yet plumbed over IPC. Keep the option for forward compat —
+	// future "per-request trust anchors" feature will use it.
 	if !cfg.endpointIPSet || cfg.endpointHost == "" {
 		return nil, errors.New("httpclient: WithEndpointIP is required (DNS lands in MAZ-41)")
 	}
