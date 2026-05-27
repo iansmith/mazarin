@@ -477,6 +477,13 @@ func (dc *DrawContextImpl) ResetClip() {
 	dc.gs.hasClipRect = false
 }
 
+func (dc *DrawContextImpl) ClipBounds() image.Rectangle {
+	if dc.gs.hasClipRect {
+		return dc.gs.clipRect
+	}
+	return dc.im.Bounds()
+}
+
 func (dc *DrawContextImpl) Translate(x, y float64) {
 	dc.gs.matrix = dc.gs.matrix.Translate(x, y)
 }

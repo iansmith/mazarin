@@ -112,6 +112,11 @@ type DrawContext interface {
 	Clip()
 	// ResetClip removes the clipping region (restores full-canvas clipping).
 	ResetClip()
+	// ClipBounds returns the axis-aligned bounding box of the current clip in
+	// canvas coordinates, or the full image bounds when no clip is active.
+	// When a non-rectangular clip mask is active the returned rectangle is the
+	// mask's bounding box; sub-rect coverage must be consulted via the mask.
+	ClipBounds() image.Rectangle
 
 	// --- Transform stack ---
 	Push()
