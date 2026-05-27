@@ -80,3 +80,12 @@ path = "/shareprobe.maz"
 [[shepherd]]
 name = "sophie"
 path = "/sophie.maz"
+
+# MAZ-49 HTTP/1.1 + TLS protocol shepherd. Owns x509, the CA bundle, and
+# the wire framing; consumers call in via mazarin/httpclient. Phase one
+# (item 2 of the plan) boots and registers; the Do handler lands in
+# item 7. Currently coexists with sophie's fat-client TLS path; sophie's
+# refactor onto httpclient lives in MAZ-48.
+[[shepherd]]
+name = "protocol-http"
+path = "/protocol-http.maz"
