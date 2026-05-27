@@ -1,23 +1,33 @@
-// Package httpclient red tests for MAZ-49.
+// Package httpclient tests for MAZ-49.
 //
-// These tests describe the expected post-implementation behavior of the
-// mazarin/httpclient public surface. They fail on current code (which is
-// stubbed) and should turn green incrementally as MAZ-49 work items land.
+// These tests exercise the real implementation of New and Do's argument
+// validation paths that don't require live transfer.Slab pages (which
+// in turn require the mazzy kernel — host darwin can't service the
+// underlying AllocPages syscall). The Slab-bounds branches of validate
+// are exercised by the boot integration in MAZ-49 item 8.
 package httpclient
 
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
+	"strings"
 	"testing"
-
-	"mazzy/mazarin/transfer"
 )
 
-// TestNew_ReturnsClientWhenRequiredOptionsProvided asserts that New, given a
-// CA pool and an endpoint pin, returns a non-nil HttpProtocolClient.
-//
-// Currently FAILS: New is stubbed to return errUnimplemented.
+// newClient is a convenience that builds a client with the minimum
+// required options.
+func newClient(t *testing.T) HttpProtocolClient {
+	t.Helper()
+	c, err := New(
+		WithRootCAs(x509.NewCertPool()),
+		WithEndpointIP("api.anthropic.com", [4]byte{1, 2, 3, 4}),
+	)
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	return c
+}
+
 func TestNew_ReturnsClientWhenRequiredOptionsProvided(t *testing.T) {
 	pool := x509.NewCertPool()
 	c, err := New(
@@ -32,10 +42,6 @@ func TestNew_ReturnsClientWhenRequiredOptionsProvided(t *testing.T) {
 	}
 }
 
-// TestNew_RejectsMissingRootCAs asserts that omitting WithRootCAs fails
-// construction rather than producing a client that would skip verification.
-//
-// Currently FAILS: New is stubbed; the validation branch doesn't exist yet.
 func TestNew_RejectsMissingRootCAs(t *testing.T) {
 	_, err := New(
 		WithEndpointIP("api.anthropic.com", [4]byte{1, 2, 3, 4}),
@@ -43,55 +49,71 @@ func TestNew_RejectsMissingRootCAs(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when WithRootCAs omitted, got nil")
 	}
+	if !strings.Contains(err.Error(), "WithRootCAs") {
+		t.Fatalf("err should mention WithRootCAs, got: %v", err)
+	}
 }
 
-// TestDo_RejectsNilRequest asserts that Do bails cleanly on a nil request
-// rather than panicking deep in the IPC layer.
-//
-// Currently FAILS: there's no client to call Do on.
-func TestDo_RejectsNilRequest(t *testing.T) {
-	pool := x509.NewCertPool()
-	c, err := New(
-		WithRootCAs(pool),
-		WithEndpointIP("h", [4]byte{1, 2, 3, 4}),
+func TestNew_RejectsMissingEndpointIP(t *testing.T) {
+	_, err := New(
+		WithRootCAs(x509.NewCertPool()),
 	)
-	if err != nil {
-		t.Skipf("New failed earlier in red-test sequence: %v", err)
+	if err == nil {
+		t.Fatal("expected error when WithEndpointIP omitted, got nil")
 	}
-	_, err = c.Do(nil, transfer.Handle{})
+}
+
+func TestNew_RejectsEmptyShepherdName(t *testing.T) {
+	_, err := New(
+		WithRootCAs(x509.NewCertPool()),
+		WithEndpointIP("h", [4]byte{1, 2, 3, 4}),
+		WithShepherdName(""),
+	)
+	if err == nil {
+		t.Fatal("expected error on WithShepherdName(''), got nil")
+	}
+}
+
+func TestDo_RejectsNilRequest(t *testing.T) {
+	c := newClient(t)
+	_, err := c.Do(nil, nil)
 	if err == nil {
 		t.Fatal("expected error on nil request, got nil")
 	}
 }
 
-// TestDo_RejectsEmptyRespDest asserts Do refuses a zero-page respDest, since
-// protocol-http will not allocate response Slabs itself.
-//
-// Currently FAILS: client doesn't exist.
-func TestDo_RejectsEmptyRespDest(t *testing.T) {
-	pool := x509.NewCertPool()
-	c, err := New(
-		WithRootCAs(pool),
-		WithEndpointIP("h", [4]byte{1, 2, 3, 4}),
-	)
-	if err != nil {
-		t.Skipf("New failed earlier in red-test sequence: %v", err)
-	}
-	req := &Request{Method: "POST", URL: "https://h/x"}
-	_, err = c.Do(req, transfer.Handle{VA: 0, Pages: 0})
+func TestDo_RejectsEmptyMethod(t *testing.T) {
+	c := newClient(t)
+	req := &Request{Method: "", URL: "https://h/x"}
+	_, err := c.Do(req, nil)
 	if err == nil {
-		t.Fatal("expected error on zero-page respDest, got nil")
+		t.Fatal("expected error on empty method, got nil")
 	}
 }
 
-// TestWithMinTLSVersion_DefaultsToTLS12 asserts that without explicit
-// WithMinTLSVersion the client clamps to TLS 1.2 — the conservative default
-// documented in the ticket.
-//
-// Currently FAILS: there's no way to inspect the applied config yet. The
-// implementation in MAZ-49 will expose this via an internal accessor that
-// this test uses (the accessor lives in the same package so it stays
-// unexported).
+func TestDo_RejectsEmptyURL(t *testing.T) {
+	c := newClient(t)
+	req := &Request{Method: "GET", URL: ""}
+	_, err := c.Do(req, nil)
+	if err == nil {
+		t.Fatal("expected error on empty URL, got nil")
+	}
+}
+
+func TestDo_RejectsNilBody(t *testing.T) {
+	c := newClient(t)
+	req := &Request{Method: "GET", URL: "https://h/x", Body: nil}
+	_, err := c.Do(req, nil)
+	if err == nil {
+		t.Fatal("expected error on nil body Slab, got nil")
+	}
+}
+
+// Tests for HeadersMax/BodyLen out-of-range, nil respDest with non-nil
+// body, and the post-validation "not yet wired" sentinel all require
+// real transfer.Slab pages. They're covered by the boot integration
+// in MAZ-49 item 8.
+
 func TestWithMinTLSVersion_DefaultsToTLS12(t *testing.T) {
 	cfg := newConfigForTest(
 		WithRootCAs(x509.NewCertPool()),
@@ -103,9 +125,6 @@ func TestWithMinTLSVersion_DefaultsToTLS12(t *testing.T) {
 	}
 }
 
-// TestWithMinTLSVersion_Overrides asserts the option actually takes effect.
-//
-// Currently FAILS: same reason as above.
 func TestWithMinTLSVersion_Overrides(t *testing.T) {
 	cfg := newConfigForTest(
 		WithRootCAs(x509.NewCertPool()),
@@ -115,15 +134,5 @@ func TestWithMinTLSVersion_Overrides(t *testing.T) {
 	if cfg.minTLSVersion != tls.VersionTLS13 {
 		t.Fatalf("minTLSVersion after override = 0x%x, want 0x%x (TLS1.3)",
 			cfg.minTLSVersion, tls.VersionTLS13)
-	}
-}
-
-// TestErrUnimplementedIsStable is a sanity check that the current stub
-// surfaces a well-known sentinel error so callers driving the red phase
-// know exactly what they're seeing. Replaced when implementation lands.
-func TestErrUnimplementedIsStable(t *testing.T) {
-	_, err := New()
-	if !errors.Is(err, errUnimplemented) {
-		t.Fatalf("expected errUnimplemented during RED phase, got %v", err)
 	}
 }
