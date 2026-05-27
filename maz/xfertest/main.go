@@ -35,6 +35,13 @@ import (
 // doesn't need the gvisor import path.
 var loopbackV4 = [4]byte{127, 0, 0, 1}
 
+// exampleComV4 is the Cloudflare anycast IP for example.com as of
+// 2026-05-21. Shared between realTcpExample (plaintext HTTP) and
+// httpsExample (HTTPS via protocol-http) so they can't drift —
+// refresh with `dig example.com` and update this one constant if
+// either stage starts FAILing.
+var exampleComV4 = [4]byte{172, 66, 147, 243}
+
 // stageSendDgramDst aims at a known-unbound port so gvisor accepts the
 // Write and discards at the local UDP demux — keeps the next stage's
 // recv queue free of unsolicited deliveries from this stage's send.
@@ -726,11 +733,10 @@ func testRealTCPExample(nc netclient.NetClient) {
 // Invoked inside the goroutine spawned by testRealTCPExample; the parent
 // wrapper handles the 10s deadline.
 func runRealTCPExample(nc netclient.NetClient) {
-	// example.com Cloudflare anycast IP as of 2026-05-21 (verify with `dig
-	// example.com` if this stage starts FAILing). example.com moved from
-	// Edgecast (93.184.215.14, static) to Cloudflare in early 2026 — expect
-	// more frequent IP rotation than before; refresh from dig as needed.
-	target := netproto.Addr{IP4: [4]byte{172, 66, 147, 243}, Port: 80}
+	// exampleComV4 (declared at top of file) is the Cloudflare anycast
+	// pin; example.com moved from Edgecast (93.184.215.14, static) to
+	// Cloudflare in early 2026 — IPs rotate more frequently now.
+	target := netproto.Addr{IP4: exampleComV4, Port: 80}
 	connID, _, err := nc.TCPConnect([4]byte{}, 0, target)
 	if err != nil {
 		sys.UartWriteString(tag + "FAIL: realTcpExample TCPConnect to example.com: " +
@@ -863,7 +869,7 @@ func runHttpsExample() {
 	// pool to exercise the option-application path. The endpoint pin
 	// matches realTcpExample's example.com IP (Cloudflare anycast).
 	client, err := httpclient.New(
-		httpclient.WithEndpointIP("example.com", [4]byte{172, 66, 147, 243}),
+		httpclient.WithEndpointIP("example.com", exampleComV4),
 	)
 	if err != nil {
 		sys.UartWriteString(tag + "FAIL: httpsExample httpclient.New: " + err.Error() + "\n")

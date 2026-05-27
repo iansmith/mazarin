@@ -28,6 +28,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"time"
 
 	"mazzy/maz/protocol-http/internal"
 	"mazzy/mazarin/sys"
@@ -36,6 +37,15 @@ import (
 	"mazzy/shared/ipc"
 	"mazzy/shared/netproto"
 )
+
+// handlerTLSDeadline bounds total time spent in the TLS handshake +
+// request + response cycle. Without it a slow or non-closing peer
+// would block the v1 single-request handler indefinitely (CodeRabbit
+// review of PR #42, item #2). 15s is roomy for healthy long-haul
+// connections and well below the caller-side defaultDoTimeout (30s)
+// so a peer hang surfaces as HttpDoErrTLS rather than the caller
+// timing out without diagnostic detail.
+const handlerTLSDeadline = 15 * time.Second
 
 // httpDoReqTagged carries the decoded payload plus the SenderSID so the
 // handler can call ReceiveShare(senderSID).
@@ -78,8 +88,18 @@ func handleDo(v any) {
 	}
 	defer respShare.Release()
 
-	// 2. Dial TCP + TLS.
-	host := string(p.Host[:p.HostLen])
+	// 2. Validate IPC-supplied lengths before slicing. The IPC fields are
+	// trusted (in-VM, same kernel), but a buggy client or future
+	// fuzz-tested code path could produce malformed payloads — failing
+	// fast with HttpDoErrGeneric is cheaper than a slice-panic that
+	// tears down the shepherd.
+	hostLen := int(p.HostLen)
+	if hostLen == 0 || hostLen > len(p.Host) {
+		sys.UartWriteString(tag + "HostLen out of range\n")
+		rs.fail(ipc.HttpDoErrGeneric, 0)
+		return
+	}
+	host := string(p.Host[:hostLen])
 	if p.EndpointFamily != ipc.HttpAddrIPv4 {
 		// IPv6 path lands when MAZ-33 widens netproto.Addr. Until then
 		// we surface a clear error rather than silently truncating.
@@ -112,6 +132,14 @@ func handleDo(v any) {
 		return
 	}
 	defer tlsConn.CloseWrite()
+	// Bound the I/O window so a slow / non-closing peer can't park
+	// the handler indefinitely (v1 processes one Do at a time).
+	if err := tlsConn.SetDeadline(time.Now().Add(handlerTLSDeadline)); err != nil {
+		sys.UartWriteString(tag + "SetDeadline: " + err.Error() + "\n")
+		rs.fail(ipc.HttpDoErrTLS, 0)
+		return
+	}
+	defer tlsConn.SetDeadline(time.Time{})
 
 	// 3. Build the HTTP/1.1 headers + request line into a small scratch
 	// buffer. The body length is known (p.ReqBodyLen) so we can stamp
@@ -125,11 +153,21 @@ func handleDo(v any) {
 	// IPC payload — supports arbitrary-length paths (REST routes with
 	// embedded IDs, long query strings).
 	reqBytes := reqShare.AsBytes()
-	if int(p.URLLen) > len(reqBytes) {
+	// Up-front bounds checks on every IPC-supplied length we'll use to
+	// slice: URLLen, HeadersMaxOffset, and HeadersMaxOffset+ReqBodyLen.
+	// Saves us from sprinkling defensive checks at each slice site.
+	urlLen := int(p.URLLen)
+	hdrMax := int(p.HeadersMaxOffset)
+	bodyLen := int(p.ReqBodyLen)
+	if urlLen < 0 || hdrMax < 0 || bodyLen < 0 {
 		rs.fail(ipc.HttpDoErrGeneric, 0)
 		return
 	}
-	urlPath := string(reqBytes[:p.URLLen])
+	if urlLen > len(reqBytes) || hdrMax > len(reqBytes) || hdrMax+bodyLen > len(reqBytes) {
+		rs.fail(ipc.HttpDoErrGeneric, 0)
+		return
+	}
+	urlPath := string(reqBytes[:urlLen])
 	headers := []internal.Header{
 		{Name: "Content-Type", Value: "application/json"},
 		{Name: "Content-Length", Value: strconv.FormatUint(uint64(p.ReqBodyLen), 10)},
@@ -146,20 +184,14 @@ func handleDo(v any) {
 	// 4. Right-align headers into the prefix region. The body is already
 	// at [HeadersMaxOffset : HeadersMaxOffset+ReqBodyLen]; we want the
 	// last header byte at HeadersMaxOffset-1, so headers start at
-	// HeadersMaxOffset - hdrLen.
-	hdrMax := int(p.HeadersMaxOffset)
-	// hdrStart must be >= URLLen so we don't clobber the URL bytes the
-	// caller wrote at reqBytes[0:URLLen]. (We've already read urlPath
-	// into a Go string above, so technically the URL bytes can be
-	// overwritten safely — but the assertion catches design errors
-	// where the prefix region is too small for both URL and headers.)
+	// HeadersMaxOffset - hdrLen. (hdrMax was bounds-checked above.)
 	if hdrLen > hdrMax {
 		sys.UartWriteString(tag + "headers exceed prefix region\n")
 		rs.fail(ipc.HttpDoErrGeneric, 0)
 		return
 	}
 	hdrStart := hdrMax - hdrLen
-	if hdrStart < int(p.URLLen) {
+	if hdrStart < urlLen {
 		// URL + headers don't both fit in the prefix region. Caller
 		// needs a bigger HeadersMax. v1 surfaces as generic; future
 		// dedicated error code if it shows up in practice.
@@ -169,12 +201,9 @@ func handleDo(v any) {
 	}
 	copy(reqBytes[hdrStart:hdrMax], hdrScratch[:hdrLen])
 
-	// 5. Single TLS write: [headers ‖ body].
-	wireEnd := hdrMax + int(p.ReqBodyLen)
-	if wireEnd > len(reqBytes) {
-		rs.fail(ipc.HttpDoErrGeneric, 0)
-		return
-	}
+	// 5. Single TLS write: [headers ‖ body]. wireEnd is bounded by the
+	// earlier hdrMax + bodyLen <= len(reqBytes) check.
+	wireEnd := hdrMax + bodyLen
 	if _, err := tlsConn.Write(reqBytes[hdrStart:wireEnd]); err != nil {
 		sys.UartWriteString(tag + "tlsConn.Write: " + err.Error() + "\n")
 		rs.fail(ipc.HttpDoErrTLS, 0)
@@ -183,13 +212,17 @@ func handleDo(v any) {
 
 	// 6. Drain the response into respShare. v1 reads until EOF (we sent
 	// Connection: close, so the server closes after the response). If
-	// the response exceeds respShare capacity we report RespTooBig.
+	// the response exceeds respShare capacity we report RespTooBig —
+	// BUT only when we actually ran out of room. An exact-fit response
+	// terminated by EOF must not be misclassified as too-big.
 	respBytes := respShare.AsBytes()
 	n := 0
+	sawEOF := false
 	for n < len(respBytes) {
 		nr, err := tlsConn.Read(respBytes[n:])
 		n += nr
 		if err == io.EOF {
+			sawEOF = true
 			break
 		}
 		if err != nil {
@@ -198,11 +231,11 @@ func handleDo(v any) {
 			return
 		}
 	}
-	if n == len(respBytes) {
-		// Filled to capacity — there may be more on the wire we didn't
-		// get to read. Surface as RespTooBig so the caller can retry
-		// with a bigger Slab. We don't know exactly how much more, so
-		// just report "+1 page" as the hint.
+	if n == len(respBytes) && !sawEOF {
+		// Filled to capacity AND there may be more on the wire we
+		// didn't get to read. Surface as RespTooBig so the caller can
+		// retry with a bigger Slab. We don't know exactly how much
+		// more, so just report "+1 page" as the hint.
 		rs.fail(ipc.HttpDoErrRespTooBig, uint32(len(respBytes))+4096)
 		return
 	}

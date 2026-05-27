@@ -12,6 +12,7 @@
 package httpclient
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"os"
@@ -45,9 +46,12 @@ const defaultDoTimeout = 30 * time.Second
 func New(opts ...Option) (HttpProtocolClient, error) {
 	cfg := &config{
 		shepherdName:  defaultShepherdName,
-		minTLSVersion: 0x0303, // tls.VersionTLS12
+		minTLSVersion: tls.VersionTLS12,
 	}
 	for _, o := range opts {
+		if o == nil {
+			return nil, errors.New("httpclient: nil option")
+		}
 		o(cfg)
 	}
 	// Note: WithRootCAs is intentionally NOT required in v1. The actual
@@ -133,6 +137,13 @@ func (c *client) Do(req *Request, respDest *transfer.Slab) (*Response, error) {
 	if len(urlPath) > req.HeadersMax {
 		return nil, fmt.Errorf("httpclient: URL path %d bytes exceeds HeadersMax=%d (caller must reserve more prefix room)",
 			len(urlPath), req.HeadersMax)
+	}
+	// HttpDoReqPayload.URLLen is a uint16 — silently truncating here
+	// would send a request with a wrong-length URL field that
+	// protocol-http can't recover from. Slabs can be up to 1 MiB so
+	// the HeadersMax check above doesn't bound URL to 65535.
+	if len(urlPath) > 0xFFFF {
+		return nil, fmt.Errorf("httpclient: URL path %d bytes exceeds uint16 URLLen limit (65535)", len(urlPath))
 	}
 	bodyBytes := req.Body.Bytes()
 	copy(bodyBytes[:len(urlPath)], urlPath)
@@ -242,10 +253,22 @@ func mapResp(p *ipc.HttpDoRespPayload, respDest *transfer.Slab) (*Response, erro
 		// nil for Response.Headers — callers that need them parse
 		// respDest.Bytes()[:HeaderEnd] locally. Tight if not pretty;
 		// the alternative is an extra Slab for parsed headers.
+		//
+		// Defense-in-depth: validate the offsets against respDest before
+		// returning so a buggy protocol-http can't trick the caller into
+		// out-of-bounds slicing.
+		capBytes := len(respDest.Bytes())
+		headerEnd := int(p.HeaderEnd)
+		bodyLen := int(p.BodyLen)
+		if headerEnd < 0 || headerEnd > capBytes ||
+			bodyLen < 0 || bodyLen > capBytes-headerEnd {
+			return nil, fmt.Errorf("httpclient: invalid response bounds headerEnd=%d bodyLen=%d slabCap=%d",
+				headerEnd, bodyLen, capBytes)
+		}
 		return &Response{
 			StatusCode: int(p.StatusCode),
-			HeaderEnd:  int(p.HeaderEnd),
-			BodyLen:    int(p.BodyLen),
+			HeaderEnd:  headerEnd,
+			BodyLen:    bodyLen,
 		}, nil
 	case ipc.HttpDoErrRespTooBig:
 		return nil, fmt.Errorf("httpclient: response exceeds pre-posted Slab capacity (need %d more bytes)", p.BytesNeeded)
@@ -285,7 +308,15 @@ func methodToEnum(m string) (ipc.HttpMethod, bool) {
 // extractURLPath strips "scheme://host" from a full URL, returning just
 // the path-and-query portion (or "/" if the URL is bare). We hand-roll
 // to avoid pulling in net/url's transitive deps; v1 only needs the
-// common "https://host[:port]/path" case.
+// common "https://host[:port]/path[?query]" case.
+//
+// Edge cases:
+//   - "https://host/foo?x=1" → "/foo?x=1" (path with query)
+//   - "https://host?x=1"     → "/?x=1"    (RFC 3986 §3.3: empty path
+//                                          when authority is followed
+//                                          by '?'; request-target needs
+//                                          an explicit '/' anyway)
+//   - "https://host"         → "/"        (no path, no query)
 func extractURLPath(rawURL string) string {
 	// Find "://" — if absent, treat the whole thing as a path.
 	const schemeSep = "://"
@@ -298,11 +329,15 @@ func extractURLPath(rawURL string) string {
 	}
 	// Skip the scheme + separator; find the first '/' after that.
 	rest := rawURL[i+len(schemeSep):]
-	j := indexByte(rest, '/')
-	if j < 0 {
-		return "/"
+	if j := indexByte(rest, '/'); j >= 0 {
+		return rest[j:]
 	}
-	return rest[j:]
+	// No '/' in the authority-and-beyond portion. If a '?' appears, the
+	// query starts there with an implicit empty path → return "/" + query.
+	if q := indexByte(rest, '?'); q >= 0 {
+		return "/" + rest[q:]
+	}
+	return "/"
 }
 
 func indexOf(s, sub string) int {
@@ -346,7 +381,11 @@ func (c *client) validate(req *Request, respDest *transfer.Slab) error {
 	if req.HeadersMax < 0 || req.HeadersMax > len(bodyBytes) {
 		return fmt.Errorf("httpclient: HeadersMax=%d out of range [0, %d]", req.HeadersMax, len(bodyBytes))
 	}
-	if req.BodyLen < 0 || req.HeadersMax+req.BodyLen > len(bodyBytes) {
+	// Compare with subtraction rather than addition so two huge ints
+	// can't wrap to a negative result and silently bypass the check.
+	// HeadersMax is already bounded by the preceding check, so the
+	// subtraction is non-negative here.
+	if req.BodyLen < 0 || req.BodyLen > len(bodyBytes)-req.HeadersMax {
 		return fmt.Errorf("httpclient: BodyLen=%d puts body end past Slab capacity (HeadersMax=%d, slab=%d)",
 			req.BodyLen, req.HeadersMax, len(bodyBytes))
 	}
