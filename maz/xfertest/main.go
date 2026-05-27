@@ -20,10 +20,12 @@ import (
 	"time"
 	"unsafe"
 
+	"mazzy/mazarin/httpclient"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/netclient"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/transfer"
 	"mazzy/mazarin/uring"
 	"mazzy/shared/ipc"
 	"mazzy/shared/netproto"
@@ -32,6 +34,13 @@ import (
 // loopbackV4 matches gvisor's IPv4Loopback; declared here so xfertest
 // doesn't need the gvisor import path.
 var loopbackV4 = [4]byte{127, 0, 0, 1}
+
+// exampleComV4 is the Cloudflare anycast IP for example.com as of
+// 2026-05-21. Shared between realTcpExample (plaintext HTTP) and
+// httpsExample (HTTPS via protocol-http) so they can't drift —
+// refresh with `dig example.com` and update this one constant if
+// either stage starts FAILing.
+var exampleComV4 = [4]byte{172, 66, 147, 243}
 
 // stageSendDgramDst aims at a known-unbound port so gvisor accepts the
 // Write and discards at the local UDP demux — keeps the next stage's
@@ -434,6 +443,10 @@ func testNetClient() bool {
 	// NetClient on the same uring races for response delivery and times
 	// out on Connect. Non-blocking: testRealTCPExample has no return value.
 	testRealTCPExample(nc)
+	// MAZ-49 end-to-end: GET / against example.com via the protocol-http
+	// shepherd. Uses its own mazarin/httpclient (no nc sharing), runs
+	// concurrently-safe on a dedicated response ring.
+	testHttpsExample()
 	return ok
 }
 
@@ -720,11 +733,10 @@ func testRealTCPExample(nc netclient.NetClient) {
 // Invoked inside the goroutine spawned by testRealTCPExample; the parent
 // wrapper handles the 10s deadline.
 func runRealTCPExample(nc netclient.NetClient) {
-	// example.com Cloudflare anycast IP as of 2026-05-21 (verify with `dig
-	// example.com` if this stage starts FAILing). example.com moved from
-	// Edgecast (93.184.215.14, static) to Cloudflare in early 2026 — expect
-	// more frequent IP rotation than before; refresh from dig as needed.
-	target := netproto.Addr{IP4: [4]byte{172, 66, 147, 243}, Port: 80}
+	// exampleComV4 (declared at top of file) is the Cloudflare anycast
+	// pin; example.com moved from Edgecast (93.184.215.14, static) to
+	// Cloudflare in early 2026 — IPs rotate more frequently now.
+	target := netproto.Addr{IP4: exampleComV4, Port: 80}
 	connID, _, err := nc.TCPConnect([4]byte{}, 0, target)
 	if err != nil {
 		sys.UartWriteString(tag + "FAIL: realTcpExample TCPConnect to example.com: " +
@@ -819,4 +831,100 @@ func runRealTCPExample(nc netclient.NetClient) {
 
 	sys.UartWriteString(tag + "PASS realTcpExample bytes=" + sys.Itoa(int64(n)) +
 		" httpVersion=" + httpVersion + " status=200\n")
+}
+
+// testHttpsExample is the MAZ-49 boot-time smoke test for end-to-end
+// HTTPS through the protocol-http shepherd via mazarin/httpclient.
+// Wrapped in a 30s timeout (TLS handshake + RTT to example.com can run
+// 1–3s on a healthy link). Non-blocking: prints PASS/FAIL via UART.
+func testHttpsExample() {
+	done := make(chan struct{}, 1)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		runHttpsExample()
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(30 * time.Second):
+		sys.UartWriteString(tag + "FAIL: httpsExample timed out after 30s (protocol-http hung, peer unreachable, or IP stale?)\n")
+	}
+}
+
+// runHttpsExample issues a GET / against example.com over HTTPS via the
+// protocol-http shepherd. Validates StatusCode==200 and that the
+// response body contains "Example Domain".
+//
+// example.com is currently Cloudflare-fronted; the IP must match
+// realTcpExample's pin (refresh both together with `dig example.com`
+// if either stage starts failing).
+func runHttpsExample() {
+	if err := sys.WaitForShepherdReady("protocol-http", 5); err != nil {
+		sys.UartWriteString(tag + "FAIL: httpsExample WaitForShepherdReady(protocol-http): " + err.Error() + "\n")
+		return
+	}
+
+	// Build the client. v1 doesn't actually use WithRootCAs on the
+	// client side (protocol-http has its own pool) but we pass an empty
+	// pool to exercise the option-application path. The endpoint pin
+	// matches realTcpExample's example.com IP (Cloudflare anycast).
+	client, err := httpclient.New(
+		httpclient.WithEndpointIP("example.com", exampleComV4),
+	)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: httpsExample httpclient.New: " + err.Error() + "\n")
+		return
+	}
+
+	// Allocate the request Slab: 1 page = 4096 bytes of headers-prefix
+	// space, 0 bytes of body (GET has no body). HeadersMax == slab size
+	// puts the body's first byte exactly at the slab boundary, which
+	// our validator accepts for an empty body.
+	reqSlab, err := transfer.Allocate(4096, 0)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: httpsExample Allocate(req): " + err.Error() + "\n")
+		return
+	}
+	defer reqSlab.Release()
+
+	// Response Slab: 4 pages = 16 KiB. example.com is ~830 bytes today
+	// (Cloudflare-hosted as of 2026-05); 16 KiB gives plenty of room
+	// for headers + body.
+	respSlab, err := transfer.Allocate(16384, 0)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: httpsExample Allocate(resp): " + err.Error() + "\n")
+		return
+	}
+	defer respSlab.Release()
+
+	req := &httpclient.Request{
+		Method:     "GET",
+		URL:        "https://example.com/",
+		Body:       reqSlab,
+		HeadersMax: 4096, // entire slab is prefix region for the GET
+		BodyLen:    0,
+	}
+	resp, err := client.Do(req, respSlab)
+	if err != nil {
+		sys.UartWriteString(tag + "FAIL: httpsExample client.Do: " + err.Error() + "\n")
+		return
+	}
+	if resp.StatusCode != 200 {
+		sys.UartWriteString(tag + "FAIL: httpsExample StatusCode=" + sys.Itoa(int64(resp.StatusCode)) + " want 200\n")
+		return
+	}
+	// Body lives in respSlab at [HeaderEnd : HeaderEnd+BodyLen].
+	respBytes := respSlab.Bytes()
+	if resp.HeaderEnd+resp.BodyLen > len(respBytes) {
+		sys.UartWriteString(tag + "FAIL: httpsExample body offsets out of range\n")
+		return
+	}
+	body := respBytes[resp.HeaderEnd : resp.HeaderEnd+resp.BodyLen]
+	if !bytes.Contains(body, []byte("Example Domain")) {
+		sys.UartWriteString(tag + "FAIL: httpsExample response missing 'Example Domain' marker (bodyLen=" +
+			sys.Itoa(int64(resp.BodyLen)) + ")\n")
+		return
+	}
+	sys.UartWriteString(tag + "PASS httpsExample status=200 bodyLen=" +
+		sys.Itoa(int64(resp.BodyLen)) + "\n")
 }

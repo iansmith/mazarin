@@ -1,0 +1,56 @@
+version: '3'
+
+# protocol-http.maz follows the same buildmode=plugin pattern as sophie.maz
+# (and the other consumer-side .maz shepherds). No -tags mazhost / no
+# dlopen-host-exports: protocol-http does not host plugins, it only calls
+# into mazarin/netclient and crypto/tls.
+tasks:
+  arm64:
+    desc: Build protocol-http.maz via mazgo (ET_DYN plugin-shape, UNDEF runtime)
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/protocol-http/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.PROTOCOL_HTTP_MAZ}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building protocol-http.maz (mazgo + mazlink, -buildmode=plugin)..."'
+      - |
+        CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.PROTOCOL_HTTP_MAZ}} ./maz/protocol-http
+      - '{{.GO}} tool go-echo "protocol-http.maz ready at {{.PROTOCOL_HTTP_MAZ}}"'
+
+  amd64:
+    desc: Build protocol-http.maz for x86_64 via mazgo (pattern parity; not gated)
+    run: once
+    deps: [':check-env', ':mazgo-build', ':mazlink-build', ':mazgo-toolexec-build']
+    sources:
+      - '{{.ROOT_DIR}}/maz/protocol-http/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.MAZLINK_BIN}}'
+      - '{{.MAZGO_BIN}}'
+      - '{{.MAZGO_TOOLEXEC_BIN}}'
+      - '{{.DLOPEN_HOST_POLICY}}'
+    generates:
+      - '{{.PROTOCOL_HTTP_MAZ_AMD64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building protocol-http.maz for x86_64 (mazgo + mazlink)..."'
+      - |
+        CGO_ENABLED=0 GOARCH=amd64 GOOS=linux \
+        {{.ROOT_DIR}}/{{.MAZGO_BIN}} build \
+          -buildmode=plugin \
+          -toolexec="{{.ROOT_DIR}}/{{.MAZGO_TOOLEXEC_BIN}} {{.ROOT_DIR}}/{{.MAZLINK_BIN}}" \
+          "-ldflags=-linkmode=internal -dlopen-host-packages={{.ROOT_DIR}}/{{.DLOPEN_HOST_POLICY}}" \
+          {{.GCFLAGS}} -o {{.PROTOCOL_HTTP_MAZ_AMD64}} ./maz/protocol-http
+      - '{{.GO}} tool go-echo "protocol-http.maz (x86_64) ready at {{.PROTOCOL_HTTP_MAZ_AMD64}}"'

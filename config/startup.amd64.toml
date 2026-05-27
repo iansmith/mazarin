@@ -39,3 +39,7 @@ path = "/net.elf"
 [[shepherd]]
 name = "sophie"
 path = "/sophie.maz"
+
+[[shepherd]]
+name = "protocol-http"
+path = "/protocol-http.maz"

@@ -60,6 +60,7 @@ includes:
   shareprobe:        {taskfile: ./maz/shareprobe/Taskfile.yml}
   test-fixture-http: {taskfile: ./maz/test-fixture-http/Taskfile.yml}
   sophie:       {taskfile: ./maz/sophie/Taskfile.yml}
+  protocol-http: {taskfile: ./maz/protocol-http/Taskfile.yml}
   # .maz programs (continued)
   clocks:       {taskfile: ./maz/clocks/Taskfile.yml}
   versai:       {taskfile: ./mazarin/apps/versai/Taskfile.yml}
@@ -125,6 +126,7 @@ vars:
   SHAREPROBE_MAZ: '{{.BUILD_DIR}}/shareprobe.maz'
   TEST_FIXTURE_HTTP_MAZ: '{{.BUILD_DIR}}/test-fixture-http.maz'
   SOPHIE_MAZ: '{{.BUILD_DIR}}/sophie.maz'
+  PROTOCOL_HTTP_MAZ: '{{.BUILD_DIR}}/protocol-http.maz'
   CLOCKS_MAZ_AMD64: '{{.BUILD_DIR}}/clocks-amd64.maz'
   VERSAI_MAZ_AMD64: '{{.BUILD_DIR}}/versai-amd64.maz'
   CALC_MAZ_AMD64: '{{.BUILD_DIR}}/calc-amd64.maz'
@@ -142,6 +144,7 @@ vars:
   SHAREPROBE_MAZ_AMD64: '{{.BUILD_DIR}}/shareprobe-amd64.maz'
   TEST_FIXTURE_HTTP_MAZ_AMD64: '{{.BUILD_DIR}}/test-fixture-http-amd64.maz'
   SOPHIE_MAZ_AMD64: '{{.BUILD_DIR}}/sophie-amd64.maz'
+  PROTOCOL_HTTP_MAZ_AMD64: '{{.BUILD_DIR}}/protocol-http-amd64.maz'
   SHEPHERD_ELF: '{{.BUILD_DIR}}/shepherd.elf'
   RACHEL_MAZ: '{{.BUILD_DIR}}/rachel.maz'
   RACHEL_ELF: '{{.BUILD_DIR}}/rachel.elf'
@@ -536,11 +539,11 @@ tasks:
 
   userspace-build:
     desc: Build all ARM64 userspace programs (shepherds, .maz modules, test programs)
-    deps: [rachel:arm64, linux:arm64, fs:arm64, net:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, gvisor:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, xfertest:arm64, transfertest:arm64, transferprobe:arm64, sharetest:arm64, shareprobe:arm64, test-fixture-http:arm64, sophie:arm64]
+    deps: [rachel:arm64, linux:arm64, fs:arm64, net:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, gvisor:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, xfertest:arm64, transfertest:arm64, transferprobe:arm64, sharetest:arm64, shareprobe:arm64, test-fixture-http:arm64, sophie:arm64, protocol-http:arm64]
 
   userspace-build-x86_64:
     desc: Build all x86_64 userspace programs (shepherds + test programs)
-    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, net:x86_64, clocks:amd64, versai:amd64, calc:amd64, mail-app:x86_64, gvisor:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64, sophie:amd64]
+    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, net:x86_64, clocks:amd64, versai:amd64, calc:amd64, mail-app:x86_64, gvisor:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64, sophie:amd64, protocol-http:amd64]
 
   # ===========================================================================
   # Disk Image
@@ -567,7 +570,7 @@ tasks:
 
   disk-arm64:
     desc: Create ext2 disk image with ARM64 maz binaries and kmazarin kernel
-    deps: [shepherd:arm64, rachel:arm64, linux:arm64, fs:arm64, net:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, gvisor:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, xfertest:arm64, transfertest:arm64, transferprobe:arm64, sharetest:arm64, shareprobe:arm64, test-fixture-http:arm64, sophie:arm64, kmazarin:arm64, convert-boot-image]
+    deps: [shepherd:arm64, rachel:arm64, linux:arm64, fs:arm64, net:arm64, clocks:arm64, versai:arm64, calc:arm64, mail-app:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, keymapper:arm64, gvisor:arm64, linux-ui:arm64, fti:arm64, maildb:arm64, mail-ui:arm64, xfertest:arm64, transfertest:arm64, transferprobe:arm64, sharetest:arm64, shareprobe:arm64, test-fixture-http:arm64, sophie:arm64, protocol-http:arm64, kmazarin:arm64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -598,11 +601,13 @@ tasks:
       - '{{.SHAREPROBE_MAZ}}'
       - '{{.TEST_FIXTURE_HTTP_MAZ}}'
       - '{{.SOPHIE_MAZ}}'
+      - '{{.PROTOCOL_HTTP_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
       - 'config/startup.arm64.toml'
       - 'config/rachel.arm64.toml'
       - 'sophie/**/*'
+      - 'protocol-http/**/*'
       - 'user/**/*'
       - 'data/**/*'
     generates:
@@ -615,12 +620,12 @@ tasks:
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
       # Single -dir /sophie= so mkext2 doesn't create two competing /sophie inodes;
       # subdirectories ssl/ and secrets/ get recursed into automatically.
-      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data -dir /sophie=./sophie {{.SHEPHERD_ELF}} {{.RACHEL_MAZ}} {{.LINUX_MAZ}} {{.FS_ELF}} {{.NET_ELF}} {{.CLOCKS_MAZ}} {{.VERSAI_MAZ}} {{.CALC_MAZ}} {{.MAIL_MAZ}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.GVISOR_MAZ}} {{.LINUX_UI_MAZ}} {{.FTI_MAZ}} {{.MAILDB_MAZ}} {{.MAIL_UI_MAZ}} {{.XFERTEST_MAZ}} {{.TRANSFERTEST_MAZ}} {{.TRANSFERPROBE_MAZ}} {{.SHARETEST_MAZ}} {{.SHAREPROBE_MAZ}} {{.TEST_FIXTURE_HTTP_MAZ}} {{.SOPHIE_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
+      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data -dir /sophie=./sophie -dir /protocol-http=./protocol-http {{.SHEPHERD_ELF}} {{.RACHEL_MAZ}} {{.LINUX_MAZ}} {{.FS_ELF}} {{.NET_ELF}} {{.CLOCKS_MAZ}} {{.VERSAI_MAZ}} {{.CALC_MAZ}} {{.MAIL_MAZ}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KEYMAPPER_MAZ}} {{.GVISOR_MAZ}} {{.LINUX_UI_MAZ}} {{.FTI_MAZ}} {{.MAILDB_MAZ}} {{.MAIL_UI_MAZ}} {{.XFERTEST_MAZ}} {{.TRANSFERTEST_MAZ}} {{.TRANSFERPROBE_MAZ}} {{.SHARETEST_MAZ}} {{.SHAREPROBE_MAZ}} {{.TEST_FIXTURE_HTTP_MAZ}} {{.SOPHIE_MAZ}} {{.PROTOCOL_HTTP_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml {{.BUILD_DIR}}/disk-staging-arm64/rachel.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
     desc: Create ext2 disk image with x86_64 maz binaries and kmazarin kernel
-    deps: [shepherd:x86_64, rachel:x86_64, linux:x86_64, fs:x86_64, net:x86_64, clocks:amd64, versai:amd64, calc:amd64, mail-app:x86_64, helloworld:amd64, prefs:amd64, fontsvc:amd64, keymapper:amd64, gvisor:amd64, linux-ui:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64, sophie:amd64, kmazarin:x86_64, convert-boot-image]
+    deps: [shepherd:x86_64, rachel:x86_64, linux:x86_64, fs:x86_64, net:x86_64, clocks:amd64, versai:amd64, calc:amd64, mail-app:x86_64, helloworld:amd64, prefs:amd64, fontsvc:amd64, keymapper:amd64, gvisor:amd64, linux-ui:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64, sophie:amd64, protocol-http:amd64, kmazarin:x86_64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -645,10 +650,12 @@ tasks:
       - '{{.MAILDB_MAZ_AMD64}}'
       - '{{.MAIL_UI_MAZ_AMD64}}'
       - '{{.SOPHIE_MAZ_AMD64}}'
+      - '{{.PROTOCOL_HTTP_MAZ_AMD64}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
       - 'config/startup.amd64.toml'
       - 'sophie/**/*'
+      - 'protocol-http/**/*'
       - 'user/**/*'
       - 'data/**/*'
     generates:
@@ -676,10 +683,11 @@ tasks:
       - '{{.GO}} tool go-cp {{.MAILDB_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/maildb.maz'
       - '{{.GO}} tool go-cp {{.MAIL_UI_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz'
       - '{{.GO}} tool go-cp {{.SOPHIE_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/sophie.maz'
+      - '{{.GO}} tool go-cp {{.PROTOCOL_HTTP_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/protocol-http.maz'
       - '{{.GO}} tool go-cp config/startup.amd64.toml {{.BUILD_DIR}}/disk-staging-amd64/startup.toml'
       - '{{.GO}} tool go-cp config/rachel.amd64.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml'
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_AMD64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data -dir /sophie=./sophie {{.BUILD_DIR}}/disk-staging-amd64/shepherd.elf {{.BUILD_DIR}}/disk-staging-amd64/rachel.maz {{.BUILD_DIR}}/disk-staging-amd64/linux.maz {{.BUILD_DIR}}/disk-staging-amd64/fs.elf {{.BUILD_DIR}}/disk-staging-amd64/net.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.maz {{.BUILD_DIR}}/disk-staging-amd64/versai.maz {{.BUILD_DIR}}/disk-staging-amd64/calc.maz {{.BUILD_DIR}}/disk-staging-amd64/mail.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz {{.BUILD_DIR}}/disk-staging-amd64/gvisor.maz {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/fti.maz {{.BUILD_DIR}}/disk-staging-amd64/maildb.maz {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/sophie.maz {{.BUILD_DIR}}/disk-staging-amd64/startup.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkext2 -o {{.DISK_AMD64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data -dir /sophie=./sophie -dir /protocol-http=./protocol-http {{.BUILD_DIR}}/disk-staging-amd64/shepherd.elf {{.BUILD_DIR}}/disk-staging-amd64/rachel.maz {{.BUILD_DIR}}/disk-staging-amd64/linux.maz {{.BUILD_DIR}}/disk-staging-amd64/fs.elf {{.BUILD_DIR}}/disk-staging-amd64/net.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.maz {{.BUILD_DIR}}/disk-staging-amd64/versai.maz {{.BUILD_DIR}}/disk-staging-amd64/calc.maz {{.BUILD_DIR}}/disk-staging-amd64/mail.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz {{.BUILD_DIR}}/disk-staging-amd64/gvisor.maz {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/fti.maz {{.BUILD_DIR}}/disk-staging-amd64/maildb.maz {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/sophie.maz {{.BUILD_DIR}}/disk-staging-amd64/protocol-http.maz {{.BUILD_DIR}}/disk-staging-amd64/startup.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   # ===========================================================================
@@ -927,7 +935,7 @@ tasks:
     deps: [check-env]
     cmds:
       - '{{.GO}} tool go-echo "Running tests..."'
-      - '{{.GO}} test -v ./shared/... ./mazarin/transfer/...'
+      - '{{.GO}} test -v ./shared/... ./mazarin/transfer/... ./mazarin/httpclient/... ./maz/protocol-http/internal/...'
 
   clean:
     desc: Remove build artifacts
