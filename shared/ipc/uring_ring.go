@@ -48,6 +48,8 @@ const (
 	ProtoShareReq        uint32 = 22 // mazarin/transfer Mode 2 Share publication (sender → consumer) — MAZ-53
 	ProtoShareRelease    uint32 = 23 // mazarin/transfer Mode 2 Release (consumer → sender) — MAZ-53
 	ProtoChainReq        uint32 = 24 // chained-share boot test: sharetest → test-fixture-http "allocate + share back" — MAZ-53
+	ProtoHttpIPCReq      uint32 = 25 // mazarin/httpclient → protocol-http: Do request — MAZ-49
+	ProtoHttpIPCResp     uint32 = 26 // protocol-http → mazarin/httpclient: Do response — MAZ-49
 )
 
 // UringIPCRingHeader is the metadata at offset 0 of the ring's first page.
