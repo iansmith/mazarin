@@ -12,7 +12,11 @@ func TestHttpDoReq_EncodeDecodeRoundtrip(t *testing.T) {
 		ReqBodyLen:       128,
 		ReqID:            0xdeadbeef,
 		RespRing:         2,
+		HostLen:          17,
+		EndpointIP:       [4]byte{1, 2, 3, 4},
+		EndpointPort:     443,
 	}
+	copy(want.Host[:], "api.anthropic.com")
 	copy(want.URLPath[:], "/v1/messages")
 
 	msg := EncodeHttpDoReq(&want, 17)
@@ -28,6 +32,15 @@ func TestHttpDoReq_EncodeDecodeRoundtrip(t *testing.T) {
 	}
 	if string(got.URLPath[:got.URLLen]) != "/v1/messages" {
 		t.Fatalf("URLPath: want /v1/messages got %q", string(got.URLPath[:got.URLLen]))
+	}
+	if string(got.Host[:got.HostLen]) != "api.anthropic.com" {
+		t.Fatalf("Host: want api.anthropic.com got %q", string(got.Host[:got.HostLen]))
+	}
+	if got.EndpointIP != [4]byte{1, 2, 3, 4} {
+		t.Fatalf("EndpointIP: want [1 2 3 4] got %v", got.EndpointIP)
+	}
+	if got.EndpointPort != 443 {
+		t.Fatalf("EndpointPort: want 443 got %d", got.EndpointPort)
 	}
 }
 

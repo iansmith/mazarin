@@ -59,9 +59,13 @@ const (
 
 // HttpURLMaxInline caps the inline URL path length carried in the request
 // payload. Longer URLs would require a separate share and are rejected by
-// protocol-http with HttpDoErrGeneric. 80 bytes covers all realistic API
-// endpoint paths (e.g. Anthropic's "/v1/messages").
-const HttpURLMaxInline = 80
+// protocol-http with HttpDoErrGeneric. 48 bytes covers realistic API
+// endpoint paths (e.g. Anthropic's "/v1/messages" is 12 chars).
+const HttpURLMaxInline = 48
+
+// HttpHostMaxInline caps the inline hostname length. 32 bytes covers
+// realistic hostnames (e.g. "api.anthropic.com" is 17 chars).
+const HttpHostMaxInline = 32
 
 // HttpDoReqPayload is the payload for ProtoHttpIPCReq messages.
 //
@@ -75,8 +79,11 @@ const HttpURLMaxInline = 80
 //	[16:20]  ReqBodyLen        uint32   — actual body length within reqShare
 //	[20:24]  ReqID             uint32   — for response correlation
 //	[24:25]  RespRing          uint8    — ring index for ProtoHttpIPCResp
-//	[25:32]  _pad
-//	[32:112] URLPath           [80]byte — request-target path (URLPath[:URLLen] is valid)
+//	[25:26]  HostLen           uint8    — number of valid bytes in Host
+//	[26:30]  EndpointIP        [4]byte  — IPv4 to TCPConnect against (DNS lands in MAZ-41)
+//	[30:32]  EndpointPort      uint16   — TCP port (443 for HTTPS)
+//	[32:64]  Host              [32]byte — SNI + Host header value (Host[:HostLen] is valid)
+//	[64:112] URLPath           [48]byte — request-target path (URLPath[:URLLen] is valid)
 type HttpDoReqPayload struct {
 	Method           HttpMethod
 	URLLen           uint16
@@ -86,7 +93,10 @@ type HttpDoReqPayload struct {
 	ReqBodyLen       uint32
 	ReqID            uint32
 	RespRing         uint8
-	_pad             [7]byte
+	HostLen          uint8
+	EndpointIP       [4]byte
+	EndpointPort     uint16
+	Host             [HttpHostMaxInline]byte
 	URLPath          [HttpURLMaxInline]byte
 }
 
