@@ -80,7 +80,16 @@ func handleDo(v any) {
 
 	// 2. Dial TCP + TLS.
 	host := string(p.Host[:p.HostLen])
-	dst := netproto.Addr{IP4: p.EndpointIP, Port: p.EndpointPort}
+	if p.EndpointFamily != ipc.HttpAddrIPv4 {
+		// IPv6 path lands when MAZ-33 widens netproto.Addr. Until then
+		// we surface a clear error rather than silently truncating.
+		sys.UartWriteString(tag + "EndpointFamily IPv6 not yet wired (MAZ-33)\n")
+		rs.fail(ipc.HttpDoErrConnect, 0)
+		return
+	}
+	var ip4 [4]byte
+	copy(ip4[:], p.EndpointAddr[:4])
+	dst := netproto.Addr{IP4: ip4, Port: p.EndpointPort}
 	connID, _, err := nc.TCPConnect([4]byte{}, 0, dst)
 	if err != nil {
 		sys.UartWriteString(tag + "TCPConnect: " + err.Error() + "\n")

@@ -138,9 +138,10 @@ func (c *client) Do(req *Request, respDest *transfer.Slab) (*Response, error) {
 		ReqID:            reqID,
 		RespRing:         uint8(defaultRespRing),
 		HostLen:          uint8(len(c.cfg.endpointHost)),
-		EndpointIP:       c.cfg.endpointIP,
-		EndpointPort:     443, // HTTPS only in v1
+		EndpointFamily:   ipc.HttpAddrIPv4, // v6 lands when MAZ-33 widens netproto.Addr
+		EndpointPort:     443,              // HTTPS only in v1
 	}
+	copy(payload.EndpointAddr[:4], c.cfg.endpointIP[:])
 	copy(payload.Host[:], c.cfg.endpointHost)
 	copy(payload.URLPath[:], urlPath)
 

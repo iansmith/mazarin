@@ -59,13 +59,30 @@ const (
 
 // HttpURLMaxInline caps the inline URL path length carried in the request
 // payload. Longer URLs would require a separate share and are rejected by
-// protocol-http with HttpDoErrGeneric. 48 bytes covers realistic API
+// protocol-http with HttpDoErrGeneric. 32 bytes covers realistic API
 // endpoint paths (e.g. Anthropic's "/v1/messages" is 12 chars).
-const HttpURLMaxInline = 48
+const HttpURLMaxInline = 32
 
 // HttpHostMaxInline caps the inline hostname length. 32 bytes covers
 // realistic hostnames (e.g. "api.anthropic.com" is 17 chars).
 const HttpHostMaxInline = 32
+
+// HttpEndpointAddrSize is the byte width of the endpoint address slot.
+// Sized for IPv6; IPv4 lives in the first 4 bytes with EndpointFamily=4.
+// Future MAZ-33 (IPv6 default) flips real addresses into the rest of
+// the slot without a wire-format break.
+const HttpEndpointAddrSize = 16
+
+// HttpAddrFamily enumerates the address family carried in EndpointAddr.
+// Values match the conventional POSIX AF_* numbering so future
+// migrations can swap to AF_INET / AF_INET6 directly.
+type HttpAddrFamily uint8
+
+const (
+	HttpAddrInvalid HttpAddrFamily = 0
+	HttpAddrIPv4    HttpAddrFamily = 4
+	HttpAddrIPv6    HttpAddrFamily = 6
+)
 
 // HttpDoReqPayload is the payload for ProtoHttpIPCReq messages.
 //
@@ -80,10 +97,13 @@ const HttpHostMaxInline = 32
 //	[20:24]  ReqID             uint32   — for response correlation
 //	[24:25]  RespRing          uint8    — ring index for ProtoHttpIPCResp
 //	[25:26]  HostLen           uint8    — number of valid bytes in Host
-//	[26:30]  EndpointIP        [4]byte  — IPv4 to TCPConnect against (DNS lands in MAZ-41)
-//	[30:32]  EndpointPort      uint16   — TCP port (443 for HTTPS)
-//	[32:64]  Host              [32]byte — SNI + Host header value (Host[:HostLen] is valid)
-//	[64:112] URLPath           [48]byte — request-target path (URLPath[:URLLen] is valid)
+//	[26:27]  EndpointFamily    HttpAddrFamily — 4 (IPv4) or 6 (IPv6); MAZ-33 enables v6
+//	[27:28]  _pad0             uint8
+//	[28:30]  EndpointPort      uint16   — TCP port (443 for HTTPS)
+//	[30:32]  _pad1             uint16   — align EndpointAddr to 4 bytes
+//	[32:48]  EndpointAddr      [16]byte — v4 uses first 4 bytes; v6 uses all 16
+//	[48:80]  Host              [32]byte — SNI + Host header value (Host[:HostLen] is valid)
+//	[80:112] URLPath           [32]byte — request-target path (URLPath[:URLLen] is valid)
 type HttpDoReqPayload struct {
 	Method           HttpMethod
 	URLLen           uint16
@@ -94,8 +114,11 @@ type HttpDoReqPayload struct {
 	ReqID            uint32
 	RespRing         uint8
 	HostLen          uint8
-	EndpointIP       [4]byte
+	EndpointFamily   HttpAddrFamily
+	_pad0            uint8
 	EndpointPort     uint16
+	_pad1            uint16
+	EndpointAddr     [HttpEndpointAddrSize]byte
 	Host             [HttpHostMaxInline]byte
 	URLPath          [HttpURLMaxInline]byte
 }
