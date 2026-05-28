@@ -30,17 +30,8 @@ package proc
 
 import "errors"
 
-// PID range constants — same set defined in MAZ-69's pid_allocator.go.
-// When both branches merge to master, keep one definition (whichever lands
-// first); these are identical and the merge collapses cleanly with a
-// manual resolution.
-//
-//	MinPID = 2   — PID 0 invalid (Linux convention); PID 1 reserved (kernel sentinel)
-//	MaxPID = 4095 — 12-bit cap, fits x86 PCID & ARM ASID hardware tag widths
-const (
-	MinPID ShepherdId = 2
-	MaxPID ShepherdId = 4095
-)
+// MinPID and MaxPID constants live in pid_allocator.go (MAZ-69 landed first).
+// This file uses them by reference.
 
 // MaxLiveShepherds bounds the concurrent live shepherd count. Tunable —
 // start at 256 (well above the ~100 we expect from go-build-style peaks).
