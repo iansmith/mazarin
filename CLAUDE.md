@@ -87,6 +87,17 @@ Promotion is one-way: memory → project-specific → universal. Rules go up whe
 
 # Mazzy-Specific Declarations
 
+## Pre-commit (overrides universal §1)
+
+- **Do NOT commit by default.** After each meaningful chunk of edits, surface what changed and ASK whether to commit or continue. Self-driven commits bloat history, fragment diffs, and remove the user's review checkpoint. Leave the working tree dirty unless told otherwise.
+- **Rare exceptions where committing inline IS correct:**
+  - You're inside a structured workflow skill that owns commit semantics — `/ticket-pr` (full simplify + commit + PR + CodeRabbit), `/ticket-plan` Phase 0 RED-test commit (locks the spec before implementation).
+  - The user just said "commit X".
+  - You're rolling back a destructive change you just made.
+  - Otherwise: stop and ask.
+- **Ticket-anchored work commits via `/ticket-pr`** — it bundles simplify + commit + PR + CodeRabbit polling in one pass. Self-driven Phase-by-Phase commits ahead of `/ticket-pr` defeat its design and clutter the history with intermediate states the reviewer doesn't need to see.
+- When committing IS the right call, universal §1's sub-rules still apply: run `simplify` (or `Agent(code-simplifier)`) on staged-or-working changes first, then build + targeted tests, then commit + push. Never use `pre-commit-review` as a stand-in for simplify.
+
 ## Environment (set every session)
 
 ```bash
