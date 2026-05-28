@@ -221,10 +221,6 @@ const (
 	ThreadBlockedKernelRingPush ThreadState = 20 // Thread 0 blocked in pushStringFull (topHalfUartRing full); woken by consumer pop or 10ms deadline
 )
 
-// MaxShepherds is the maximum number of shepherd processes (userspace programs).
-// Defined in proc package; aliased here for local convenience.
-const MaxShepherds = proc.MaxShepherds
-
 // MaxThreads is the maximum number of threads supported
 const MaxThreads = 512
 
@@ -657,7 +653,7 @@ var pendingYieldBlockState ThreadState
 
 // ID allocators - initialized in InitIdAllocators()
 var threadIdAllocator ds.StaticAllocator[ThreadId]          // Manages unique thread IDs (0..MaxThreads-1)
-var shepherdIdAllocator ds.StaticAllocator[proc.ShepherdId] // Manages unique shepherd IDs (0..MaxShepherds-1)
+var shepherdIdAllocator ds.StaticAllocator[proc.ShepherdId] // Manages unique shepherd IDs (0..proc.MaxLiveShepherds-1)
 
 // ========== Scheduler Lock ==========
 
@@ -873,7 +869,7 @@ func InitIdAllocators() {
 
 	// Initialize shepherd ID allocator. PIDs [0, ReservedKernelShepherds) are
 	// kernel-reserved (PID 0 invalid, PID 1 kernel sentinel); allocator hands
-	// out PIDs in [ReservedKernelShepherds, MaxShepherds), shuffled.
+	// out PIDs in [ReservedKernelShepherds, proc.MaxLiveShepherds), shuffled.
 	shepherdIdAllocator.InitWithReserved(shepherdIdStackData[:], ReservedKernelShepherds)
 
 	// Reset kernel thread counter (starts at 0, used by AcquireKernelThreadId)
@@ -2153,10 +2149,10 @@ type DeferredCleanupEntry struct {
 
 // deferredCleanups holds deferred page cleanup entries. Free slots have
 // InUse=false; appendDeferredCleanup scans linearly for a free slot.
-var deferredCleanups [MaxShepherds]DeferredCleanupEntry
+var deferredCleanups [proc.MaxLiveShepherds]DeferredCleanupEntry
 
 // appendDeferredCleanup stores entry in the first free slot of deferredCleanups.
-// Panics if no free slot is available — MaxShepherds in-flight dying shepherds
+// Panics if no free slot is available — proc.MaxLiveShepherds in-flight dying shepherds
 // would be an unprecedented runaway.
 //
 //go:nosplit

@@ -396,4 +396,4 @@ func CheckIOUringWFITimeout(ringID int, currentCompletions uint32) bool {
 }
 
 // Needed by iouring.go but may not be imported yet.
-var _ = proc.MaxShepherds // keep proc import alive
+var _ = proc.MaxLiveShepherds // keep proc import alive

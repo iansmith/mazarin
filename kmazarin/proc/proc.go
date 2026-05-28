@@ -9,9 +9,6 @@
 package proc
 
 
-// MaxShepherds is the maximum number of shepherd processes (userspace programs).
-const MaxShepherds = 32
-
 // SignalNSIG is the number of signals (1-64 + sentinel), matching Linux _NSIG.
 const SignalNSIG = 65
 
@@ -24,7 +21,8 @@ type ShepherdSignalAction struct {
 	Mask     uint64
 }
 
-// ShepherdId is a unique shepherd (userspace process) identifier (0-MaxShepherds-1).
+// ShepherdId is a unique shepherd (userspace process) identifier; valid
+// values are 0 (kernel) and the [MinPID, MaxPID] PID range.
 type ShepherdId int16
 
 // Shepherd represents a userspace process that runs Go code.
