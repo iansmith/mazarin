@@ -265,7 +265,14 @@ func ResetTickAccounting(startTime uint64) {
 		p.TicksStartedRunning = 0
 		return true
 	})
-	// The currently running shepherd needs its clock started
+	// proc.Shepherds.ForEach does not visit PID 0 — the kernel shepherd
+	// lives in a separate singleton. Reset its accumulator too so kernel
+	// CPU stats don't drift from boot onward.
+	proc.KernelShepherd.TotalTicksRunning = 0
+	proc.KernelShepherd.TicksStartedRunning = 0
+	// The currently running shepherd needs its clock started.
+	// (FindShepherdBySID(0) returns &KernelShepherd, so kernel threads
+	// are handled by the same lookup as userspace threads.)
 	ct := GetCurrentThread()
 	if ct != nil {
 		if p := proc.FindShepherdBySID(ct.PID); p != nil {
@@ -3644,18 +3651,17 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	}
 
 	atomic.AddUint64(&dbgPreemptSwitchCount, 1)
-	// Shepherd-level tick accounting
-	// Stop old shepherd's clock
-	if oldShepherd := proc.FindShepherdBySID(oldThread.PID); oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
-		oldShepherd.TotalTicksRunning += currentTime - oldShepherd.TicksStartedRunning
-		// Only clear shepherd clock if switching to a DIFFERENT shepherd
-		if next.PID != oldThread.PID {
+	// Shepherd-level tick accounting — only on inter-shepherd switches.
+	// On intra-shepherd switches the shepherd's clock keeps running across
+	// the thread change; accumulating here would re-add the same interval
+	// every time, since we wouldn't clear TicksStartedRunning either.
+	if next.PID != oldThread.PID {
+		// Stop old shepherd's clock.
+		if oldShepherd := proc.FindShepherdBySID(oldThread.PID); oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
+			oldShepherd.TotalTicksRunning += currentTime - oldShepherd.TicksStartedRunning
 			oldShepherd.TicksStartedRunning = 0
 		}
-	}
-
-	// Start new shepherd's clock (only if different shepherd)
-	if next.PID != oldThread.PID {
+		// Start new shepherd's clock.
 		if newShepherd := proc.FindShepherdBySID(next.PID); newShepherd != nil {
 			newShepherd.TicksStartedRunning = currentTime
 		}

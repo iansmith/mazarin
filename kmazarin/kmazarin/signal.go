@@ -96,6 +96,9 @@ func GetSignalAction(sig int) SignalAction {
 			return SignalAction{Handler: sa.Handler, Flags: sa.Flags,
 				Restorer: sa.Restorer, Mask: sa.Mask}
 		}
+		// Userspace thread whose shepherd has been torn down — fail closed
+		// instead of leaking the kernel's signalActions table to userspace.
+		return SignalAction{}
 	}
 	return signalActions[sig]
 }
@@ -105,12 +108,15 @@ func GetSignalAction(sig int) SignalAction {
 //
 //go:nosplit
 func GetSignalActionForThread(thread *Thread, sig int) SignalAction {
-	if thread.PID > 0 {
+	if thread != nil && thread.PID > 0 {
 		if p := proc.FindShepherdBySID(thread.PID); p != nil {
 			sa := &p.SignalActions[sig]
 			return SignalAction{Handler: sa.Handler, Flags: sa.Flags,
 				Restorer: sa.Restorer, Mask: sa.Mask}
 		}
+		// Userspace thread whose shepherd has been torn down — fail closed
+		// instead of leaking the kernel's signalActions table to userspace.
+		return SignalAction{}
 	}
 	return signalActions[sig]
 }
@@ -130,6 +136,9 @@ func SetSignalAction(sig int, sa *SignalAction) {
 			}
 			return
 		}
+		// Userspace thread whose shepherd has been torn down — drop the
+		// write instead of clobbering the kernel's signalActions table.
+		return
 	}
 	signalActions[sig] = *sa
 }
