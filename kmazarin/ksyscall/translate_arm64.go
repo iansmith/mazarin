@@ -38,9 +38,11 @@ var arm64ToSysID = [512]SysID{
 	214: SysIDBrk,
 	215: SysIDMunmap,
 	220: SysIDClone,
+	221: SysIDExecve,
 	222: SysIDMmap,
 	226: SysIDMprotect,
 	233: SysIDMadvise,
+	260: SysIDWait4,
 	261: SysIDPrlimit64,
 	278: SysIDGetrandom,
 
