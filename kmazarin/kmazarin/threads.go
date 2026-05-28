@@ -622,7 +622,7 @@ var staticDeadlineQueue ds.StaticOrderedList
 
 // ID allocator backing arrays - statically allocated
 var threadIdStackData [threadArraySize]ThreadId            // Backing array for thread ID allocator
-var shepherdIdStackData [proc.MaxShepherds]proc.ShepherdId // Backing array for shepherd ID allocator
+var shepherdIdStackData [proc.MaxLiveShepherds]proc.ShepherdId // Backing array for shepherd ID allocator
 
 // nextKernelThreadId is a counter for allocating kernel thread IDs (0 to ReservedKernelThreads-1).
 // Kernel threads are identified by PID == 0 (the kernel shepherd) and get IDs from this counter.
