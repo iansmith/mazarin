@@ -142,6 +142,32 @@ type Shepherd struct {
 	// FileMappings tracks file-backed mmap regions. When a page fault occurs
 	// in one of these ranges, the kernel reads file data and maps it read-only.
 	FileMappings [MaxFileMappings]FileMapping
+
+	// MAZ-70: Linux-emulation process bookkeeping. Empty / zero for boot-time
+	// kernel-launched shepherds; populated for forked Linux processes. Methods
+	// to manipulate these fields live in shepherd_state.go.
+
+	// ParentPID is the PID of this process's parent. 0 means no parent
+	// (boot-time launched shepherd).
+	ParentPID ShepherdId
+
+	// Children holds the PIDs of this shepherd's live children.
+	// Manipulate via AddChild / RemoveChild; iterate via EachChild.
+	// The slot ordering is implementation-defined.
+	Children    [MaxChildrenPerShepherd]ShepherdId
+	NumChildren int32
+
+	// Zombie + ExitStatus implement Linux-style zombie reaping. While
+	// Zombie is true, the shepherd has exited but the parent has not yet
+	// called wait4 — ExitStatus is the recorded exit code.
+	Zombie     bool
+	ExitStatus int32
+
+	// Environ + EnvironLen hold the raw environ block (null-separated
+	// bytes) for use at the next execve. Manipulate via SetEnviron /
+	// GetEnviron.
+	Environ    [MaxEnvironBytes]byte
+	EnvironLen uint32
 }
 
 // Id implements the ds.Ider interface for Shepherd.
