@@ -71,10 +71,8 @@ func ReadAndResetScanDeltas() (runs, accessed, total uint64) {
 // Called from the timer bottom-half goroutine (KernelIdleLoop) every ~1000
 // timer ticks. NOT nosplit — uses spans.ForEach and page table walking.
 func ScanAccessedBits(shepherdID proc.ShepherdId) (accessedCount int, totalCount int) {
-	if shepherdID < 0 || int(shepherdID) >= proc.MaxShepherds {
-		return
-	}
-	if !proc.ShepherdListInUse[shepherdID] {
+	p := proc.FindShepherdBySID(shepherdID)
+	if p == nil {
 		return
 	}
 	defer func() {
@@ -83,7 +81,6 @@ func ScanAccessedBits(shepherdID proc.ShepherdId) (accessedCount int, totalCount
 		atomic.AddUint64(&scanTotalPages, uint64(totalCount))
 	}()
 
-	p := &proc.ShepherdListData[shepherdID]
 	l0PA := p.PageTableL0PA
 	if l0PA == 0 {
 		return // No page table allocated (shepherd never ran)
@@ -136,14 +133,13 @@ func ScanAccessedBits(shepherdID proc.ShepherdId) (accessedCount int, totalCount
 // Pinned pages and already-swapped pages are never returned.
 // Returned PAs are still mapped; the caller must call SwapOutPage to evict.
 func FindEvictionCandidates(shepherdID proc.ShepherdId, count int) []uintptr {
-	if shepherdID < 0 || int(shepherdID) >= proc.MaxShepherds || count <= 0 {
+	if count <= 0 {
 		return nil
 	}
-	if !proc.ShepherdListInUse[shepherdID] {
+	p := proc.FindShepherdBySID(shepherdID)
+	if p == nil {
 		return nil
 	}
-
-	p := &proc.ShepherdListData[shepherdID]
 	l0PA := p.PageTableL0PA
 	if l0PA == 0 {
 		return nil

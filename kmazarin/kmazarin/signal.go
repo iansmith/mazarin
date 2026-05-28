@@ -84,17 +84,21 @@ func InitSignals() {
 }
 
 // GetSignalAction returns the signal action for the given signal number.
-// For userspace threads (ShepherdIdx >= 0), reads from the shepherd's per-process table.
+// For userspace threads (PID > 0), reads from the shepherd's per-process table.
 // For kernel threads, reads from the global table.
 //
 //go:nosplit
 func GetSignalAction(sig int) SignalAction {
 	t := GetCurrentThread()
-	if t != nil && t.ShepherdIdx >= 0 {
-		p := &proc.ShepherdListData[t.ShepherdIdx]
-		sa := &p.SignalActions[sig]
-		return SignalAction{Handler: sa.Handler, Flags: sa.Flags,
-			Restorer: sa.Restorer, Mask: sa.Mask}
+	if t != nil && t.PID > 0 {
+		if p := proc.FindShepherdBySID(t.PID); p != nil {
+			sa := &p.SignalActions[sig]
+			return SignalAction{Handler: sa.Handler, Flags: sa.Flags,
+				Restorer: sa.Restorer, Mask: sa.Mask}
+		}
+		// Userspace thread whose shepherd has been torn down — fail closed
+		// instead of leaking the kernel's signalActions table to userspace.
+		return SignalAction{}
 	}
 	return signalActions[sig]
 }
@@ -104,28 +108,36 @@ func GetSignalAction(sig int) SignalAction {
 //
 //go:nosplit
 func GetSignalActionForThread(thread *Thread, sig int) SignalAction {
-	if thread.ShepherdIdx >= 0 {
-		p := &proc.ShepherdListData[thread.ShepherdIdx]
-		sa := &p.SignalActions[sig]
-		return SignalAction{Handler: sa.Handler, Flags: sa.Flags,
-			Restorer: sa.Restorer, Mask: sa.Mask}
+	if thread != nil && thread.PID > 0 {
+		if p := proc.FindShepherdBySID(thread.PID); p != nil {
+			sa := &p.SignalActions[sig]
+			return SignalAction{Handler: sa.Handler, Flags: sa.Flags,
+				Restorer: sa.Restorer, Mask: sa.Mask}
+		}
+		// Userspace thread whose shepherd has been torn down — fail closed
+		// instead of leaking the kernel's signalActions table to userspace.
+		return SignalAction{}
 	}
 	return signalActions[sig]
 }
 
 // SetSignalAction installs a signal action for the given signal number.
-// For userspace threads (ShepherdIdx >= 0), writes to the shepherd's per-process table.
+// For userspace threads (PID > 0), writes to the shepherd's per-process table.
 // For kernel threads, writes to the global table.
 //
 //go:nosplit
 func SetSignalAction(sig int, sa *SignalAction) {
 	t := GetCurrentThread()
-	if t != nil && t.ShepherdIdx >= 0 {
-		p := &proc.ShepherdListData[t.ShepherdIdx]
-		p.SignalActions[sig] = proc.ShepherdSignalAction{
-			Handler: sa.Handler, Flags: sa.Flags,
-			Restorer: sa.Restorer, Mask: sa.Mask,
+	if t != nil && t.PID > 0 {
+		if p := proc.FindShepherdBySID(t.PID); p != nil {
+			p.SignalActions[sig] = proc.ShepherdSignalAction{
+				Handler: sa.Handler, Flags: sa.Flags,
+				Restorer: sa.Restorer, Mask: sa.Mask,
+			}
+			return
 		}
+		// Userspace thread whose shepherd has been torn down — drop the
+		// write instead of clobbering the kernel's signalActions table.
 		return
 	}
 	signalActions[sig] = *sa

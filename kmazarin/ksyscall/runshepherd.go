@@ -145,7 +145,7 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	klog.Criticalf("[RS]", "[RunShepherd] %s: copied %d bytes from user\n", req.Name, len(elfData))
 
 	// Unmap the raw ELF pages from the caller (implicit cleanup).
-	unmapUserPages(req.StartVA, req.NumPages, req.CallerL0PA, int16(req.CallerShepherd.PID))
+	unmapUserPages(req.StartVA, req.NumPages, req.CallerL0PA, req.CallerShepherd.PID)
 	klog.Criticalf("[RS]", "[RunShepherd] %s: unmapped %d caller pages\n", req.Name, req.NumPages)
 
 	// Validate ELF header
@@ -217,33 +217,33 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	// Cache symbol table, highest VA, filename, allocate IPC uring ring, and
 	// register all kernel-allocated VA ranges in Spans so CleanupShepherdPages
 	// Phase 1 correctly reclaims ELF, stack, framebuffer, and constraint pages.
-	for i := 0; i < proc.MaxShepherds; i++ {
-		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PageTableL0PA == processL0PA {
-			p := &proc.ShepherdListData[i]
-			p.SymbolTable = shepherdSymTable
-			p.HighestVA = shepherdHighestVA
-			p.Filename = "/" + req.Name + ".elf"
-
-			// Allocate IPC uring ring for the new shepherd
-			uringID := allocateUringID()
-			p.UringID = uringID
-			allocateUringIPCRing(p, 0)
-			registerUringID(uringID, int16(p.PID))
-
-			// Register kernel-allocated VA ranges that mmap syscall never sees.
-			for j := 0; j < loadedProc.SegmentCount; j++ {
-				p.Spans.Add(loadedProc.SegmentSpans[j].VA, loadedProc.SegmentSpans[j].Size)
-			}
-			p.Spans.Add(loadedProc.StackBase, 64*1024)
-			p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
-			// UserConstraintPagesVA is intentionally NOT added to Spans.
-			// Constraint pages are a system-lifetime shared resource mapped
-			// read-only into every shepherd. CleanupShepherdPages must not
-			// release them; they are protected by PD_PINNED on the base page.
-
-			break
+	proc.Shepherds.ForEach(func(p *proc.Shepherd) bool {
+		if p.PageTableL0PA != processL0PA {
+			return true // keep iterating
 		}
-	}
+		p.SymbolTable = shepherdSymTable
+		p.HighestVA = shepherdHighestVA
+		p.Filename = "/" + req.Name + ".elf"
+
+		// Allocate IPC uring ring for the new shepherd
+		uringID := allocateUringID()
+		p.UringID = uringID
+		allocateUringIPCRing(p, 0)
+		registerUringID(uringID, int16(p.PID))
+
+		// Register kernel-allocated VA ranges that mmap syscall never sees.
+		for j := 0; j < loadedProc.SegmentCount; j++ {
+			p.Spans.Add(loadedProc.SegmentSpans[j].VA, loadedProc.SegmentSpans[j].Size)
+		}
+		p.Spans.Add(loadedProc.StackBase, 64*1024)
+		p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
+		// UserConstraintPagesVA is intentionally NOT added to Spans.
+		// Constraint pages are a system-lifetime shared resource mapped
+		// read-only into every shepherd. CleanupShepherdPages must not
+		// release them; they are protected by PD_PINNED on the base page.
+
+		return false // stop iteration — found our shepherd
+	})
 
 	return 0
 }

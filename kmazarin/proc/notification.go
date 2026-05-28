@@ -51,11 +51,17 @@ const (
 // NotificationEvent is a kernel→linux-shepherd lifecycle event.
 //
 // Payload semantics depend on Type — see the EventType constants.
+//
+// Pid/ParentPid are int16 to match the wire ABI (shared/ipc/uring_ring.go
+// ProcessNotification). MAZ-73 widens ShepherdId to int32 in Go, but the
+// PID range [MinPID, MaxPID] = [2, 4095] still fits in int16; callers
+// narrow at the boundary. Size-match with the wire struct is enforced
+// by the assertion in kmazarin/kmazarin/uring_ipc.go.
 type NotificationEvent struct {
 	Type       EventType
 	_pad       [3]byte // alignment padding so Pid is 4-byte aligned
-	Pid        ShepherdId
-	ParentPid  ShepherdId
+	Pid        int16
+	ParentPid  int16
 	ExitStatus int32
 }
 

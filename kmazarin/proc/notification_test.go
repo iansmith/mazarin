@@ -90,7 +90,7 @@ func TestNotificationQueueFIFOOrdering(t *testing.T) {
 func TestNotificationQueueFullPushErr(t *testing.T) {
 	q := NewNotificationQueue()
 	for i := 0; i < MaxNotificationEvents; i++ {
-		ev := NotificationEvent{Type: EventChildExit, Pid: ShepherdId(i + 2)}
+		ev := NotificationEvent{Type: EventChildExit, Pid: int16(i + 2)}
 		if err := q.Push(ev); err != nil {
 			t.Fatalf("Push #%d returned %v before capacity", i, err)
 		}
@@ -112,7 +112,7 @@ func TestNotificationQueueRingReusesSlots(t *testing.T) {
 	// Push half capacity.
 	half := MaxNotificationEvents / 2
 	for i := 0; i < half; i++ {
-		_ = q.Push(NotificationEvent{Type: EventChildExit, Pid: ShepherdId(i + 2)})
+		_ = q.Push(NotificationEvent{Type: EventChildExit, Pid: int16(i + 2)})
 	}
 	// Pop all of them.
 	for i := 0; i < half; i++ {
@@ -125,7 +125,7 @@ func TestNotificationQueueRingReusesSlots(t *testing.T) {
 	}
 	// Push capacity worth of new events; all should succeed.
 	for i := 0; i < MaxNotificationEvents; i++ {
-		ev := NotificationEvent{Type: EventExecComplete, Pid: ShepherdId(i + 100)}
+		ev := NotificationEvent{Type: EventExecComplete, Pid: int16(i + 100)}
 		if err := q.Push(ev); err != nil {
 			t.Errorf("Push #%d after drain returned %v, want nil", i, err)
 		}
@@ -137,7 +137,7 @@ func TestNotificationQueueRingReusesSlots(t *testing.T) {
 func TestNotificationQueueLenTracksDepth(t *testing.T) {
 	q := NewNotificationQueue()
 	for i := 0; i < 10; i++ {
-		_ = q.Push(NotificationEvent{Type: EventChildExit, Pid: ShepherdId(i + 2)})
+		_ = q.Push(NotificationEvent{Type: EventChildExit, Pid: int16(i + 2)})
 		if got := q.Len(); got != i+1 {
 			t.Errorf("Len after Push #%d = %d, want %d", i, got, i+1)
 		}

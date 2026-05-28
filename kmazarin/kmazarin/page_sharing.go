@@ -92,7 +92,7 @@ func LookupVACache(ownerSID, targetSID int16, ownerPageVA uintptr) (uintptr, boo
 // CleanupPageSharingForShepherd clears VA cache entries for a dying shepherd.
 func CleanupPageSharingForShepherd(shepherdID int16) {
 	sid := int(shepherdID)
-	if sid < 0 || sid >= proc.MaxShepherds {
+	if sid < 0 || sid >= proc.MaxLiveShepherds {
 		return
 	}
 	cleanupVACacheForShepherd(shepherdID)

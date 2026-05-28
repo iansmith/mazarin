@@ -18,7 +18,7 @@ type deathSubscriber struct {
 }
 
 // deathSubscribers holds the global subscriber list. Max one entry per shepherd.
-var deathSubscribers [proc.MaxShepherds]deathSubscriber
+var deathSubscribers [proc.MaxLiveShepherds]deathSubscriber
 
 // SyscallSubscribeDeaths registers the calling shepherd for global death
 // notifications. ProtoDeath messages are delivered to the caller's uring ring

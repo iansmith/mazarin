@@ -32,8 +32,9 @@ type NotifyQueue struct {
 }
 
 // notifyQueues is the per-shepherd notification queue array.
-// Indexed by ShepherdId (0 to MaxShepherds-1).
-var notifyQueues [proc.MaxShepherds]NotifyQueue
+// Indexed by ShepherdId (0 to MaxLiveShepherds-1). The shepherdIdAllocator's
+// backing array is also MaxLiveShepherds long, so allocated PIDs fit.
+var notifyQueues [proc.MaxLiveShepherds]NotifyQueue
 
 // initNotifyQueues initializes all notification queues.
 // Called from InitKernelAttrManager.
@@ -53,7 +54,7 @@ func initNotifyQueues() {
 //go:nosplit
 func (mgr *KernelAttrManager) enqueueNotificationCollectWake(slot uint16, owner uint16) {
 	pid := int(owner)
-	if pid < 0 || pid >= proc.MaxShepherds {
+	if pid < 0 || pid >= proc.MaxLiveShepherds {
 		return
 	}
 	q := &notifyQueues[pid]
@@ -105,7 +106,7 @@ checkWake:
 //
 //go:nosplit
 func SetBlockedTID(shepherdSID int, tid int32) {
-	if shepherdSID >= 0 && shepherdSID < proc.MaxShepherds {
+	if shepherdSID >= 0 && shepherdSID < proc.MaxLiveShepherds {
 		notifyQueues[shepherdSID].BlockedTID = tid
 	}
 }
@@ -113,7 +114,7 @@ func SetBlockedTID(shepherdSID int, tid int32) {
 // drainNotifyQueue copies pending slot numbers to a kernel buffer and resets
 // the queue. Returns the count of slots drained, or -1 if overflow occurred.
 func drainNotifyQueue(pid int) ([]uint16, int) {
-	if pid < 0 || pid >= proc.MaxShepherds {
+	if pid < 0 || pid >= proc.MaxLiveShepherds {
 		return nil, 0
 	}
 	q := &notifyQueues[pid]
@@ -193,7 +194,7 @@ func SyscallAttrWaitDirty(resultBufPtr, maxSlots, _, _, _, _ uint64) int64 {
 
 	pid, _ := getCurrentThreadSIDAndTID()
 	shepherdSID := int(pid)
-	if shepherdSID < 0 || shepherdSID >= proc.MaxShepherds {
+	if shepherdSID < 0 || shepherdSID >= proc.MaxLiveShepherds {
 		return -22 // EINVAL
 	}
 

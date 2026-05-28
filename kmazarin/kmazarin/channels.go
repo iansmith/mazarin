@@ -4,6 +4,7 @@ package main
 
 import (
 	"mazzy/kmazarin/ds"
+	"mazzy/kmazarin/proc"
 	"unsafe"
 )
 
@@ -32,7 +33,7 @@ const (
 )
 
 const MaxChannelSlotsPerShepherd = 8
-const MaxChannels = MaxChannelSlotsPerShepherd * MaxShepherds // 8 * 16 = 128
+const MaxChannels = MaxChannelSlotsPerShepherd * proc.MaxLiveShepherds // 8 * 16 = 128
 const ReservedKernelChannels = MaxChannelSlotsPerShepherd   // 8 channels for kernel (shepherd 0)
 
 // ============================================================================
@@ -91,8 +92,8 @@ var channelIdAllocator ds.StaticAllocator[ChannelId]
 
 // Each shepherd has one pending message slot. The kernel queues a message here,
 // and it's delivered when the shepherd calls WaitKernelAsync.
-var shepherdPendingMessage [MaxShepherds]KernelAsyncBundle
-var shepherdHasPendingMessage [MaxShepherds]bool
+var shepherdPendingMessage [proc.MaxLiveShepherds]KernelAsyncBundle
+var shepherdHasPendingMessage [proc.MaxLiveShepherds]bool
 
 // ============================================================================
 // Initialization
@@ -113,7 +114,7 @@ func InitChannels() {
 	channelIdAllocator.InitWithReserved(channelIdStackData[:], ReservedKernelChannels)
 
 	// Clear pending message state
-	for i := 0; i < MaxShepherds; i++ {
+	for i := 0; i < proc.MaxLiveShepherds; i++ {
 		shepherdHasPendingMessage[i] = false
 	}
 }
@@ -183,7 +184,7 @@ func AllocateAPIChannel(pid ShepherdId) ChannelId {
 //
 //go:nosplit
 func QueueKernelAsync(pid ShepherdId, bundle KernelAsyncBundle) bool {
-	if pid < 0 || int(pid) >= MaxShepherds {
+	if pid < 0 || int(pid) >= proc.MaxLiveShepherds {
 		return false
 	}
 
@@ -210,7 +211,7 @@ func QueueKernelAsync(pid ShepherdId, bundle KernelAsyncBundle) bool {
 //
 //go:nosplit
 func DequeueKernelAsync(pid ShepherdId) (KernelAsyncBundle, bool) {
-	if pid < 0 || int(pid) >= MaxShepherds {
+	if pid < 0 || int(pid) >= proc.MaxLiveShepherds {
 		return KernelAsyncBundle{}, false
 	}
 
@@ -235,7 +236,7 @@ func DequeueKernelAsync(pid ShepherdId) (KernelAsyncBundle, bool) {
 //
 //go:nosplit
 func HasPendingKernelAsync(pid ShepherdId) bool {
-	if pid < 0 || int(pid) >= MaxShepherds {
+	if pid < 0 || int(pid) >= proc.MaxLiveShepherds {
 		return false
 	}
 	return shepherdHasPendingMessage[pid]

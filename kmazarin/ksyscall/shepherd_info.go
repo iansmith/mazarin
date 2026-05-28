@@ -21,11 +21,10 @@ func SyscallShepherdInfo(bufPtr, maxEntries, _, _, _, _ uint64) int64 {
 	entrySize := int(unsafe.Sizeof(hid.ShepherdInfoEntry{}))
 	written := 0
 
-	for i := 0; i < proc.MaxShepherds && written < int(maxEntries); i++ {
-		if !proc.ShepherdListInUse[i] {
-			continue
+	proc.Shepherds.ForEach(func(p *proc.Shepherd) bool {
+		if written >= int(maxEntries) {
+			return false
 		}
-		p := &proc.ShepherdListData[i]
 
 		var entry hid.ShepherdInfoEntry
 		entry.SID = int16(p.PID)
@@ -63,7 +62,8 @@ func SyscallShepherdInfo(bufPtr, maxEntries, _, _, _, _ uint64) int64 {
 		}
 
 		written++
-	}
+		return true
+	})
 
 	return int64(written)
 }
