@@ -1,13 +1,9 @@
 // ShepherdStorage — sparse PID-keyed storage for live Shepherd records (MAZ-73).
 //
-// Today's shepherd storage is a dense `ShepherdListData [MaxShepherds=32]Shepherd`
-// array. Under the post-MAZ-68/-73 PID model, PIDs run 2..4095 but the number
-// of LIVE shepherds at any time is much smaller (peak ~100 for go-build-style
-// workloads). A dense PID-indexed array of Shepherd structs would be tens of
-// MB — too much. Sparse storage with a PID-to-slot index is the chosen shape.
-//
-// This file declares the API. The METHODS ARE STUBS; the Phase B implementation
-// agent fills them in. Phase 0 tests in shepherd_storage_test.go pin behavior.
+// Under the post-MAZ-68/-73 PID model, PIDs run 2..4095 but the number of LIVE
+// shepherds at any time is much smaller (peak ~100 for go-build-style workloads).
+// A dense PID-indexed array of Shepherd structs would be tens of MB — too much.
+// Sparse storage with a PID-to-slot index is the chosen shape.
 //
 // Design decisions implemented here (see Linear MAZ-68 + MAZ-73):
 //
@@ -17,14 +13,6 @@
 //   - Exhaustion returns ErrShepherdSlotExhausted.
 //   - Reallocating an existing PID returns ErrShepherdPIDInUse.
 //   - PIDs outside [MinPID, MaxPID] are rejected.
-//
-// Out of scope here:
-//
-//   - The int16 → int32 ShepherdId sweep (Phase B implementation step;
-//     no unit test — either the codebase compiles or it doesn't).
-//   - Switching today's `createUserspaceThreadImpl` from the
-//     `StaticAllocator + ShepherdListData[MaxShepherds]` pattern to this new
-//     storage (cutover is also a Phase B step but driven by separate review).
 
 package proc
 
@@ -116,7 +104,7 @@ func (s *ShepherdStorage) Get(pid ShepherdId) (*Shepherd, bool) {
 		return nil, false
 	}
 	idx := s.pidIndex[pid-MinPID]
-	if idx < 0 {
+	if idx < 0 || idx >= MaxLiveShepherds {
 		return nil, false
 	}
 	return &s.slots[idx], true

@@ -214,29 +214,23 @@ func cleanupFlushResponsePage(info *DelegateCallInfo, handlerSID int16) {
 // WriteBackSharedMmapOnDeath flushes and cleans up all file-backed mmap pages
 // for a dying shepherd. Called from TerminateShepherd Phase 1 (pre-lock).
 func WriteBackSharedMmapOnDeath(pid int16) {
-	for i := int16(0); i < int16(len(proc.ShepherdListData)); i++ {
-		if !proc.ShepherdListInUse[i] {
-			continue
-		}
-		if int16(proc.ShepherdListData[i].PID) != pid {
-			continue
-		}
-		p := &proc.ShepherdListData[i]
-
-		// Check if any file mappings exist
-		hasFileMappings := false
-		for j := 0; j < proc.MaxFileMappings; j++ {
-			if p.FileMappings[j].InUse {
-				hasFileMappings = true
-				break
-			}
-		}
-
-		if hasFileMappings {
-			// Flush all fds + clean up all handler-side mappings in rounds.
-			// length=0 + fd=0xFFFFFFFF → drain everything for this sid.
-			flushAndCleanupPages(0xFFFFFFFF, pid, 0, 0)
-		}
+	p := proc.FindShepherdBySID(proc.ShepherdId(pid))
+	if p == nil {
 		return
+	}
+
+	// Check if any file mappings exist
+	hasFileMappings := false
+	for j := 0; j < proc.MaxFileMappings; j++ {
+		if p.FileMappings[j].InUse {
+			hasFileMappings = true
+			break
+		}
+	}
+
+	if hasFileMappings {
+		// Flush all fds + clean up all handler-side mappings in rounds.
+		// length=0 + fd=0xFFFFFFFF → drain everything for this sid.
+		flushAndCleanupPages(0xFFFFFFFF, pid, 0, 0)
 	}
 }
