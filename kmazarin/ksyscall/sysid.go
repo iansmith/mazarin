@@ -76,5 +76,10 @@ const (
 	SysIDPread64      = sysid.Pread64
 	SysIDPwrite64     = sysid.Pwrite64
 
+	// Process-creation syscalls (Linux fork/exec — MAZ-62 container).
+	SysIDExecve    = sysid.Execve
+	SysIDWait4     = sysid.Wait4
+	SysIDCloneExec = sysid.CloneExec // kernel-internal — NOT translatable from userspace
+
 	NumSyscallIDs = sysid.NumIDs
 )

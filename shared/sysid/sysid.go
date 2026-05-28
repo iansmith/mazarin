@@ -83,5 +83,12 @@ const (
 	_                // reserved (was MmapPageWriteback)
 	MmapPageFlush     // internal: kernel → linux shepherd flush dirty cached pages for a file
 
+	// Process-creation syscalls (Linux fork/exec — MAZ-62 container).
+	// Clone (thread flavor) is at position 32 above; these three are the
+	// process-flavor additions.
+	Execve    // execve — Linux userspace
+	Wait4     // wait4 — Linux userspace
+	CloneExec // kernel-internal: combined clone+execve, originated by the linux shepherd (MAZ-62). NOT reachable from userspace — no per-arch translation table entry maps to this ID.
+
 	NumIDs // sentinel — array size
 )
