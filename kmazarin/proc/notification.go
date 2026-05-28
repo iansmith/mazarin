@@ -78,11 +78,29 @@ var ErrQueueFull = errors.New("proc: notification queue full")
 // agent decides whether to add internal serialization based on actual
 // caller patterns.
 //
-// Storage: fixed-size array; no heap allocations; nosplit-friendly.
+// Storage: a fixed-size ring buffer of NotificationEvent values; no
+// heap allocations; nosplit-friendly. The events array is large
+// (MaxNotificationEvents * sizeof(NotificationEvent) ≈ 3 KB) so callers
+// should allocate the queue once and reuse it, not push it through the
+// stack by value.
+//
+// Overflow policy (recommendation for callers):
+//
+//	Push returns ErrQueueFull when the queue is at capacity. The
+//	recommended policy for kernel producers is **drop-oldest with a
+//	printk-style warning**: on ErrQueueFull, the caller should Pop one
+//	event, log a warning via klog (e.g. klog.Errf), and retry Push. This
+//	keeps the most recent events — which are what wait4/SIGCHLD
+//	consumers care about — at the cost of dropping a stale event. The
+//	queue itself does NOT implement drop-oldest because (a) it would
+//	silently lose events with no diagnostic, and (b) the producer side
+//	already holds a lock and can do this trivially. See MAZ-77 for the
+//	first real producer call site.
 type NotificationQueue struct {
-	// Implementation TBD. Phase B agent decides the ring shape; Phase 0
-	// tests pin the externally observable behavior.
-	_ struct{}
+	events [MaxNotificationEvents]NotificationEvent
+	head   uint32 // next slot to Pop
+	tail   uint32 // next slot to Push
+	count  uint32 // current depth (disambiguates head==tail full vs empty)
 }
 
 // NewNotificationQueue returns an empty queue.
@@ -91,13 +109,19 @@ func NewNotificationQueue() *NotificationQueue {
 }
 
 // Push appends an event to the back of the queue. Returns ErrQueueFull
-// if the queue is at MaxNotificationEvents.
+// if the queue is at MaxNotificationEvents — no mutation occurs in that
+// case. See the type-level docstring for the recommended overflow
+// policy (drop-oldest with a klog warning).
 //
 //go:nosplit
 func (q *NotificationQueue) Push(ev NotificationEvent) error {
-	// STUB — implemented by Phase B agent.
-	_ = ev
-	return ErrQueueFull
+	if q.count == MaxNotificationEvents {
+		return ErrQueueFull
+	}
+	q.events[q.tail] = ev
+	q.tail = (q.tail + 1) % MaxNotificationEvents
+	q.count++
+	return nil
 }
 
 // Pop removes and returns the event at the front of the queue. The
@@ -106,16 +130,20 @@ func (q *NotificationQueue) Push(ev NotificationEvent) error {
 //
 //go:nosplit
 func (q *NotificationQueue) Pop() (NotificationEvent, bool) {
-	// STUB — implemented by Phase B agent.
-	return NotificationEvent{}, false
+	if q.count == 0 {
+		return NotificationEvent{}, false
+	}
+	ev := q.events[q.head]
+	q.head = (q.head + 1) % MaxNotificationEvents
+	q.count--
+	return ev, true
 }
 
 // Len reports how many events are currently in the queue.
 //
 //go:nosplit
 func (q *NotificationQueue) Len() int {
-	// STUB — implemented by Phase B agent.
-	return 0
+	return int(q.count)
 }
 
 // Cap reports the queue's capacity (= MaxNotificationEvents).
