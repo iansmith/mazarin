@@ -56,9 +56,17 @@ var (
 //
 //go:nosplit
 func (s *Shepherd) AddChild(child ShepherdId) error {
-	// STUB — implemented by Phase B agent.
-	_ = child
-	return ErrTooManyChildren
+	for i := int32(0); i < s.NumChildren; i++ {
+		if s.Children[i] == child {
+			return nil
+		}
+	}
+	if s.NumChildren >= MaxChildrenPerShepherd {
+		return ErrTooManyChildren
+	}
+	s.Children[s.NumChildren] = child
+	s.NumChildren++
+	return nil
 }
 
 // RemoveChild removes child from this shepherd's child list. Idempotent
@@ -66,8 +74,13 @@ func (s *Shepherd) AddChild(child ShepherdId) error {
 //
 //go:nosplit
 func (s *Shepherd) RemoveChild(child ShepherdId) {
-	// STUB — implemented by Phase B agent.
-	_ = child
+	for i := int32(0); i < s.NumChildren; i++ {
+		if s.Children[i] == child {
+			s.Children[i] = s.Children[s.NumChildren-1]
+			s.NumChildren--
+			return
+		}
+	}
 }
 
 // HasChild reports whether child is currently in this shepherd's
@@ -75,8 +88,11 @@ func (s *Shepherd) RemoveChild(child ShepherdId) {
 //
 //go:nosplit
 func (s *Shepherd) HasChild(child ShepherdId) bool {
-	// STUB — implemented by Phase B agent.
-	_ = child
+	for i := int32(0); i < s.NumChildren; i++ {
+		if s.Children[i] == child {
+			return true
+		}
+	}
 	return false
 }
 
@@ -84,8 +100,7 @@ func (s *Shepherd) HasChild(child ShepherdId) bool {
 //
 //go:nosplit
 func (s *Shepherd) ChildCount() int32 {
-	// STUB — implemented by Phase B agent.
-	return 0
+	return s.NumChildren
 }
 
 // EachChild calls fn for each child PID in the list. Iteration order is
@@ -93,8 +108,11 @@ func (s *Shepherd) ChildCount() int32 {
 //
 //go:nosplit
 func (s *Shepherd) EachChild(fn func(child ShepherdId) bool) {
-	// STUB — implemented by Phase B agent.
-	_ = fn
+	for i := int32(0); i < s.NumChildren; i++ {
+		if !fn(s.Children[i]) {
+			return
+		}
+	}
 }
 
 // MarkZombie marks this shepherd as exited and records the exit status.
@@ -103,16 +121,18 @@ func (s *Shepherd) EachChild(fn func(child ShepherdId) bool) {
 //
 //go:nosplit
 func (s *Shepherd) MarkZombie(status int32) {
-	// STUB — implemented by Phase B agent.
-	_ = status
+	if s.Zombie {
+		return
+	}
+	s.Zombie = true
+	s.ExitStatus = status
 }
 
 // IsZombie reports whether the shepherd has exited but not been reaped.
 //
 //go:nosplit
 func (s *Shepherd) IsZombie() bool {
-	// STUB — implemented by Phase B agent.
-	return false
+	return s.Zombie
 }
 
 // Reap clears the zombie state and returns the recorded exit status.
@@ -120,8 +140,13 @@ func (s *Shepherd) IsZombie() bool {
 //
 //go:nosplit
 func (s *Shepherd) Reap() int32 {
-	// STUB — implemented by Phase B agent.
-	return 0
+	if !s.Zombie {
+		return 0
+	}
+	status := s.ExitStatus
+	s.Zombie = false
+	s.ExitStatus = 0
+	return status
 }
 
 // SetEnviron stores the raw environ bytes for use at the next execve.
@@ -133,9 +158,12 @@ func (s *Shepherd) Reap() int32 {
 //
 //go:nosplit
 func (s *Shepherd) SetEnviron(env []byte) error {
-	// STUB — implemented by Phase B agent.
-	_ = env
-	return ErrEnvironTooLarge
+	if len(env) > MaxEnvironBytes {
+		return ErrEnvironTooLarge
+	}
+	copy(s.Environ[:], env)
+	s.EnvironLen = uint32(len(env))
+	return nil
 }
 
 // GetEnviron returns a read-only view of the stored environ bytes.
@@ -144,6 +172,5 @@ func (s *Shepherd) SetEnviron(env []byte) error {
 //
 //go:nosplit
 func (s *Shepherd) GetEnviron() []byte {
-	// STUB — implemented by Phase B agent.
-	return nil
+	return s.Environ[:s.EnvironLen]
 }
