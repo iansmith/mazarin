@@ -1,18 +1,37 @@
 // MAZZY USERSPACE OVERLAY: sys_linux_arm64.s
 //
-// This file replaces the stock Go runtime sys_linux_arm64.s for userspace
-// shepherd builds. Changes from stock:
+// PURPOSE: Use the ARM64 generic timer (CNTVCT_EL0) directly for nanotime
+// and walltime, bypassing the need for Linux's vDSO mechanism.
 //
-// 1. nanotime1: Reads CNTVCT_EL0 directly instead of clock_gettime SVC.
-//    Uses nsPerTickX256 (defined in walltime_mazzy.go) for conversion.
-//    This eliminates ~33M SVCs/4s from Go scheduler/sysmon nanotime calls.
+// Background: on stock Linux/arm64 the Go runtime calls clock_gettime,
+// which the Linux vDSO satisfies in user mode by reading CNTVCT_EL0
+// directly via vDSO-mapped code — no SVC required. Mazzy does NOT
+// implement vDSO, so without this overlay the stock runtime would fall
+// back to a real SVC per nanotime call (~33M SVCs / 4s under the Go
+// scheduler + sysmon). This overlay reaches the same destination by a
+// different route: read CNTVCT_EL0 directly from user mode. The register
+// is EL0-readable on ARMv8 by default (CNTKCTL_EL1.EL0VCTEN gates it on);
+// no kernel transition needed. We get vDSO-equivalent performance without
+// needing the vDSO mechanism.
 //
-// 2. walltime: Removed from assembly, implemented in Go (walltime_mazzy.go).
-//    Computes real Unix wall clock time from boot epoch + counter ticks.
+// Only the time-related functions are overlaid. All other functions
+// (syscall stubs for read, write, mmap, etc.) are byte-for-byte stock.
 //
-// 3. readCNTVCT/readCNTFRQ: Assembly helpers for the Go walltime function.
+// Changes from stock:
 //
-// All other functions are identical to the stock Go runtime.
+// 1. nanotime1: Reads CNTVCT_EL0 directly via MRS, eliminating the
+//    clock_gettime SVC. Uses nsPerTickX256 (defined in timestub2.go,
+//    derived from CNTFRQ_EL0 at init) for fixed-point conversion to ns.
+//
+// 2. walltime: Removed from assembly, reimplemented in Go (timestub2.go).
+//    Same CNTVCT_EL0 mechanism, plus a boot epoch passed in from kmazarin
+//    via environment variables to convert monotonic ticks to wall-clock.
+//
+// 3. readCNTVCT / readCNTFRQ: Tiny EL0-readable register reads exposed
+//    to the Go walltime function.
+//
+// Reference: ARMv8 ARM, section D7.5 (Generic Timer system registers,
+// CNTVCT_EL0 / CNTFRQ_EL0).
 
 #include "go_asm.h"
 #include "go_tls.h"
@@ -232,12 +251,21 @@ TEXT runtime·mincore(SB),NOSPLIT|NOFRAME,$0-28
 	RET
 
 // ============================================================================
-// MAZZY: walltime removed — implemented in Go (walltime_mazzy.go).
-// Assembly helpers for the Go walltime function:
+// MAZZY: walltime removed — reimplemented in Go (timestub2.go) using
+// CNTVCT_EL0 + a kernel-supplied boot epoch. See the file header for the
+// full rationale (we read the ARM generic timer directly to avoid needing
+// Linux's vDSO mechanism). The two helpers below are called from the Go
+// walltime implementation.
 // ============================================================================
 
 // readCNTVCT reads the ARM64 virtual counter register.
-// Readable from EL0 (no privilege change needed).
+//
+// CNTVCT_EL0 is EL0-readable on ARMv8 by default (gated by
+// CNTKCTL_EL1.EL0VCTEN, set on mazzy). Reading it from user mode is what
+// the Linux vDSO does internally to satisfy clock_gettime; mazzy reads it
+// here directly because we don't implement vDSO. No kernel transition;
+// no SVC.
+//
 // func readCNTVCT() uint64
 TEXT runtime·readCNTVCT(SB),NOSPLIT|NOFRAME,$0-8
 	MRS	CNTVCT_EL0, R0
@@ -245,7 +273,11 @@ TEXT runtime·readCNTVCT(SB),NOSPLIT|NOFRAME,$0-8
 	RET
 
 // readCNTFRQ reads the ARM64 counter frequency register.
-// Readable from EL0 (no privilege change needed).
+//
+// CNTFRQ_EL0 is EL0-readable on ARMv8 (CNTKCTL_EL1.EL0PCTEN); same
+// rationale as readCNTVCT — userspace reads it directly to derive
+// nsPerTickX256 at runtime init, no kernel transition needed.
+//
 // func readCNTFRQ() uint64
 TEXT runtime·readCNTFRQ(SB),NOSPLIT|NOFRAME,$0-8
 	MRS	CNTFRQ_EL0, R0
@@ -253,8 +285,13 @@ TEXT runtime·readCNTFRQ(SB),NOSPLIT|NOFRAME,$0-8
 	RET
 
 // ============================================================================
-// MAZZY: nanotime1 — direct CNTVCT_EL0 read (no SVC).
-// Uses nsPerTickX256 (defined in walltime_mazzy.go) for fixed-point conversion:
+// MAZZY: nanotime1 — direct CNTVCT_EL0 read (no SVC, no vDSO).
+//
+// Stock Go on Linux/arm64 calls clock_gettime, which the vDSO satisfies
+// by reading CNTVCT_EL0 in user-mapped code. Mazzy doesn't implement
+// vDSO, so we reach the same destination by reading CNTVCT_EL0 directly
+// from this assembly. Uses nsPerTickX256 (defined in timestub2.go,
+// derived from CNTFRQ_EL0 at init) for fixed-point conversion:
 //   ns = (ticks × nsPerTickX256) >> 8
 // ============================================================================
 

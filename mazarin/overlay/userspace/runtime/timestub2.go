@@ -4,13 +4,26 @@
 
 // MAZZY USERSPACE OVERLAY: wall-clock time from the ARM64 generic timer.
 //
+// PURPOSE: Compute walltime in user mode using direct reads of the ARM64
+// generic timer (CNTVCT_EL0), bypassing the need for Linux's vDSO
+// mechanism.
+//
+// Background: on stock Linux/arm64 the Go runtime's walltime path uses
+// clock_gettime, which the vDSO satisfies by reading CNTVCT_EL0 in
+// user-mapped code — no SVC needed. Mazzy doesn't implement vDSO, so
+// instead this Go function reads CNTVCT_EL0 directly via the
+// `runtime.readCNTVCT` assembly helper (CNTVCT_EL0 is EL0-readable on
+// ARMv8 by default; no kernel transition required), then applies a boot
+// epoch passed in from kmazarin via environment variables
+// (MAZZY_BOOT_SEC / MAZZY_BOOT_TICKS / MAZZY_BOOT_NSEC) to convert
+// monotonic ticks to wall-clock time. Net result: same performance as
+// vDSO-served clock_gettime, without needing the vDSO mechanism.
+//
 // This file overlays stock Go's `runtime/timestub2.go`. The stock file
 // provides a wasmimport forward declaration of `walltime()` on platforms
 // that don't have an asm impl. On linux/arm64 the stock asm impl in
 // `sys_linux_arm64.s` was removed by the overlay companion file in this
-// directory, so we provide a Go implementation here instead — reading
-// CNTVCT_EL0 directly and applying a boot epoch published by kmazarin via
-// environment variables (MAZZY_BOOT_SEC / MAZZY_BOOT_TICKS / MAZZY_BOOT_NSEC).
+// directory; this Go implementation takes its place.
 //
 // On platforms other than linux/arm64 this file is excluded by build tag
 // and the relevant native stock impl is used (e.g. `sys_linux_amd64.s`).
@@ -50,9 +63,11 @@ func readCNTVCT() uint64
 func readCNTFRQ() uint64
 
 // walltime returns wall clock time derived from the ARM64 generic timer
-// and boot epoch data passed from the kernel via environment variables.
-// Before init() runs (during early runtime bootstrap), returns monotonic
-// time approximated from the counter — sufficient for runtime bootstrap.
+// (CNTVCT_EL0, read EL0-direct — no SVC, no vDSO; see file header for the
+// rationale) and boot epoch data passed from the kernel via environment
+// variables. Before init() runs (during early runtime bootstrap), returns
+// monotonic time approximated from the counter — sufficient for runtime
+// bootstrap.
 //
 //go:nosplit
 func walltime() (sec int64, nsec int32) {
