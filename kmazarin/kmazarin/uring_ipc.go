@@ -505,6 +505,41 @@ func KernelWriteToRing(targetSID int16, msg *ipc.UringIPCMsg) (int64, uintptr) {
 	return UringSendKernel(-1, targetSID, 0, uintptr(unsafe.Pointer(msg)))
 }
 
+// notificationEventLayoutCheck compile-asserts that proc.NotificationEvent and
+// ipc.ProcessNotification have the same size, so the wire encoding below
+// (memcpy via unsafe.Pointer cast) is sound. shared/ipc cannot import
+// kmazarin/proc; this check lives in the kernel package where both types
+// are in scope. The variable is never referenced — its only purpose is to
+// fail the build if the layouts drift.
+var _ [unsafe.Sizeof(proc.NotificationEvent{})]byte = [unsafe.Sizeof(ipc.ProcessNotification{})]byte{}
+
+// KernelPublishProcessNotify delivers a process-lifecycle event from the
+// kernel to a target shepherd's default uring ring (MAZ-71). Used to wake
+// wait4 / raise SIGCHLD / handle Pdeathsig in the linux shepherd; future
+// callers may target other shepherds (e.g. a debug-monitor).
+//
+// Returns silently if targetSID is unknown — the caller (typically the
+// scheduler under schedulerLock) cannot do anything useful with the error,
+// and dropping is safer than panicking inside the critical section. The
+// scheduling-aware caller in MAZ-77 will log via klog when it cares.
+//
+// Direct memcpy of the proc event into the wire payload relies on the
+// compile-time layout assertion above.
+//
+//go:nosplit
+//go:noinline
+func KernelPublishProcessNotify(targetSID proc.ShepherdId, ev proc.NotificationEvent) (int64, uintptr) {
+	if proc.FindShepherdBySID(targetSID) == nil {
+		return 0, 0
+	}
+	var msg ipc.UringIPCMsg
+	msg.Protocol = ipc.ProtoProcessNotify
+	msg.SenderSID = -1 // kernel
+	// Layout-identical copy — see the size assertion above.
+	*(*proc.NotificationEvent)(unsafe.Pointer(&msg.Payload[0])) = ev
+	return KernelWriteToRing(int16(targetSID), &msg)
+}
+
 
 // KernelWriteToRingFromIRQ is a nosplit-safe version of KernelWriteToRing
 // for use from IRQ top-half handlers. Always writes to ring 0.
