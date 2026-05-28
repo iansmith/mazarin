@@ -145,7 +145,7 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	klog.Criticalf("[RS]", "[RunShepherd] %s: copied %d bytes from user\n", req.Name, len(elfData))
 
 	// Unmap the raw ELF pages from the caller (implicit cleanup).
-	unmapUserPages(req.StartVA, req.NumPages, req.CallerL0PA, int16(req.CallerShepherd.PID))
+	unmapUserPages(req.StartVA, req.NumPages, req.CallerL0PA, req.CallerShepherd.PID)
 	klog.Criticalf("[RS]", "[RunShepherd] %s: unmapped %d caller pages\n", req.Name, req.NumPages)
 
 	// Validate ELF header

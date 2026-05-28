@@ -34,7 +34,7 @@ func SyscallFreePages(arg0, arg1, _, _, _, _ uint64) int64 {
 		return -1 // EPERM
 	}
 
-	unmapUserPages(baseVA, numPages, shepherd.PageTableL0PA, int16(shepherd.PID))
+	unmapUserPages(baseVA, numPages, shepherd.PageTableL0PA, shepherd.PID)
 
 	kmem.TlbiVMALLE1()
 	kmem.DsbISH()

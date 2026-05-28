@@ -23,7 +23,7 @@ type ShepherdSignalAction struct {
 
 // ShepherdId is a unique shepherd (userspace process) identifier; valid
 // values are 0 (kernel) and the [MinPID, MaxPID] PID range.
-type ShepherdId int16
+type ShepherdId int32
 
 // Shepherd represents a userspace process that runs Go code.
 // Each shepherd has its own address space and Go runtime.

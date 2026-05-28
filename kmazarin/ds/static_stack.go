@@ -5,7 +5,7 @@ package ds
 // StackElement is a type constraint for elements that can be stored in StaticStack.
 // Supports small integer types commonly used for IDs and indices.
 type StackElement interface {
-	~byte | ~int8 | ~uint16 | ~int16
+	~byte | ~int8 | ~uint16 | ~int16 | ~uint32 | ~int32
 }
 
 // StaticStack implements a fixed-capacity stack backed by a static array.
