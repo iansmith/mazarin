@@ -270,13 +270,17 @@ func ResetTickAccounting(startTime uint64) {
 	// CPU stats don't drift from boot onward.
 	proc.KernelShepherd.TotalTicksRunning = 0
 	proc.KernelShepherd.TicksStartedRunning = 0
-	// The currently running shepherd needs its clock started.
+	// Restart the clock on every shepherd that currently has a running
+	// thread. Walking the thread table (rather than just the current
+	// thread) catches shepherds already running on other CPUs whose
+	// TicksStartedRunning would otherwise stay 0 until they next switch.
 	// (FindShepherdBySID(0) returns &KernelShepherd, so kernel threads
 	// are handled by the same lookup as userspace threads.)
-	ct := GetCurrentThread()
-	if ct != nil {
-		if p := proc.FindShepherdBySID(ct.PID); p != nil {
-			p.TicksStartedRunning = startTime
+	for i := 0; i < MaxThreads; i++ {
+		if threadListInUse[i] && threadListData[i].State == ThreadRunning {
+			if p := proc.FindShepherdBySID(threadListData[i].PID); p != nil {
+				p.TicksStartedRunning = startTime
+			}
 		}
 	}
 }
