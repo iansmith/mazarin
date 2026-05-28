@@ -50,6 +50,7 @@ const (
 	ProtoChainReq        uint32 = 24 // chained-share boot test: sharetest → test-fixture-http "allocate + share back" — MAZ-53
 	ProtoHttpIPCReq      uint32 = 25 // mazarin/httpclient → protocol-http: Do request — MAZ-49
 	ProtoHttpIPCResp     uint32 = 26 // protocol-http → mazarin/httpclient: Do response — MAZ-49
+	ProtoProcessNotify   uint32 = 27 // kernel → linux shepherd: process lifecycle event (child-exit / parent-death / exec-complete) — MAZ-71
 )
 
 // UringIPCRingHeader is the metadata at offset 0 of the ring's first page.
@@ -111,6 +112,64 @@ func EncodeIdleFlushHint() UringIPCMsg {
 	return msg
 }
 
+// ProcessNotification is the wire payload for ProtoProcessNotify messages
+// (kernel → linux shepherd, MAZ-71). It mirrors kmazarin/proc.NotificationEvent
+// but is defined here so the wire ABI lives next to the protocol number and
+// userspace consumers don't have to import the kernel proc package.
+//
+// Layout (must stay identical to proc.NotificationEvent so the kernel can
+// memcpy without a per-field copy):
+//
+//	Type:       1 byte — see NotifyType* constants
+//	_pad:       3 bytes
+//	Pid:        2 bytes (int16, the subject PID)
+//	ParentPid:  2 bytes (int16, parent PID for ChildExit)
+//	ExitStatus: 4 bytes (int32, exit status for ChildExit)
+//
+// Total: 12 bytes. UringIPCMsg.Payload is 112 bytes so there is ample room.
+type ProcessNotification struct {
+	Type       uint8
+	_pad       [3]byte
+	Pid        int16
+	ParentPid  int16
+	ExitStatus int32
+}
+
+// NotifyType* mirror kmazarin/proc.EventType. Duplicated here (rather than
+// imported) because shared/ipc is below kmazarin/proc in the dependency
+// graph and userspace must not pull in the kernel package. The two
+// definitions are kept in sync by convention; a mismatch would corrupt
+// the wire format.
+const (
+	NotifyTypeInvalid       uint8 = 0
+	NotifyTypeChildExit     uint8 = 1
+	NotifyTypeParentDeath   uint8 = 2
+	NotifyTypeExecComplete  uint8 = 3
+)
+
+// EncodeProcessNotification builds a ProtoProcessNotify UringIPCMsg.
+// SenderSID is set to -1 (kernel-originated). The payload bytes are written
+// directly into msg.Payload via unsafe.Pointer, matching DeathNotification.
+func EncodeProcessNotification(ev ProcessNotification) UringIPCMsg {
+	var msg UringIPCMsg
+	msg.Protocol = ProtoProcessNotify
+	msg.SenderSID = -1 // kernel
+	*(*ProcessNotification)(unsafe.Pointer(&msg.Payload[0])) = ev
+	return msg
+}
+
+// DecodeProcessNotification extracts the ProcessNotification payload from a
+// UringIPCMsg. Used by the linux shepherd's uring dispatcher.
+func DecodeProcessNotification(msg *UringIPCMsg) ProcessNotification {
+	return *(*ProcessNotification)(unsafe.Pointer(&msg.Payload[0]))
+}
+
 // Compile-time size assertions.
 var _ [UringIPCHeaderSize]byte = [unsafe.Sizeof(UringIPCRingHeader{})]byte{}
 var _ [UringIPCSlotSize]byte = [unsafe.Sizeof(UringIPCMsg{})]byte{}
+
+// ProcessNotification must stay <= the available payload space and must
+// match kmazarin/proc.NotificationEvent byte-for-byte. The 12-byte size
+// is enforced here; layout parity is asserted on the kernel side where
+// both types are in scope (see kmazarin/kmazarin/uring_ipc.go).
+var _ [12]byte = [unsafe.Sizeof(ProcessNotification{})]byte{}
