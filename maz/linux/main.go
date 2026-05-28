@@ -381,6 +381,17 @@ func startUringDispatchers(fsClient fsclient.FSClient, delegateCh chan any, stdo
 		default: // drop if channel full — shepherd is already busy
 		}
 	})
+	// Kernel-published process-lifecycle events (MAZ-71): child-exit,
+	// parent-death, exec-complete. v1 just logs them — wiring to wait4
+	// (MAZ-80) and SIGCHLD (MAZ-89) lands in follow-up tickets.
+	ipcDispatcher.OnFunc(ipc.ProtoProcessNotify, decodeProcessNotify, func(v any) {
+		ev, ok := v.(ipc.ProcessNotification)
+		if !ok {
+			return
+		}
+		fmt.Printf("[linux] process-notify: type=%d pid=%d ppid=%d status=%d\n",
+			ev.Type, ev.Pid, ev.ParentPid, ev.ExitStatus)
+	})
 	ipcDispatcher.Start()
 	fmt.Printf("[linux] uring dispatcher ring=0 started (ipc: WM/Font/Death/IdleHint)\n")
 
@@ -426,6 +437,13 @@ func decodeRawPayload(msg *ipc.UringIPCMsg) any {
 	raw := make([]byte, len(msg.Payload))
 	copy(raw, msg.Payload[:])
 	return raw
+}
+
+// decodeProcessNotify decodes the kernel-published ProcessNotification payload
+// for ProtoProcessNotify (MAZ-71). Returns the value (not a pointer) so the
+// downstream callback can type-assert without aliasing the ring slot.
+func decodeProcessNotify(msg *ipc.UringIPCMsg) any {
+	return ipc.DecodeProcessNotification(msg)
 }
 
 // forceLinuxIOItab ensures the linker includes the LinuxIO interface type
