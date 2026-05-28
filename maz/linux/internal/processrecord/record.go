@@ -68,40 +68,39 @@ var ErrPIDExists = errors.New("processrecord: PID already in table")
 // NOT goroutine-safe — the linux shepherd's main event loop is the sole
 // user. If concurrent access becomes a requirement, wrap with a mutex.
 type Table struct {
-	// Implementation TBD. Phase B agent decides between map vs. sparse
-	// array vs. other; tests pin the externally observable behavior.
+	records map[PID]*PerPIDRecord
 }
 
 // New returns an empty Table.
 func New() *Table {
-	return &Table{}
+	return &Table{records: make(map[PID]*PerPIDRecord)}
 }
 
 // Create allocates a new record for pid and returns a pointer to it.
 // Returns ErrPIDExists if a record for pid is already present.
 func (t *Table) Create(pid PID) (*PerPIDRecord, error) {
-	// STUB — implemented by Phase B agent.
-	_ = pid
-	return nil, ErrPIDExists
+	if _, ok := t.records[pid]; ok {
+		return nil, ErrPIDExists
+	}
+	rec := &PerPIDRecord{PID: pid}
+	t.records[pid] = rec
+	return rec, nil
 }
 
 // Get returns the record for pid. The second return value is false if no
 // record exists.
 func (t *Table) Get(pid PID) (*PerPIDRecord, bool) {
-	// STUB — implemented by Phase B agent.
-	_ = pid
-	return nil, false
+	rec, ok := t.records[pid]
+	return rec, ok
 }
 
 // Remove deletes the record for pid. Idempotent — removing a PID that is
 // not in the table is a no-op.
 func (t *Table) Remove(pid PID) {
-	// STUB — implemented by Phase B agent.
-	_ = pid
+	delete(t.records, pid)
 }
 
 // Len returns the number of records currently in the table.
 func (t *Table) Len() int {
-	// STUB — implemented by Phase B agent.
-	return 0
+	return len(t.records)
 }
