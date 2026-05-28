@@ -12,11 +12,8 @@ import (
 //
 //go:noinline
 func SyscallGetReady(sid, _, _, _, _, _ uint64) int64 {
-	id := int16(sid)
-	for i := 0; i < proc.MaxShepherds; i++ {
-		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PID == proc.ShepherdId(id) {
-			return int64(atomic.LoadInt32(&proc.ShepherdListData[i].Ready))
-		}
+	if p := proc.FindShepherdBySID(proc.ShepherdId(sid)); p != nil {
+		return int64(atomic.LoadInt32(&p.Ready))
 	}
 	return 0 // not found
 }

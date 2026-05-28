@@ -221,10 +221,6 @@ const (
 	ThreadBlockedKernelRingPush ThreadState = 20 // Thread 0 blocked in pushStringFull (topHalfUartRing full); woken by consumer pop or 10ms deadline
 )
 
-// MaxShepherds is the maximum number of shepherd processes (userspace programs).
-// Defined in proc package; aliased here for local convenience.
-const MaxShepherds = proc.MaxShepherds
-
 // MaxThreads is the maximum number of threads supported
 const MaxThreads = 512
 
@@ -238,9 +234,11 @@ const threadArraySize = constants.ThreadPoolSize
 // Userspace threads get IDs from ReservedKernelThreads to MaxThreads-1 (shuffled).
 const ReservedKernelThreads = 8
 
-// ReservedKernelShepherds is the number of shepherd slots reserved for the kernel.
-// Slot 0 is for the kernel's "shepherd" entry (PID 0, used for kernel threads).
-const ReservedKernelShepherds = 1
+// ReservedKernelShepherds is the number of PIDs reserved for the kernel and
+// not handed out by shepherdIdAllocator. Per MAZ-68: PID 0 is invalid (Linux
+// convention) and PID 1 is the kernel sentinel. Userspace shepherds receive
+// PIDs from [proc.MinPID, proc.MaxPID] = [2, 4095].
+const ReservedKernelShepherds = int(proc.MinPID) // = 2
 
 // startingTicksProgram is the CNTVCT_EL0 value when all shepherds are launched.
 // Baseline for ResetTickAccounting; zero means not yet set.
@@ -262,17 +260,15 @@ func ResetTickAccounting(startTime uint64) {
 			}
 		}
 	}
-	for i := 0; i < MaxShepherds; i++ {
-		if proc.ShepherdListInUse[i] {
-			proc.ShepherdListData[i].TotalTicksRunning = 0
-			proc.ShepherdListData[i].TicksStartedRunning = 0
-		}
-	}
+	proc.Shepherds.ForEach(func(p *proc.Shepherd) bool {
+		p.TotalTicksRunning = 0
+		p.TicksStartedRunning = 0
+		return true
+	})
 	// The currently running shepherd needs its clock started
 	ct := GetCurrentThread()
-	if ct != nil && ct.ShepherdIdx >= 0 {
-		p := &proc.ShepherdListData[ct.ShepherdIdx]
-		if proc.ShepherdListInUse[ct.ShepherdIdx] {
+	if ct != nil {
+		if p := proc.FindShepherdBySID(ct.PID); p != nil {
 			p.TicksStartedRunning = startTime
 		}
 	}
@@ -345,13 +341,6 @@ type Thread struct {
 	// with only X0, X28, SP, and SPSR overridden for clone semantics.
 	// Set in CloneThread, cleared in doContextSwitchImpl after the copy.
 	CloneNeedsParentRegs uint32
-
-	// WARNING: ShepherdIdx is a shepherd LIST INDEX (not a PID). Used ONLY by time-critical
-	// code paths (timer IRQ top-half, preemption checks) that need O(1) access to
-	// the shepherd's tick accounting without a PID→Shepherd lookup. This index is set
-	// once at thread creation and never changes. Do NOT use for general shepherd
-	// lookups — use GetShepherdByPID(t.PID) instead.
-	ShepherdIdx int16
 
 	// HomeCPU is the preferred CPU for this thread (soft affinity).
 	// Threads wake to their HomeCPU's local queue for cache locality.
@@ -614,7 +603,7 @@ func clearSoftIRQSlotForTID(tid ThreadId) {
 // Backing arrays - statically allocated, zero-initialized
 var threadListData [threadArraySize]Thread // Stores Thread VALUES (not pointers)
 var threadListInUse [threadArraySize]bool  // false = available (zero value)
-// shepherdListData and shepherdListInUse are now proc.ShepherdListData and proc.ShepherdListInUse.
+// Shepherd storage lives in proc.Shepherds (sparse PID-keyed) + proc.KernelShepherd (PID 0).
 var readyQueueData [threadArraySize]ThreadId    // Stores TIDs (unique thread IDs)
 var readyQueueInUse [threadArraySize]bool       // Tracks holes in ready queue
 var blockedQueueData [threadArraySize]ThreadId  // Stores TIDs (unique thread IDs)
@@ -629,7 +618,7 @@ var staticDeadlineQueue ds.StaticOrderedList
 
 // ID allocator backing arrays - statically allocated
 var threadIdStackData [threadArraySize]ThreadId            // Backing array for thread ID allocator
-var shepherdIdStackData [proc.MaxShepherds]proc.ShepherdId // Backing array for shepherd ID allocator
+var shepherdIdStackData [proc.MaxLiveShepherds]proc.ShepherdId // Backing array for shepherd ID allocator
 
 // nextKernelThreadId is a counter for allocating kernel thread IDs (0 to ReservedKernelThreads-1).
 // Kernel threads are identified by PID == 0 (the kernel shepherd) and get IDs from this counter.
@@ -639,8 +628,7 @@ var nextKernelThreadId ThreadId = 0
 
 // Data structures - will be initialized in InitThreads()
 // DO NOT initialize slices here - Go's initialization order causes them to be length 0!
-var threadList ds.StaticList[*Thread, Thread]                 // StaticList stores Thread VALUES, returns pointers
-var shepherdList ds.StaticList[*proc.Shepherd, proc.Shepherd] // StaticList stores Shepherd VALUES, returns pointers
+var threadList ds.StaticList[*Thread, Thread] // StaticList stores Thread VALUES, returns pointers
 
 var readyQueue ds.StaticQueue[ThreadId]
 
@@ -665,7 +653,7 @@ var pendingYieldBlockState ThreadState
 
 // ID allocators - initialized in InitIdAllocators()
 var threadIdAllocator ds.StaticAllocator[ThreadId]          // Manages unique thread IDs (0..MaxThreads-1)
-var shepherdIdAllocator ds.StaticAllocator[proc.ShepherdId] // Manages unique shepherd IDs (0..MaxShepherds-1)
+var shepherdIdAllocator ds.StaticAllocator[proc.ShepherdId] // Manages unique shepherd IDs (0..proc.MaxLiveShepherds-1)
 
 // ========== Scheduler Lock ==========
 
@@ -879,9 +867,10 @@ func InitIdAllocators() {
 	// IDs ReservedKernelThreads..MaxThreads-1 are shuffled for userspace
 	threadIdAllocator.InitWithReserved(threadIdStackData[:], ReservedKernelThreads)
 
-	// Initialize shepherd ID allocator with ID 0 reserved for kernel
-	// IDs 1..MaxShepherds-1 are shuffled and available for Acquire()
-	shepherdIdAllocator.InitWithReserved(shepherdIdStackData[:], 1)
+	// Initialize shepherd ID allocator. PIDs [0, ReservedKernelShepherds) are
+	// kernel-reserved (PID 0 invalid, PID 1 kernel sentinel); allocator hands
+	// out PIDs in [ReservedKernelShepherds, proc.MaxLiveShepherds), shuffled.
+	shepherdIdAllocator.InitWithReserved(shepherdIdStackData[:], ReservedKernelShepherds)
 
 	// Reset kernel thread counter (starts at 0, used by AcquireKernelThreadId)
 	nextKernelThreadId = 0
@@ -937,8 +926,6 @@ func InitThreads() {
 	// Must be done here, NOT as global initializers (Go init order issue)
 	threadList.Data = threadListData[:]
 	threadList.InUse = threadListInUse[:]
-	shepherdList.Data = proc.ShepherdListData[:]
-	shepherdList.InUse = proc.ShepherdListInUse[:]
 	readyQueue.Data = readyQueueData[:]
 	readyQueue.InUse = readyQueueInUse[:]
 	blockedQueue.Data = blockedQueueData[:]
@@ -949,7 +936,6 @@ func InitThreads() {
 
 	// Initialize reserved slots for kernel use
 	threadList.InitReserved(ReservedKernelThreads)
-	shepherdList.InitReserved(ReservedKernelShepherds)
 
 	// Save kmazarin's g address early - x28 should be pointing to kmazarin's g
 	// at this point (early init runs on g0/m0).
@@ -973,11 +959,9 @@ func InitThreads() {
 	// Acquire thread ID 0 for the kernel's entry thread
 	firstThreadId := AcquireKernelThreadId()
 
-	// Set up the kernel shepherd at reserved slot 0
-	// This represents the "kernel process" that owns all kernel threads
-	p0 := shepherdList.ReservedGet(0)
-	p0.PID = 0
-	shepherdList.ReservedSet(0)
+	// Set up the kernel shepherd — PID 0 lives in proc.KernelShepherd
+	// (out of [MinPID, MaxPID] so it doesn't share storage with userspace).
+	proc.KernelShepherd.PID = 0
 
 	// Set up thread 0 at reserved slot 0 - the kernel's "entry" thread
 	// This thread represents the initial execution context and gets scheduled
@@ -1020,19 +1004,16 @@ func InitThreads() {
 }
 
 // currentShepherdImpl is the registered implementation of proc.GetCurrentShepherd.
-// Returns nil for kernel threads (ShepherdIdx < 0) and early-init calls.
+// Returns nil for kernel threads (PID 0) and early-init calls. Userspace
+// syscall handlers rely on the nil result to reject kernel-context callers.
 //
 //go:nosplit
 func currentShepherdImpl() *proc.Shepherd {
 	t := GetCurrentThread()
-	if t == nil {
+	if t == nil || t.PID == 0 {
 		return nil
 	}
-	idx := int(t.ShepherdIdx)
-	if idx < 0 || idx >= proc.MaxShepherds || !proc.ShepherdListInUse[idx] {
-		return nil
-	}
-	return &proc.ShepherdListData[idx]
+	return proc.FindShepherdBySID(t.PID)
 }
 
 // InitDeadlineQueue initializes the deadline queue.
@@ -1600,12 +1581,10 @@ func KernelIdleLoop() {
 		currentTick := atomic.LoadUint64(&scanTimerCount)
 		if currentTick-scanLastTick >= 300 {
 			scanLastTick = currentTick
-			for i := 0; i < MaxShepherds; i++ {
-				if !proc.ShepherdListInUse[i] {
-					continue
-				}
-				kmem.ScanAccessedBits(proc.ShepherdId(i))
-			}
+			proc.Shepherds.ForEach(func(p *proc.Shepherd) bool {
+				kmem.ScanAccessedBits(p.PID)
+				return true
+			})
 		}
 
 		// Process deadlines with IRQs disabled (critical section)
@@ -1764,18 +1743,14 @@ func SaveThread0AndYield() uint64 {
 
 	// Shepherd-level tick accounting: stop old shepherd, start new shepherd
 	if next.PID != t0.PID {
-		if t0.ShepherdIdx >= 0 {
-			oldShepherd := shepherdList.Get(int(t0.ShepherdIdx))
-			if oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
-				oldShepherd.TotalTicksRunning += currentTime - oldShepherd.TicksStartedRunning
-				oldShepherd.TicksStartedRunning = 0
-			}
+		oldShepherd := proc.FindShepherdBySID(t0.PID)
+		if oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
+			oldShepherd.TotalTicksRunning += currentTime - oldShepherd.TicksStartedRunning
+			oldShepherd.TicksStartedRunning = 0
 		}
-		if next.ShepherdIdx >= 0 {
-			newShepherd := shepherdList.Get(int(next.ShepherdIdx))
-			if newShepherd != nil {
-				newShepherd.TicksStartedRunning = currentTime
-			}
+		newShepherd := proc.FindShepherdBySID(next.PID)
+		if newShepherd != nil {
+			newShepherd.TicksStartedRunning = currentTime
 		}
 	}
 
@@ -1996,12 +1971,10 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	if parent != nil {
 		t.PageTableL0PA = parent.PageTableL0PA
 		t.PID = parent.PID
-		t.ShepherdIdx = parent.ShepherdIdx
 
 		// Increment shepherd's thread count for userspace threads (PID > 0)
-		if parent.PID > 0 && parent.ShepherdIdx >= 0 {
-			shepherd := &proc.ShepherdListData[parent.ShepherdIdx]
-			if proc.ShepherdListInUse[parent.ShepherdIdx] {
+		if parent.PID > 0 {
+			if shepherd := proc.FindShepherdBySID(parent.PID); shepherd != nil {
 				shepherd.ThreadCount++
 			}
 		}
@@ -2114,12 +2087,13 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 
 	// Decrement shepherd thread count and release shepherd if this was the last thread
 	exitingPID := t.PID
-	if t.PID > 0 && t.ShepherdIdx >= 0 && proc.ShepherdListInUse[t.ShepherdIdx] {
-		shepherd := &proc.ShepherdListData[t.ShepherdIdx]
-		shepherd.ThreadCount--
-		if shepherd.ThreadCount <= 0 {
-			// Last thread of this shepherd - release the shepherd
-			releaseShepherdSchedLockHeld(t.ShepherdIdx, exitingPID, false)
+	if t.PID > 0 {
+		if shepherd := proc.FindShepherdBySID(t.PID); shepherd != nil {
+			shepherd.ThreadCount--
+			if shepherd.ThreadCount <= 0 {
+				// Last thread of this shepherd - release the shepherd
+				releaseShepherdSchedLockHeld(exitingPID, false)
+			}
 		}
 	}
 
@@ -2173,8 +2147,24 @@ type DeferredCleanupEntry struct {
 	L0PA  uintptr
 }
 
-// deferredCleanups holds deferred page cleanup entries indexed by shepherd slot.
-var deferredCleanups [MaxShepherds]DeferredCleanupEntry
+// deferredCleanups holds deferred page cleanup entries. Free slots have
+// InUse=false; appendDeferredCleanup scans linearly for a free slot.
+var deferredCleanups [proc.MaxLiveShepherds]DeferredCleanupEntry
+
+// appendDeferredCleanup stores entry in the first free slot of deferredCleanups.
+// Panics if no free slot is available — proc.MaxLiveShepherds in-flight dying shepherds
+// would be an unprecedented runaway.
+//
+//go:nosplit
+func appendDeferredCleanup(entry DeferredCleanupEntry) {
+	for i := range deferredCleanups {
+		if !deferredCleanups[i].InUse {
+			deferredCleanups[i] = entry
+			return
+		}
+	}
+	panic("deferredCleanups: no free slot")
+}
 
 // CompleteDeferredCleanup is called from SyscallDeathAck when the linux shepherd
 // has drained all in-flight I/O for a dead shepherd. Frees the dead shepherd's
@@ -2293,10 +2283,8 @@ func terminateShepherdDelegateCleanupHandlerOnly(pid int16) {
 // isLinuxShepherd returns true if the shepherd with the given PID is the linux
 // shepherd. Used to flush deferred cleanups when the linux shepherd itself dies.
 func isLinuxShepherd(pid ShepherdId) bool {
-	for i := int16(0); i < int16(MaxShepherds); i++ {
-		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PID == pid {
-			return proc.ShepherdListData[i].Filename == "linux"
-		}
+	if shep := proc.FindShepherdBySID(pid); shep != nil {
+		return shep.Filename == "linux"
 	}
 	return false
 }
@@ -2353,17 +2341,10 @@ func terminateShepherdImpl(sf *SchedulerFunc, pid ShepherdId, status int64, defe
 	}
 
 	// Find the shepherd and release it
-	shepherdIdx := int16(-1)
-	for i := int16(0); i < int16(MaxShepherds); i++ {
-		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PID == pid {
-			shepherdIdx = i
-			break
-		}
-	}
-	if shepherdIdx >= 0 {
+	if shep, ok := proc.Shepherds.Get(pid); ok {
 		// Force ThreadCount to 0 and release
-		proc.ShepherdListData[shepherdIdx].ThreadCount = 0
-		releaseShepherdSchedLockHeld(shepherdIdx, pid, deferPages)
+		shep.ThreadCount = 0
+		releaseShepherdSchedLockHeld(pid, deferPages)
 	}
 
 	// Find next ready thread
@@ -2408,8 +2389,9 @@ func terminateShepherdInternal(pid uint64, status int64) uint64 {
 // is skipped. The linux shepherd will ACK via SysDeathAck to trigger cleanup.
 //
 //go:nosplit
-func releaseShepherdSchedLockHeld(shepherdIdx int16, pid ShepherdId, deferPages bool) {
-	if shepherdIdx < 0 || !proc.ShepherdListInUse[shepherdIdx] {
+func releaseShepherdSchedLockHeld(pid ShepherdId, deferPages bool) {
+	shepherd, ok := proc.Shepherds.Get(pid)
+	if !ok {
 		return // Invalid or already released
 	}
 
@@ -2421,32 +2403,29 @@ func releaseShepherdSchedLockHeld(shepherdIdx int16, pid ShepherdId, deferPages 
 
 	// Clean up DMA clumps: mark dead, free pages if no I/O in flight.
 	// Clumps with InFlight > 0 will be freed by the completion handler.
-	ksyscall.CleanupShepherdDMAClumps(&proc.ShepherdListData[shepherdIdx])
+	ksyscall.CleanupShepherdDMAClumps(shepherd)
 
-	// Read l0PA and spans BEFORE zeroing the shepherd struct.
+	// Read l0PA BEFORE Release zeros the shepherd struct.
 	// CleanupShepherdPages needs these to walk the page tables.
-	l0PA := proc.ShepherdListData[shepherdIdx].PageTableL0PA
-	spans := &proc.ShepherdListData[shepherdIdx].Spans
+	l0PA := shepherd.PageTableL0PA
 
 	if deferPages {
 		// Two-phase death: save L0PA for deferred cleanup.
 		// freeLeaves=true in CompleteDeferredCleanup will walk L3 entries to
 		// free all leaf pages, since Spans is empty in the deferred path.
-		deferredCleanups[shepherdIdx] = DeferredCleanupEntry{
+		appendDeferredCleanup(DeferredCleanupEntry{
 			InUse: true,
 			SID:   pid,
 			L0PA:  l0PA,
-		}
+		})
 	} else {
-		// Normal path: free all physical pages now.
-		kmem.CleanupShepherdPages(pid, spans, l0PA, false)
+		// Normal path: free all physical pages now. Pass the live Spans pointer
+		// before Release zeros the slot.
+		kmem.CleanupShepherdPages(pid, &shepherd.Spans, l0PA, false)
 	}
 
-	// Release the shepherd slot
-	proc.ShepherdListInUse[shepherdIdx] = false
-
-	// Zero the shepherd struct for security (prevent info leaks)
-	proc.ShepherdListData[shepherdIdx] = proc.Shepherd{}
+	// Release the shepherd slot (clears the struct and frees the PID for storage).
+	proc.Shepherds.Release(pid)
 
 	// Release the shepherd ID back to the allocator for immediate reuse.
 	// Because StaticAllocator uses LIFO (stack), this ID will be the next
@@ -2471,7 +2450,7 @@ func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) i
 //
 //go:nosplit
 func GetShepherdByPID(pid ShepherdId) *Shepherd {
-	return shepherdList.FindById(int32(pid))
+	return proc.FindShepherdBySID(pid)
 }
 
 // createUserspaceThreadImpl is the internal implementation with sf for testing
@@ -2479,13 +2458,18 @@ func GetShepherdByPID(pid ShepherdId) *Shepherd {
 //go:nosplit
 func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16 {
 	// BEGIN CRITICAL SECTION - protect all scheduling data structures:
-	// shepherdIdAllocator, shepherdList, threadList, readyQueue
+	// shepherdIdAllocator, proc.Shepherds, threadList, readyQueue
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	// Allocate shepherd ID and shepherd entry inside the critical section
+	// Allocate shepherd ID and shepherd entry inside the critical section.
+	// shepherdIdAllocator yields PIDs in [MinPID, MaxPID]; ShepherdStorage
+	// accepts exactly that range, so Allocate cannot return OutOfRange here.
 	shepherdId := shepherdIdAllocator.Acquire()
-	_, p := shepherdList.Allocate()
+	p, err := proc.Shepherds.Allocate(shepherdId)
+	if err != nil {
+		panic("createUserspaceThreadImpl: shepherd storage allocation failed")
+	}
 	p.PID = shepherdId
 	p.PageTableL0PA = pageTableL0PA
 	p.ThreadCount = 1 // This shepherd starts with one thread
@@ -2511,15 +2495,6 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.GPtr = 0
 	t.EntryFunc = 0
 	t.CloneNeedsParentRegs = 0 // Clear in case slot was reused from a clone child
-
-	// Set ShepherdIdx for O(1) shepherd lookup in timer handler
-	t.ShepherdIdx = -1 // Default: no shepherd
-	for pi := 0; pi < len(shepherdList.Data); pi++ {
-		if shepherdList.InUse[pi] && shepherdList.Data[pi].PID == shepherdId {
-			t.ShepherdIdx = int16(pi)
-			break
-		}
-	}
 
 	// Set up initial context for userspace execution
 	t.Context.SetupForUserspace(entryPoint, stackPtr)
@@ -3468,11 +3443,8 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	next.TicksStartedRunning = currentTime
 
 	// Start shepherd clock if needed
-	if next.ShepherdIdx >= 0 {
-		shepherd := shepherdList.Get(int(next.ShepherdIdx))
-		if shepherd != nil && shepherd.TicksStartedRunning == 0 {
-			shepherd.TicksStartedRunning = currentTime
-		}
+	if shepherd := proc.FindShepherdBySID(next.PID); shepherd != nil && shepherd.TicksStartedRunning == 0 {
+		shepherd.TicksStartedRunning = currentTime
 	}
 
 	// Set as current thread (updates both per-CPU and global)
@@ -3674,21 +3646,17 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	atomic.AddUint64(&dbgPreemptSwitchCount, 1)
 	// Shepherd-level tick accounting
 	// Stop old shepherd's clock
-	if oldThread.ShepherdIdx >= 0 {
-		oldShepherd := shepherdList.Get(int(oldThread.ShepherdIdx))
-		if oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
-			oldShepherd.TotalTicksRunning += currentTime - oldShepherd.TicksStartedRunning
-			// Only clear shepherd clock if switching to a DIFFERENT shepherd
-			if next.PID != oldThread.PID {
-				oldShepherd.TicksStartedRunning = 0
-			}
+	if oldShepherd := proc.FindShepherdBySID(oldThread.PID); oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
+		oldShepherd.TotalTicksRunning += currentTime - oldShepherd.TicksStartedRunning
+		// Only clear shepherd clock if switching to a DIFFERENT shepherd
+		if next.PID != oldThread.PID {
+			oldShepherd.TicksStartedRunning = 0
 		}
 	}
 
 	// Start new shepherd's clock (only if different shepherd)
-	if next.ShepherdIdx >= 0 && next.PID != oldThread.PID {
-		newShepherd := shepherdList.Get(int(next.ShepherdIdx))
-		if newShepherd != nil {
+	if next.PID != oldThread.PID {
+		if newShepherd := proc.FindShepherdBySID(next.PID); newShepherd != nil {
 			newShepherd.TicksStartedRunning = currentTime
 		}
 	}
@@ -3840,9 +3808,8 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 		}
 
 		// Shepherd-level tick accounting: stop old shepherd's clock if switching to a different shepherd
-		if newThread != nil && newThread.PID != oldPID && oldThread.ShepherdIdx >= 0 {
-			oldShepherd := shepherdList.Get(int(oldThread.ShepherdIdx))
-			if oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
+		if newThread != nil && newThread.PID != oldPID {
+			if oldShepherd := proc.FindShepherdBySID(oldThread.PID); oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
 				oldShepherd.TotalTicksRunning += currentTime - oldShepherd.TicksStartedRunning
 				oldShepherd.TicksStartedRunning = 0
 			}
@@ -3872,9 +3839,8 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	newThread.TicksStartedRunning = currentTime
 
 	// Start new shepherd's clock if switching to a different shepherd
-	if newThread.PID != oldPID && newThread.ShepherdIdx >= 0 {
-		newShepherd := shepherdList.Get(int(newThread.ShepherdIdx))
-		if newShepherd != nil {
+	if newThread.PID != oldPID {
+		if newShepherd := proc.FindShepherdBySID(newThread.PID); newShepherd != nil {
 			newShepherd.TicksStartedRunning = currentTime
 		}
 	}

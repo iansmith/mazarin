@@ -50,7 +50,7 @@ func copyPagesFromUser(startVA uintptr, totalBytes int, l0PA uintptr) []byte {
 // we log entry, every 256-page progress checkpoint, and exit. If the loop
 // hangs in an iteration, the last progress log pinpoints the iteration and
 // the va/pa being processed when it stuck.
-func unmapUserPages(startVA uintptr, numPages int, l0PA uintptr, ownerSID int16) {
+func unmapUserPages(startVA uintptr, numPages int, l0PA uintptr, ownerSID proc.ShepherdId) {
 	for i := 0; i < numPages; i++ {
 		va := startVA + uintptr(i)*4096
 		pa := kmem.UnmapUserPageWithL0(va, l0PA)
@@ -58,7 +58,7 @@ func unmapUserPages(startVA uintptr, numPages int, l0PA uintptr, ownerSID int16)
 			kmem.ReleasePageByPA(pa &^ 0xFFF)
 		}
 	}
-	callerShepherd := proc.FindShepherdBySID(proc.ShepherdId(ownerSID))
+	callerShepherd := proc.FindShepherdBySID(ownerSID)
 	if callerShepherd != nil {
 		callerShepherd.Spans.Remove(uint64(startVA), uint64(numPages)*4096)
 	}

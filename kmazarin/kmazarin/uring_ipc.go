@@ -48,7 +48,7 @@ type UringIPCSlot struct {
 	Dead              bool                             // owner terminated; pages freed when RingRefCount reaches 0
 }
 
-var uringIPCSlots [proc.MaxShepherds][ipc.MaxRingsPerShepherd]UringIPCSlot
+var uringIPCSlots [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]UringIPCSlot
 
 // UringConnection tracks an active connection between two shepherds.
 type UringConnection struct {
@@ -71,7 +71,7 @@ type uringIDEntry struct {
 	SID     int16
 }
 
-var uringIDMap [proc.MaxShepherds]uringIDEntry
+var uringIDMap [proc.MaxLiveShepherds]uringIDEntry
 
 func init() {
 	for i := range uringIPCSlots {
@@ -93,7 +93,7 @@ func init() {
 // Called from DoRunShepherdWork (heap-safe, on thread 0).
 func AllocUringIPCRing(shepherd *proc.Shepherd, ringIdx int) bool {
 	sid := int16(shepherd.PID)
-	if sid < 0 || int(sid) >= proc.MaxShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
+	if sid < 0 || int(sid) >= proc.MaxLiveShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
 		return false
 	}
 
@@ -208,7 +208,7 @@ func DoUringConnectWork(req *UringConnectWorkRequest) int64 {
 	}
 
 	// Verify target ring exists
-	if targetSID < 0 || int(targetSID) >= proc.MaxShepherds {
+	if targetSID < 0 || int(targetSID) >= proc.MaxLiveShepherds {
 		return -3 // ESRCH
 	}
 	ringIdx := req.TargetRingIdx
@@ -321,7 +321,7 @@ func releaseProducerLock(hdr *ipc.UringIPCRingHeader) {
 //
 //go:noinline
 func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) (int64, uintptr) {
-	if targetSID < 0 || int(targetSID) >= proc.MaxShepherds || ringIdx >= ipc.MaxRingsPerShepherd {
+	if targetSID < 0 || int(targetSID) >= proc.MaxLiveShepherds || ringIdx >= ipc.MaxRingsPerShepherd {
 		return -22, 0 // EINVAL
 	}
 
@@ -553,7 +553,7 @@ func KernelPublishProcessNotify(targetSID proc.ShepherdId, ev proc.NotificationE
 //go:nosplit
 //go:noinline
 func KernelWriteToRingFromIRQ(targetSID int16, msg *ipc.UringIPCMsg) {
-	if targetSID < 0 || int(targetSID) >= proc.MaxShepherds {
+	if targetSID < 0 || int(targetSID) >= proc.MaxLiveShepherds {
 		return
 	}
 
@@ -618,7 +618,7 @@ func KernelWriteToRingFromIRQ(targetSID int16, msg *ipc.UringIPCMsg) {
 //
 //go:nosplit
 func drainUringIPCRing(sid int16, ringIdx int) (uintptr, bool) {
-	if sid < 0 || int(sid) >= proc.MaxShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
+	if sid < 0 || int(sid) >= proc.MaxLiveShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
 		return 0, false
 	}
 	slot := &uringIPCSlots[sid][ringIdx]
@@ -645,7 +645,7 @@ func drainUringIPCRing(sid int16, ringIdx int) (uintptr, bool) {
 //
 //go:nosplit
 func advanceUringHead(sid int16, ringIdx int) {
-	if sid < 0 || int(sid) >= proc.MaxShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
+	if sid < 0 || int(sid) >= proc.MaxLiveShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
 		return
 	}
 	hdr := ringHeader(&uringIPCSlots[sid][ringIdx])
@@ -662,7 +662,7 @@ func advanceUringHead(sid int16, ringIdx int) {
 //
 //go:noinline
 func WakeSenderAfterDrain(sid int16, ringIdx int) {
-	if sid < 0 || int(sid) >= proc.MaxShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
+	if sid < 0 || int(sid) >= proc.MaxLiveShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
 		return
 	}
 	slot := &uringIPCSlots[sid][ringIdx]
@@ -702,7 +702,7 @@ func BlockForUringRecv(shepherdIdx int, ringIdx int, bufPtr uint64) uintptr {
 	}
 
 	// Clear previous blocked thread (M migration)
-	if shepherdIdx >= 0 && shepherdIdx < proc.MaxShepherds && ringIdx >= 0 && ringIdx < ipc.MaxRingsPerShepherd {
+	if shepherdIdx >= 0 && shepherdIdx < proc.MaxLiveShepherds && ringIdx >= 0 && ringIdx < ipc.MaxRingsPerShepherd {
 		prev := (*Thread)(unsafe.Pointer(uringIPCSlots[shepherdIdx][ringIdx].BlockedPtr))
 		if prev != nil && prev.State == ThreadBlockedUringRecv {
 			prev.State = ThreadReady
@@ -713,7 +713,7 @@ func BlockForUringRecv(shepherdIdx int, ringIdx int, bufPtr uint64) uintptr {
 	t.State = ThreadBlockedUringRecv
 	t.SoftIRQSlotArg = bufPtr    // arg0 for rewind
 	t.SoftIRQSyscallNum = 0x1015 // SysUringRecv
-	if shepherdIdx >= 0 && shepherdIdx < proc.MaxShepherds && ringIdx >= 0 && ringIdx < ipc.MaxRingsPerShepherd {
+	if shepherdIdx >= 0 && shepherdIdx < proc.MaxLiveShepherds && ringIdx >= 0 && ringIdx < ipc.MaxRingsPerShepherd {
 		uringIPCSlots[shepherdIdx][ringIdx].BlockedTID = int16(t.TID)
 		uringIPCSlots[shepherdIdx][ringIdx].BlockedPtr = uintptr(unsafe.Pointer(t))
 	}
@@ -755,7 +755,7 @@ func ReleaseUringConnection(handle int, callerSID int16) int64 {
 
 		// Decrement target ring's refcount. If the ring owner is dead
 		// and this was the last reference, free the ring pages.
-		if targetSID >= 0 && int(targetSID) < proc.MaxShepherds && targetRingIdx < ipc.MaxRingsPerShepherd {
+		if targetSID >= 0 && int(targetSID) < proc.MaxLiveShepherds && targetRingIdx < ipc.MaxRingsPerShepherd {
 			slot := &uringIPCSlots[targetSID][targetRingIdx]
 			slot.RingRefCount--
 			if slot.Dead && slot.RingRefCount <= 0 {
@@ -795,7 +795,7 @@ func freeUringRingPages(slot *UringIPCSlot) {
 // 4. Mark ring Dead. Free pages only if RingRefCount is already 0.
 // 5. Clear the uring ID map entry.
 func CleanupUringIPCForShepherd(sid int16) {
-	if sid < 0 || int(sid) >= proc.MaxShepherds {
+	if sid < 0 || int(sid) >= proc.MaxLiveShepherds {
 		return
 	}
 
@@ -862,7 +862,7 @@ func CleanupUringIPCForShepherd(sid int16) {
 			// Decrement target ring's refcount.
 			targetSID := conn.TargetSID
 			targetRingIdx := conn.TargetRingIdx
-			if targetSID >= 0 && int(targetSID) < proc.MaxShepherds && targetRingIdx < ipc.MaxRingsPerShepherd {
+			if targetSID >= 0 && int(targetSID) < proc.MaxLiveShepherds && targetRingIdx < ipc.MaxRingsPerShepherd {
 				targetSlot := &uringIPCSlots[targetSID][targetRingIdx]
 				targetSlot.RingRefCount--
 				if targetSlot.Dead && targetSlot.RingRefCount <= 0 {

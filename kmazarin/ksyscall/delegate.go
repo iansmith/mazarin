@@ -124,12 +124,9 @@ func IsDelegated(id sysid.ID, callerSID int16) bool {
 }
 
 // isDelegateReady checks if the handler shepherd has signaled Ready.
-// Scans ShepherdListData since PID != array index.
 func isDelegateReady(pid proc.ShepherdId) bool {
-	for i := 0; i < proc.MaxShepherds; i++ {
-		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PID == pid {
-			return atomic.LoadInt32(&proc.ShepherdListData[i].Ready) != 0
-		}
+	if p := proc.FindShepherdBySID(pid); p != nil {
+		return atomic.LoadInt32(&p.Ready) != 0
 	}
 	return false
 }

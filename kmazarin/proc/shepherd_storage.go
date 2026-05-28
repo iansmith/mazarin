@@ -1,13 +1,9 @@
 // ShepherdStorage — sparse PID-keyed storage for live Shepherd records (MAZ-73).
 //
-// Today's shepherd storage is a dense `ShepherdListData [MaxShepherds=32]Shepherd`
-// array. Under the post-MAZ-68/-73 PID model, PIDs run 2..4095 but the number
-// of LIVE shepherds at any time is much smaller (peak ~100 for go-build-style
-// workloads). A dense PID-indexed array of Shepherd structs would be tens of
-// MB — too much. Sparse storage with a PID-to-slot index is the chosen shape.
-//
-// This file declares the API. The METHODS ARE STUBS; the Phase B implementation
-// agent fills them in. Phase 0 tests in shepherd_storage_test.go pin behavior.
+// Under the post-MAZ-68/-73 PID model, PIDs run 2..4095 but the number of LIVE
+// shepherds at any time is much smaller (peak ~100 for go-build-style workloads).
+// A dense PID-indexed array of Shepherd structs would be tens of MB — too much.
+// Sparse storage with a PID-to-slot index is the chosen shape.
 //
 // Design decisions implemented here (see Linear MAZ-68 + MAZ-73):
 //
@@ -17,14 +13,6 @@
 //   - Exhaustion returns ErrShepherdSlotExhausted.
 //   - Reallocating an existing PID returns ErrShepherdPIDInUse.
 //   - PIDs outside [MinPID, MaxPID] are rejected.
-//
-// Out of scope here:
-//
-//   - The int16 → int32 ShepherdId sweep (Phase B implementation step;
-//     no unit test — either the codebase compiles or it doesn't).
-//   - Switching today's `createUserspaceThreadImpl` from the
-//     `StaticAllocator + ShepherdListData[MaxShepherds]` pattern to this new
-//     storage (cutover is also a Phase B step but driven by separate review).
 
 package proc
 
@@ -58,16 +46,27 @@ var ErrShepherdPIDOutOfRange = errors.New("proc: PID out of range")
 //
 // Concurrency: NOT goroutine-safe on its own. Callers in the kernel are
 // expected to hold an appropriate lock (typically schedulerLock).
+//
+// Layout:
+//   - slots: fixed-size array of Shepherd values.
+//   - inUse: parallel occupancy bitmap (one bool per slot).
+//   - pidIndex: PID → slot index map (-1 = no slot). Sized over the full
+//     PID range so lookups are O(1) array access with no scan.
+//   - count: number of live shepherds; mirrored from inUse for fast Len().
 type ShepherdStorage struct {
-	// Implementation TBD. Phase B agent decides the concrete layout
-	// (slots + inUse + pidIndex). Phase 0 tests pin the externally
-	// observable behavior.
-	_ struct{}
+	slots    [MaxLiveShepherds]Shepherd
+	inUse    [MaxLiveShepherds]bool
+	pidIndex [MaxPID - MinPID + 1]int16 // -1 means "no slot for this PID"
+	count    int32
 }
 
 // NewShepherdStorage returns an empty storage ready to allocate.
 func NewShepherdStorage() *ShepherdStorage {
-	return &ShepherdStorage{}
+	s := &ShepherdStorage{}
+	for i := range s.pidIndex {
+		s.pidIndex[i] = -1
+	}
+	return s
 }
 
 // Allocate reserves a slot for pid and returns a pointer to the (zero-valued)
@@ -79,8 +78,20 @@ func NewShepherdStorage() *ShepherdStorage {
 //
 //go:nosplit
 func (s *ShepherdStorage) Allocate(pid ShepherdId) (*Shepherd, error) {
-	// STUB — implemented by Phase B agent.
-	_ = pid
+	if pid < MinPID || pid > MaxPID {
+		return nil, ErrShepherdPIDOutOfRange
+	}
+	if s.pidIndex[pid-MinPID] >= 0 {
+		return nil, ErrShepherdPIDInUse
+	}
+	for i := 0; i < MaxLiveShepherds; i++ {
+		if !s.inUse[i] {
+			s.inUse[i] = true
+			s.pidIndex[pid-MinPID] = int16(i)
+			s.count++
+			return &s.slots[i], nil
+		}
+	}
 	return nil, ErrShepherdSlotExhausted
 }
 
@@ -89,9 +100,14 @@ func (s *ShepherdStorage) Allocate(pid ShepherdId) (*Shepherd, error) {
 //
 //go:nosplit
 func (s *ShepherdStorage) Get(pid ShepherdId) (*Shepherd, bool) {
-	// STUB — implemented by Phase B agent.
-	_ = pid
-	return nil, false
+	if pid < MinPID || pid > MaxPID {
+		return nil, false
+	}
+	idx := s.pidIndex[pid-MinPID]
+	if idx < 0 || idx >= MaxLiveShepherds {
+		return nil, false
+	}
+	return &s.slots[idx], true
 }
 
 // Release frees the slot for pid. Idempotent — releasing a PID that has
@@ -100,16 +116,24 @@ func (s *ShepherdStorage) Get(pid ShepherdId) (*Shepherd, bool) {
 //
 //go:nosplit
 func (s *ShepherdStorage) Release(pid ShepherdId) {
-	// STUB — implemented by Phase B agent.
-	_ = pid
+	if pid < MinPID || pid > MaxPID {
+		return
+	}
+	idx := s.pidIndex[pid-MinPID]
+	if idx < 0 {
+		return
+	}
+	s.slots[idx] = Shepherd{}
+	s.inUse[idx] = false
+	s.pidIndex[pid-MinPID] = -1
+	s.count--
 }
 
 // Len returns the number of live shepherds currently in storage.
 //
 //go:nosplit
 func (s *ShepherdStorage) Len() int32 {
-	// STUB — implemented by Phase B agent.
-	return 0
+	return s.count
 }
 
 // ForEach calls fn for each live Shepherd in the storage. Iteration
@@ -118,6 +142,11 @@ func (s *ShepherdStorage) Len() int32 {
 //
 //go:nosplit
 func (s *ShepherdStorage) ForEach(fn func(*Shepherd) bool) {
-	// STUB — implemented by Phase B agent.
-	_ = fn
+	for i := 0; i < MaxLiveShepherds; i++ {
+		if s.inUse[i] {
+			if !fn(&s.slots[i]) {
+				return
+			}
+		}
+	}
 }

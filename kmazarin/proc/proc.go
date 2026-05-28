@@ -9,9 +9,6 @@
 package proc
 
 
-// MaxShepherds is the maximum number of shepherd processes (userspace programs).
-const MaxShepherds = 32
-
 // SignalNSIG is the number of signals (1-64 + sentinel), matching Linux _NSIG.
 const SignalNSIG = 65
 
@@ -24,8 +21,9 @@ type ShepherdSignalAction struct {
 	Mask     uint64
 }
 
-// ShepherdId is a unique shepherd (userspace process) identifier (0-MaxShepherds-1).
-type ShepherdId int16
+// ShepherdId is a unique shepherd (userspace process) identifier; valid
+// values are 0 (kernel) and the [MinPID, MaxPID] PID range.
+type ShepherdId int32
 
 // Shepherd represents a userspace process that runs Go code.
 // Each shepherd has its own address space and Go runtime.
@@ -175,13 +173,17 @@ func (p *Shepherd) Id() int32 {
 	return int32(p.PID)
 }
 
-// ShepherdListData is the backing array for the shepherd list, indexed by list slot
-// (NOT necessarily by PID — use Thread.ShepherdIdx for O(1) access).
-// Exported so kmazarin/kmazarin and other packages can access it directly.
-var ShepherdListData [MaxShepherds]Shepherd
+// KernelShepherd holds the per-process state for the kernel shepherd (PID 0).
+// PID 0 is out of [MinPID, MaxPID] so it cannot live in ShepherdStorage; it
+// gets its own slot. All kernel threads (PID == 0) belong to this shepherd.
+var KernelShepherd Shepherd
 
-// ShepherdListInUse tracks which slots in ShepherdListData are occupied.
-var ShepherdListInUse [MaxShepherds]bool
+// Shepherds is the sparse PID-keyed live-shepherd storage. PIDs in
+// [MinPID, MaxPID] live here; PID 0 lives in KernelShepherd.
+//
+// Concurrency: callers hold schedulerLock (in the kmazarin package) before
+// invoking methods on Shepherds.
+var Shepherds = NewShepherdStorage()
 
 // GetCurrentShepherd is a function hook registered by the main package at boot.
 // It returns a pointer to the Shepherd for the currently running thread, or nil
@@ -202,15 +204,17 @@ func CurrentShepherd() *Shepherd {
 	return f()
 }
 
-// FindShepherdBySID looks up a shepherd by PID without requiring the kmazarin/kmazarin package.
-// Returns nil if no shepherd with the given PID is found.
+// FindShepherdBySID looks up a shepherd by PID. Returns nil if no live
+// shepherd with that PID exists. Wrapper over Shepherds.Get (plus the
+// KernelShepherd special-case for PID 0).
 //
 //go:nosplit
 func FindShepherdBySID(pid ShepherdId) *Shepherd {
-	for i := 0; i < MaxShepherds; i++ {
-		if ShepherdListInUse[i] && ShepherdListData[i].PID == pid {
-			return &ShepherdListData[i]
-		}
+	if pid == 0 {
+		return &KernelShepherd
+	}
+	if shep, ok := Shepherds.Get(pid); ok {
+		return shep
 	}
 	return nil
 }
