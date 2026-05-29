@@ -129,6 +129,28 @@ type DrawContext interface {
 	// 2D affine matrix (CSS matrix(a,b,c,d,e,f) parameter order).
 	MultiplyMatrix(xx, yx, xy, yy, x0, y0 float64)
 
+	// MultiplyProjectiveMatrix composes a 3×3 projective (homography)
+	// transform, row-major, onto the current transform and switches the
+	// graphics state into projective mode (point transforms apply a
+	// perspective divide). Used to render CSS 3D transforms whose composed
+	// projection of the z=0 element plane carries a perspective component.
+	//
+	// Scope and limitations (current implementation):
+	//   - Vector path fills/strokes are projected exactly for straight-edged
+	//     shapes (perspective preserves lines), so solid-color boxes under
+	//     perspective are correct.
+	//   - Raster content (images via DrawImage*, glyph bitmaps) is NOT
+	//     perspective-warped — those paths sample via the affine matrix and
+	//     are skipped under projective mode rather than drawn incorrectly. A
+	//     per-pixel inverse-homography sampler is future work.
+	//   - A primitive with any vertex on or behind the camera near-plane
+	//     (homogeneous W ≤ ε) is dropped whole, not near-plane-clipped;
+	//     Sutherland–Hodgman W-clipping is future work.
+	//   - Stroke width is a uniform scalar (no per-vertex perspective
+	//     widening) and curves are flattened in local space before
+	//     projection; both are quality, not correctness, concerns.
+	MultiplyProjectiveMatrix(m00, m01, m02, m10, m11, m12, m20, m21, m22 float64)
+
 	// --- Compositing groups ---
 	PushGroup()
 	PopGroup()
