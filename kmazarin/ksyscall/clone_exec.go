@@ -61,6 +61,17 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 		klog.Errf("[CloneExec] ERROR: nil CallerShepherd\n")
 		return ceEFAULT
 	}
+	// Reject malformed ELF sizing before any memory op: copyPagesFromUser does
+	// make([]byte, ELFNumBytes) (a negative length panics the kernel worker)
+	// and unmapUserPages walks ELFNumPages. The in-kernel caller (MAZ-79)
+	// derives these from a real file, but a kernel primitive must not panic on
+	// a bad request — this mirrors the bounds SyscallRunShepherd enforces at
+	// its SVC entry.
+	if req.ELFNumBytes <= 0 || req.ELFNumPages <= 0 {
+		klog.Errf("[CloneExec] ERROR: invalid ELF sizing bytes=%d pages=%d\n",
+			req.ELFNumBytes, req.ELFNumPages)
+		return ceENOEXEC
+	}
 	// Cap-check the buffered intent + cwd before allocating anything. These
 	// come from the shepherd-side caller; rejecting an oversized request up
 	// front keeps the failure free of teardown.
