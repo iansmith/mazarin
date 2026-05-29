@@ -666,11 +666,17 @@ func simpleMain() {
 	}
 
 	// MAZ-108 kmem teardown leak-soak self-test. Gated by config; OFF by
-	// default. Runs HERE — before launchEmbeddedFS and before EnableIRQs/timer
-	// below — so the system is quiescent (only thread 0 active) and the
-	// free-frame count it measures isn't perturbed by shepherd allocations.
+	// default. Runs before launchEmbeddedFS, so no shepherd threads exist yet
+	// — but CPU IRQs were already enabled earlier in simpleMain (only the
+	// timer IRQ is currently masked), so a live device IRQ's bottom-half could
+	// allocate/free a frame mid-measurement and skew the free-frame delta.
+	// Mask IRQs around the self-test so the measurement window is quiescent by
+	// construction. Only thread 0 runs here, so the brief IRQ-off window during
+	// this diagnostic is safe.
 	if kernelCfg.KmemLeakTest {
+		savedDAIF := SaveAndDisableIRQs()
 		runKmemLeakSelfTest()
+		RestoreIRQs(savedDAIF)
 	}
 
 	// Launch the embedded fs shepherd from memory — no disk I/O needed.
