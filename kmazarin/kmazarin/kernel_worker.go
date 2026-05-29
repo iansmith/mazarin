@@ -17,6 +17,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/ksyscall"
+	"mazzy/kmazarin/proc"
 	"sync/atomic"
 	"unsafe"
 )
@@ -234,12 +235,19 @@ func (uringConnectWorkerImpl) Do(req *UringConnectWorkRequest) int64 {
 	return DoUringConnectWork(req)
 }
 
+type cloneExecWorkerImpl struct{}
+
+func (cloneExecWorkerImpl) Do(req *proc.CloneExecRequest) int64 {
+	return ksyscall.DoCloneExecWork(req)
+}
+
 // --- Global instances ---
 
 var (
 	runShepherdKW  *KernelSVCWorker[ksyscall.RunShepherdWorkRequest]
 	epollKW        *KernelSVCWorker[ksyscall.EpollWorkRequest]
 	uringConnectKW *KernelSVCWorker[UringConnectWorkRequest]
+	cloneExecKW    *KernelSVCWorker[proc.CloneExecRequest]
 )
 
 // initKernelWorkers creates all kernel SVC workers.
@@ -248,6 +256,7 @@ func initKernelWorkers() {
 	runShepherdKW = NewKernelSVCWorker("RunShepherd", runShepherdWorkerImpl{})
 	epollKW = NewKernelSVCWorker("Epoll", epollWorkerImpl{})
 	uringConnectKW = NewKernelSVCWorker("UringConnect", uringConnectWorkerImpl{})
+	cloneExecKW = NewKernelSVCWorker("CloneExec", cloneExecWorkerImpl{})
 }
 
 // --- Linkname bridge wrappers (ksyscall → main) ---
@@ -267,6 +276,11 @@ func SubmitUringConnect(req UringConnectWorkRequest) uintptr {
 	return uringConnectKW.Submit(req)
 }
 
+// SubmitCloneExec is the linkname target for ksyscall.submitCloneExec (MAZ-75).
+func SubmitCloneExec(req proc.CloneExecRequest) uintptr {
+	return cloneExecKW.Submit(req)
+}
+
 // hasPendingKernelWork returns true if any SVC worker has pending work
 // waiting for thread 0 to relay. Used by the timer ISR to boost thread 0.
 //
@@ -275,5 +289,5 @@ func hasPendingKernelWork() bool {
 	if runShepherdKW == nil {
 		return false // called before initKernelWorkers
 	}
-	return runShepherdKW.Pending() || uringConnectKW.Pending()
+	return runShepherdKW.Pending() || uringConnectKW.Pending() || cloneExecKW.Pending()
 }

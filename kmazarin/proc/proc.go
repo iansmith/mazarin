@@ -166,6 +166,17 @@ type Shepherd struct {
 	// GetEnviron.
 	Environ    [MaxEnvironBytes]byte
 	EnvironLen uint32
+
+	// MAZ-75: buffered in-child intent from clone_exec. Set by the kernel
+	// during DoCloneExecWork; consumed and cleared by the new shepherd's
+	// startup stub (landed via MAZ-78/79) BEFORE exec'ing the target ELF.
+	// Empty / zero for shepherds spawned outside clone_exec (boot-time
+	// launched, etc.). See kmazarin/proc/clone_exec.go for the type defs
+	// and the storage-vs-application split.
+	StartupIntent    [MaxStartupIntentOps]CloneExecIntentOp
+	NumStartupIntent uint32
+	StartupCwd       [MaxStartupCwdBytes]byte
+	StartupCwdLen    uint32
 }
 
 // Id implements the ds.Ider interface for Shepherd.

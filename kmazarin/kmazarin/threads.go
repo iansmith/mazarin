@@ -1536,6 +1536,7 @@ func KernelIdleLoop() {
 		runShepherdKW.Relay()
 		epollKW.Relay()
 		uringConnectKW.Relay()
+		cloneExecKW.Relay()
 
 		// NOTE: runtime.Gosched() was removed here. When Gosched runs Go's
 		// internal goroutine scheduler, goroutines doing SVC sched_yield cause
