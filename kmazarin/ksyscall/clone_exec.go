@@ -21,15 +21,14 @@
 // unexported ELF/address-space helpers (loadELF, copyPagesFromUser,
 // parseELFHeader, setupUserStack via loadELF, buildSymbolTable, …).
 //
-// Error-teardown scope (MAZ-75 ships option (a): happy-path + best-effort).
-// The kmem inverse-teardown primitives needed to fully unwind a partial init
-// (FreeProcessPageTable, an UndoELFLoad handle, a partial-Spans cleanup) do
-// not exist yet; building them is split out to MAZ-108. The two leak sites on
-// the failure path below carry TODO(MAZ-108) markers describing exactly what
-// leaks. Note the allocation order: the child PID + Shepherd slot are not
-// created until CreateUserspaceThread, which runs AFTER the only realistic
-// late-init failure (loadELF) — so a loadELF failure leaks only address-space
-// memory, never a PID or Shepherd slot.
+// Error teardown (MAZ-108): each late-init failure branch (framebuffer/
+// constraint map, loadELF) calls kmem.FreeProcessPageTable(childL0PA), which
+// reclaims the child L0, its on-demand L1/L2/L3 tables, and any segment/stack
+// frames mapped before the failure — in one walk, no per-segment undo handle.
+// Note the allocation order: the child PID + Shepherd slot are not created
+// until CreateUserspaceThread, which runs AFTER the only realistic late-init
+// failure (loadELF) — so a loadELF failure leaks neither a PID nor a Shepherd
+// slot, only address-space memory, which FreeProcessPageTable now reclaims.
 package ksyscall
 
 import (
@@ -128,16 +127,12 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	fbPA := gpu.GetFramebufferPA()
 	fbSize := uintptr(gpu.GetFramebufferSize())
 	if !kmem.MapUserFramebufferWithL0(fbPA, fbSize, childL0PA) {
-		// TODO(MAZ-108): release childL0PA via kmem.FreeProcessPageTable once
-		// it exists. Currently leaks ~16 KiB of page-table memory on this
-		// failure path. See findings.md (MAZ-75) and MAZ-108.
+		kmem.FreeProcessPageTable(childL0PA) // reclaim the child page table (MAZ-108)
 		klog.Errf("[CloneExec] ERROR: MapUserFramebufferWithL0 failed\n")
 		return ceENOMEM
 	}
 	if !kmem.MapUserConstraintPagesWithL0(childL0PA) {
-		// TODO(MAZ-108): release childL0PA + undo the framebuffer mapping via
-		// kmem.FreeProcessPageTable once it exists. Currently leaks the page
-		// table + framebuffer mapping. See findings.md (MAZ-75) and MAZ-108.
+		kmem.FreeProcessPageTable(childL0PA) // reclaim page table + framebuffer mapping (MAZ-108)
 		klog.Errf("[CloneExec] ERROR: MapUserConstraintPagesWithL0 failed\n")
 		return ceENOMEM
 	}
@@ -154,12 +149,12 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	// injects, which it needs to run correctly under this kernel.
 	loadedProc, err := loadELF(elfData, filename, childL0PA, 0, cloneExecExtraArgs(req))
 	if err != nil {
-		// TODO(MAZ-108): undo loadELF's segment + stack mappings and release
-		// childL0PA via kmem.UndoELFLoad + kmem.FreeProcessPageTable once they
-		// exist. Currently leaks the page table plus whatever segment/stack
-		// pages loadELF mapped before failing. No PID/Shepherd slot has been
-		// allocated yet (CreateUserspaceThread runs below), so nothing else
-		// needs reclaiming. See findings.md (MAZ-75) and MAZ-108.
+		// Reclaim the child page table plus every segment/stack frame loadELF
+		// mapped before failing — a single FreeProcessPageTable walk covers the
+		// L0, the on-demand L1/L2/L3 tables, and the leaf frames (MAZ-108). No
+		// PID/Shepherd slot has been allocated yet (CreateUserspaceThread runs
+		// below), so nothing else needs reclaiming.
+		kmem.FreeProcessPageTable(childL0PA)
 		klog.Errf("[CloneExec] ERROR: loadELF failed err=%v\n", err)
 		return ceENOEXEC
 	}

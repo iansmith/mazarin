@@ -665,6 +665,14 @@ func simpleMain() {
 		ksyscall.SetShepherdMemLimitMB(kernelCfg.GoMemLimitMB)
 	}
 
+	// MAZ-108 kmem teardown leak-soak self-test. Gated by config; OFF by
+	// default. Runs HERE — before launchEmbeddedFS and before EnableIRQs/timer
+	// below — so the system is quiescent (only thread 0 active) and the
+	// free-frame count it measures isn't perturbed by shepherd allocations.
+	if kernelCfg.KmemLeakTest {
+		runKmemLeakSelfTest()
+	}
+
 	// Launch the embedded fs shepherd from memory — no disk I/O needed.
 	// fs reads /startup.toml from disk and launches all [[shepherd]] entries.
 	launchEmbeddedFS()

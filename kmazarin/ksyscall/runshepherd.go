@@ -177,12 +177,14 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	fbPA := gpu.GetFramebufferPA()
 	fbSize := uintptr(gpu.GetFramebufferSize())
 	if !kmem.MapUserFramebufferWithL0(fbPA, fbSize, processL0PA) {
+		kmem.FreeProcessPageTable(processL0PA) // reclaim the page table (MAZ-108)
 		klog.Errf("[RunShepherd] ERROR: MapUserFramebufferWithL0 failed name=%s\n", req.Name)
 		return int64(errNoSpace)
 	}
 
 	// Map constraint shared pages read-only into shepherd address space.
 	if !kmem.MapUserConstraintPagesWithL0(processL0PA) {
+		kmem.FreeProcessPageTable(processL0PA) // reclaim page table + framebuffer mapping (MAZ-108)
 		klog.Errf("[RunShepherd] ERROR: MapUserConstraintPagesWithL0 failed name=%s\n", req.Name)
 		return int64(errNoSpace)
 	}
@@ -199,6 +201,9 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	// Load ELF into the new shepherd's page table
 	loadedProc, err := loadELF(elfData, "/"+req.Name+".elf", processL0PA, 0, req.Args)
 	if err != nil {
+		// Reclaim the page table + any segment/stack frames loadELF mapped
+		// before failing — one FreeProcessPageTable walk covers it (MAZ-108).
+		kmem.FreeProcessPageTable(processL0PA)
 		klog.Errf("[RunShepherd] ERROR: loadELF failed name=%s err=%v\n", req.Name, err)
 		return int64(errInvalidELF)
 	}
