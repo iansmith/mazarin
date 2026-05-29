@@ -31,46 +31,48 @@
 
 package proc
 
-// Sizing constants. Tunable; chosen to cover the os/exec.Cmd pattern (3-5
-// FD ops typical, occasional Cmd.Dir for chdir).
+import "mazzy/shared/linuxabi"
+
+// SINGLE SOURCE OF TRUTH (MAZ-118 locked decision).
+//
+// The clone_exec buffered-intent encoding lives ONCE in shared/linuxabi and is
+// imported by BOTH the kernel (here) and the linux shepherd
+// (maz/linux/internal/cloneexec). Below we reconcile proc to that definition
+// via Go TYPE ALIASES (`=`) and const re-exports, so the already-merged MAZ-75
+// kernel call sites (Shepherd.StartupIntent array dimensions, ksyscall
+// cap-checks, `{Kind: IntentDup3, ...}` literals) compile unchanged while there
+// is no second copy to drift. See shared/linuxabi/cloneexec.go for the spec.
+
+// Sizing caps, re-exported from linuxabi. Used as array dimensions
+// (Shepherd.StartupIntent / StartupCwd) and ksyscall cap-checks.
 const (
 	// MaxStartupIntentOps caps the number of FD-flavored intent ops the
-	// kernel stores per shepherd. os/exec typically uses 3-5 (dup3 stdout +
-	// dup3 stderr + close pipe ends + F_SETFD on inherited FDs). 16 covers
-	// comfortably; bump if a real workload hits the cap.
-	MaxStartupIntentOps = 16
+	// kernel stores per shepherd.
+	MaxStartupIntentOps = linuxabi.MaxStartupIntentOps
 
 	// MaxStartupCwdBytes caps the chdir target path stored on the child
-	// shepherd. Linux PATH_MAX is 4096 but most paths are < 256.
-	MaxStartupCwdBytes = 256
+	// shepherd.
+	MaxStartupCwdBytes = linuxabi.MaxStartupCwdBytes
 )
 
-// CloneExecIntentKind discriminates the buffered FD-flavored ops.
-// IntentNone is the sentinel zero value so unused trailing slots in
-// Shepherd.StartupIntent don't get misinterpreted as real ops.
-type CloneExecIntentKind uint8
+// CloneExecIntentKind is an alias of linuxabi.IntentKind — the same type the
+// shepherd buffers, so the two sides cannot drift.
+type CloneExecIntentKind = linuxabi.IntentKind
 
+// Kind sentinels, re-exported from linuxabi so existing call sites keep using
+// the unqualified names.
 const (
-	IntentNone   CloneExecIntentKind = iota // sentinel / zero
-	IntentDup3                              // Arg0=oldfd, Arg1=newfd, Arg2=flags
-	IntentClose                             // Arg0=fd
-	IntentFSetFD                            // Arg0=fd, Arg1=flags (FD_CLOEXEC, etc.)
+	IntentNone   = linuxabi.IntentNone   // sentinel / zero
+	IntentDup3   = linuxabi.IntentDup3   // Arg0=oldfd, Arg1=newfd, Arg2=flags
+	IntentClose  = linuxabi.IntentClose  // Arg0=fd
+	IntentFSetFD = linuxabi.IntentFSetFD // Arg0=fd, Arg1=flags (FD_CLOEXEC, etc.)
 )
 
-// CloneExecIntentOp is one buffered FD-flavored op. Size is pinned at 16
-// bytes (see TestCloneExecIntentOpSize); enlarging this struct inflates
-// the per-Shepherd StartupIntent array, so any size change is deliberate.
-//
-// Chdir is NOT represented here — at most one chdir per clone_exec is
-// meaningful, so it lives directly on Shepherd.StartupCwd instead of
-// burning a 256-byte path field on every IntentOp.
-type CloneExecIntentOp struct {
-	Kind CloneExecIntentKind
-	_pad [3]byte // alignment to 4 so Arg0 is 4-byte-aligned
-	Arg0 int32
-	Arg1 int32
-	Arg2 int32
-}
+// CloneExecIntentOp is an alias of linuxabi.IntentOp. Size is pinned at 16
+// bytes by the shared definition (the per-Shepherd StartupIntent array budget
+// assumes 16-byte ops). Chdir is NOT an op kind — it lives directly on
+// Shepherd.StartupCwd, not here.
+type CloneExecIntentOp = linuxabi.IntentOp
 
 // CloneExecRequest is the transient work-request passed from the shepherd-
 // side caller (eventually maz/linux's execve dispatch, MAZ-79) to the kernel

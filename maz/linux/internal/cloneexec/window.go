@@ -45,15 +45,6 @@
 // only shared structure; if MAZ-78 introduces concurrent dispatch across
 // TIDs, wrap the Registry with a sync.Mutex.
 //
-// =====================================================================
-// STUB — Phase 0 (MAZ-118). The types and method set below exist so the RED
-// tests in window_test.go COMPILE and FAIL on assertions (RED state),
-// matching the processrecord Phase-0 pattern. The bodies are deliberately
-// non-functional (they return zero values, NOT panics, so the test binary
-// runs and each test reports a clean per-assertion FAIL); the implementation
-// phase replaces them with the real state machine.
-// =====================================================================
-
 package cloneexec
 
 import (
@@ -99,13 +90,18 @@ func New() *Registry {
 // Open begins a buffering window for tid (called by MAZ-78 on a
 // process-flavor clone). Returns ErrWindowExists if one is already open.
 func (r *Registry) Open(tid int32) error {
-	return nil // STUB
+	if _, ok := r.windows[tid]; ok {
+		return ErrWindowExists
+	}
+	r.windows[tid] = &window{}
+	return nil
 }
 
 // IsOpen reports whether tid currently has a window (open or poisoned but not
 // yet flushed/aborted).
 func (r *Registry) IsOpen(tid int32) bool {
-	return false // STUB
+	_, ok := r.windows[tid]
+	return ok
 }
 
 // Buffer appends one FD-flavored op (dup3 / close / F_SETFD) to tid's window.
@@ -114,7 +110,28 @@ func (r *Registry) IsOpen(tid int32) bool {
 // unrecognized) kind is treated as an unbufferable syscall and poisons the
 // window.
 func (r *Registry) Buffer(tid int32, op linuxabi.IntentOp) error {
-	return nil // STUB
+	w, ok := r.windows[tid]
+	if !ok {
+		return ErrNoWindow
+	}
+	if w.poisoned {
+		return ErrPoisoned
+	}
+	switch op.Kind {
+	case linuxabi.IntentDup3, linuxabi.IntentClose, linuxabi.IntentFSetFD:
+		// recognized — fall through to the cap check
+	default:
+		// IntentNone or any unknown kind is unbufferable: poison, don't append.
+		w.poisoned = true
+		return ErrPoisoned
+	}
+	if len(w.ops) >= linuxabi.MaxStartupIntentOps {
+		// At cap: poison without truncating or appending.
+		w.poisoned = true
+		return ErrIntentOverflow
+	}
+	w.ops = append(w.ops, op)
+	return nil
 }
 
 // Poison marks tid's window poisoned (called by MAZ-78 when an unrecognized /
@@ -122,14 +139,33 @@ func (r *Registry) Buffer(tid int32, op linuxabi.IntentOp) error {
 // (so the matching execve can observe the failure via Flush) but Flush will
 // refuse to emit its intent.
 func (r *Registry) Poison(tid int32) error {
-	return nil // STUB
+	w, ok := r.windows[tid]
+	if !ok {
+		return ErrNoWindow
+	}
+	w.poisoned = true
+	return nil
 }
 
 // SetCwd records a chdir target for tid's window. Replaces any prior cwd
 // (last chdir wins). A path longer than linuxabi.MaxStartupCwdBytes returns
 // ErrCwdOverflow and poisons the window.
 func (r *Registry) SetCwd(tid int32, path []byte) error {
-	return nil // STUB
+	w, ok := r.windows[tid]
+	if !ok {
+		return ErrNoWindow
+	}
+	if w.poisoned {
+		return ErrPoisoned
+	}
+	if len(path) > linuxabi.MaxStartupCwdBytes {
+		// Over cap: poison without overwriting the prior cwd with a truncated value.
+		w.poisoned = true
+		return ErrCwdOverflow
+	}
+	// Copy (don't alias the caller's slice); last chdir wins.
+	w.cwd = append([]byte(nil), path...)
+	return nil
 }
 
 // Flush consumes tid's window and returns the buffered ops + cwd for the
@@ -137,18 +173,27 @@ func (r *Registry) SetCwd(tid int32, path []byte) error {
 // second Flush returns ErrNoWindow). A poisoned window returns ErrPoisoned
 // and emits no partial intent. cwd is nil when no chdir was set.
 func (r *Registry) Flush(tid int32) (ops []linuxabi.IntentOp, cwd []byte, err error) {
-	return nil, nil, nil // STUB
+	w, ok := r.windows[tid]
+	if !ok {
+		return nil, nil, ErrNoWindow
+	}
+	// Consumed-on-flush even when poisoned, so the failure is reported once.
+	delete(r.windows, tid)
+	if w.poisoned {
+		return nil, nil, ErrPoisoned
+	}
+	return w.ops, w.cwd, nil
 }
 
 // Abort drops tid's window without producing intent. Called on thread-exit or
 // shepherd cleanup (syscalls.go) when a clone had no matching execve.
 // Idempotent — aborting an absent TID is a no-op.
 func (r *Registry) Abort(tid int32) {
-	// STUB
+	delete(r.windows, tid)
 }
 
 // Len returns the number of windows currently tracked (open + poisoned, not
 // yet flushed/aborted). Used to assert no leaked windows.
 func (r *Registry) Len() int {
-	return 0 // STUB
+	return len(r.windows)
 }
