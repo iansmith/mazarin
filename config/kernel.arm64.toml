@@ -34,3 +34,9 @@ preempt_after_ticks = 33
 # output is slow, but means serial logs won't contain shepherd output.
 suppress_serial_stdio_copy = false
 suppress_kernel_serial = false
+
+# Diagnostics
+# MAZ-108: run the kmem teardown leak-soak self-test at boot (verifies
+# FreeProcessPageTable reclaims process page tables with no frame leak). OFF by
+# default — flip to true to re-run the verification.
+kmem_leak_test = false

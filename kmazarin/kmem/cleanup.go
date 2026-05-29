@@ -77,7 +77,27 @@ func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGrou
 	// When freeLeaves is true, also frees leaf (data) pages by walking L3 entries
 	// before freeing the L3 table — used by the deferred cleanup path where Spans
 	// is empty and Phase 1 freed nothing.
-	walkAndFreePageTablePages(l0PA, freeLeaves)
+	// teardown=false: preserve existing shepherd-exit semantics (PT pages that
+	// happen to be PD_PINNED are left alone; every leaf goes through releasePageByPA).
+	walkAndFreePageTablePages(l0PA, freeLeaves, false)
+}
+
+// releasePTPage frees a page-table page. When unpin is true it first clears
+// PD_PINNED on the page so a process page table built on the kernel worker —
+// whose PT pages get typed PageKernelPT (because pfContextShepherdID==0) and
+// therefore auto-pinned by SetPageDescriptor — can still be reclaimed. This is
+// safe only for page-table pages reached by walking a *process* L0: on ARM64
+// those are entirely process-private (TTBR0 is user-only), and on x86_64/RISC-V
+// the walk already skips kernel-shared L1 entries (platformIsSharedKernelL1).
+// Leaf frames are released via releasePageByPA, which still honors PD_PINNED, so
+// genuinely pinned leaves (framebuffer, constraint shared block) stay protected.
+func releasePTPage(pa uintptr, unpin bool) bool {
+	if unpin {
+		if desc := GetPageDescriptor(pa); desc != nil {
+			desc.Flags &^= PD_PINNED
+		}
+	}
+	return releasePageByPA(pa)
 }
 
 // ReleasePageByPA decrements the refcount for the physical page at pa and
@@ -144,8 +164,18 @@ func releasePageByPA(pa uintptr) bool {
 // frees each leaf (data) page before freeing the L3 table itself — used by the
 // deferred cleanup path where Phase 1 Spans walk freed nothing.
 //
+// When teardown is true (FreeProcessPageTable / process-teardown path):
+//   - intermediate/L0 page-table pages are force-freed even if PD_PINNED (see
+//     releasePTPage) — worker-built process PT pages get auto-pinned as
+//     PageKernelPT and must still be reclaimed; and
+//   - the freeLeaves walk frees only genuinely process-owned leaves, silently
+//     skipping shared/mapped-in frames (framebuffer, constraint block) rather
+//     than routing them through releasePageByPA (which would spam UNDERFLOW).
+// When teardown is false (shepherd-exit via CleanupShepherdPages), behavior is
+// unchanged: PT pages honor PD_PINNED and every leaf goes through releasePageByPA.
+//
 // Returns the total number of PT pages freed.
-func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool) int {
+func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool, teardown bool) int {
 	freed := 0
 
 	l0VA := paToVAOrCache(l0PA)
@@ -213,8 +243,22 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool) int {
 							l3e := *(*uint64)(unsafe.Pointer(l3VA + uintptr(l)*8))
 							if pteIsValid(l3e) {
 								leafPA := pteExtractPA(l3e)
-								if desc := GetPageDescriptor(leafPA); desc != nil && (desc.Flags&PD_FILE_BACKED) != 0 {
+								desc := GetPageDescriptor(leafPA)
+								if desc != nil && (desc.Flags&PD_FILE_BACKED) != 0 {
 									continue // Handler still holds PTE; defer to handleFlushReply
+								}
+								if teardown {
+									// Process-teardown path: free only genuinely
+									// process-owned leaves. Shared/mapped-in frames
+									// (framebuffer, constraint block) are mapped by VA
+									// into the process but not owned by it — they have
+									// RefCount<=0 or PD_PINNED. Skip them silently;
+									// routing them through releasePageByPA would spam the
+									// UNDERFLOW bug-detector (the framebuffer alone is
+									// thousands of frames) without freeing anything.
+									if desc == nil || desc.RefCount <= 0 || (desc.Flags&PD_PINNED) != 0 {
+										continue
+									}
 								}
 								releasePageByPA(leafPA)
 							}
@@ -223,22 +267,22 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool) int {
 				}
 
 				// Free the L3 page table page itself.
-				if releasePageByPA(l3PA) {
+				if releasePTPage(l3PA, teardown) {
 					freed++
 				}
 			}
 			// Free the L2 page table page itself.
-			if releasePageByPA(l2PA) {
+			if releasePTPage(l2PA, teardown) {
 				freed++
 			}
 		}
 		// Free the L1 page table page itself.
-		if releasePageByPA(l1PA) {
+		if releasePTPage(l1PA, teardown) {
 			freed++
 		}
 	}
 	// Free the L0 root page itself.
-	if releasePageByPA(l0PA) {
+	if releasePTPage(l0PA, teardown) {
 		freed++
 	}
 

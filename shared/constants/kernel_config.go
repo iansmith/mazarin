@@ -21,4 +21,11 @@ type KernelConfig struct {
 	// Serial output
 	SuppressSerialStdioCopy bool `toml:"suppress_serial_stdio_copy"`
 	SuppressKernelSerial    bool `toml:"suppress_kernel_serial"`
+
+	// Diagnostics
+	// KmemLeakTest runs the MAZ-108 kmem teardown leak-soak self-test at boot
+	// (before launching shepherds, while the system is quiescent) and logs
+	// before/after free-frame counts. OFF by default; enable only for
+	// teardown-primitive verification.
+	KmemLeakTest bool `toml:"kmem_leak_test"`
 }
