@@ -2543,6 +2543,7 @@ func createCloneExecThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.MPtr = 0
 	t.GPtr = 0
 	t.EntryFunc = 0
+	t.InCloneSetup = 0         // Clear in case slot was reused from a clone child
 	t.CloneNeedsParentRegs = 0 // Clear in case slot was reused from a clone child
 
 	// Set up initial context for userspace execution
