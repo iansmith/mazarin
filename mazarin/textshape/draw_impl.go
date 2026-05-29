@@ -29,8 +29,18 @@ type pathSeg struct {
 
 // graphicsState holds all saveable/restorable drawing state (no image buffer).
 type graphicsState struct {
-	matrix        Matrix
-	color         color.Color
+	matrix Matrix
+	// proj holds an optional 3×3 projective (homography) transform in
+	// row-major order. When hasProj is true, point transforms use proj
+	// (with a perspective divide) instead of the affine `matrix`. This
+	// supports CSS 3D transforms with a perspective component, where a
+	// z=0 element plane projects to screen via a 2D homography rather
+	// than a 2D affine map. graphicsState is copied by value on
+	// Save/Restore, so these fields snapshot/restore automatically.
+	proj    [9]float64
+	hasProj bool
+
+	color color.Color
 	fillPattern   Pattern
 	strokePattern Pattern
 	lineWidth     float64
@@ -58,6 +68,15 @@ type DrawContextImpl struct {
 	// path state
 	path       []pathSeg
 	hasCurrent bool
+	// projBehindCamera is set while building a path under a projective
+	// (perspective) transform if any vertex falls on or behind the camera
+	// near-plane (homogeneous W ≤ projNearEpsilon). Such a primitive cannot
+	// be projected correctly — W ≤ 0 mirrors geometry to the front and W ≈ 0
+	// explodes to unbounded screen coordinates — so the whole primitive is
+	// dropped at fill/stroke time rather than rasterizing garbage. Reset by
+	// ClearPath. (A future near-plane clip would instead split the primitive
+	// at W = ε; dropping is the conservative interim per the reviewer note.)
+	projBehindCamera bool
 	startX     float64
 	startY     float64
 	currentX   float64
@@ -485,14 +504,27 @@ func (dc *DrawContextImpl) ClipBounds() image.Rectangle {
 }
 
 func (dc *DrawContextImpl) Translate(x, y float64) {
+	if dc.gs.hasProj {
+		dc.gs.proj = mul3(dc.gs.proj, [9]float64{1, 0, x, 0, 1, y, 0, 0, 1})
+		return
+	}
 	dc.gs.matrix = dc.gs.matrix.Translate(x, y)
 }
 
 func (dc *DrawContextImpl) Scale(x, y float64) {
+	if dc.gs.hasProj {
+		dc.gs.proj = mul3(dc.gs.proj, [9]float64{x, 0, 0, 0, y, 0, 0, 0, 1})
+		return
+	}
 	dc.gs.matrix = dc.gs.matrix.Scale(x, y)
 }
 
 func (dc *DrawContextImpl) Rotate(angle float64) {
+	if dc.gs.hasProj {
+		c, s := math.Cos(angle), math.Sin(angle)
+		dc.gs.proj = mul3(dc.gs.proj, [9]float64{c, -s, 0, s, c, 0, 0, 0, 1})
+		return
+	}
 	dc.gs.matrix = dc.gs.matrix.Rotate(angle)
 }
 
@@ -504,22 +536,111 @@ func (dc *DrawContextImpl) RotateAbout(angle, x, y float64) {
 
 func (dc *DrawContextImpl) MultiplyMatrix(xx, yx, xy, yy, x0, y0 float64) {
 	m := Matrix{XX: xx, YX: yx, XY: xy, YY: yy, X0: x0, Y0: y0}
+	if dc.gs.hasProj {
+		// Already projective: fold the affine multiply into the
+		// homography so composition order matches the affine path
+		// (new transform applied to local coordinates first).
+		dc.gs.proj = mul3(dc.gs.proj, affineTo3(m))
+		return
+	}
 	dc.gs.matrix = m.Multiply(dc.gs.matrix)
+}
+
+// MultiplyProjectiveMatrix composes a 3×3 projective (homography) transform,
+// in row-major order, onto the current transform. After this call the
+// graphics state is in projective mode: point transforms apply the
+// homography with a perspective divide. Mirrors the role of MultiplyMatrix
+// for the affine case. Used to render CSS 3D transforms whose composed
+// projection of the z=0 element plane carries a perspective component.
+func (dc *DrawContextImpl) MultiplyProjectiveMatrix(m00, m01, m02, m10, m11, m12, m20, m21, m22 float64) {
+	m := [9]float64{m00, m01, m02, m10, m11, m12, m20, m21, m22}
+	if !dc.gs.hasProj {
+		// Promote the current affine matrix to a 3×3 base, then compose.
+		dc.gs.proj = affineTo3(dc.gs.matrix)
+		dc.gs.hasProj = true
+	}
+	// Apply m to the local point first (innermost), with the existing
+	// transform wrapping outside — matching MultiplyMatrix's composition
+	// order (verified: m.Multiply(g) applies m before g).
+	dc.gs.proj = mul3(dc.gs.proj, m)
 }
 
 // transformPoint applies the current matrix to a point.
 func (dc *DrawContextImpl) transformPoint(x, y float64) (float64, float64) {
+	if dc.gs.hasProj {
+		p := dc.gs.proj
+		X := p[0]*x + p[1]*y + p[2]
+		Y := p[3]*x + p[4]*y + p[5]
+		W := p[6]*x + p[7]*y + p[8]
+		if W > projNearEpsilon {
+			return X / W, Y / W
+		}
+		// On or behind the camera near-plane (W ≤ ε, incl. W ≤ 0). The
+		// perspective divide is invalid here: W < 0 mirrors geometry to the
+		// front, W ≈ 0 explodes to unbounded coordinates. Return the finite
+		// homogeneous numerators (never Inf/NaN) — any path containing such a
+		// vertex is flagged via projBehindCamera and dropped before raster,
+		// so these values are not drawn. callers that need the W (path
+		// building) use projW to set that flag.
+		return X, Y
+	}
 	return dc.gs.matrix.TransformPoint(x, y)
+}
+
+// projNearEpsilon is the camera near-plane threshold in homogeneous W. A
+// vertex with W ≤ projNearEpsilon is on/behind the near-plane and its
+// primitive is dropped (see projBehindCamera).
+const projNearEpsilon = 1e-6
+
+// projW returns the homogeneous W coordinate of (x,y) under the current
+// transform (1.0 when not in projective mode). Used during path building to
+// detect vertices on/behind the camera near-plane.
+func (dc *DrawContextImpl) projW(x, y float64) float64 {
+	if !dc.gs.hasProj {
+		return 1
+	}
+	p := dc.gs.proj
+	return p[6]*x + p[7]*y + p[8]
+}
+
+// notePathPoint flags the in-progress path if (x,y) — in pre-transform local
+// coordinates — lies on or behind the camera near-plane under a projective
+// transform. No-op in affine mode.
+func (dc *DrawContextImpl) notePathPoint(x, y float64) {
+	if dc.gs.hasProj && dc.projW(x, y) <= projNearEpsilon {
+		dc.projBehindCamera = true
+	}
 }
 
 // TransformPoint applies the current matrix to a point (exported, satisfies DrawContext interface).
 func (dc *DrawContextImpl) TransformPoint(x, y float64) (float64, float64) {
-	return dc.gs.matrix.TransformPoint(x, y)
+	return dc.transformPoint(x, y)
+}
+
+// affineTo3 expands a 2D affine Matrix into a row-major 3×3 homography.
+// Matrix maps (x,y) → (XX*x+XY*y+X0, YX*x+YY*y+Y0); the homogeneous row is
+// [0 0 1].
+func affineTo3(m Matrix) [9]float64 {
+	return [9]float64{
+		m.XX, m.XY, m.X0,
+		m.YX, m.YY, m.Y0,
+		0, 0, 1,
+	}
+}
+
+// mul3 returns a*b for two row-major 3×3 matrices.
+func mul3(a, b [9]float64) [9]float64 {
+	return [9]float64{
+		a[0]*b[0] + a[1]*b[3] + a[2]*b[6], a[0]*b[1] + a[1]*b[4] + a[2]*b[7], a[0]*b[2] + a[1]*b[5] + a[2]*b[8],
+		a[3]*b[0] + a[4]*b[3] + a[5]*b[6], a[3]*b[1] + a[4]*b[4] + a[5]*b[7], a[3]*b[2] + a[4]*b[5] + a[5]*b[8],
+		a[6]*b[0] + a[7]*b[3] + a[8]*b[6], a[6]*b[1] + a[7]*b[4] + a[8]*b[7], a[6]*b[2] + a[7]*b[5] + a[8]*b[8],
+	}
 }
 
 // --- Path building ---
 
 func (dc *DrawContextImpl) MoveTo(x, y float64) {
+	dc.notePathPoint(x, y)
 	tx, ty := dc.transformPoint(x, y)
 	dc.path = append(dc.path, pathSeg{op: pathMoveTo, args: [6]float64{tx, ty}})
 	dc.startX, dc.startY = tx, ty
@@ -532,6 +653,7 @@ func (dc *DrawContextImpl) LineTo(x, y float64) {
 		dc.MoveTo(x, y)
 		return
 	}
+	dc.notePathPoint(x, y)
 	tx, ty := dc.transformPoint(x, y)
 	dc.path = append(dc.path, pathSeg{op: pathLineTo, args: [6]float64{tx, ty}})
 	dc.currentX, dc.currentY = tx, ty
@@ -541,6 +663,8 @@ func (dc *DrawContextImpl) QuadraticTo(x1, y1, x2, y2 float64) {
 	if !dc.hasCurrent {
 		dc.MoveTo(x1, y1)
 	}
+	dc.notePathPoint(x1, y1)
+	dc.notePathPoint(x2, y2)
 	tx1, ty1 := dc.transformPoint(x1, y1)
 	tx2, ty2 := dc.transformPoint(x2, y2)
 	dc.path = append(dc.path, pathSeg{op: pathQuadTo, args: [6]float64{tx1, ty1, tx2, ty2}})
@@ -551,6 +675,9 @@ func (dc *DrawContextImpl) CubicTo(x1, y1, x2, y2, x3, y3 float64) {
 	if !dc.hasCurrent {
 		dc.MoveTo(x1, y1)
 	}
+	dc.notePathPoint(x1, y1)
+	dc.notePathPoint(x2, y2)
+	dc.notePathPoint(x3, y3)
 	tx1, ty1 := dc.transformPoint(x1, y1)
 	tx2, ty2 := dc.transformPoint(x2, y2)
 	tx3, ty3 := dc.transformPoint(x3, y3)
@@ -568,6 +695,7 @@ func (dc *DrawContextImpl) ClosePath() {
 func (dc *DrawContextImpl) ClearPath() {
 	dc.path = dc.path[:0]
 	dc.hasCurrent = false
+	dc.projBehindCamera = false
 }
 
 // --- Shape primitives ---
@@ -687,6 +815,12 @@ func (dc *DrawContextImpl) pathBounds() image.Rectangle {
 // fillWithPattern rasterizes the current path as a fill onto dc.im using the given pattern.
 func (dc *DrawContextImpl) fillWithPattern(pat Pattern) {
 	if len(dc.path) == 0 {
+		return
+	}
+	if dc.projBehindCamera {
+		// A vertex of this path is on/behind the camera near-plane; the
+		// projection is invalid. Drop the primitive rather than rasterize
+		// mirrored/exploded geometry. See projBehindCamera.
 		return
 	}
 
@@ -1140,6 +1274,10 @@ func (dc *DrawContextImpl) strokeWithPattern(pat Pattern) {
 	if len(dc.path) == 0 {
 		return
 	}
+	if dc.projBehindCamera {
+		// See fillWithPattern: a vertex is on/behind the near-plane; drop.
+		return
+	}
 	expanded := dc.strokeExpand()
 	if len(expanded) == 0 {
 		return
@@ -1159,7 +1297,33 @@ func (dc *DrawContextImpl) strokeWithPattern(pat Pattern) {
 
 // FillRectangle fills an axis-aligned rectangle by writing pixels directly,
 // bypassing the rasterizer. Uses the current fill pattern.
+// fillRectAsPath fills a rectangle through the general path rasterizer (four
+// transformed corners), so it is correct under any current transform —
+// including rotation, shear, and projective (perspective) transforms — unlike
+// the two-corner axis-aligned fast path in FillRectangle. It saves and
+// restores any path the caller was mid-building.
+func (dc *DrawContextImpl) fillRectAsPath(x, y, w, h float64) {
+	savedPath, savedCur, savedBehind := dc.path, dc.hasCurrent, dc.projBehindCamera
+	dc.path, dc.hasCurrent, dc.projBehindCamera = nil, false, false
+	dc.MoveTo(x, y)
+	dc.LineTo(x+w, y)
+	dc.LineTo(x+w, y+h)
+	dc.LineTo(x, y+h)
+	dc.ClosePath()
+	dc.fillWithPattern(dc.gs.fillPattern)
+	dc.path, dc.hasCurrent, dc.projBehindCamera = savedPath, savedCur, savedBehind
+}
+
 func (dc *DrawContextImpl) FillRectangle(x, y, w, h float64) {
+	// The two-corner fast path below fills the axis-aligned screen bbox
+	// between the transformed corners — correct only when the current
+	// transform maps axes to axes (pure translate/scale). Under rotation,
+	// shear, or a projective transform the rectangle becomes a (possibly
+	// non-affine) quad, so route through the general path rasterizer.
+	if dc.gs.hasProj || dc.gs.matrix.XY != 0 || dc.gs.matrix.YX != 0 {
+		dc.fillRectAsPath(x, y, w, h)
+		return
+	}
 	tx0, ty0 := dc.transformPoint(x, y)
 	tx1, ty1 := dc.transformPoint(x+w, y+h)
 	if tx0 > tx1 {
@@ -1590,6 +1754,17 @@ func (dc *DrawContextImpl) DrawImage(im image.Image, x, y int) {
 // DrawImageAnchored draws the image, offsetting by -ax*w and -ay*h from (x,y).
 // Uses BiLinear transform when the matrix has rotation/scale; plain draw.Draw otherwise.
 func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay float64) {
+	// Projective (perspective) transforms are not supported for raster image
+	// content: the image sampler below builds an affine f64.Aff3 from
+	// gs.matrix and xdraw.BiLinear.Transform is affine-only — a homography
+	// cannot be represented, and under projective mode gs.matrix is stale
+	// (it diverged from the active homography at promotion). Drawing here
+	// would silently use the wrong transform, so skip deliberately rather
+	// than render incorrectly. CSS-3D-transformed images are a documented
+	// limitation; a per-pixel inverse-homography sampler is future work.
+	if dc.gs.hasProj {
+		return
+	}
 	s := im.Bounds().Size()
 	ox := x - int(ax*float64(s.X))
 	oy := y - int(ay*float64(s.Y))
