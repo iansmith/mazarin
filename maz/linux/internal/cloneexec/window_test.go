@@ -152,9 +152,9 @@ func TestIntentOverflowFails(t *testing.T) {
 		t.Errorf("Buffer past cap returned %v, want ErrIntentOverflow", overflowErr)
 	}
 
-	// Overflow poisons: Flush must not hand back the truncated prefix.
-	if _, _, err := r.Flush(tid); err == nil {
-		t.Errorf("Flush after overflow returned nil err; want a failure (truncated intent must not escape)")
+	// Overflow poisons: Flush must hand back ErrPoisoned, not the truncated prefix.
+	if _, _, err := r.Flush(tid); !errors.Is(err, ErrPoisoned) {
+		t.Errorf("Flush after overflow returned %v, want ErrPoisoned (truncated intent must not escape)", err)
 	}
 }
 
@@ -180,8 +180,8 @@ func TestCwdOverflowFails(t *testing.T) {
 
 	// The over-long cwd must not have replaced the at-cap value with a
 	// truncated string; and an overflow poisons the window.
-	if _, _, err := r.Flush(tid); err == nil {
-		t.Errorf("Flush after cwd overflow returned nil err; want a failure (truncated cwd must not escape)")
+	if _, _, err := r.Flush(tid); !errors.Is(err, ErrPoisoned) {
+		t.Errorf("Flush after cwd overflow returned %v, want ErrPoisoned (truncated cwd must not escape)", err)
 	}
 }
 
