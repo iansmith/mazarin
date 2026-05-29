@@ -2465,10 +2465,43 @@ func GetShepherdByPID(pid ShepherdId) *Shepherd {
 	return proc.FindShepherdBySID(pid)
 }
 
-// createUserspaceThreadImpl is the internal implementation with sf for testing
+// CreateCloneExecThread creates the child thread for a clone_exec, populating
+// its race-sensitive startup state (parent identity + buffered intent + chdir
+// target) UNDER schedulerLock, BEFORE the child is enqueued to the ready queue.
+//
+// MAZ-112: CreateUserspaceThread enqueues the child (State=ThreadReady) before
+// returning, so the child is schedulable immediately. The clone_exec worker
+// (DoCloneExecWork) previously populated ParentPID / StartupIntent / StartupCwd
+// AFTER the create call, via a lock-free scan — leaving a window where a
+// consumer racing the child's first instruction could observe them unset
+// (MAZ-113 is the future reader). Folding the population into the locked
+// critical section here closes that window. Returns the child TID and PID so
+// the caller needn't re-find the new shepherd by its L0 page-table address.
+//
+// The non-race-sensitive fields (SymbolTable / HighestVA / Filename, the uring
+// IPC trio, Spans) stay in DoCloneExecWork, OUTSIDE the lock — AllocUringIPCRing
+// is not nosplit, allocates pages, and takes the buddy lock, so it must never
+// run under schedulerLock.
 //
 //go:nosplit
-func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16 {
+func CreateCloneExecThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, parentPID ShepherdId, intent []proc.CloneExecIntentOp, cwd []byte) (tid int16, pid ShepherdId) {
+	return createCloneExecThreadImpl(&NormalSchedulerFunc, entryPoint, stackPtr, pageTableL0PA, parentPID, intent, cwd)
+}
+
+// createCloneExecThreadImpl is the shared internal implementation behind both
+// CreateUserspaceThread (empty startup state) and CreateCloneExecThread. The sf
+// parameter lets the boot self-test inject a SchedulerFunc whose StateCheck
+// reads back the populated fields at "create-userspace-thread-complete".
+//
+// SetStartupState is called after Shepherds.Allocate and before
+// enqueueReadySchedLockHeld, so the race-sensitive fields are visible the
+// moment the child becomes schedulable. SetStartupState is nosplit and copies
+// only into fixed arrays — no heap allocation in the lock-held region. For the
+// boot-launched path (parentPID=0, nil intent/cwd) it is a no-op on the freshly
+// zeroed slot.
+//
+//go:nosplit
+func createCloneExecThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr, parentPID ShepherdId, intent []proc.CloneExecIntentOp, cwd []byte) (tid int16, pid ShepherdId) {
 	// BEGIN CRITICAL SECTION - protect all scheduling data structures:
 	// shepherdIdAllocator, proc.Shepherds, threadList, readyQueue
 	savedDAIF := sf.DisableAndSaveDAIF()
@@ -2480,20 +2513,24 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	shepherdId := shepherdIdAllocator.Acquire()
 	p, err := proc.Shepherds.Allocate(shepherdId)
 	if err != nil {
-		panic("createUserspaceThreadImpl: shepherd storage allocation failed")
+		panic("createCloneExecThreadImpl: shepherd storage allocation failed")
 	}
 	p.PID = shepherdId
 	p.PageTableL0PA = pageTableL0PA
 	p.ThreadCount = 1 // This shepherd starts with one thread
 
+	// MAZ-112: populate the race-sensitive startup state as a unit, BEFORE the
+	// child is enqueued and becomes schedulable.
+	p.SetStartupState(parentPID, intent, cwd)
+
 	// Allocate thread slot from static list (panics if exhausted)
 	_, t := threadList.Allocate()
 
 	// Acquire unique thread ID from allocator
-	tid := threadIdAllocator.Acquire()
+	newTID := threadIdAllocator.Acquire()
 
 	// Fill in thread state
-	t.TID = tid           // Unique ID from allocator
+	t.TID = newTID        // Unique ID from allocator
 	t.PID = shepherdId    // Shepherd (process) ID for ASID
 	t.State = ThreadReady // Not running yet - deadlines set when scheduled
 	t.PageTableL0PA = pageTableL0PA
@@ -2516,7 +2553,7 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.StolenFromCPU = -1
 
 	// Add to ready queue (Pluck first just in case TID was reused)
-	pluckFromAllQueues(tid)
+	pluckFromAllQueues(newTID)
 	enqueueReadySchedLockHeld(t)
 
 	if sf.StateCheck != nil {
@@ -2527,7 +2564,19 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
-	return int16(tid)
+	return int16(newTID), shepherdId
+}
+
+// createUserspaceThreadImpl is the internal implementation with sf for testing.
+// A boot-launched shepherd carries no clone_exec startup state, so this
+// delegates to createCloneExecThreadImpl with an empty parent / intent / cwd —
+// SetStartupState(0, nil, nil) is a no-op on the freshly zeroed Shepherd slot,
+// so the resulting thread is identical to the pre-MAZ-112 path.
+//
+//go:nosplit
+func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16 {
+	tid, _ := createCloneExecThreadImpl(sf, entryPoint, stackPtr, pageTableL0PA, 0, nil, nil)
+	return tid
 }
 
 // threadToIdx converts a Thread pointer to its index in the threads array.
