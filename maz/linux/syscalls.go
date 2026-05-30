@@ -472,15 +472,15 @@ func (h *syscallHandler) sysFlock(req sys.SyscallRequest) {
 const pipe2FDBytes = 8
 
 // sysPipe2 implements pipe2(pipefd[2], flags). It allocates a linked
-// (read-end, write-end) fd pair backed by the internal/pipe data plane, writes
-// the two fd numbers into the kernel-provided copy-back page, and replies with
-// the byte count so the kernel copies pipefd[0]=read, pipefd[1]=write back to
-// the caller. flags carries O_CLOEXEC / O_NONBLOCK, propagated onto both ends.
+// (read-end, write-end) fd pair backed by the internal/pipe data plane and
+// writes the two fd numbers into the kernel-provided copy-back page;
+// pipefd[0]=read, pipefd[1]=write. flags carries O_CLOEXEC / O_NONBLOCK,
+// propagated onto both ends.
 //
-// On success it replies pipe2FDBytes (the Getcwd copy-back convention: a
-// positive reply = bytes written back, which the caller's pipe2 wrapper treats
-// as success and discards). On failure it replies a negative errno and writes
-// nothing back.
+// It replies 0 on success — Linux pipe2 returns 0, not a byte count. The kernel
+// copies the fixed pipe2FDBytes payload back on a zero (success) return for
+// Pipe2 specifically (see delegate.go's copy-back path). On failure it replies a
+// negative errno and writes nothing back.
 func (h *syscallHandler) sysPipe2(req sys.SyscallRequest) {
 	flags := int(req.Args[1])
 	buf := req.DataBuf()
@@ -514,7 +514,7 @@ func (h *syscallHandler) sysPipe2(req sys.SyscallRequest) {
 	// bytes verbatim to the caller's pipefd array, read back as two _C_int.
 	binary.LittleEndian.PutUint32(buf[0:4], uint32(rfd))
 	binary.LittleEndian.PutUint32(buf[4:8], uint32(wfd))
-	req.Reply(pipe2FDBytes)
+	req.Reply(EOK) // Linux pipe2 returns 0; the kernel copies pipefd back.
 }
 
 // pipeReadWaiter is a read request parked on an empty pipe. It is stored as the
@@ -588,7 +588,10 @@ func (h *syscallHandler) sysWritePipe(req sys.SyscallRequest, e *fdtable.Entry) 
 // after a pipe write-end close.
 func wakePipeReaders(end *pipe.End) {
 	for _, tok := range end.TakeWaiters() {
-		w := tok.(*pipeReadWaiter)
+		w, ok := tok.(*pipeReadWaiter)
+		if !ok {
+			continue // only sysReadPipe parks, always a *pipeReadWaiter; be defensive.
+		}
 		if !drainPipeInto(w.req, w.end) {
 			// Still would-block (e.g. another reader drained the buffer first
 			// and a writer remains): re-park rather than spuriously waking.

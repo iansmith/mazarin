@@ -863,19 +863,34 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 			// Linux semantics: if the copy faults at any point (even after
 			// partial success), read() returns -EFAULT. A partial copy means
 			// the caller's buffer was bogus.
-			if isCopyBackSyscall(info.SysID) && returnVal > 0 && info.DataPagePA != 0 {
-				bytesToCopy := uint32(returnVal)
+			//
+			// bytesToCopy is normally the byte count the handler returned. pipe2
+			// is the exception: it succeeds with returnVal == 0 (Linux pipe2
+			// returns 0) yet must still copy its fixed 8-byte pipefd[2] payload,
+			// so it copies a fixed length on success rather than reading it from
+			// the return value.
+			if isCopyBackSyscall(info.SysID) && info.DataPagePA != 0 {
+				var bytesToCopy uint32
+				if info.SysID == sysid.Pipe2 {
+					if returnVal == 0 {
+						bytesToCopy = pipe2FDBytes
+					}
+				} else if returnVal > 0 {
+					bytesToCopy = uint32(returnVal)
+				}
 				if bytesToCopy > info.CallerBufLen {
 					bytesToCopy = info.CallerBufLen
 				}
 				if bytesToCopy > 4096 {
 					bytesToCopy = 4096
 				}
-				actual := copyDataPageToCaller(info.DataPagePA, info.CallerBufVA, info.CallerL0PA, bytesToCopy)
-				if uint32(actual) < bytesToCopy {
-					klog.Errf("[DLG] unable to write to client buffer @0x%x, only %d of %d were written before a fault\n",
-						uint64(info.CallerBufVA), actual, bytesToCopy)
-					returnVal = -14 // EFAULT
+				if bytesToCopy > 0 {
+					actual := copyDataPageToCaller(info.DataPagePA, info.CallerBufVA, info.CallerL0PA, bytesToCopy)
+					if uint32(actual) < bytesToCopy {
+						klog.Errf("[DLG] unable to write to client buffer @0x%x, only %d of %d were written before a fault\n",
+							uint64(info.CallerBufVA), actual, bytesToCopy)
+						returnVal = -14 // EFAULT
+					}
 				}
 			}
 
