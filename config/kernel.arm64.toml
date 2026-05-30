@@ -40,3 +40,11 @@ suppress_kernel_serial = false
 # FreeProcessPageTable reclaims process page tables with no frame leak). OFF by
 # default — flip to true to re-run the verification.
 kmem_leak_test = false
+
+# MAZ-112: run the clone_exec intent-visibility race self-test at boot. Creates
+# a real clone_exec child and checks its race-sensitive startup state
+# (ParentPID + buffered intent + chdir target) is already populated the moment
+# the child becomes schedulable, then reaps the child. Logs [clone-exec-race]
+# PASS (window closed) or FAIL (fields observed unset). OFF by default — flip to
+# true to re-run the verification.
+clone_exec_race_test = false

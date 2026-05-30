@@ -174,3 +174,32 @@ func (s *Shepherd) SetEnviron(env []byte) error {
 func (s *Shepherd) GetEnviron() []byte {
 	return s.Environ[:s.EnvironLen]
 }
+
+// SetStartupState records, as a single unit, every race-sensitive field a
+// clone_exec child needs before it becomes schedulable: the parent identity
+// (ParentPID), the buffered FD-flavored intent ops (StartupIntent /
+// NumStartupIntent), and the chdir target (StartupCwd / StartupCwdLen).
+//
+// MAZ-112: CreateCloneExecThread calls this UNDER schedulerLock, BEFORE the
+// child is enqueued to the ready queue, so a consumer racing the child's first
+// instruction can never observe these fields unset. Consolidating the
+// population into one nosplit helper keeps the lock-held critical section
+// minimal (the live x86_64 nosplit-overflow bug means the in-lock code must
+// stay tiny) and gives a host-testable seam for the populate-as-a-unit
+// contract.
+//
+// The intent ops and cwd bytes are COPIED into the Shepherd's fixed arrays;
+// the caller's slices are safe to modify or release after return. copy() into
+// a fixed array clamps, so an over-cap slice (the caller cap-checks first, but
+// the helper never overruns) stores at most MaxStartupIntentOps /
+// MaxStartupCwdBytes. The returned counts reflect what was actually stored.
+//
+//go:nosplit
+func (s *Shepherd) SetStartupState(parentPID ShepherdId, intent []CloneExecIntentOp, cwd []byte) (intentCopied, cwdCopied int) {
+	s.ParentPID = parentPID
+	n := copy(s.StartupIntent[:], intent)
+	s.NumStartupIntent = uint32(n)
+	c := copy(s.StartupCwd[:], cwd)
+	s.StartupCwdLen = uint32(c)
+	return n, c
+}

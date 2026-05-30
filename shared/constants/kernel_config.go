@@ -28,4 +28,14 @@ type KernelConfig struct {
 	// before/after free-frame counts. OFF by default; enable only for
 	// teardown-primitive verification.
 	KmemLeakTest bool `toml:"kmem_leak_test"`
+
+	// CloneExecRaceTest runs the MAZ-112 clone_exec intent-visibility race
+	// self-test at boot (before launching shepherds, while the system is
+	// quiescent). It creates a real clone_exec child and, at the moment the
+	// child becomes schedulable, reads back its race-sensitive startup state
+	// (ParentPID + buffered intent + chdir target), then reaps the child. It
+	// logs [clone-exec-race] PASS when the fields are already populated
+	// (window closed) or FAIL when they are observed unset. OFF by default;
+	// enable only to verify the race fix.
+	CloneExecRaceTest bool `toml:"clone_exec_race_test"`
 }
