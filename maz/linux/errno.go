@@ -7,6 +7,7 @@ const (
 	ENOENT       int64 = -2
 	EIO          int64 = -5
 	EBADF        int64 = -9
+	ECHILD       int64 = -10
 	ENOMEM       int64 = -12
 	EACCES       int64 = -13
 	EFAULT       int64 = -14

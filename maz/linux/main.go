@@ -53,6 +53,15 @@ type stdinDecRefNotification struct {
 // enter WFI (no ready threads). The delegate handler flushes one write buffer.
 type idleFlushNotification struct{}
 
+// processNotification carries a kernel process-lifecycle event (child-exit,
+// exec-complete) from the ring-0 reader onto the single delegate-loop
+// goroutine. wait4's reaper state and waiter map are NOT goroutine-safe
+// against the ring-0 reader, so — like death/idleFlush — the event is funneled
+// onto the delegate lane before any shared state is touched (MAZ-80).
+type processNotification struct {
+	ev ipc.ProcessNotification
+}
+
 // shepherdState tracks per-SID refcount for the two-phase death protocol.
 // refcount starts at 1 ("alive" baseline). Each in-flight read/write: +1.
 // Each completed read/write: -1. When dying && refcount<=1: ACK to kernel.
@@ -296,6 +305,9 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 			case idleFlushNotification:
 				handler.flushOneBuffer()
 
+			case processNotification:
+				handler.handleProcessNotification(v.ev)
+
 			case sys.SyscallRequest:
 				req := v // capture by value for the worker
 				sid := req.CallerPID
@@ -381,16 +393,19 @@ func startUringDispatchers(fsClient fsclient.FSClient, delegateCh chan any, stdo
 		default: // drop if channel full — shepherd is already busy
 		}
 	})
-	// Kernel-published process-lifecycle events (MAZ-71): child-exit,
-	// parent-death, exec-complete. v1 just logs them — wiring to wait4
-	// (MAZ-80) and SIGCHLD (MAZ-89) lands in follow-up tickets.
+	// Kernel-published process-lifecycle events (MAZ-71): child-exit and
+	// exec-complete drive wait4's reaper (MAZ-80). Funnel onto the delegate
+	// lane so the (non-goroutine-safe-against-ring-0) waiter map and the
+	// reaper bookkeeping are only ever touched on the delegate-loop goroutine.
+	// SIGCHLD (MAZ-89) hooks the same events in a follow-up.
 	ipcDispatcher.OnFunc(ipc.ProtoProcessNotify, decodeProcessNotify, func(v any) {
 		ev, ok := v.(ipc.ProcessNotification)
 		if !ok {
 			return
 		}
-		fmt.Printf("[linux] process-notify: type=%d pid=%d ppid=%d status=%d\n",
-			ev.Type, ev.Pid, ev.ParentPid, ev.ExitStatus)
+		// Unconditional send (matches death routing) — the event must not be
+		// dropped or a child would never be reaped.
+		delegateCh <- processNotification{ev: ev}
 	})
 	ipcDispatcher.Start()
 	fmt.Printf("[linux] uring dispatcher ring=0 started (ipc: WM/Font/Death/IdleHint)\n")
@@ -657,7 +672,7 @@ func MazarinMain() {
 		sysid.Ioctl, sysid.Writev, sysid.Readv,
 		sysid.Statfs, sysid.Fstatfs, sysid.Fsync, sysid.Fdatasync,
 		sysid.Flock, sysid.Pread64, sysid.Pwrite64,
-		sysid.Clone,
+		sysid.Clone, sysid.Wait4,
 		sysid.Dup3, sysid.Fcntl,
 		sysid.Pipe2,
 	)
