@@ -7,11 +7,13 @@ import (
 	"sync"
 	"unsafe"
 
+	"mazzy/maz/linux/internal/cloneexec"
 	"mazzy/maz/linux/internal/fdtable"
 	"mazzy/maz/linux/internal/pipe"
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/dlist"
+	"mazzy/shared/linuxabi"
 	"mazzy/shared/sysid"
 )
 
@@ -44,15 +46,37 @@ type syscallHandler struct {
 	// by sid → inum. Drained in sysMmapPageFlush after the last page
 	// for an inum is removed, and on shepherd death.
 	orphanHandles map[int16]map[uint32]uint32
+
+	// cloneWindows holds the per-cloning-thread buffering windows (MAZ-118)
+	// opened when a process-flavor clone (CLONE_THREAD clear) is forwarded
+	// here (MAZ-78). A window stays open across the in-child setup syscalls
+	// until the matching execve flushes it (MAZ-79). The parked clone caller
+	// blocks in the kernel delegate path until that Reply; until execve lands
+	// the only window-closing path is Abort on shepherd death (cleanupShepherd).
+	//
+	// cloneWindows is keyed by global TID; cloneTIDsBySID maps each caller SID
+	// to the TIDs whose windows it owns, so a dying shepherd's still-open
+	// windows can be aborted (windows are TID-keyed, cleanup is SID-keyed).
+	//
+	// cloneMu guards BOTH maps. The per-shepherd ShepherdFilesystemData.mu held
+	// across handle() serializes one shepherd's syscalls, but different
+	// shepherds run on different goroutines and would touch the single shared
+	// Registry concurrently — and cloneexec.Registry is not goroutine-safe (see
+	// its package doc). cloneMu is the wrapping mutex that doc prescribes.
+	cloneMu        sync.Mutex
+	cloneWindows   *cloneexec.Registry
+	cloneTIDsBySID map[int16]map[int32]struct{}
 }
 
 func newSyscallHandler(fs fsclient.FSClient) *syscallHandler {
 	return &syscallHandler{
-		shepherds:     make(map[int16]*ShepherdFilesystemData),
-		flocks:        newFlockTable(),
-		fs:            fs,
-		cache:         newPageCache(),
-		orphanHandles: make(map[int16]map[uint32]uint32),
+		shepherds:      make(map[int16]*ShepherdFilesystemData),
+		flocks:         newFlockTable(),
+		fs:             fs,
+		cache:          newPageCache(),
+		orphanHandles:  make(map[int16]map[uint32]uint32),
+		cloneWindows:   cloneexec.New(),
+		cloneTIDsBySID: make(map[int16]map[int32]struct{}),
 	}
 }
 
@@ -140,6 +164,13 @@ func (h *syscallHandler) getShepherd(sid int16) *ShepherdFilesystemData {
 // cleanupShepherd closes all open FDs, releases all flocks, and removes
 // the per-shepherd state for the given SID. Called on shepherd death.
 func (h *syscallHandler) cleanupShepherd(sid int16) {
+	// Abort any clone buffering windows still open for this shepherd's threads.
+	// A process-flavor clone that never reached its matching execve (the caller
+	// died first) leaves a parked window; without this the window would leak
+	// (MAZ-78 DoD item 4). The parked caller itself is unblocked kernel-side by
+	// CleanupDelegateForDeadShepherd — it is part of the dying shepherd.
+	h.abortCloneWindowsForSID(sid)
+
 	h.mu.Lock()
 	s := h.shepherds[sid]
 	if s == nil {
@@ -190,6 +221,10 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 	shep.mu.Lock()
 	defer shep.mu.Unlock()
 	switch req.SysID {
+	// --- Process lifecycle ---
+	case sysid.Clone:
+		h.sysCloneProcess(req)
+
 	// --- Local-only syscalls ---
 	case sysid.Close:
 		h.sysClose(req)
@@ -207,6 +242,10 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 		h.sysFsync(req)
 	case sysid.Flock:
 		h.sysFlock(req)
+	case sysid.Dup3:
+		h.sysDup3(req)
+	case sysid.Fcntl:
+		h.sysFcntl(req)
 	case sysid.Pipe2:
 		h.sysPipe2(req)
 
@@ -264,6 +303,64 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 }
 
 // ============================================================
+// Process lifecycle
+// ============================================================
+
+// sysCloneProcess handles a process-flavor clone (CLONE_THREAD clear) forwarded
+// here by the kernel dispatch gate (MAZ-78). Thread-flavor clones never reach
+// the shepherd — they are served in-kernel by SyscallClone → CloneThread.
+//
+// It opens a MAZ-118 buffering window keyed by the cloning thread's TID and
+// then WITHHOLDS the Reply: the os/exec idiom is clone() → a short run of
+// in-child setup syscalls (dup3/close/fcntl/chdir) → execve(). The caller stays
+// parked in the kernel delegate path with the window open; the matching execve
+// (MAZ-79) flushes the buffered intent and replies to the parked clone. This is
+// the deferred-Reply park model (mirrors MAZ-80), the same mechanism the stdin
+// drainer uses to defer a read(0) reply.
+//
+// Defensive guard: a thread-flavor mask arriving here would be a dispatch bug
+// (the kernel gate should have routed it to CloneThread); reply ENOSYS rather
+// than open a window that no execve will ever flush. A duplicate Open for a TID
+// that already has a window (reused before its prior clone resolved) likewise
+// fails closed.
+func (h *syscallHandler) sysCloneProcess(req sys.SyscallRequest) {
+	if !linuxabi.IsProcessClone(req.Args[0]) {
+		req.Reply(ENOSYS)
+		return
+	}
+	tid := int32(req.CallerTID)
+
+	h.cloneMu.Lock()
+	if err := h.cloneWindows.Open(tid); err != nil {
+		h.cloneMu.Unlock()
+		req.Reply(EWOULDBLOCK) // EAGAIN: a window for this TID is already open
+		return
+	}
+	tids := h.cloneTIDsBySID[req.CallerPID]
+	if tids == nil {
+		tids = make(map[int32]struct{})
+		h.cloneTIDsBySID[req.CallerPID] = tids
+	}
+	tids[tid] = struct{}{}
+	h.cloneMu.Unlock()
+
+	// No req.Reply here: the caller stays parked until execve flushes the
+	// window (MAZ-79) or the window is aborted on shepherd death.
+}
+
+// abortCloneWindowsForSID drops every clone buffering window owned by sid's
+// threads. Called from cleanupShepherd on shepherd death so a clone that never
+// reached its execve does not leak a window (MAZ-78 DoD item 4). Idempotent.
+func (h *syscallHandler) abortCloneWindowsForSID(sid int16) {
+	h.cloneMu.Lock()
+	defer h.cloneMu.Unlock()
+	for tid := range h.cloneTIDsBySID[sid] {
+		h.cloneWindows.Abort(tid)
+	}
+	delete(h.cloneTIDsBySID, sid)
+}
+
+// ============================================================
 // Local-only syscalls
 // ============================================================
 
@@ -282,7 +379,8 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 	if e.Kind == fdtable.KindPipeRead || e.Kind == fdtable.KindPipeWrite {
 		// Closing a write end decrements the shared writer count, so a reader
 		// blocked on this pipe now drains to EOF. Wake any parked reader before
-		// freeing the slot.
+		// freeing the slot. Pipe ends carry no fs handle / WriteBuf, so they
+		// skip releaseFDResources entirely.
 		e.Pipe.Close()
 		if e.Kind == fdtable.KindPipeWrite {
 			wakePipeReaders(e.Pipe)
@@ -291,8 +389,20 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 		req.Reply(EOK)
 		return
 	}
+	h.releaseFDResources(req.CallerPID, fd, e)
+	fdt.Free(fd)
+	req.Reply(EOK)
+}
+
+// releaseFDResources runs the close-time disposition for a single open file
+// entry — flushing any pending write buffer and releasing (or orphaning) the
+// fs-side handle — WITHOUT freeing the table slot. sysClose calls it then
+// frees the slot; sysDup3 calls it for the entry it is about to overwrite at
+// newfd. Stdio entries carry no handle/WriteBuf, so callers gate on Kind
+// before invoking it.
+func (h *syscallHandler) releaseFDResources(sid int16, fd int, e *fdtable.Entry) {
 	if e.WriteBuf != nil && len(e.WriteBuf) > 0 {
-		h.flushWriteBuf(req.CallerPID, fd, e) // best-effort; ignore error on close
+		h.flushWriteBuf(sid, fd, e) // best-effort; ignore error on close
 	}
 	// Linux semantics: mmap'd pages survive close. If the cache still has
 	// pages for this inode, leave the fs handle open so the eventual
@@ -302,14 +412,105 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 	// working. The handle is released by closeOrphanHandleIfDrained when
 	// the last page for this inum is removed, or by death cleanup.
 	if e.Handle != 0 {
-		if h.cache.HasPagesFor(req.CallerPID, e.Inum) {
-			h.markOrphanHandle(req.CallerPID, e.Inum, e.Handle)
+		if h.cache.HasPagesFor(sid, e.Inum) {
+			h.markOrphanHandle(sid, e.Inum, e.Handle)
 		} else {
 			h.fs.Close(e.Handle)
 		}
 	}
-	fdt.Free(fd)
-	req.Reply(EOK)
+}
+
+// sysDup3 implements dup3(oldfd, newfd, flags): newfd is made to refer to the
+// same open file as oldfd, after closing whatever previously occupied newfd.
+// EINVAL when oldfd == newfd, EBADF on a closed oldfd or out-of-range newfd.
+// The displaced newfd is disposed exactly like sysClose via releaseFDResources.
+func (h *syscallHandler) sysDup3(req sys.SyscallRequest) {
+	sid := req.CallerPID
+	fdt := h.getShepherd(sid).FDT
+	oldfd := int(req.Args[0])
+	newfd := int(req.Args[1])
+	flags := int32(req.Args[2])
+
+	newfd, errno := fdt.Dup3(oldfd, newfd, flags, func(displaced *fdtable.Entry) {
+		// Give the displaced entry the same close-time disposition sysClose
+		// would (WriteBuf flush + orphan/release of any fs handle).
+		h.releaseFDResources(sid, newfd, displaced)
+	})
+	if errno != EOK {
+		req.Reply(errno)
+		return
+	}
+	req.Reply(int64(newfd)) // Linux dup3 returns the new descriptor on success
+}
+
+// fcntl command numbers (identical on ARM64 and amd64).
+const (
+	fSETFD    = 2 // F_SETFD — set fd flags (only FD_CLOEXEC is meaningful)
+	fGETFD    = 1 // F_GETFD — get fd flags
+	fGETFL    = 3 // F_GETFL — get file status flags (access mode)
+	fSETFL    = 4 // F_SETFL — set file status flags
+	fdCLOEXEC = 1 // FD_CLOEXEC bit returned/accepted by F_GETFD/F_SETFD
+)
+
+// sysFcntl implements the fcntl commands the shepherd path owns: F_SETFD /
+// F_GETFD store and read the per-fd close-on-exec bit (MAZ-119), and the stdio
+// fast paths (fd 0/1/2) for F_GETFD/F_SETFD/F_GETFL/F_SETFL mirror the kernel's
+// in-kernel SyscallFcntl stub so the Go runtime's os.init() probes on
+// stdin/stdout/stderr keep working once fcntl is delegated here. Any other
+// command returns ENOSYS, matching the kernel stub for fd > 2.
+func (h *syscallHandler) sysFcntl(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
+	fd := int(req.Args[0])
+	cmd := req.Args[1]
+	arg := req.Args[2]
+
+	e := fdt.Get(fd)
+
+	switch cmd {
+	case fGETFD:
+		if e == nil {
+			req.Reply(EBADF)
+			return
+		}
+		if e.Cloexec {
+			req.Reply(fdCLOEXEC)
+		} else {
+			req.Reply(EOK) // stdio defaults to no flags, matching the kernel stub
+		}
+	case fSETFD:
+		if e == nil {
+			req.Reply(EBADF)
+			return
+		}
+		e.Cloexec = arg&fdCLOEXEC != 0
+		req.Reply(EOK)
+	case fGETFL:
+		// Access mode for the stdio fds, mirroring the kernel stub: stdin is
+		// read-only, stdout/stderr are write-only.
+		if e == nil {
+			req.Reply(EBADF)
+			return
+		}
+		if e.Kind == fdtable.KindStdin {
+			req.Reply(0) // O_RDONLY
+			return
+		}
+		if e.Kind == fdtable.KindStdout || e.Kind == fdtable.KindStderr {
+			req.Reply(1) // O_WRONLY
+			return
+		}
+		req.Reply(int64(e.Flags))
+	case fSETFL:
+		// Status-flag changes are a no-op here (and the kernel stub pretends
+		// to set them for stdio); only a closed fd is an error.
+		if e == nil {
+			req.Reply(EBADF)
+			return
+		}
+		req.Reply(EOK)
+	default:
+		req.Reply(ENOSYS)
+	}
 }
 
 func (h *syscallHandler) sysLseek(req sys.SyscallRequest) {

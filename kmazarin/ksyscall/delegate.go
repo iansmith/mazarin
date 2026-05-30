@@ -361,8 +361,10 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		}
 
 	default:
-		// Lseek, Close, Fchdir, Ioctl, Ftruncate, Fsync, Fdatasync, Flock, etc:
-		// no data page, just args and return value.
+		// Lseek, Close, Fchdir, Ioctl, Ftruncate, Fsync, Fdatasync, Flock,
+		// Dup3, Fcntl, etc: no data page, just scalar args and return value.
+		// (Dup3 = oldfd/newfd/flags; Fcntl = fd/cmd/arg — all scalars, and
+		// neither is a copy-back syscall, so they need no buffer marshaling.)
 	}
 
 	// Stash call info for the reply path (indexed by caller TID).

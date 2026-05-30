@@ -43,6 +43,7 @@ var x86ToSysID = [512]SysID{
 	281: SysIDEpollPwait,
 	290: SysIDEventfd,
 	291: SysIDEpollCreate,
+	292: SysIDDup3,
 	302: SysIDPrlimit64,
 	318: SysIDGetrandom,
 

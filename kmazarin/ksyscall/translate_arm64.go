@@ -10,6 +10,7 @@ var arm64ToSysID = [512]SysID{
 	20:  SysIDEpollCreate,
 	21:  SysIDEpollCtl,
 	22:  SysIDEpollPwait,
+	24:  SysIDDup3,
 	25:  SysIDFcntl,
 	56:  SysIDOpenat,
 	57:  SysIDClose,

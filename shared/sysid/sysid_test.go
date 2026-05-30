@@ -68,6 +68,43 @@ func TestNumIDsAccountsForNewIDs(t *testing.T) {
 	}
 }
 
+// MAZ-119 Phase 0: red tests for the Dup3 identifier. dup3 has no shepherd
+// path today — there is no Dup3 sysid. fcntl already has the Fcntl sysid
+// (reused, not re-added). These tests turn green once Dup3 is appended to
+// sysid.go before the NumIDs sentinel.
+
+func TestDup3Exists(t *testing.T) {
+	if Dup3 == Invalid {
+		t.Fatal("sysid.Dup3 must not equal Invalid (the sentinel zero value)")
+	}
+}
+
+func TestDup3IsDistinct(t *testing.T) {
+	// Dup3 must not alias any existing identifier it could plausibly collide
+	// with: the reused Fcntl id (this ticket touches both), Close (dup3
+	// closes newfd first), or Clone (process-creation neighborhood).
+	if Dup3 == Fcntl {
+		t.Errorf("Dup3 must not alias Fcntl (both = %d)", Dup3)
+	}
+	if Dup3 == Close {
+		t.Errorf("Dup3 must not alias Close (both = %d)", Dup3)
+	}
+	if Dup3 == Clone {
+		t.Errorf("Dup3 must not alias Clone (both = %d)", Dup3)
+	}
+	if Dup3 == Execve {
+		t.Errorf("Dup3 must not alias Execve (both = %d)", Dup3)
+	}
+}
+
+func TestDup3BelowNumIDs(t *testing.T) {
+	// NumIDs is the array-size sentinel for every [NumIDs]Foo dispatch table.
+	// Dup3 must fall strictly below it so the kernel can index it.
+	if Dup3 >= NumIDs {
+		t.Errorf("Dup3 (%d) must be < NumIDs (%d)", Dup3, NumIDs)
+	}
+}
+
 // MAZ-121 Phase 0: red tests for the Pipe2 identifier. pipe2 is a fork/exec
 // prerequisite (os.Pipe / the errpipe success handshake). These turn green
 // once Pipe2 exists in sysid.go.
@@ -81,7 +118,7 @@ func TestPipe2Exists(t *testing.T) {
 func TestPipe2DistinctFromOthers(t *testing.T) {
 	// Pipe2 must not alias any neighboring identifier in the iota block.
 	others := map[string]ID{
-		"Execve": Execve, "Wait4": Wait4, "CloneExec": CloneExec, "Clone": Clone,
+		"Execve": Execve, "Wait4": Wait4, "CloneExec": CloneExec, "Clone": Clone, "Dup3": Dup3,
 	}
 	for name, id := range others {
 		if Pipe2 == id {
