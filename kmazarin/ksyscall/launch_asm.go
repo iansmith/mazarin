@@ -1,6 +1,9 @@
 package ksyscall
 
-import _ "unsafe" // for go:linkname
+import (
+	"mazzy/kmazarin/proc"
+	_ "unsafe" // for go:linkname
+)
 
 // Forward declarations for functions provided via assembly or go:linkname.
 
@@ -19,6 +22,15 @@ func EnableTimerIRQ()
 //
 //go:linkname CreateUserspaceThread main.CreateUserspaceThread
 func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16
+
+// CreateCloneExecThread is provided by main package via go:linkname (MAZ-112).
+// It allocates the clone_exec child thread and populates its race-sensitive
+// startup state (ParentPID + buffered intent + chdir target) UNDER schedulerLock
+// before enqueue, then returns the child TID and PID so DoCloneExecWork needn't
+// re-find the new shepherd by its L0 page-table address.
+//
+//go:linkname CreateCloneExecThread main.CreateCloneExecThread
+func CreateCloneExecThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, parentPID proc.ShepherdId, intent []proc.CloneExecIntentOp, cwd []byte) (int16, proc.ShepherdId)
 
 // unsafePointer is a helper to convert uintptr to pointer
 //

@@ -679,6 +679,17 @@ func simpleMain() {
 		RestoreIRQs(savedDAIF)
 	}
 
+	// MAZ-112 clone_exec intent-visibility race self-test. Gated by config; OFF
+	// by default. Same quiescent-window rationale as the kmem leak test above:
+	// run IRQ-off before launchEmbeddedFS while only thread 0 exists, so the
+	// synthetic child is created and reaped without the scheduler ever running
+	// it.
+	if kernelCfg.CloneExecRaceTest {
+		savedDAIF := SaveAndDisableIRQs()
+		runCloneExecRaceSelfTest()
+		RestoreIRQs(savedDAIF)
+	}
+
 	// Launch the embedded fs shepherd from memory — no disk I/O needed.
 	// fs reads /startup.toml from disk and launches all [[shepherd]] entries.
 	launchEmbeddedFS()

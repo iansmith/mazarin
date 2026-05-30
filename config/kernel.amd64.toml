@@ -21,3 +21,10 @@ preempt_after_ticks = 33
 # Serial output
 suppress_serial_stdio_copy = false
 suppress_kernel_serial = false
+
+# Diagnostics
+# MAZ-112: run the clone_exec intent-visibility race self-test at boot. See
+# kernel.arm64.toml for the full rationale. OFF by default. (The x86_64 build is
+# blocked on a separate nosplit-overflow bug, so this flag is plumbed for parity
+# but not currently exercisable on amd64.)
+clone_exec_race_test = false

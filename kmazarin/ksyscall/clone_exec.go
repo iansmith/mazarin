@@ -9,11 +9,12 @@
 //  1. copies + validates the target ELF out of the caller's address space,
 //  2. builds a fresh address space (page table + framebuffer + constraint),
 //  3. loads the ELF segments + user stack,
-//  4. creates the child's first thread (which atomically allocates the child
-//     PID + Shepherd slot under schedulerLock),
-//  5. wires parent/child links (MAZ-70), STORES the buffered intent on the
-//     child Shepherd for shepherd-side application (MAZ-78/79), registers VA
-//     spans + the IPC ring, and
+//  4. creates the child's first thread via CreateCloneExecThread, which
+//     atomically allocates the child PID + Shepherd slot AND populates the
+//     race-sensitive startup state (parent identity + buffered intent + chdir
+//     target) under schedulerLock before the child is enqueued (MAZ-112),
+//  5. registers the non-race-sensitive child setup (introspection fields, VA
+//     spans + the IPC ring) lock-free on the worker thread, and
 //  6. delivers EventExecComplete to the parent (MAZ-71).
 //
 // It mirrors DoRunShepherdWork (runshepherd.go) — the proven shepherd-launch
@@ -26,7 +27,7 @@
 // reclaims the child L0, its on-demand L1/L2/L3 tables, and any segment/stack
 // frames mapped before the failure — in one walk, no per-segment undo handle.
 // Note the allocation order: the child PID + Shepherd slot are not created
-// until CreateUserspaceThread, which runs AFTER the only realistic late-init
+// until CreateCloneExecThread, which runs AFTER the only realistic late-init
 // failure (loadELF) — so a loadELF failure leaks neither a PID nor a Shepherd
 // slot, only address-space memory, which FreeProcessPageTable now reclaims.
 package ksyscall
@@ -163,73 +164,57 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	SetUserspaceActive()
 	kmem.FinalUserspaceSync()
 
-	// Create the child's first thread. This atomically allocates the child
-	// PID + Shepherd slot under schedulerLock and enqueues the thread to the
-	// ready queue (see createUserspaceThreadImpl). We locate the freshly
-	// created Shepherd below by matching its page-table root, exactly as
-	// DoRunShepherdWork does.
-	CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, childL0PA)
-
-	// Find the new child Shepherd by its L0PA, then wire parent/child links,
-	// store the buffered intent, register VA spans for cleanup, and allocate
-	// its IPC ring — mirrors DoRunShepherdWork's post-creation setup.
+	// Create the child's first thread. This atomically allocates the child PID
+	// + Shepherd slot under schedulerLock, populates the race-sensitive startup
+	// state (ParentPID + buffered intent + chdir target) via SetStartupState,
+	// and enqueues the thread to the ready queue — all under the lock (see
+	// createCloneExecThreadImpl). Returning the PID directly lets us skip the
+	// O(n) L0PA scan DoRunShepherdWork uses.
 	//
-	// Intent-visibility note: the child thread is already on the ready queue
-	// when we set ParentPID / StartupIntent below, so a consumer racing the
-	// child's first instruction could observe them unset. This is latent in
-	// MAZ-75 — no consumer of StartupIntent exists yet (the startup stub that
-	// reads it lands in MAZ-78/79), and the xfertest reads these fields only
-	// after clone_exec returns. Closing the window (populate under
-	// schedulerLock before the thread is enqueued) is Item 6 / MAZ-78/79.
-	var newPID proc.ShepherdId
-	proc.Shepherds.ForEach(func(p *proc.Shepherd) bool {
-		if p.PageTableL0PA != childL0PA {
-			return true // keep iterating
-		}
-		newPID = p.PID
-		p.SymbolTable = symTable
-		p.HighestVA = highestVA
-		p.Filename = filename
+	// MAZ-112 intent-visibility: populating the race-sensitive fields before
+	// enqueue closes the window in which a consumer racing the child's first
+	// instruction (MAZ-113 is the future reader) could observe ParentPID /
+	// StartupIntent / StartupCwd unset. The non-race-sensitive fields below
+	// (SymbolTable / HighestVA / Filename, the uring trio, Spans) stay here on
+	// the worker thread, OUTSIDE schedulerLock — AllocUringIPCRing is not
+	// nosplit, allocates pages, and takes the buddy lock, so it must never run
+	// under the scheduler spinlock.
+	_, newPID := CreateCloneExecThread(loadedProc.EntryPoint, loadedProc.StackTop, childL0PA,
+		req.CallerShepherd.PID, req.Intent, req.Cwd)
 
-		// Parent/child wiring (MAZ-70).
-		p.ParentPID = req.CallerShepherd.PID
-
-		// STORE the buffered in-child intent. The kernel only stores it; the
-		// child's startup stub (MAZ-78/79) applies the dup3/close/F_SETFD ops
-		// against the shepherd-side FD table and the chdir before exec'ing the
-		// target entry. Trailing slots stay IntentNone (zeroed by Allocate).
-		n := copy(p.StartupIntent[:], req.Intent)
-		p.NumStartupIntent = uint32(n)
-		c := copy(p.StartupCwd[:], req.Cwd)
-		p.StartupCwdLen = uint32(c)
-
-		// Allocate the child's IPC uring ring.
-		uringID := allocateUringID()
-		p.UringID = uringID
-		allocateUringIPCRing(p, 0)
-		registerUringID(uringID, int16(p.PID))
-
-		// Register kernel-allocated VA ranges so CleanupShepherdPages reclaims
-		// the ELF segments + stack + framebuffer on the child's death.
-		// Constraint pages are intentionally NOT added — they are a
-		// system-lifetime shared resource (PD_PINNED), released by no shepherd.
-		for j := 0; j < loadedProc.SegmentCount; j++ {
-			p.Spans.Add(loadedProc.SegmentSpans[j].VA, loadedProc.SegmentSpans[j].Size)
-		}
-		p.Spans.Add(loadedProc.StackBase, 64*1024)
-		p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
-
-		return false // found it — stop
-	})
-
-	if newPID == 0 {
-		// Should be impossible: CreateUserspaceThread just created a shepherd
-		// with this L0PA. Treat as a hard error rather than returning a bogus
-		// PID. The child thread is already on the ready queue and its page
-		// table is live — this deep late-init failure is scoped to MAZ-108.
-		klog.Errf("[CloneExec] ERROR: child shepherd not found after thread create L0PA=0x%x\n", childL0PA)
+	// O(1) lookup of the freshly created Shepherd (Allocate just registered it
+	// under newPID). ok is guaranteed true — the slot was allocated under the
+	// lock moments ago — but the nil-check documents the invariant and avoids a
+	// nil deref if it is ever violated.
+	p, ok := proc.Shepherds.Get(newPID)
+	if !ok {
+		klog.Errf("[CloneExec] ERROR: child shepherd %d not found after thread create\n", newPID)
 		return ceENOMEM
 	}
+
+	// Non-race-sensitive child setup: introspection fields, the IPC ring, and
+	// the VA spans for death-time cleanup. None of these can be observed by the
+	// child before its runtime boots (it cannot IPC or die first), so they stay
+	// lock-free here.
+	p.SymbolTable = symTable
+	p.HighestVA = highestVA
+	p.Filename = filename
+
+	// Allocate the child's IPC uring ring.
+	uringID := allocateUringID()
+	p.UringID = uringID
+	allocateUringIPCRing(p, 0)
+	registerUringID(uringID, int16(p.PID))
+
+	// Register kernel-allocated VA ranges so CleanupShepherdPages reclaims
+	// the ELF segments + stack + framebuffer on the child's death.
+	// Constraint pages are intentionally NOT added — they are a
+	// system-lifetime shared resource (PD_PINNED), released by no shepherd.
+	for j := 0; j < loadedProc.SegmentCount; j++ {
+		p.Spans.Add(loadedProc.SegmentSpans[j].VA, loadedProc.SegmentSpans[j].Size)
+	}
+	p.Spans.Add(loadedProc.StackBase, 64*1024)
+	p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
 
 	// Link the child into the parent's child list. Best-effort: an overflow
 	// (parent already has MaxChildrenPerShepherd live children) leaves the
