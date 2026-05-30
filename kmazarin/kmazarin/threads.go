@@ -2261,6 +2261,19 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	})
 	// Remove the dying shepherd from the subscriber list.
 	ksyscall.CleanupDeathSubscriptionsForShepherd(int16(pid))
+	// Deliver EventChildExit to the parent (MAZ-77). Look up the dying child
+	// while its slot is still live (terminateShepherdImpl releases it), build
+	// the event with the RAW exit code, and publish to the parent's ring. The
+	// parent observes it when it next polls (wait4, MAZ-80). Boot shepherds
+	// (ParentPID == 0) yield ok=false and are skipped — no parent to notify.
+	// Must run here in the non-nosplit pre-lock window: KernelPublishProcessNotify
+	// takes schedulerLock internally, so it cannot run inside terminateShepherdImpl's
+	// critical section. The returned (result, ctx) is discarded — same as MAZ-75.
+	if child := proc.FindShepherdBySID(pid); child != nil {
+		if ev, target, ok := proc.BuildChildExitEvent(child, int32(status)); ok {
+			KernelPublishProcessNotify(target, ev)
+		}
+	}
 	// Flush deferred cleanups if the linux shepherd itself is dying.
 	if isLinuxShepherd(pid) {
 		FlushAllDeferredCleanups()
