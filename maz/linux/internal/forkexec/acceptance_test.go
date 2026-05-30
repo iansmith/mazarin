@@ -1,23 +1,18 @@
 // Package forkexec_test holds MAZ-114's Phase-0 acceptance spec for the
 // fork+exec+wait4 round trip (the MAZ-62 umbrella DoD).
 //
-// WHY THIS TEST EXISTS AND WHY IT IS RED
+// WHY THIS TEST EXISTS
 //
 // MAZ-114 is the integration acceptance gate for the fork/exec core. Its
 // real Definition of Done is an end-to-end run *inside* mazzy: a test
 // program does an os/exec-style fork+exec of a child ELF and recovers the
 // child's exit status via wait4, exercising every layer (clone dispatch →
 // buffering window → execve flush → kernel clone_exec → child startup stub
-// → kernel child-exit notification → shepherd wait4 park/unpark). That
-// full path only runs under HVF and only once the entire blocker chain
-// (MAZ-77/78/79/80/113/118/119/120/121/122) has landed — see findings.md.
+// → kernel child-exit notification → shepherd wait4 park/unpark). That full
+// path only runs under HVF; it is tracked separately (the clone/vfork
+// double-return is MAZ-127 — see task_plan.md).
 //
-// None of that chain is built yet (all blockers are "In Progress", not
-// merged — the task brief that called them merged was wrong; git log on
-// master shows only the MAZ-69..75 foundation). So the genuinely end-to-end
-// HVF stage cannot exist today.
-//
-// What CAN be locked today, host-testably (`task test` runs
+// What is locked HERE, host-testably (`task test` runs
 // ./maz/linux/internal/...), is the BEHAVIORAL CONTRACT of the wait4 reaper
 // — the shepherd-side component that MAZ-80 builds and MAZ-114 promotes to
 // an acceptance assertion. MAZ-80's own description defers "the real
@@ -35,11 +30,12 @@
 //   4. WNOHANG / park  — a live-but-not-exited child: WNOHANG clear → "must
 //                        park" sentinel; WNOHANG set → wpid==0 (not ECHILD).
 //
-// The package `mazzy/maz/linux/internal/forkexec` that these tests import
-// does not exist yet, so this file does not compile → RED. The plan
-// (task_plan.md) makes "these tests turn green" the objective Done-when for
-// the host-testable slice, and adds the HVF end-to-end stage as the
-// remaining Done-when that lands after the blocker chain.
+// History: this file was committed RED in MAZ-114's Phase-0 (the
+// `mazzy/maz/linux/internal/forkexec` package did not exist, so it did not
+// compile), locking the acceptance contract before implementation. reaper.go
+// now ships and these tests pass GREEN — they ARE the host-testable acceptance
+// for the wait4 reaper. The live HVF round trip (the remaining Done-when) is
+// tracked separately; see task_plan.md / MAZ-127.
 package forkexec_test
 
 import (
@@ -105,7 +101,7 @@ func TestSingleChildWait4RecoversExitStatus(t *testing.T) {
 	}
 }
 
-// TestConcurrentChildrenEachReapedOnce is MAZ-114 scenario 3 (concurrent
+// TestConcurrentChildrenEachReapedOnce is MAZ-114 scenario 2 (concurrent
 // children, the `go build -p N` shape). Eight children exit; eight wait4(-1)
 // calls reap eight DISTINCT pids; the ninth returns ECHILD.
 func TestConcurrentChildrenEachReapedOnce(t *testing.T) {
@@ -140,7 +136,7 @@ func TestConcurrentChildrenEachReapedOnce(t *testing.T) {
 	}
 }
 
-// TestNoChildrenReturnsECHILD is MAZ-114 scenario 4 (clean failure). A
+// TestNoChildrenReturnsECHILD is MAZ-114 scenario 3 (clean failure). A
 // parent with no children at all must get ECHILD from wait4 — never a hang
 // (WouldPark) and never a bogus pid.
 func TestNoChildrenReturnsECHILD(t *testing.T) {

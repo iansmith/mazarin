@@ -51,7 +51,14 @@ func main() {
 		os.Stdout.WriteString("child cwd=" + cwd + "\n")
 		code := 0
 		if len(args) >= 3 {
-			code, _ = strconv.Atoi(args[2])
+			// Surface a malformed exit code as a distinct non-zero status rather
+			// than silently exiting 0 — a silent 0 would mask a launch-arg
+			// regression in the parent's intent stage.
+			parsed, err := strconv.Atoi(args[2])
+			if err != nil {
+				os.Exit(67)
+			}
+			code = parsed
 		}
 		os.Exit(code)
 	}
