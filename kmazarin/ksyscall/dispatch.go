@@ -112,7 +112,7 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 			// Magic fds (epoll instance, eventfd) are never delegated — the linux
 			// shepherd doesn't know about them and would return errors.
 			callerSID := getCurrentThreadSID()
-			if IsDelegated(sysID, callerSID) && !IsMagicFdSyscall(sysID, arg0) {
+			if IsDelegated(sysID, callerSID) && !IsMagicFdSyscall(sysID, arg0) && !isThreadFlavorClone(sysID, arg0) {
 				atomic.AddUint64(&SysIDDelegated[sysIdx], 1)
 				result = DelegateSyscall(sysID, arg0, arg1, arg2, arg3, arg4, arg5)
 			} else {

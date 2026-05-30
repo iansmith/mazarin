@@ -31,11 +31,24 @@ const (
 // process-creation case (syscall/exec_linux.go).
 const SIGCHLD = 0x11 // 17
 
-// csignalMask isolates the exit-signal selector that occupies the low byte of
-// the clone flag word (the CSIGNAL mask in the Linux UAPI).
-const csignalMask = 0xff
-
-// NOTE (MAZ-78, Phase 0): the classifier IsProcessClone is INTENTIONALLY not
-// defined yet. The Phase-0 RED test in clone_flags_test.go exercises it and
-// must fail (compile error: undefined) on current code. Implementing
-// IsProcessClone is the work this ticket locks the spec for.
+// IsProcessClone reports whether a clone(2) flag mask requests PROCESS creation
+// (forwarded to the linux shepherd) rather than THREAD creation (the existing
+// in-kernel path).
+//
+// The sole discriminator is the CLONE_THREAD bit:
+//
+//   - The Go runtime ALWAYS sets CLONE_THREAD|CLONE_VM when spawning an OS
+//     thread (runtime/os_linux.go cloneFlags); there is no runtime path that
+//     clones a thread without CLONE_THREAD (design/linux-fork-exec-survey.md).
+//   - os/exec via syscall.forkExec NEVER sets CLONE_THREAD: it uses
+//     CLONE_VFORK|CLONE_VM (plus the SIGCHLD exit-signal in the low byte) or a
+//     bare SIGCHLD fork (syscall/exec_linux.go).
+//
+// CLONE_VFORK and the low-byte SIGCHLD selector corroborate the process case
+// but are NOT load-bearing: CLONE_THREAD alone is sufficient and is never
+// omitted for threads, so it dominates even when a SIGCHLD-like value appears
+// in the low byte. This keeps the existing thread path from ever being
+// misrouted to the shepherd.
+func IsProcessClone(flags uint64) bool {
+	return flags&CLONE_THREAD == 0
+}
