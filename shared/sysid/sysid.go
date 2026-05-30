@@ -90,5 +90,7 @@ const (
 	Wait4     // wait4 — Linux userspace
 	CloneExec // kernel-internal: combined clone+execve, originated by the linux shepherd (MAZ-62). NOT reachable from userspace — no per-arch translation table entry maps to this ID.
 
+	Dup3 // dup3 — delegated to the linux shepherd (MAZ-119). fcntl reuses the Fcntl id above.
+
 	NumIDs // sentinel — array size
 )

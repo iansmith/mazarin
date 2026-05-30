@@ -183,6 +183,54 @@ func (t *Table) CloseCloexecFDs(closeHandle func(handle uint32)) {
 	}
 }
 
+// Dup3 implements dup3(oldfd, newfd, flags): it makes newfd refer to the same
+// open file as oldfd, first closing whatever entry occupied newfd. On success
+// it returns (newfd, 0); on error it returns (-1, -errno) and leaves the table
+// unchanged. Linux dup3 semantics:
+//
+//   - oldfd must be open               → else EBADF
+//   - newfd must be in range [0,MaxFDs) → else EBADF
+//   - oldfd == newfd                    → EINVAL (the defining difference from
+//     dup2, which would no-op and return oldfd)
+//   - flags may carry O_CLOEXEC, setting the new fd's Cloexec bit.
+//
+// The new entry is an independent struct COPY of the old one — it shares the
+// open-file identity (Handle/Inum/Path) but gets its own Offset. (Real Linux
+// shares one open-file description; this shepherd keeps the offset on the entry,
+// so a copy is the closest approximation and is sufficient for the fork/exec
+// inheritance use case.) The copy never inherits oldfd's WriteBuf: a half-built
+// write buffer belongs to one fd, not its dup.
+//
+// closeNewFD, if non-nil, is invoked with the entry that previously occupied
+// newfd (still installed at that slot when the callback runs), so the caller
+// can flush/release that entry's fs resources through its own fs client before
+// it is overwritten. It is called for every displaced entry; the callback
+// itself decides what disposition each entry needs.
+func (t *Table) Dup3(oldfd, newfd int, flags int32, closeNewFD func(e *Entry)) (int, int64) {
+	old := t.Get(oldfd)
+	if old == nil {
+		return -1, -9 // EBADF
+	}
+	if newfd < 0 || newfd >= MaxFDs {
+		return -1, -9 // EBADF
+	}
+	if oldfd == newfd {
+		return -1, -22 // EINVAL
+	}
+	if prev := t.Get(newfd); prev != nil {
+		if closeNewFD != nil {
+			closeNewFD(prev)
+		}
+		t.Free(newfd)
+	}
+	dup := *old
+	dup.WriteBuf = nil
+	dup.WriteBufOff = 0
+	dup.Cloexec = CloexecFromFlags(flags)
+	t.Put(newfd, &dup)
+	return newfd, 0
+}
+
 // ResolvePath converts a possibly-relative path to absolute using the CWD,
 // then canonicalizes (collapses `//`, eliminates `.` and `..`). Paths
 // starting with '/' are normalized as-is. Empty paths return an error-
