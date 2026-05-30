@@ -540,6 +540,11 @@ func MazarinShepherd(injected any) error {
 func MazarinMain() {
 	fmt.Printf("[linux] MazarinMain() entered\n")
 
+	// MAZ-121: pipe2 data-plane boot self-test. Runs first — it is self-contained
+	// (no fs/rachel dependency) and deterministic, so its [pipe2test] marker lands
+	// before the shepherd-launch storm. Proves DoD items 1-3 on the live shepherd.
+	runPipe2SelfTest()
+
 	// Use the fsclient passed by the generic shepherd (already connected,
 	// dispatcher on ring 1 feeding responses).
 	fsClient := shepherdInit.GetFSClient()
