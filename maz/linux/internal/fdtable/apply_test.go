@@ -133,14 +133,14 @@ func TestApplyStartupIntent_EmptyCwdSkipsChdir(t *testing.T) {
 
 // TestApplyStartupIntent_BadFDReturnsEBADF verifies the small contract: a
 // malformed op (here, dup3 from a closed/never-opened fd) is rejected with
-// -EBADF rather than silently producing a nil/garbage entry. The parent
+// EBADF rather than silently producing a nil/garbage entry. The parent
 // validates ops at buffering time, so a violation reaching here is a bug —
-// surfacing it as -EBADF lets the execve caller fail the child cleanly.
+// surfacing it as EBADF lets the execve caller fail the child cleanly.
 func TestApplyStartupIntent_BadFDReturnsEBADF(t *testing.T) {
 	tbl := New()
 	// fd9 was never opened; dup3(9, 1) has no source entry to copy.
 	ops := []linuxabi.IntentOp{dup3Op(9, 1, 0)}
-	if errno := tbl.ApplyStartupIntent(ops, nil); errno != -EBADF {
-		t.Errorf("dup3 from a closed fd: errno=%d, want -EBADF (%d)", errno, -EBADF)
+	if errno := tbl.ApplyStartupIntent(ops, nil); errno != errBadFD {
+		t.Errorf("dup3 from a closed fd: errno=%d, want errBadFD (%d)", errno, errBadFD)
 	}
 }
