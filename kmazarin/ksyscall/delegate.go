@@ -360,6 +360,22 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataLen = pipe2FDBytes
 		}
 
+	case sysid.Wait4:
+		// wait4(pid, *wstatus, options, *rusage): arg1 = wstatus output (a
+		// 4-byte _C_int). Output syscall like Pipe2 — the handler fills a
+		// data page with the encoded status and the kernel copies the fixed
+		// 4 bytes back to the caller's *wstatus on a successful Reply. A NULL
+		// wstatus (arg1 == 0) is valid: no page, no copy-back.
+		if arg1 != 0 {
+			pa, va := allocEmptyDataPage(handlerSID, handlerShepherd)
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = waitStatusBytes
+		}
+
 	default:
 		// Lseek, Close, Fchdir, Ioctl, Ftruncate, Fsync, Fdatasync, Flock,
 		// Dup3, Fcntl, etc: no data page, just scalar args and return value.
@@ -398,6 +414,10 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		// pipe2(pipefd, flags): arg0=pipefd output array, 2x int32.
 		callerBufVA = uintptr(arg0)
 		callerBufLen = pipe2FDBytes
+	case sysid.Wait4:
+		// wait4(pid, *wstatus, options, *rusage): arg1=wstatus, a 4-byte _C_int.
+		callerBufVA = uintptr(arg1)
+		callerBufLen = waitStatusBytes
 	}
 	// Pre-fault the caller's output buffer pages while we're still in the
 	// caller's context (TTBR0 + CurrentShepherd() are correct). During the
@@ -873,11 +893,21 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 			// the return value.
 			if isCopyBackSyscall(info.SysID) && info.DataPagePA != 0 {
 				var bytesToCopy uint32
-				if info.SysID == sysid.Pipe2 {
+				switch {
+				case info.SysID == sysid.Pipe2:
+					// pipe2 succeeds with returnVal == 0 yet still copies its
+					// fixed 8-byte pipefd[2] payload.
 					if returnVal == 0 {
 						bytesToCopy = pipe2FDBytes
 					}
-				} else if returnVal > 0 {
+				case info.SysID == sysid.Wait4:
+					// wait4's returnVal is the reaped PID (> 0 on success), not
+					// a byte count — copy the fixed 4-byte *wstatus on a reap.
+					if returnVal > 0 {
+						bytesToCopy = waitStatusBytes
+					}
+				case returnVal > 0:
+					// Read-family: returnVal is the byte count the handler wrote.
 					bytesToCopy = uint32(returnVal)
 				}
 				if bytesToCopy > info.CallerBufLen {
@@ -954,11 +984,15 @@ func isCopyBackSyscall(id sysid.ID) bool {
 	switch id {
 	case sysid.Read, sysid.Pread64, sysid.Fstat, sysid.Getdents64, sysid.Getcwd,
 		sysid.Fstatfs, sysid.Statfs, sysid.Fstatat, sysid.Readlinkat, sysid.Readv,
-		sysid.Pipe2:
+		sysid.Pipe2, sysid.Wait4:
 		return true
 	}
 	return false
 }
+
+// waitStatusBytes is the number of bytes wait4 copies back to the caller's
+// *wstatus pointer: a 4-byte _C_int holding the Linux-encoded wait status.
+const waitStatusBytes = 4
 
 // copyDataPageToCaller copies bytes from a data page (by PA) into the caller's
 // buffer (by VA, using the caller's page table).

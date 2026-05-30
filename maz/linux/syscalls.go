@@ -10,9 +10,11 @@ import (
 	"mazzy/maz/linux/internal/cloneexec"
 	"mazzy/maz/linux/internal/fdtable"
 	"mazzy/maz/linux/internal/pipe"
+	"mazzy/maz/linux/internal/wait"
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/dlist"
+	"mazzy/shared/ipc"
 	"mazzy/shared/linuxabi"
 	"mazzy/shared/sysid"
 )
@@ -66,6 +68,39 @@ type syscallHandler struct {
 	cloneMu        sync.Mutex
 	cloneWindows   *cloneexec.Registry
 	cloneTIDsBySID map[int16]map[int32]struct{}
+
+	// reaper holds the wait4 child bookkeeping (live-child set, zombie set)
+	// and the Linux wait-status encoding (MAZ-80). It is goroutine-safe: the
+	// wait4 dispatch runs on the file-lane worker pool, while the child-exit /
+	// exec-complete notifications that feed it are funneled onto the single
+	// delegate-loop goroutine.
+	reaper *wait.Reaper
+
+	// waitMu guards waiters. wait4 dispatch (worker pool) stashes a parked
+	// request; the delegate-loop child-exit handler wakes it. Separate from
+	// reaper's internal lock so the two never nest.
+	waitMu sync.Mutex
+	// waiters holds parked wait4 callers keyed by (callerSID, callerTID): a
+	// thread has at most one outstanding wait4. Each entry remembers the
+	// parked SyscallRequest (replied to later) plus the original pid/options
+	// so a child exit can re-run reaper.Decide for that waiter.
+	waiters map[waiterKey]wait4Waiter
+}
+
+// waiterKey identifies a single parked wait4 caller thread. A thread blocks on
+// at most one wait4 at a time, so (SID, TID) is a unique key.
+type waiterKey struct {
+	sid int16
+	tid int16
+}
+
+// wait4Waiter is a parked wait4 caller: the stashed request (whose Reply is
+// deferred until a matching child exits) plus the wait4 selector so the
+// child-exit handler can re-decide whether this exit satisfies the wait.
+type wait4Waiter struct {
+	req     sys.SyscallRequest
+	pid     int64 // wait4 pid arg: >0 specific child, -1 any child
+	options int   // wait4 options (WNOHANG etc.)
 }
 
 func newSyscallHandler(fs fsclient.FSClient) *syscallHandler {
@@ -77,6 +112,8 @@ func newSyscallHandler(fs fsclient.FSClient) *syscallHandler {
 		orphanHandles:  make(map[int16]map[uint32]uint32),
 		cloneWindows:   cloneexec.New(),
 		cloneTIDsBySID: make(map[int16]map[int32]struct{}),
+		reaper:         wait.New(),
+		waiters:        make(map[waiterKey]wait4Waiter),
 	}
 }
 
@@ -171,6 +208,11 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 	// CleanupDelegateForDeadShepherd — it is part of the dying shepherd.
 	h.abortCloneWindowsForSID(sid)
 
+	// Drop any wait4 waiters owned by this shepherd (and its child bookkeeping):
+	// the parked caller is woken kernel-side with -ESRCH, so a stale stashed
+	// request would otherwise double-Reply (MAZ-80).
+	h.dropWait4Waiters(sid)
+
 	h.mu.Lock()
 	s := h.shepherds[sid]
 	if s == nil {
@@ -224,6 +266,8 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 	// --- Process lifecycle ---
 	case sysid.Clone:
 		h.sysCloneProcess(req)
+	case sysid.Wait4:
+		h.sysWait4(req)
 
 	// --- Local-only syscalls ---
 	case sysid.Close:
@@ -346,6 +390,131 @@ func (h *syscallHandler) sysCloneProcess(req sys.SyscallRequest) {
 
 	// No req.Reply here: the caller stays parked until execve flushes the
 	// window (MAZ-79) or the window is aborted on shepherd death.
+}
+
+// sysWait4 handles wait4(pid, *wstatus, options, *rusage) (MAZ-80).
+//
+// The reaper decides the outcome from the shepherd-side child bookkeeping:
+//   - a reapable zombie  -> write the encoded status, Reply(wpid);
+//   - ECHILD             -> Reply(ECHILD);
+//   - WNOHANG, no zombie -> Reply(0) immediately;
+//   - blocking, no zombie but a live child -> PARK (defer the Reply). The
+//     caller stays blocked in the kernel delegate path until a matching
+//     EventChildExit arrives and the delegate-loop handler reaps it.
+//
+// Parking is the deferred-Reply trick (no new primitive): stash the request
+// by value and do NOT call Reply. wakeWait4OnChildExit later finishes it.
+func (h *syscallHandler) sysWait4(req sys.SyscallRequest) {
+	pid := int64(int32(req.Args[0])) // wait4 pid: sign-extend the 32-bit arg
+	options := int(req.Args[2])
+	parent := req.CallerPID
+
+	out := h.reaper.Decide(int32(parent), pid, options)
+
+	if out.MustPark {
+		// Defer the Reply: park the caller until a child exit satisfies it.
+		h.waitMu.Lock()
+		h.waiters[waiterKey{sid: parent, tid: req.CallerTID}] = wait4Waiter{
+			req:     req,
+			pid:     pid,
+			options: options,
+		}
+		h.waitMu.Unlock()
+		return
+	}
+	replyWait4(req, out)
+}
+
+// replyWait4 finishes a wait4 request that did NOT park: an error, a WNOHANG
+// no-op, or a successful reap. On a reap it writes the 4-byte encoded status
+// into the kernel-provided data page (which the kernel copies back to the
+// caller's *wstatus on Reply with a positive return value).
+func replyWait4(req sys.SyscallRequest, out wait.Outcome) {
+	if out.Errno != 0 {
+		req.Reply(int64(out.Errno))
+		return
+	}
+	// WNOHANG no-op (WPid == 0): nothing reaped, nothing to write back.
+	if out.WPid > 0 {
+		writeWaitStatus(req, out.EncodedStatus)
+	}
+	req.Reply(int64(out.WPid))
+}
+
+// writeWaitStatus writes the encoded wait status as a little-endian 4-byte
+// _C_int into the head of the delegate data page. The kernel copies these 4
+// bytes back to the caller's *wstatus pointer (wait4 arg1) on Reply. If the
+// caller passed a NULL *wstatus, the kernel allocated no data page and
+// DataBuf() is short — guard on length.
+func writeWaitStatus(req sys.SyscallRequest, encoded int) {
+	buf := req.DataBuf()
+	if len(buf) < waitStatusBytes {
+		return
+	}
+	binary.LittleEndian.PutUint32(buf[:waitStatusBytes], uint32(int32(encoded)))
+}
+
+// waitStatusBytes is the size of the Linux wait status written back to the
+// caller's *wstatus: a 4-byte _C_int.
+const waitStatusBytes = 4
+
+// wakeWait4OnChildExit is called on the delegate loop after a child exit has
+// been recorded in the reaper. It re-decides every parked waiter belonging to
+// the exited child's parent and replies to the first one this exit satisfies
+// (a single exit reaps a single child).
+//
+// Re-running Decide (rather than blindly replying the exited child) keeps the
+// "specific-pid" waiters correct: a waiter on a different specific child must
+// stay parked, and the reap-exactly-once delete happens inside Decide.
+func (h *syscallHandler) wakeWait4OnChildExit(parent int32) {
+	h.waitMu.Lock()
+	defer h.waitMu.Unlock()
+	for key, w := range h.waiters {
+		if int32(key.sid) != parent {
+			continue
+		}
+		out := h.reaper.Decide(parent, w.pid, w.options)
+		if out.MustPark {
+			continue // this exit does not satisfy this waiter
+		}
+		delete(h.waiters, key)
+		replyWait4(w.req, out)
+		return // one exit reaps one child
+	}
+}
+
+// handleProcessNotification processes a kernel process-lifecycle event on the
+// delegate-loop goroutine (MAZ-80). It updates the reaper bookkeeping and, for
+// a child exit, wakes any parked wait4 the exit satisfies.
+//
+//   - EventExecComplete (a child finished execve and is running): register the
+//     child as live so a later wait4 can tell "no such child" (ECHILD) apart
+//     from "child alive, not yet exited" (block).
+//   - EventChildExit (a child died): record the zombie with its RAW exit code,
+//     then re-decide parked waiters for that parent and reap one if satisfied.
+func (h *syscallHandler) handleProcessNotification(ev ipc.ProcessNotification) {
+	switch ev.Type {
+	case ipc.NotifyTypeExecComplete:
+		h.reaper.RegisterChild(int32(ev.ParentPid), int32(ev.Pid))
+	case ipc.NotifyTypeChildExit:
+		h.reaper.AddZombie(int32(ev.ParentPid), int32(ev.Pid), int(ev.ExitStatus))
+		h.wakeWait4OnChildExit(int32(ev.ParentPid))
+	}
+}
+
+// dropWait4Waiters drops every parked wait4 waiter owned by sid (as the
+// waiting parent). Called on shepherd death: the parked caller is unblocked
+// kernel-side by the delegate death-cleanup (-ESRCH), so the shepherd must
+// discard its stale stashed request to avoid a double-Reply. Idempotent.
+func (h *syscallHandler) dropWait4Waiters(sid int16) {
+	h.waitMu.Lock()
+	for key := range h.waiters {
+		if key.sid == sid {
+			delete(h.waiters, key)
+		}
+	}
+	h.waitMu.Unlock()
+	h.reaper.DropParent(int32(sid))
 }
 
 // abortCloneWindowsForSID drops every clone buffering window owned by sid's
