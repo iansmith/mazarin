@@ -8,11 +8,12 @@ import (
 	"mazzy/maz/linux/internal/pipe"
 )
 
-// pipe2SelfTestEnabled gates the MAZ-121 boot self-test below. ON by default so
-// every boot emits the deterministic [pipe2test] marker that proves the pipe2
-// data plane round-trips on the live shepherd; flip to false to silence it.
-// Mirrors the kmem leak-soak self-test's boot-gated flag pattern (MAZ-108).
-const pipe2SelfTestEnabled = true
+// pipe2SelfTestEnabled gates the MAZ-121 boot self-test below. OFF by default to
+// match the project's diagnostics convention (kmem leak-soak MAZ-108, clone-exec
+// race MAZ-112 are both gated off by default); flip to true to emit the
+// deterministic [pipe2test] marker proving the pipe2 data plane round-trips on
+// the live shepherd. Guest-path E2E is verified by MAZ-114.
+const pipe2SelfTestEnabled = false
 
 // pipe2SelfTestTag is the deterministic marker prefix. One [pipe2test] PASS line
 // on success; [pipe2test] FAIL <reason> on any failure.
