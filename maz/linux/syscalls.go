@@ -224,6 +224,8 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 	// --- Process lifecycle ---
 	case sysid.Clone:
 		h.sysCloneProcess(req)
+	case sysid.Execve:
+		h.sysExecve(req)
 
 	// --- Local-only syscalls ---
 	case sysid.Close:

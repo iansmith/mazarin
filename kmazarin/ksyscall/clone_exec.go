@@ -49,8 +49,10 @@ const (
 	ceEFAULT       int64 = -14 // EFAULT — bad address (ELF copy / null caller)
 	ceENOEXEC      int64 = -8  // ENOEXEC — bad ELF format or wrong machine
 	ceENOMEM       int64 = -12 // ENOMEM — page table / mapping / shepherd alloc failed
-	ceE2BIG        int64 = -7  // E2BIG — too many buffered intent ops
+	ceE2BIG        int64 = -7  // E2BIG — too many buffered intent ops / params over ARG_MAX
 	ceENAMETOOLONG int64 = -36 // ENAMETOOLONG — chdir target path too long
+	ceEINVAL       int64 = -22 // EINVAL — misaligned region / bad page count (SVC entry)
+	ceEAGAIN       int64 = -11 // EAGAIN — kernel worker busy / no thread to switch to
 )
 
 // DoCloneExecWork performs the combined clone+exec on the kernel worker
@@ -142,13 +144,14 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	symTable := buildSymbolTable(elfData, &hdr)
 	highestVA := findHighestVA(elfData, &hdr)
 
-	// Load the ELF segments + user stack into the child page table. argv is
-	// threaded through loadELF's extraArgs; faithful custom argv[0]/envp is
-	// deferred to MAZ-79 (the refined MAZ-75 DoD only requires the child to
-	// run the target binary — see task_plan.md). The child still gets the
-	// mandatory mazzy runtime env (GODEBUG/GOMEMLIMIT/…) that setupUserStack
-	// injects, which it needs to run correctly under this kernel.
-	loadedProc, err := loadELF(elfData, filename, childL0PA, 0, cloneExecExtraArgs(req))
+	// Load the ELF segments + user stack into the child page table with the
+	// FAITHFUL argv[0]/envp (MAZ-120): the caller's argv verbatim (argv[0] =
+	// program name, no shepherd-number argv[1]) and the caller's envp merged
+	// with the mandatory mazzy runtime env (GODEBUG=gccheckmark=1 / GOMEMLIMIT /
+	// … — mandatory wins on conflict, which the child needs to run correctly
+	// under this kernel). cloneExecFaithful tolerates a nil/empty Argv by
+	// falling back to a single-element argv built from the filename.
+	loadedProc, err := loadELF(elfData, filename, childL0PA, 0, nil, cloneExecFaithful(req, filename))
 	if err != nil {
 		// Reclaim the child page table plus every segment/stack frame loadELF
 		// mapped before failing — a single FreeProcessPageTable walk covers the
@@ -261,18 +264,20 @@ func validateCloneExecELFHeader(header []byte, totalBytes int) int64 {
 	return 0
 }
 
-// cloneExecExtraArgs converts the request's argv (minus argv[0], which loadELF
-// supplies from filename) into the []string extraArgs that setupUserStack
-// lays out. v1 fidelity note: setupUserStack additionally injects the shepherd
-// number as argv[1] and the mandatory mazzy runtime env; faithful execve
-// argv[0]/envp is deferred to MAZ-79. See task_plan.md.
-func cloneExecExtraArgs(req *proc.CloneExecRequest) []string {
-	if len(req.Argv) <= 1 {
-		return nil
+// cloneExecFaithful builds the faithful argv/envp layout setupUserStack lays out
+// for the execve child (MAZ-120): the caller's full Argv (argv[0] = program
+// name) and Envp verbatim, never the shepherd-launch {filename, shepherdStr}.
+//
+// A faithful execve always carries argv[0] (the program name); but if a caller
+// hands an empty Argv, fall back to a single-element argv built from the
+// resolved filename so the child still has a valid argv[0] rather than argc=0.
+func cloneExecFaithful(req *proc.CloneExecRequest, filename string) *cloneExecLayout {
+	argv := req.Argv
+	if len(argv) == 0 {
+		argv = [][]byte{[]byte(filename)}
 	}
-	args := make([]string, 0, len(req.Argv)-1)
-	for _, a := range req.Argv[1:] {
-		args = append(args, string(a))
+	return &cloneExecLayout{
+		Argv: argv,
+		Envp: req.Envp,
 	}
-	return args
 }

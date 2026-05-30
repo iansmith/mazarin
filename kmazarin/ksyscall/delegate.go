@@ -19,6 +19,7 @@ import (
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/constants"
 	"mazzy/shared/ipc"
+	"mazzy/shared/linuxabi"
 	"mazzy/shared/sysid"
 	"sync/atomic"
 	"unsafe"
@@ -287,6 +288,22 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			// Store oldpath+null length in arg0 so handler can split.
 			arg0 = newOff
 		}
+
+	case sysid.Execve:
+		// execve(path, argv, envp): arg0 = pathname pointer, arg1 = argv
+		// pointer array (NULL-terminated char**), arg2 = envp pointer array.
+		// Flatten path + the two ragged vectors into one data page framed as a
+		// CloneExecParams blob (linuxabi) so the linux handler decodes them with
+		// the same shared decoder the kernel SVC entry uses. A child argv/envp
+		// that overflows the single 4 KB page is rejected with E2BIG (the SVC
+		// caps the full request at ARG_MAX again downstream).
+		pa, va, n, errno := packExecveDataPage(handlerSID, handlerShepherd, uintptr(arg0), uintptr(arg1), uintptr(arg2))
+		if errno != 0 {
+			return errno
+		}
+		dataPagePA = pa
+		handlerDataVA = va
+		dataLen = uint32(n)
 
 	case sysid.Fstatat:
 		// fstatat: arg1 = pathname, arg2 = statbuf (output).
@@ -654,6 +671,128 @@ func allocAndCopyCallerString(handlerSID int16, handlerShepherd *proc.Shepherd, 
 	handlerShepherd.Spans.Add(va, 4096)
 
 	return pa, va, strLen
+}
+
+// execveMaxArgs bounds how many argv/envp entries the kernel flattens out of a
+// child's execve, so a corrupt (non-NULL-terminated) pointer array can't spin
+// the kernel forever. ARG_MAX-style ceiling; far above any real invocation.
+const execveMaxArgs = 4096
+
+// readUserPtr reads an 8-byte little-endian pointer from the caller's address
+// space at va. Returns (ptr, ok); ok is false if any byte is unreadable.
+func readUserPtr(va uintptr) (uintptr, bool) {
+	var p uintptr
+	for i := uintptr(0); i < 8; i++ {
+		b, ok := kmem.ReadUserByte(va + i)
+		if !ok {
+			return 0, false
+		}
+		p |= uintptr(b) << (i * 8)
+	}
+	return p, true
+}
+
+// readUserCString reads a NUL-terminated string from the caller's address space
+// at va, up to maxLen bytes. Returns (bytes-without-NUL, ok).
+func readUserCString(va uintptr, maxLen int) ([]byte, bool) {
+	if va == 0 {
+		return nil, false
+	}
+	buf := make([]byte, 0, 64)
+	for i := 0; i < maxLen; i++ {
+		b, ok := kmem.ReadUserByte(va + uintptr(i))
+		if !ok {
+			return nil, false
+		}
+		if b == 0 {
+			return buf, true
+		}
+		buf = append(buf, b)
+	}
+	return nil, false // ran past maxLen without a terminator
+}
+
+// flattenUserStringVec reads a NULL-terminated array of user char* pointers at
+// arrayVA, dereferences each into its string, and returns the strings. A nil
+// arrayVA yields an empty (nil) result — execve(path, NULL, NULL) is legal.
+// Returns ok=false on any unreadable pointer/string or if the array exceeds
+// execveMaxArgs entries.
+func flattenUserStringVec(arrayVA uintptr) ([][]byte, bool) {
+	if arrayVA == 0 {
+		return nil, true
+	}
+	var out [][]byte
+	for i := 0; i < execveMaxArgs; i++ {
+		strPtr, ok := readUserPtr(arrayVA + uintptr(i)*8)
+		if !ok {
+			return nil, false
+		}
+		if strPtr == 0 {
+			return out, true // NULL terminator
+		}
+		s, ok := readUserCString(strPtr, 4096)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, s)
+	}
+	return nil, false // no NULL terminator within execveMaxArgs
+}
+
+// packExecveDataPage flattens a child's execve(path, argv, envp) into one data
+// page, framed as a linuxabi.CloneExecParams blob (Filename = path, Argv/Envp =
+// the flattened vectors, Intent/Cwd empty — those are supplied by the handler
+// from the clone window). The page is mapped into the handler's address space.
+// Returns (PA, handlerVA, blobLen, errno); errno is 0 on success, a negative
+// errno on failure (EFAULT for unreadable args, E2BIG for an over-4 KB blob,
+// ENOMEM for allocation failure).
+func packExecveDataPage(handlerSID int16, handlerShepherd *proc.Shepherd, pathVA, argvVA, envpVA uintptr) (uintptr, uint64, int, int64) {
+	if pathVA == 0 {
+		return 0, 0, 0, -14 // EFAULT
+	}
+	path, ok := readUserCString(pathVA, 4096)
+	if !ok {
+		return 0, 0, 0, -14 // EFAULT
+	}
+	argv, ok := flattenUserStringVec(argvVA)
+	if !ok {
+		return 0, 0, 0, -14 // EFAULT
+	}
+	envp, ok := flattenUserStringVec(envpVA)
+	if !ok {
+		return 0, 0, 0, -14 // EFAULT
+	}
+
+	blob, err := linuxabi.MarshalCloneExecParams(
+		linuxabi.PackArgv(argv), linuxabi.PackArgv(envp), nil, nil, path)
+	if err != nil || len(blob) > 4096 {
+		return 0, 0, 0, -7 // E2BIG
+	}
+
+	pa := kmem.AllocPage(kmem.PageSharedIPC, handlerSID)
+	if pa == 0 {
+		return 0, 0, 0, -12 // ENOMEM
+	}
+	scratchVA := kmem.MapPAToKernelScratch(pa)
+	if scratchVA == 0 {
+		kmem.ReleasePageByPA(pa)
+		return 0, 0, 0, -12 // ENOMEM
+	}
+	zeroPage(scratchVA)
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(scratchVA)), 4096)
+	copy(dst, blob)
+
+	va := bumpAllocForShepherd(handlerShepherd, 4096)
+	if va == 0 {
+		kmem.ReleasePageByPA(pa)
+		return 0, 0, 0, -12 // ENOMEM
+	}
+	if !kmem.MapPageInProcess(handlerSID, uintptr(va), pa, 0) { // RW
+		kmem.ReleasePageByPA(pa)
+		return 0, 0, 0, -12 // ENOMEM
+	}
+	handlerShepherd.Spans.Add(va, 4096)
+	return pa, va, len(blob), 0
 }
 
 var allocStrDbg int

@@ -182,7 +182,7 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 
 	// Parse and load ELF using the fresh process page table
 	filename := "/" + name + ".elf"
-	loadedProc, err := loadELF(elfData, filename, processL0PA, 0, nil)
+	loadedProc, err := loadELF(elfData, filename, processL0PA, 0, nil, nil)
 	if err != nil {
 		klog.Errf("[Launch] loadELF FAILED: %v\n", err)
 		return -5
@@ -234,12 +234,27 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 	return 0
 }
 
+// cloneExecLayout carries the faithful argv/envp for the execve→clone_exec
+// child stack (MAZ-120). When non-nil, setupUserStack uses Argv verbatim
+// (argv[0] = caller's program name, NO shepherd-number argv[1]) and lays out
+// the caller's Envp merged with the mandatory mazzy runtime env (mandatory
+// wins). When nil, setupUserStack keeps the legacy shepherd-launch layout
+// ({filename, shepherdStr, extraArgs...} + mandatory-only env).
+type cloneExecLayout struct {
+	Argv [][]byte // faithful argv; Argv[0] is the program name
+	Envp [][]byte // caller's envp (merged with mandatory env inside setupUserStack)
+}
+
 // loadELF parses an ELF file and loads it into memory
 // filename is passed through to setupUserStack for argv[0]
 // l0PA is the physical address of the L0 page table to use for mapping.
 // CRITICAL: This must be passed explicitly to prevent race conditions with
 // context switches that would otherwise corrupt the global processL0PA.
-func loadELF(data []byte, filename string, l0PA uintptr, shepherdNum uint64, extraArgs []string) (*Process, error) {
+//
+// faithful is non-nil only for the execve→clone_exec path (MAZ-120); it
+// overrides the shepherd-launch argv/envv layout with the caller's faithful
+// argv[0]+envp. extraArgs is ignored when faithful is set.
+func loadELF(data []byte, filename string, l0PA uintptr, shepherdNum uint64, extraArgs []string, faithful *cloneExecLayout) (*Process, error) {
 	if len(data) < 64 {
 		return nil, &elfError{"file too small for ELF header"}
 	}
@@ -351,7 +366,7 @@ func loadELF(data []byte, filename string, l0PA uintptr, shepherdNum uint64, ext
 		return nil, err
 	}
 
-	stackTop, err := setupUserStack(stackBase, stackSize, filename, l0PA, shepherdNum, extraArgs)
+	stackTop, err := setupUserStack(stackBase, stackSize, filename, l0PA, shepherdNum, extraArgs, faithful)
 	if err != nil {
 		return nil, err
 	}
@@ -748,22 +763,41 @@ func allocateUserStack(base, size uint64, l0PA uintptr) error {
 	return nil
 }
 
-// setupUserStack maps the stack page and uses ProcessEnv to lay out the
+// setupUserStack maps the stack pages and uses ProcessEnv to lay out the
 // argv/envp/auxv appropriate for launching a shepherd.
-func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, shepherdNum uint64, extraArgs []string) (uint64, error) {
+//
+// faithful is non-nil only for the execve→clone_exec child (MAZ-120): its Argv
+// replaces the {filename, shepherdStr, extraArgs...} layout verbatim and its
+// Envp is merged with the mandatory env (mandatory wins) instead of using the
+// mandatory env alone.
+func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, shepherdNum uint64, extraArgs []string, faithful *cloneExecLayout) (uint64, error) {
 	pageSize := uint64(4096)
 	stackTop := stackBase + stackSize
 
+	// Map EVERY stack page to a kernel scratch VA so the layout can span more
+	// than the top page — a faithful execve argv+envp can be far larger than
+	// the 4 KB the single-page path historically supported (MAZ-120). The
+	// scratch mapping is a fixed linear PA→VA offset, so non-contiguous physical
+	// frames produce non-contiguous scratch VAs; StackWriter resolves per page.
+	numPages := int(stackSize / pageSize)
+	pageVAs := make([]uint64, 0, numPages)
+	scratchVAs := make([]uintptr, 0, numPages)
+	for i := 0; i < numPages; i++ {
+		pageVA := stackBase + uint64(i)*pageSize
+		pa := kmem.WalkUserPageTableWithL0(uintptr(pageVA), l0PA)
+		if pa == 0 {
+			return 0, &elfError{"stack page not mapped"}
+		}
+		scratchVA := kmem.MapPAToKernelScratch(pa &^ uintptr(pageSize-1))
+		if scratchVA == 0 {
+			return 0, &elfError{"failed to map stack to kernel scratch"}
+		}
+		pageVAs = append(pageVAs, pageVA)
+		scratchVAs = append(scratchVAs, scratchVA)
+	}
+	// Top-page scratch VA, for the post-layout cache clean of the SP page.
 	topPageVA := (stackTop - 1) &^ (pageSize - 1)
-	topPA := kmem.WalkUserPageTableWithL0(uintptr(topPageVA), l0PA)
-	if topPA == 0 {
-		return 0, &elfError{"stack page not mapped"}
-	}
-
-	kernelVA := kmem.MapPAToKernelScratch(topPA &^ uintptr(pageSize-1))
-	if kernelVA == 0 {
-		return 0, &elfError{"failed to map stack to kernel scratch"}
-	}
+	kernelVA := scratchVAs[(topPageVA-stackBase)/pageSize]
 
 	// Convert shepherd number to string (single digit 0-9)
 	shepherdStr := "0"
@@ -864,21 +898,40 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 
 	penv.SetAuxv(6, 4096) // AT_PAGESZ
 
-	argv := []string{filename, shepherdStr}
-	argv = append(argv, filteredArgs...)
 	sw := &StackWriter{
-		StackBase: stackBase,
-		StackTop:  stackTop,
-		KernelVA:  kernelVA,
+		StackBase:  stackBase,
+		StackTop:   stackTop,
+		KernelVA:   kernelVA,
+		PageVAs:    pageVAs,
+		ScratchVAs: scratchVAs,
 	}
-	sp, err := penv.Layout(argv, sw)
+
+	var sp uint64
+	var err error
+	if faithful != nil {
+		// Execve faithful-argv path (MAZ-120): caller's argv verbatim (argv[0] =
+		// program name, NO shepherd-number argv[1] — that is a RunShepherd-launch
+		// artifact a fork/exec'd Linux child must never see), and the caller's
+		// envp merged with the mandatory mazzy runtime env (mandatory wins).
+		merged := proc.MergeExecEnv(faithful.Envp, penv.EnvBytes())
+		sp, err = penv.LayoutFaithful(faithful.Argv, merged, sw)
+	} else {
+		// Shepherd-launch path: argv = {filename, shepherdStr, extraArgs...},
+		// env = mandatory only.
+		argv := []string{filename, shepherdStr}
+		argv = append(argv, filteredArgs...)
+		sp, err = penv.Layout(argv, sw)
+	}
 	if err != nil {
 		return 0, err
 	}
 
-	kmem.CleanPageCache(kernelVA)
+	// Clean every stack page the layout may have written (the faithful path can
+	// span multiple pages), not just the top page.
+	for _, scratchVA := range scratchVAs {
+		kmem.CleanPageCache(scratchVA)
+	}
 
-	// DEBUG: Read back what was written to verify stack contents
 	return sp, nil
 }
 
