@@ -1,0 +1,138 @@
+// Spec-lock tests for the clone_exec SVC params wire format (MAZ-120). These
+// pin the single-source-of-truth encoding the userspace marshaler
+// (mazarin/sys.CloneExec) and the kernel unmarshaler (kmazarin/ksyscall) both
+// depend on, plus the argv/envp packing the proc-side helpers re-export.
+
+package linuxabi
+
+import (
+	"bytes"
+	"testing"
+)
+
+func equalBlobs(a, b [][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !bytes.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// TestPackArgvRoundtrip — UnpackArgv is the exact inverse of PackArgv for a
+// vector with no empty elements; argv[0] survives byte-identical.
+func TestPackArgvRoundtrip(t *testing.T) {
+	argv := [][]byte{[]byte("compile"), []byte("-o"), []byte("x.a")}
+	got := UnpackArgv(PackArgv(argv))
+	if !equalBlobs(got, argv) {
+		t.Fatalf("roundtrip mismatch: argv=%q got=%q", argv, got)
+	}
+}
+
+// TestPackArgvEmpty — an empty vector packs to a nil blob and unpacks to empty
+// (not a one-element [""] slice).
+func TestPackArgvEmpty(t *testing.T) {
+	if b := PackArgv(nil); b != nil {
+		t.Errorf("PackArgv(nil) = %q, want nil", b)
+	}
+	if got := UnpackArgv(nil); len(got) != 0 {
+		t.Errorf("UnpackArgv(nil) yielded %d elements, want 0", len(got))
+	}
+}
+
+// TestMarshalCloneExecParamsRoundtrip — a full params region (argv + envp +
+// intent + cwd + filename) survives Marshal→Unmarshal byte-for-byte.
+func TestMarshalCloneExecParamsRoundtrip(t *testing.T) {
+	argv := [][]byte{[]byte("compile"), []byte("-o"), []byte("out.a")}
+	envp := [][]byte{[]byte("GOROOT=/go"), []byte("GODEBUG=gccheckmark=1")}
+	intent := []IntentOp{
+		{Kind: IntentDup3, Arg0: 7, Arg1: 1, Arg2: 0},
+		{Kind: IntentClose, Arg0: 8},
+		{Kind: IntentFSetFD, Arg0: 9, Arg1: 1},
+	}
+	cwd := []byte("/work/src")
+	filename := []byte("/usr/bin/compile")
+
+	blob, err := MarshalCloneExecParams(PackArgv(argv), PackArgv(envp), intent, cwd, filename)
+	if err != nil {
+		t.Fatalf("MarshalCloneExecParams: %v", err)
+	}
+	got, err := UnmarshalCloneExecParams(blob)
+	if err != nil {
+		t.Fatalf("UnmarshalCloneExecParams: %v", err)
+	}
+	if !equalBlobs(got.Argv, argv) {
+		t.Errorf("argv mismatch: got=%q want=%q", got.Argv, argv)
+	}
+	if !equalBlobs(got.Envp, envp) {
+		t.Errorf("envp mismatch: got=%q want=%q", got.Envp, envp)
+	}
+	if !bytes.Equal(got.Cwd, cwd) {
+		t.Errorf("cwd mismatch: got=%q want=%q", got.Cwd, cwd)
+	}
+	if !bytes.Equal(got.Filename, filename) {
+		t.Errorf("filename mismatch: got=%q want=%q", got.Filename, filename)
+	}
+	if len(got.Intent) != len(intent) {
+		t.Fatalf("intent count = %d, want %d", len(got.Intent), len(intent))
+	}
+	for i := range intent {
+		if got.Intent[i] != intent[i] {
+			t.Errorf("intent[%d] = %+v, want %+v", i, got.Intent[i], intent[i])
+		}
+	}
+}
+
+// TestMarshalCloneExecParamsEmpty — a fully-empty request (no argv/envp/intent/
+// cwd/filename) still produces a valid header-only blob that round-trips.
+func TestMarshalCloneExecParamsEmpty(t *testing.T) {
+	blob, err := MarshalCloneExecParams(nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("MarshalCloneExecParams(empty): %v", err)
+	}
+	if len(blob) != CloneExecParamsHeaderSize {
+		t.Errorf("empty blob len = %d, want %d", len(blob), CloneExecParamsHeaderSize)
+	}
+	got, err := UnmarshalCloneExecParams(blob)
+	if err != nil {
+		t.Fatalf("UnmarshalCloneExecParams(empty): %v", err)
+	}
+	if len(got.Argv) != 0 || len(got.Envp) != 0 || len(got.Intent) != 0 ||
+		len(got.Cwd) != 0 || len(got.Filename) != 0 {
+		t.Errorf("empty round-trip non-empty: %+v", got)
+	}
+}
+
+// TestUnmarshalCloneExecParamsRejectsShort — a blob shorter than the header is
+// rejected, not silently decoded from garbage.
+func TestUnmarshalCloneExecParamsRejectsShort(t *testing.T) {
+	if _, err := UnmarshalCloneExecParams(make([]byte, CloneExecParamsHeaderSize-1)); err != ErrCloneExecParamsMalformed {
+		t.Errorf("short blob err = %v, want ErrCloneExecParamsMalformed", err)
+	}
+}
+
+// TestUnmarshalCloneExecParamsRejectsOverrun — a header that declares section
+// lengths past the blob end is rejected.
+func TestUnmarshalCloneExecParamsRejectsOverrun(t *testing.T) {
+	blob, err := MarshalCloneExecParams([]byte("a\x00b"), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Truncate the body so the declared argvLen runs past the blob.
+	truncated := blob[:len(blob)-1]
+	if _, err := UnmarshalCloneExecParams(truncated); err != ErrCloneExecParamsMalformed {
+		t.Errorf("overrun blob err = %v, want ErrCloneExecParamsMalformed", err)
+	}
+}
+
+// TestMarshalCloneExecParamsRejectsOversize — a params region past
+// CloneExecArgMax is rejected with ErrCloneExecArgTooBig (E2BIG at the SVC).
+func TestMarshalCloneExecParamsRejectsOversize(t *testing.T) {
+	huge := make([]byte, CloneExecArgMax+1)
+	if _, err := MarshalCloneExecParams(huge, nil, nil, nil, nil); err != ErrCloneExecArgTooBig {
+		t.Errorf("oversize err = %v, want ErrCloneExecArgTooBig", err)
+	}
+}

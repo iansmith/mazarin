@@ -266,6 +266,8 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 	// --- Process lifecycle ---
 	case sysid.Clone:
 		h.sysCloneProcess(req)
+	case sysid.Execve:
+		h.sysExecve(req)
 	case sysid.Wait4:
 		h.sysWait4(req)
 

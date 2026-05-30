@@ -5,6 +5,8 @@ const (
 	EOK          int64 = 0
 	EPERM        int64 = -1
 	ENOENT       int64 = -2
+	E2BIG        int64 = -7
+	ENOEXEC      int64 = -8
 	EIO          int64 = -5
 	EBADF        int64 = -9
 	ECHILD       int64 = -10

@@ -77,4 +77,5 @@ const (
 	SysTransferDMAClump          = MazzySyscallBase + 68 // 0x1044 - Transfer one whole DMA clump to a target shepherd (MAZ-29 page handoff)
 	SysShareNetPageWithClient    = MazzySyscallBase + 69 // 0x1045 - Map caller's page into a client shepherd (MAZ-29 per-stream send ring)
 	SysUnshareFromTarget         = MazzySyscallBase + 70 // 0x1046 - Revoke caller's shared mapping from target shepherd (MAZ-53 Mode 2 Release)
+	SysCloneExec                 = MazzySyscallBase + 71 // 0x1047 - Combined clone+execve: load staged ELF into a fresh child with faithful argv[0]/envp + buffered intent (MAZ-120)
 )

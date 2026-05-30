@@ -199,7 +199,7 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	klog.Criticalf("[RS]", "[RunShepherd] %s: pre-loadELF highestVA=0x%x\n", req.Name, shepherdHighestVA)
 
 	// Load ELF into the new shepherd's page table
-	loadedProc, err := loadELF(elfData, "/"+req.Name+".elf", processL0PA, 0, req.Args)
+	loadedProc, err := loadELF(elfData, "/"+req.Name+".elf", processL0PA, 0, req.Args, nil)
 	if err != nil {
 		// Reclaim the page table + any segment/stack frames loadELF mapped
 		// before failing — one FreeProcessPageTable walk covers it (MAZ-108).
