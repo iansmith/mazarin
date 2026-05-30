@@ -132,15 +132,30 @@ func TestApplyStartupIntent_EmptyCwdSkipsChdir(t *testing.T) {
 }
 
 // TestApplyStartupIntent_BadFDReturnsEBADF verifies the small contract: a
-// malformed op (here, dup3 from a closed/never-opened fd) is rejected with
-// EBADF rather than silently producing a nil/garbage entry. The parent
-// validates ops at buffering time, so a violation reaching here is a bug —
-// surfacing it as EBADF lets the execve caller fail the child cleanly.
+// malformed op is rejected with EBADF rather than silently producing a
+// nil/garbage entry. The parent validates ops at buffering time, so a
+// violation reaching here is a bug — surfacing it as EBADF lets the execve
+// caller fail the child cleanly.
+//
+// The same-fd cases (Arg0==Arg1) specifically guard against the validation
+// being short-circuited: dup3(-1,-1) and dup3(9,9) must still EBADF even though
+// the no-op same-fd shortcut would otherwise skip the fd check.
 func TestApplyStartupIntent_BadFDReturnsEBADF(t *testing.T) {
-	tbl := New()
-	// fd9 was never opened; dup3(9, 1) has no source entry to copy.
-	ops := []linuxabi.IntentOp{dup3Op(9, 1, 0)}
-	if errno := tbl.ApplyStartupIntent(ops, nil); errno != errBadFD {
-		t.Errorf("dup3 from a closed fd: errno=%d, want errBadFD (%d)", errno, errBadFD)
+	cases := []struct {
+		name string
+		op   linuxabi.IntentOp
+	}{
+		{"dup3 from a never-opened fd", dup3Op(9, 1, 0)},
+		{"dup3 same-fd, negative (invalid)", dup3Op(-1, -1, 0)},
+		{"dup3 same-fd, never-opened", dup3Op(9, 9, 0)},
+		{"dup3 out-of-range dest fd", dup3Op(0, MaxFDs, 0)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tbl := New()
+			if errno := tbl.ApplyStartupIntent([]linuxabi.IntentOp{tc.op}, nil); errno != errBadFD {
+				t.Errorf("%s: errno=%d, want errBadFD (%d)", tc.name, errno, errBadFD)
+			}
+		})
 	}
 }

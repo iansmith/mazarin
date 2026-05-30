@@ -56,9 +56,10 @@ func (t *Table) ApplyStartupIntent(ops []linuxabi.IntentOp, cwd []byte) int64 {
 		case linuxabi.IntentNone:
 			// Sentinel for unused trailing slots — skip.
 		case linuxabi.IntentDup3:
-			if op.Arg0 == op.Arg1 {
-				continue // dup3 onto itself is a no-op
-			}
+			// Validate both fds BEFORE the same-fd short-circuit so a
+			// malformed op like dup3(-1, -1, ...) still returns errBadFD
+			// rather than silently succeeding. t.Get bounds-checks Arg0 and
+			// returns nil for an out-of-range or closed source.
 			src := t.Get(int(op.Arg0))
 			if src == nil {
 				return errBadFD
@@ -66,12 +67,16 @@ func (t *Table) ApplyStartupIntent(ops []linuxabi.IntentOp, cwd []byte) int64 {
 			if op.Arg1 < 0 || int(op.Arg1) >= MaxFDs {
 				return errBadFD
 			}
+			if op.Arg0 == op.Arg1 {
+				continue // dup3 onto itself is a no-op (after validation)
+			}
 			// Value copy so the new fd is a distinct entry, not a pointer
 			// alias of the source (closing one must not disturb the other).
-			// dup3's Cloexec is set fresh from its flags (O_CLOEXEC), not
-			// inherited from the source — matching Linux dup3 semantics.
+			// dup3's Cloexec is set fresh from its flags (O_CLOEXEC) via the
+			// package's single derivation point, not inherited from the source
+			// — matching Linux dup3 semantics.
 			dup := *src
-			dup.Cloexec = uint32(op.Arg2)&OCLOEXEC != 0
+			dup.Cloexec = CloexecFromFlags(op.Arg2)
 			t.Put(int(op.Arg1), &dup)
 		case linuxabi.IntentClose:
 			if t.Get(int(op.Arg0)) == nil {
