@@ -186,13 +186,17 @@ func (t *Table) CloseCloexecFDs(closeHandle func(handle uint32)) {
 // Dup3 implements dup3(oldfd, newfd, flags): it makes newfd refer to the same
 // open file as oldfd, first closing whatever entry occupied newfd. On success
 // it returns (newfd, 0); on error it returns (-1, -errno) and leaves the table
-// unchanged. Linux dup3 semantics:
+// unchanged. The validation order mirrors the Linux kernel's ksys_dup3 exactly
+// (a malformed call must surface the same errno Linux would):
 //
-//   - oldfd must be open               → else EBADF
-//   - newfd must be in range [0,MaxFDs) → else EBADF
-//   - oldfd == newfd                    → EINVAL (the defining difference from
-//     dup2, which would no-op and return oldfd)
-//   - flags may carry O_CLOEXEC, setting the new fd's Cloexec bit.
+//   - flags carry any bit other than O_CLOEXEC → EINVAL
+//   - oldfd == newfd                           → EINVAL (the defining
+//     difference from dup2, and checked BEFORE oldfd validity so that
+//     dup3(badfd, badfd, 0) is EINVAL, not EBADF)
+//   - newfd out of range [0,MaxFDs)            → EBADF
+//   - oldfd not open                           → EBADF
+//
+// O_CLOEXEC in flags sets the new fd's Cloexec bit.
 //
 // The new entry is an independent struct COPY of the old one — it shares the
 // open-file identity (Handle/Inum/Path) but gets its own Offset. (Real Linux
@@ -207,15 +211,18 @@ func (t *Table) CloseCloexecFDs(closeHandle func(handle uint32)) {
 // it is overwritten. It is called for every displaced entry; the callback
 // itself decides what disposition each entry needs.
 func (t *Table) Dup3(oldfd, newfd int, flags int32, closeNewFD func(e *Entry)) (int, int64) {
-	old := t.Get(oldfd)
-	if old == nil {
-		return -1, -9 // EBADF
+	if uint32(flags)&^uint32(OCLOEXEC) != 0 {
+		return -1, -22 // EINVAL — only O_CLOEXEC is a valid dup3 flag
+	}
+	if oldfd == newfd {
+		return -1, -22 // EINVAL — checked before oldfd validity, per Linux
 	}
 	if newfd < 0 || newfd >= MaxFDs {
 		return -1, -9 // EBADF
 	}
-	if oldfd == newfd {
-		return -1, -22 // EINVAL
+	old := t.Get(oldfd)
+	if old == nil {
+		return -1, -9 // EBADF
 	}
 	if prev := t.Get(newfd); prev != nil {
 		if closeNewFD != nil {

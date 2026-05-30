@@ -82,12 +82,35 @@ func TestDup3ClosesExistingNewFD(t *testing.T) {
 }
 
 // TestDup3SameFDIsEINVAL verifies dup3(fd, fd, flags) is EINVAL (the defining
-// difference from dup2, which would return fd unchanged).
+// difference from dup2, which would return fd unchanged). The oldfd==newfd
+// check must run BEFORE oldfd-validity, so even a closed fd dup'd onto itself
+// is EINVAL, not EBADF — matching Linux's ksys_dup3 ordering.
 func TestDup3SameFDIsEINVAL(t *testing.T) {
 	tbl := New()
 	tbl.Put(3, &Entry{Kind: KindFile, Handle: 100})
 	if _, errno := tbl.Dup3(3, 3, 0, nil); errno != -22 { // EINVAL
 		t.Errorf("Dup3(3,3,0) errno = %d, want -22 (EINVAL)", errno)
+	}
+	// Closed fd onto itself: still EINVAL (ordering before EBADF).
+	if _, errno := tbl.Dup3(9, 9, 0, nil); errno != -22 {
+		t.Errorf("Dup3(9,9,0) on closed fd: errno = %d, want -22 (EINVAL, not EBADF)", errno)
+	}
+}
+
+// TestDup3UnknownFlagsIsEINVAL verifies dup3 rejects any flag bit other than
+// O_CLOEXEC with EINVAL, matching Linux (flags & ~O_CLOEXEC must be 0).
+func TestDup3UnknownFlagsIsEINVAL(t *testing.T) {
+	tbl := New()
+	tbl.Put(3, &Entry{Kind: KindFile, Handle: 100})
+	if _, errno := tbl.Dup3(3, 5, 0x1, nil); errno != -22 { // 0x1 is not O_CLOEXEC
+		t.Errorf("Dup3 with unknown flag 0x1: errno = %d, want -22 (EINVAL)", errno)
+	}
+	if tbl.Get(5) != nil {
+		t.Errorf("Dup3 with bad flags must not install anything at newfd")
+	}
+	// O_CLOEXEC alone is accepted.
+	if _, errno := tbl.Dup3(3, 5, OCLOEXEC, nil); errno != 0 {
+		t.Errorf("Dup3 with O_CLOEXEC: errno = %d, want 0", errno)
 	}
 }
 

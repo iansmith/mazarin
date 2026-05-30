@@ -321,12 +321,16 @@ func (h *syscallHandler) sysDup3(req sys.SyscallRequest) {
 	newfd := int(req.Args[1])
 	flags := int32(req.Args[2])
 
-	_, errno := fdt.Dup3(oldfd, newfd, flags, func(displaced *fdtable.Entry) {
+	newfd, errno := fdt.Dup3(oldfd, newfd, flags, func(displaced *fdtable.Entry) {
 		// Give the displaced entry the same close-time disposition sysClose
 		// would (WriteBuf flush + orphan/release of any fs handle).
 		h.releaseFDResources(sid, newfd, displaced)
 	})
-	req.Reply(int64(errno))
+	if errno != EOK {
+		req.Reply(errno)
+		return
+	}
+	req.Reply(int64(newfd)) // Linux dup3 returns the new descriptor on success
 }
 
 // fcntl command numbers (identical on ARM64 and amd64).
