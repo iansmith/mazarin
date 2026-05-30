@@ -345,6 +345,21 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataLen = uint32(count)
 		}
 
+	case sysid.Pipe2:
+		// pipe2(pipefd[2], flags): arg0 = pipefd pointer (output). Output
+		// syscall like Getcwd — the handler fills a data page with the two
+		// int32 fds and the kernel copies the 8 bytes back to the caller's
+		// pipefd array on Reply.
+		if arg0 != 0 {
+			pa, va := allocEmptyDataPage(handlerSID, handlerShepherd)
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = pipe2FDBytes
+		}
+
 	default:
 		// Lseek, Close, Fchdir, Ioctl, Ftruncate, Fsync, Fdatasync, Flock,
 		// Dup3, Fcntl, etc: no data page, just scalar args and return value.
@@ -379,6 +394,10 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		// readlinkat(dirfd, path, buf, bufsiz): arg2=buf, arg3=bufsiz.
 		callerBufVA = uintptr(arg2)
 		callerBufLen = uint32(arg3)
+	case sysid.Pipe2:
+		// pipe2(pipefd, flags): arg0=pipefd output array, 2x int32.
+		callerBufVA = uintptr(arg0)
+		callerBufLen = pipe2FDBytes
 	}
 	// Pre-fault the caller's output buffer pages while we're still in the
 	// caller's context (TTBR0 + CurrentShepherd() are correct). During the
@@ -846,19 +865,34 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 			// Linux semantics: if the copy faults at any point (even after
 			// partial success), read() returns -EFAULT. A partial copy means
 			// the caller's buffer was bogus.
-			if isCopyBackSyscall(info.SysID) && returnVal > 0 && info.DataPagePA != 0 {
-				bytesToCopy := uint32(returnVal)
+			//
+			// bytesToCopy is normally the byte count the handler returned. pipe2
+			// is the exception: it succeeds with returnVal == 0 (Linux pipe2
+			// returns 0) yet must still copy its fixed 8-byte pipefd[2] payload,
+			// so it copies a fixed length on success rather than reading it from
+			// the return value.
+			if isCopyBackSyscall(info.SysID) && info.DataPagePA != 0 {
+				var bytesToCopy uint32
+				if info.SysID == sysid.Pipe2 {
+					if returnVal == 0 {
+						bytesToCopy = pipe2FDBytes
+					}
+				} else if returnVal > 0 {
+					bytesToCopy = uint32(returnVal)
+				}
 				if bytesToCopy > info.CallerBufLen {
 					bytesToCopy = info.CallerBufLen
 				}
 				if bytesToCopy > 4096 {
 					bytesToCopy = 4096
 				}
-				actual := copyDataPageToCaller(info.DataPagePA, info.CallerBufVA, info.CallerL0PA, bytesToCopy)
-				if uint32(actual) < bytesToCopy {
-					klog.Errf("[DLG] unable to write to client buffer @0x%x, only %d of %d were written before a fault\n",
-						uint64(info.CallerBufVA), actual, bytesToCopy)
-					returnVal = -14 // EFAULT
+				if bytesToCopy > 0 {
+					actual := copyDataPageToCaller(info.DataPagePA, info.CallerBufVA, info.CallerL0PA, bytesToCopy)
+					if uint32(actual) < bytesToCopy {
+						klog.Errf("[DLG] unable to write to client buffer @0x%x, only %d of %d were written before a fault\n",
+							uint64(info.CallerBufVA), actual, bytesToCopy)
+						returnVal = -14 // EFAULT
+					}
 				}
 			}
 
@@ -912,10 +946,15 @@ func prefaultOutputBuffer(bufVA uintptr, bufLen uintptr) {
 	}
 }
 
+// pipe2FDBytes is the number of bytes pipe2 copies back to the caller's
+// pipefd[2] array: two int32 file descriptors.
+const pipe2FDBytes = 8
+
 func isCopyBackSyscall(id sysid.ID) bool {
 	switch id {
 	case sysid.Read, sysid.Pread64, sysid.Fstat, sysid.Getdents64, sysid.Getcwd,
-		sysid.Fstatfs, sysid.Statfs, sysid.Fstatat, sysid.Readlinkat, sysid.Readv:
+		sysid.Fstatfs, sysid.Statfs, sysid.Fstatat, sysid.Readlinkat, sysid.Readv,
+		sysid.Pipe2:
 		return true
 	}
 	return false

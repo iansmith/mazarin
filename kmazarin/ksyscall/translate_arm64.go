@@ -74,6 +74,7 @@ var arm64ToSysID = [512]SysID{
 	32:  SysIDFlock,
 	67:  SysIDPread64,
 	68:  SysIDPwrite64,
+	59:  SysIDPipe2,
 }
 
 // translateSyscallNum converts an ARM64 Linux syscall number to SysID.

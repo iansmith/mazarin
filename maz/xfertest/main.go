@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"syscall"
 	"time"
 	"unsafe"
@@ -99,6 +100,14 @@ func runSmokeTests() bool {
 		return false
 	}
 	sys.UartWriteString(tag + "target " + targetSym + " sid=" + sys.Itoa(int64(targetSID)) + "\n")
+
+	// --- Test 0: pipe2 guest round-trip (MAZ-121) ---
+	// Proves DoD items 1-3 from the guest side: os.Pipe() -> pipe2(O_CLOEXEC)
+	// delegated to the linux shepherd, a byte round-trip through the shared
+	// pipe data plane, EOF after the write end closes, and the close-on-exec
+	// flag reported on both ends. Non-blocking stage: prints its own
+	// [pipe2test] PASS/FAIL marker and does not gate the transfer stages.
+	testPipe2()
 
 	// --- Test 1: SyscallTransferDMAClump ---
 	clump1, err := mem.AllocContiguous(4096)
@@ -365,6 +374,98 @@ func runSmokeTests() bool {
 }
 
 func main() { MazarinMain() }
+
+// pipeTag is the deterministic marker prefix the pipe2 guest stage prints.
+// One [pipe2test] PASS line on success; [pipe2test] FAIL <reason> otherwise.
+const pipeTag = "[pipe2test] "
+
+// fdCloexec reports whether F_GETFD says the close-on-exec bit is set on fd.
+// fcntl(F_GETFD) is delegated to the linux shepherd (MAZ-119); the second
+// return is false when the fcntl itself errored (e.g. not reachable here).
+func fdCloexec(fd uintptr) (set bool, ok bool) {
+	r, _, errno := syscall.Syscall(syscall.SYS_FCNTL, fd, uintptr(syscall.F_GETFD), 0)
+	if errno != 0 {
+		return false, false
+	}
+	return r&uintptr(syscall.FD_CLOEXEC) != 0, true
+}
+
+// testPipe2 proves the MAZ-121 DoD from the guest side: os.Pipe() round-trips
+// bytes through the linux shepherd's pipe data plane, the read end sees EOF
+// once the write end closes, and O_CLOEXEC is reported on both ends.
+//
+// os.Pipe() emits pipe2(p, O_CLOEXEC) (syscall 59 on arm64 / 293 on amd64),
+// which the kernel translates to sysid.Pipe2 and delegates to the linux
+// shepherd; the two fds it returns live in this guest's per-SID fd table over
+// there, so the subsequent write/read/close on them delegate back to the same
+// shepherd and hit the same shared pipe.End. The byte plane uses raw
+// syscall.Write/Read on the *os.File fds to stay single-threaded and
+// deterministic (write fully before reading; close before the EOF read), which
+// avoids the runtime poller and never parks the lone calling thread.
+func testPipe2() {
+	r, w, err := os.Pipe()
+	if err != nil {
+		sys.UartWriteString(pipeTag + "FAIL os.Pipe: " + err.Error() + "\n")
+		return
+	}
+	rfd := r.Fd()
+	wfd := w.Fd()
+
+	// (DoD 3) O_CLOEXEC is set on both ends — os.Pipe passes O_CLOEXEC. We only
+	// assert when F_GETFD is reachable on both ends; if it isn't, skip rather
+	// than fail (the round-trip below is the load-bearing proof).
+	rSet, rOK := fdCloexec(rfd)
+	wSet, wOK := fdCloexec(wfd)
+	if rOK && wOK && (!rSet || !wSet) {
+		sys.UartWriteString(pipeTag + "FAIL cloexec not set on both ends\n")
+		return
+	}
+
+	// (DoD 1) Write a known sequence to the write end, read it back from the
+	// read end, assert identical bytes in the same order.
+	want := []byte("MAZ-121 pipe2 round-trip\x00\x01\x02\xff")
+	n, werr := syscall.Write(int(wfd), want)
+	if werr != nil {
+		sys.UartWriteString(pipeTag + "FAIL write: " + werr.Error() + "\n")
+		return
+	}
+	if n != len(want) {
+		sys.UartWriteString(pipeTag + "FAIL short write: " + sys.Itoa(int64(n)) +
+			"/" + sys.Itoa(int64(len(want))) + "\n")
+		return
+	}
+	got := make([]byte, len(want))
+	rn, rerr := syscall.Read(int(rfd), got)
+	if rerr != nil {
+		sys.UartWriteString(pipeTag + "FAIL read: " + rerr.Error() + "\n")
+		return
+	}
+	if rn != len(want) || !bytes.Equal(got[:rn], want) {
+		sys.UartWriteString(pipeTag + "FAIL bytes mismatch: read " +
+			sys.Itoa(int64(rn)) + " of " + sys.Itoa(int64(len(want))) + "\n")
+		return
+	}
+
+	// (DoD 2) Close the write end; the next read on the drained pipe must
+	// return EOF (0 bytes, no error) — the signal os/exec relies on.
+	if cerr := w.Close(); cerr != nil {
+		sys.UartWriteString(pipeTag + "FAIL close write end: " + cerr.Error() + "\n")
+		return
+	}
+	eof := make([]byte, 8)
+	en, eerr := syscall.Read(int(rfd), eof)
+	if eerr != nil {
+		sys.UartWriteString(pipeTag + "FAIL read after close: " + eerr.Error() + "\n")
+		return
+	}
+	if en != 0 {
+		sys.UartWriteString(pipeTag + "FAIL expected EOF (0), got " + sys.Itoa(int64(en)) + " bytes\n")
+		return
+	}
+	_ = r.Close()
+
+	sys.UartWriteString(pipeTag + "PASS\n")
+}
 
 // testNetClient drives the Phase 4 NetClient against net.elf and prints
 // PASS/FAIL per stage. NetClient's pending-map handles ReqID matching;

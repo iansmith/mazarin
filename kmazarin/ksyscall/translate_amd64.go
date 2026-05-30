@@ -75,6 +75,7 @@ var x86ToSysID = [512]SysID{
 	74:  SysIDFsync,
 	75:  SysIDFdatasync,
 	73:  SysIDFlock,
+	293: SysIDPipe2,
 }
 
 // translateSyscallNum converts an x86_64 Linux syscall number to SysID.

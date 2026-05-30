@@ -28,7 +28,11 @@
 // shepherd's mutex is held, so a single shepherd's syscalls stay ordered.
 package fdtable
 
-import "path"
+import (
+	"path"
+
+	"mazzy/maz/linux/internal/pipe"
+)
 
 // AT_FDCWD is the special dirfd value meaning "use the caller's CWD".
 // Linux defines this as -100; *at-family syscalls accept it in lieu of a real fd.
@@ -57,12 +61,14 @@ const (
 type Kind uint8
 
 const (
-	KindNone   Kind = iota // slot is free
-	KindStdin              // fd 0 — keyboard input
-	KindStdout             // fd 1 — console output (white)
-	KindStderr             // fd 2 — console output (red)
-	KindFile               // regular file (via fs IPC)
-	KindDir                // directory (via fs IPC)
+	KindNone      Kind = iota // slot is free
+	KindStdin                 // fd 0 — keyboard input
+	KindStdout                // fd 1 — console output (white)
+	KindStderr                // fd 2 — console output (red)
+	KindFile                  // regular file (via fs IPC)
+	KindDir                   // directory (via fs IPC)
+	KindPipeRead              // pipe2 read end (Entry.Pipe data plane)
+	KindPipeWrite             // pipe2 write end (Entry.Pipe data plane)
 )
 
 // CloexecFromFlags reports whether the given open flags request close-on-exec.
@@ -95,6 +101,12 @@ type Entry struct {
 	// nil means buffering is disabled for this fd.
 	WriteBuf    []byte
 	WriteBufOff int64
+
+	// Pipe is the data-plane end backing a KindPipeRead/KindPipeWrite fd
+	// (created by pipe2). nil for every other Kind. The read and write ends
+	// of one pipe share a buffer through their respective *pipe.End — see
+	// maz/linux/internal/pipe.
+	Pipe *pipe.End
 }
 
 // Table manages a per-shepherd file descriptor table.
