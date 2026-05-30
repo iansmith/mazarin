@@ -652,6 +652,7 @@ func MazarinMain() {
 		sysid.Ioctl, sysid.Writev, sysid.Readv,
 		sysid.Statfs, sysid.Fstatfs, sysid.Fsync, sysid.Fdatasync,
 		sysid.Flock, sysid.Pread64, sysid.Pwrite64,
+		sysid.Pipe2,
 	)
 	if delegateErr != nil {
 		sys.UartWriteString(fmt.Sprintf("[linux] RegisterSyscallHandlers failed: %v\n", delegateErr))

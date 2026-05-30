@@ -154,3 +154,46 @@ func TestPipeReadBlocksThenWakes(t *testing.T) {
 		t.Fatalf("Read after write: got %q, want %q", got[:n], "wake")
 	}
 }
+
+// TestParkReleasedOnWrite verifies a parked reader token is returned only once
+// the pipe becomes readable (a write lands), and is returned FIFO.
+func TestParkReleasedOnWrite(t *testing.T) {
+	r, w := New(0)
+
+	r.Park("reader-A")
+	r.Park("reader-B")
+
+	// Still empty with a writer open → no waiters released yet.
+	if got := r.TakeWaiters(); got != nil {
+		t.Fatalf("TakeWaiters on empty open pipe: got %v, want nil", got)
+	}
+
+	if _, err := w.Write([]byte("x")); err != nil {
+		t.Fatalf("Write: unexpected error %v", err)
+	}
+	got := r.TakeWaiters()
+	if len(got) != 2 || got[0] != "reader-A" || got[1] != "reader-B" {
+		t.Fatalf("TakeWaiters after write: got %v, want [reader-A reader-B]", got)
+	}
+	// Tokens were cleared.
+	if again := r.TakeWaiters(); again != nil {
+		t.Fatalf("TakeWaiters second call: got %v, want nil", again)
+	}
+}
+
+// TestParkReleasedOnWriterClose verifies a parked reader is released at EOF
+// (the last writer closed with the buffer drained) so the shepherd can reply 0.
+func TestParkReleasedOnWriterClose(t *testing.T) {
+	r, w := New(0)
+	r.Park("reader")
+
+	if got := r.TakeWaiters(); got != nil {
+		t.Fatalf("TakeWaiters before close: got %v, want nil", got)
+	}
+
+	w.Close()
+	got := r.TakeWaiters()
+	if len(got) != 1 || got[0] != "reader" {
+		t.Fatalf("TakeWaiters after writer close: got %v, want [reader]", got)
+	}
+}

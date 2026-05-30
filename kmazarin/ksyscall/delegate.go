@@ -345,6 +345,21 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataLen = uint32(count)
 		}
 
+	case sysid.Pipe2:
+		// pipe2(pipefd[2], flags): arg0 = pipefd pointer (output). Output
+		// syscall like Getcwd — the handler fills a data page with the two
+		// int32 fds and the kernel copies the 8 bytes back to the caller's
+		// pipefd array on Reply.
+		if arg0 != 0 {
+			pa, va := allocEmptyDataPage(handlerSID, handlerShepherd)
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = pipe2FDBytes
+		}
+
 	default:
 		// Lseek, Close, Fchdir, Ioctl, Ftruncate, Fsync, Fdatasync, Flock, etc:
 		// no data page, just args and return value.
@@ -377,6 +392,10 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		// readlinkat(dirfd, path, buf, bufsiz): arg2=buf, arg3=bufsiz.
 		callerBufVA = uintptr(arg2)
 		callerBufLen = uint32(arg3)
+	case sysid.Pipe2:
+		// pipe2(pipefd, flags): arg0=pipefd output array, 2x int32.
+		callerBufVA = uintptr(arg0)
+		callerBufLen = pipe2FDBytes
 	}
 	// Pre-fault the caller's output buffer pages while we're still in the
 	// caller's context (TTBR0 + CurrentShepherd() are correct). During the
@@ -910,10 +929,15 @@ func prefaultOutputBuffer(bufVA uintptr, bufLen uintptr) {
 	}
 }
 
+// pipe2FDBytes is the number of bytes pipe2 copies back to the caller's
+// pipefd[2] array: two int32 file descriptors.
+const pipe2FDBytes = 8
+
 func isCopyBackSyscall(id sysid.ID) bool {
 	switch id {
 	case sysid.Read, sysid.Pread64, sysid.Fstat, sysid.Getdents64, sysid.Getcwd,
-		sysid.Fstatfs, sysid.Statfs, sysid.Fstatat, sysid.Readlinkat, sysid.Readv:
+		sysid.Fstatfs, sysid.Statfs, sysid.Fstatat, sysid.Readlinkat, sysid.Readv,
+		sysid.Pipe2:
 		return true
 	}
 	return false

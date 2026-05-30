@@ -81,5 +81,7 @@ const (
 	SysIDWait4     = sysid.Wait4
 	SysIDCloneExec = sysid.CloneExec // kernel-internal — NOT translatable from userspace
 
+	SysIDPipe2 = sysid.Pipe2
+
 	NumSyscallIDs = sysid.NumIDs
 )

@@ -67,3 +67,31 @@ func TestNumIDsAccountsForNewIDs(t *testing.T) {
 		t.Errorf("CloneExec (%d) must be < NumIDs (%d)", CloneExec, NumIDs)
 	}
 }
+
+// MAZ-121 Phase 0: red tests for the Pipe2 identifier. pipe2 is a fork/exec
+// prerequisite (os.Pipe / the errpipe success handshake). These turn green
+// once Pipe2 exists in sysid.go.
+
+func TestPipe2Exists(t *testing.T) {
+	if Pipe2 == Invalid {
+		t.Fatal("sysid.Pipe2 must not equal Invalid (the sentinel zero value)")
+	}
+}
+
+func TestPipe2DistinctFromOthers(t *testing.T) {
+	// Pipe2 must not alias any neighboring identifier in the iota block.
+	others := map[string]ID{
+		"Execve": Execve, "Wait4": Wait4, "CloneExec": CloneExec, "Clone": Clone,
+	}
+	for name, id := range others {
+		if Pipe2 == id {
+			t.Errorf("Pipe2 must not alias %s (both = %d)", name, id)
+		}
+	}
+}
+
+func TestPipe2BelowNumIDs(t *testing.T) {
+	if Pipe2 >= NumIDs {
+		t.Errorf("Pipe2 (%d) must be < NumIDs (%d)", Pipe2, NumIDs)
+	}
+}

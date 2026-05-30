@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"sync"
 	"unsafe"
 
 	"mazzy/maz/linux/internal/fdtable"
+	"mazzy/maz/linux/internal/pipe"
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/dlist"
@@ -205,6 +207,8 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 		h.sysFsync(req)
 	case sysid.Flock:
 		h.sysFlock(req)
+	case sysid.Pipe2:
+		h.sysPipe2(req)
 
 	// --- Metadata syscalls (via fs IPC) ---
 	case sysid.Openat:
@@ -272,6 +276,18 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 		return
 	}
 	if e.Kind == fdtable.KindStdin || e.Kind == fdtable.KindStdout || e.Kind == fdtable.KindStderr {
+		req.Reply(EOK)
+		return
+	}
+	if e.Kind == fdtable.KindPipeRead || e.Kind == fdtable.KindPipeWrite {
+		// Closing a write end decrements the shared writer count, so a reader
+		// blocked on this pipe now drains to EOF. Wake any parked reader before
+		// freeing the slot.
+		e.Pipe.Close()
+		if e.Kind == fdtable.KindPipeWrite {
+			wakePipeReaders(e.Pipe)
+		}
+		fdt.Free(fd)
 		req.Reply(EOK)
 		return
 	}
@@ -448,6 +464,136 @@ func (h *syscallHandler) sysFlock(req sys.SyscallRequest) {
 		req.Reply(h.flocks.release(e.Handle, shep.Locks))
 	default:
 		req.Reply(EINVAL)
+	}
+}
+
+// pipe2FDBytes is the size of the pipefd[2] output: two int32 fds. Must match
+// the kernel's copy-back length for sysid.Pipe2 (delegate.go pipe2FDBytes).
+const pipe2FDBytes = 8
+
+// sysPipe2 implements pipe2(pipefd[2], flags). It allocates a linked
+// (read-end, write-end) fd pair backed by the internal/pipe data plane, writes
+// the two fd numbers into the kernel-provided copy-back page, and replies with
+// the byte count so the kernel copies pipefd[0]=read, pipefd[1]=write back to
+// the caller. flags carries O_CLOEXEC / O_NONBLOCK, propagated onto both ends.
+//
+// On success it replies pipe2FDBytes (the Getcwd copy-back convention: a
+// positive reply = bytes written back, which the caller's pipe2 wrapper treats
+// as success and discards). On failure it replies a negative errno and writes
+// nothing back.
+func (h *syscallHandler) sysPipe2(req sys.SyscallRequest) {
+	flags := int(req.Args[1])
+	buf := req.DataBuf()
+	if buf == nil || len(buf) < pipe2FDBytes {
+		req.Reply(EFAULT)
+		return
+	}
+
+	fdt := h.getShepherd(req.CallerPID).FDT
+	rfd := fdt.Alloc(3)
+	if rfd < 0 {
+		req.Reply(EMFILE)
+		return
+	}
+	// Reserve the read fd before allocating the write fd so Alloc doesn't hand
+	// back the same slot twice.
+	fdt.Put(rfd, &fdtable.Entry{Kind: fdtable.KindNone})
+	wfd := fdt.Alloc(3)
+	if wfd < 0 {
+		fdt.Free(rfd)
+		req.Reply(EMFILE)
+		return
+	}
+
+	rEnd, wEnd := pipe.New(flags)
+	cloexec := fdtable.CloexecFromFlags(int32(flags))
+	fdt.Put(rfd, &fdtable.Entry{Kind: fdtable.KindPipeRead, Pipe: rEnd, Cloexec: cloexec})
+	fdt.Put(wfd, &fdtable.Entry{Kind: fdtable.KindPipeWrite, Pipe: wEnd, Cloexec: cloexec})
+
+	// pipefd[0] = read end, pipefd[1] = write end. The kernel copies these 8
+	// bytes verbatim to the caller's pipefd array, read back as two _C_int.
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(rfd))
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(wfd))
+	req.Reply(pipe2FDBytes)
+}
+
+// pipeReadWaiter is a read request parked on an empty pipe. It is stored as the
+// opaque token in pipe.End.Park; wakePipeReaders pulls it back from TakeWaiters
+// and fulfills it once data arrives or the last writer closes (EOF).
+type pipeReadWaiter struct {
+	req sys.SyscallRequest
+	end *pipe.End
+}
+
+// drainPipeInto reads from end into the request's data buffer and replies, on
+// the assumption the buffer is readable or at EOF (the non-blocking caller has
+// already established that). It returns false without replying only when the
+// read reports ErrWouldBlock — letting the caller decide to EAGAIN or park.
+func drainPipeInto(req sys.SyscallRequest, end *pipe.End) (replied bool) {
+	buf := req.DataBuf()
+	if buf == nil {
+		req.Reply(EFAULT)
+		return true
+	}
+	count := int(req.Args[2])
+	if count > len(buf) {
+		count = len(buf)
+	}
+	n, err := end.Read(buf[:count])
+	if err != nil {
+		return false // ErrWouldBlock: empty buffer, a writer is still open.
+	}
+	req.Reply(int64(n)) // n>0 = data; n==0 = EOF (writers closed, drained).
+	return true
+}
+
+// sysReadPipe serves a read() on a pipe read-end. It drains the shared buffer
+// in FIFO order. When the buffer is empty it either reports EOF (all writers
+// closed), returns EAGAIN (O_NONBLOCK), or parks the request (blocking) to be
+// fulfilled by a later write or writer-close on the matching write-end. This
+// blocking park is exercised end-to-end by MAZ-114.
+func (h *syscallHandler) sysReadPipe(req sys.SyscallRequest, e *fdtable.Entry) {
+	if drainPipeInto(req, e.Pipe) {
+		return
+	}
+	// Empty buffer, a writer is still open.
+	if e.Pipe.Nonblock() {
+		req.Reply(EWOULDBLOCK)
+		return
+	}
+	e.Pipe.Park(&pipeReadWaiter{req: req, end: e.Pipe}) // deferred Reply.
+}
+
+// sysWritePipe serves a write() on a pipe write-end: it appends to the shared
+// buffer (bounded by the pipe cap) and wakes any reader parked on the pipe.
+// A non-blocking write to a full buffer returns EAGAIN.
+func (h *syscallHandler) sysWritePipe(req sys.SyscallRequest, e *fdtable.Entry) {
+	data := req.Data()
+	n, err := e.Pipe.Write(data)
+	if err != nil {
+		// ErrWouldBlock: buffer full. Only the non-blocking case is reachable
+		// here (a blocking writer would park, which the small pipe cap +
+		// few-byte fork/exec consumers never hit; MAZ-114 owns the blocking
+		// writer path if a real consumer needs it).
+		req.Reply(EWOULDBLOCK)
+		return
+	}
+	wakePipeReaders(e.Pipe)
+	req.Reply(int64(n))
+}
+
+// wakePipeReaders fulfills readers parked on a pipe once it became readable
+// (data written) or hit EOF (last writer closed). Each woken reader re-runs the
+// read against the shared buffer and replies. Called after a pipe write and
+// after a pipe write-end close.
+func wakePipeReaders(end *pipe.End) {
+	for _, tok := range end.TakeWaiters() {
+		w := tok.(*pipeReadWaiter)
+		if !drainPipeInto(w.req, w.end) {
+			// Still would-block (e.g. another reader drained the buffer first
+			// and a writer remains): re-park rather than spuriously waking.
+			w.end.Park(w)
+		}
 	}
 }
 
@@ -940,6 +1086,14 @@ func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 		req.Reply(EBADF)
 		return
 	}
+	if e.Kind == fdtable.KindPipeWrite {
+		req.Reply(EBADF) // reading the write end is invalid
+		return
+	}
+	if e.Kind == fdtable.KindPipeRead {
+		h.sysReadPipe(req, e)
+		return
+	}
 	if e.Kind == fdtable.KindDir {
 		req.Reply(EISDIR)
 		return
@@ -1046,6 +1200,14 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 	}
 	if e.Kind == fdtable.KindStdin {
 		req.Reply(EBADF)
+		return
+	}
+	if e.Kind == fdtable.KindPipeRead {
+		req.Reply(EBADF) // writing the read end is invalid
+		return
+	}
+	if e.Kind == fdtable.KindPipeWrite {
+		h.sysWritePipe(req, e)
 		return
 	}
 	if data == nil {
