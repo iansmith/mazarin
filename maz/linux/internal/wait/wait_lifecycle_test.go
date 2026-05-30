@@ -79,6 +79,38 @@ func TestDropParentClearsBookkeeping(t *testing.T) {
 	r.DropParent(parent)
 }
 
+// TestDecidePidSelectors — pid == 0 reaps any child (flat process-group model),
+// while pid < -1 (a specific foreign process group we cannot resolve) returns
+// ECHILD rather than reaping an arbitrary child.
+func TestDecidePidSelectors(t *testing.T) {
+	const parent = 1
+
+	// pid == 0 behaves like pid == -1: reap any child of this parent.
+	r := New()
+	r.RegisterChild(parent, 100)
+	r.AddZombie(parent, 100, 4)
+	if out := r.Decide(parent, 0, 0); out.WPid != 100 || out.Errno != 0 {
+		t.Errorf("Decide(pid=0) = %+v, want reap of 100", out)
+	}
+
+	// pid < -1: a process group we cannot resolve -> ECHILD, never a reap,
+	// even when a reapable zombie exists under this parent.
+	r2 := New()
+	r2.RegisterChild(parent, 200)
+	r2.AddZombie(parent, 200, 1)
+	out := r2.Decide(parent, -200, 0)
+	if out.Errno != ECHILD {
+		t.Errorf("Decide(pid=-200) errno = %d, want ECHILD (%d)", out.Errno, ECHILD)
+	}
+	if out.WPid != 0 || out.MustPark {
+		t.Errorf("Decide(pid=-200) = %+v, want ECHILD with no reap/park", out)
+	}
+	// The zombie must be untouched (not consumed by the rejected selector).
+	if again := r2.Decide(parent, -1, 0); again.WPid != 200 {
+		t.Errorf("Decide(-1) after rejected pid<-1 = %+v, want zombie 200 still reapable", again)
+	}
+}
+
 // TestConcurrentReapNoDoubleReap — many goroutines exit children and reap
 // concurrently; every zombie is reaped exactly once, never twice. Guards the
 // Reaper's mutex (run with `-race`).

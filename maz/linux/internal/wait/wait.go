@@ -121,19 +121,32 @@ func (r *Reaper) AddZombie(parentPID, childPID int32, rawExitStatus int) {
 }
 
 // Decide computes the wait4 outcome for a caller in parentPID waiting on
-// `pid` (>0 specific child; -1 any child) with the given options bitmask.
-// It reaps a matching zombie if one exists (removing it so it is reaped
-// exactly once), otherwise reports ECHILD, would-block, or — under
-// WNOHANG — a (0, 0) no-op.
+// `pid` with the given options bitmask:
+//   - pid > 0  -> a specific child.
+//   - pid == -1 -> any child of this parent.
+//   - pid == 0  -> any child in the caller's process group. The shepherd does
+//     not track process groups; all of a parent's children share one group in
+//     this flat model, so pid == 0 is equivalent to pid == -1 here.
+//   - pid < -1  -> any child in process group |pid|. We cannot resolve a
+//     specific foreign process group (no pgrp tracking), so there is no child
+//     we can honestly match -> ECHILD. (NOT folded into "any child", which
+//     would reap the wrong child.)
+//
+// It reaps a matching zombie if one exists (removing it so it is reaped exactly
+// once), otherwise reports ECHILD, would-block, or — under WNOHANG — a (0, 0)
+// no-op.
 func (r *Reaper) Decide(parentPID int32, pid int64, options int) Outcome {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if pid > 0 {
+	switch {
+	case pid > 0:
 		return r.decideSpecific(parentPID, int32(pid), options)
+	case pid == -1 || pid == 0:
+		return r.decideAny(parentPID, options)
+	default: // pid < -1: a specific process group we cannot resolve.
+		return Outcome{Errno: ECHILD}
 	}
-	// pid == -1 (and, conservatively, any other non-positive value): any child.
-	return r.decideAny(parentPID, options)
 }
 
 // decideSpecific resolves wait4(pid > 0). Caller holds r.mu.

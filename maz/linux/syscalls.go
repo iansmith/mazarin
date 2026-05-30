@@ -404,16 +404,27 @@ func (h *syscallHandler) sysCloneProcess(req sys.SyscallRequest) {
 //
 // Parking is the deferred-Reply trick (no new primitive): stash the request
 // by value and do NOT call Reply. wakeWait4OnChildExit later finishes it.
+//
+// rusage (req.Args[3]) is not yet populated — wait4 succeeds and leaves the
+// caller's *rusage untouched. We deliberately do NOT fail non-NULL rusage:
+// the common wait4(pid, &status, 0, &rusage) idiom would then break, which is
+// worse than leaving rusage unpopulated. Filling it needs a second copy-back
+// buffer through the kernel delegate path and is tracked as a follow-up
+// (MAZ-125).
 func (h *syscallHandler) sysWait4(req sys.SyscallRequest) {
 	pid := int64(int32(req.Args[0])) // wait4 pid: sign-extend the 32-bit arg
 	options := int(req.Args[2])
 	parent := req.CallerPID
 
+	// Hold waitMu across BOTH the Decide and the waiter insert so a child
+	// exit cannot interleave between "decided to park" and "parked". Without
+	// this, a zombie added (and its waiters scanned) in that window would miss
+	// this waiter and leave the caller parked forever. wakeWait4OnChildExit
+	// also takes waitMu before re-deciding, so the two are mutually exclusive.
+	// Lock order is always waitMu -> reaper.mu (Decide takes reaper.mu).
+	h.waitMu.Lock()
 	out := h.reaper.Decide(int32(parent), pid, options)
-
 	if out.MustPark {
-		// Defer the Reply: park the caller until a child exit satisfies it.
-		h.waitMu.Lock()
 		h.waiters[waiterKey{sid: parent, tid: req.CallerTID}] = wait4Waiter{
 			req:     req,
 			pid:     pid,
@@ -422,6 +433,7 @@ func (h *syscallHandler) sysWait4(req sys.SyscallRequest) {
 		h.waitMu.Unlock()
 		return
 	}
+	h.waitMu.Unlock()
 	replyWait4(req, out)
 }
 
@@ -460,12 +472,14 @@ const waitStatusBytes = 4
 
 // wakeWait4OnChildExit is called on the delegate loop after a child exit has
 // been recorded in the reaper. It re-decides every parked waiter belonging to
-// the exited child's parent and replies to the first one this exit satisfies
-// (a single exit reaps a single child).
+// the exited child's parent and resolves all that the exit now satisfies.
 //
-// Re-running Decide (rather than blindly replying the exited child) keeps the
-// "specific-pid" waiters correct: a waiter on a different specific child must
-// stay parked, and the reap-exactly-once delete happens inside Decide.
+// A single exit can satisfy more than one waiter: an any-child waiter reaps the
+// zombie, while a different waiter blocked on that same (now reaped, now gone)
+// specific PID must resolve to ECHILD rather than stay parked until some
+// unrelated future exit. Re-running Decide per waiter keeps each correct — the
+// reap-exactly-once delete happens inside Decide, so only one waiter actually
+// reaps the zombie and the rest see the post-reap state.
 func (h *syscallHandler) wakeWait4OnChildExit(parent int32) {
 	h.waitMu.Lock()
 	defer h.waitMu.Unlock()
@@ -477,9 +491,8 @@ func (h *syscallHandler) wakeWait4OnChildExit(parent int32) {
 		if out.MustPark {
 			continue // this exit does not satisfy this waiter
 		}
-		delete(h.waiters, key)
+		delete(h.waiters, key) // map delete during range is safe in Go
 		replyWait4(w.req, out)
-		return // one exit reaps one child
 	}
 }
 
