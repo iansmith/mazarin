@@ -6,10 +6,12 @@ import (
 	"sync"
 	"unsafe"
 
+	"mazzy/maz/linux/internal/cloneexec"
 	"mazzy/maz/linux/internal/fdtable"
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/dlist"
+	"mazzy/shared/linuxabi"
 	"mazzy/shared/sysid"
 )
 
@@ -42,15 +44,37 @@ type syscallHandler struct {
 	// by sid → inum. Drained in sysMmapPageFlush after the last page
 	// for an inum is removed, and on shepherd death.
 	orphanHandles map[int16]map[uint32]uint32
+
+	// cloneWindows holds the per-cloning-thread buffering windows (MAZ-118)
+	// opened when a process-flavor clone (CLONE_THREAD clear) is forwarded
+	// here (MAZ-78). A window stays open across the in-child setup syscalls
+	// until the matching execve flushes it (MAZ-79). The parked clone caller
+	// blocks in the kernel delegate path until that Reply; until execve lands
+	// the only window-closing path is Abort on shepherd death (cleanupShepherd).
+	//
+	// cloneWindows is keyed by global TID; cloneTIDsBySID maps each caller SID
+	// to the TIDs whose windows it owns, so a dying shepherd's still-open
+	// windows can be aborted (windows are TID-keyed, cleanup is SID-keyed).
+	//
+	// cloneMu guards BOTH maps. The per-shepherd ShepherdFilesystemData.mu held
+	// across handle() serializes one shepherd's syscalls, but different
+	// shepherds run on different goroutines and would touch the single shared
+	// Registry concurrently — and cloneexec.Registry is not goroutine-safe (see
+	// its package doc). cloneMu is the wrapping mutex that doc prescribes.
+	cloneMu        sync.Mutex
+	cloneWindows   *cloneexec.Registry
+	cloneTIDsBySID map[int16]map[int32]struct{}
 }
 
 func newSyscallHandler(fs fsclient.FSClient) *syscallHandler {
 	return &syscallHandler{
-		shepherds:     make(map[int16]*ShepherdFilesystemData),
-		flocks:        newFlockTable(),
-		fs:            fs,
-		cache:         newPageCache(),
-		orphanHandles: make(map[int16]map[uint32]uint32),
+		shepherds:      make(map[int16]*ShepherdFilesystemData),
+		flocks:         newFlockTable(),
+		fs:             fs,
+		cache:          newPageCache(),
+		orphanHandles:  make(map[int16]map[uint32]uint32),
+		cloneWindows:   cloneexec.New(),
+		cloneTIDsBySID: make(map[int16]map[int32]struct{}),
 	}
 }
 
@@ -138,6 +162,13 @@ func (h *syscallHandler) getShepherd(sid int16) *ShepherdFilesystemData {
 // cleanupShepherd closes all open FDs, releases all flocks, and removes
 // the per-shepherd state for the given SID. Called on shepherd death.
 func (h *syscallHandler) cleanupShepherd(sid int16) {
+	// Abort any clone buffering windows still open for this shepherd's threads.
+	// A process-flavor clone that never reached its matching execve (the caller
+	// died first) leaves a parked window; without this the window would leak
+	// (MAZ-78 DoD item 4). The parked caller itself is unblocked kernel-side by
+	// CleanupDelegateForDeadShepherd — it is part of the dying shepherd.
+	h.abortCloneWindowsForSID(sid)
+
 	h.mu.Lock()
 	s := h.shepherds[sid]
 	if s == nil {
@@ -188,6 +219,10 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 	shep.mu.Lock()
 	defer shep.mu.Unlock()
 	switch req.SysID {
+	// --- Process lifecycle ---
+	case sysid.Clone:
+		h.sysCloneProcess(req)
+
 	// --- Local-only syscalls ---
 	case sysid.Close:
 		h.sysClose(req)
@@ -261,6 +296,64 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 	default:
 		req.Reply(ENOSYS)
 	}
+}
+
+// ============================================================
+// Process lifecycle
+// ============================================================
+
+// sysCloneProcess handles a process-flavor clone (CLONE_THREAD clear) forwarded
+// here by the kernel dispatch gate (MAZ-78). Thread-flavor clones never reach
+// the shepherd — they are served in-kernel by SyscallClone → CloneThread.
+//
+// It opens a MAZ-118 buffering window keyed by the cloning thread's TID and
+// then WITHHOLDS the Reply: the os/exec idiom is clone() → a short run of
+// in-child setup syscalls (dup3/close/fcntl/chdir) → execve(). The caller stays
+// parked in the kernel delegate path with the window open; the matching execve
+// (MAZ-79) flushes the buffered intent and replies to the parked clone. This is
+// the deferred-Reply park model (mirrors MAZ-80), the same mechanism the stdin
+// drainer uses to defer a read(0) reply.
+//
+// Defensive guard: a thread-flavor mask arriving here would be a dispatch bug
+// (the kernel gate should have routed it to CloneThread); reply ENOSYS rather
+// than open a window that no execve will ever flush. A duplicate Open for a TID
+// that already has a window (reused before its prior clone resolved) likewise
+// fails closed.
+func (h *syscallHandler) sysCloneProcess(req sys.SyscallRequest) {
+	if !linuxabi.IsProcessClone(req.Args[0]) {
+		req.Reply(ENOSYS)
+		return
+	}
+	tid := int32(req.CallerTID)
+
+	h.cloneMu.Lock()
+	if err := h.cloneWindows.Open(tid); err != nil {
+		h.cloneMu.Unlock()
+		req.Reply(EWOULDBLOCK) // EAGAIN: a window for this TID is already open
+		return
+	}
+	tids := h.cloneTIDsBySID[req.CallerPID]
+	if tids == nil {
+		tids = make(map[int32]struct{})
+		h.cloneTIDsBySID[req.CallerPID] = tids
+	}
+	tids[tid] = struct{}{}
+	h.cloneMu.Unlock()
+
+	// No req.Reply here: the caller stays parked until execve flushes the
+	// window (MAZ-79) or the window is aborted on shepherd death.
+}
+
+// abortCloneWindowsForSID drops every clone buffering window owned by sid's
+// threads. Called from cleanupShepherd on shepherd death so a clone that never
+// reached its execve does not leak a window (MAZ-78 DoD item 4). Idempotent.
+func (h *syscallHandler) abortCloneWindowsForSID(sid int16) {
+	h.cloneMu.Lock()
+	defer h.cloneMu.Unlock()
+	for tid := range h.cloneTIDsBySID[sid] {
+		h.cloneWindows.Abort(tid)
+	}
+	delete(h.cloneTIDsBySID, sid)
 }
 
 // ============================================================

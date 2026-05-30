@@ -2,6 +2,8 @@
 
 package ksyscall
 
+import "mazzy/shared/linuxabi"
+
 // CLONE_SETTLS tells the kernel to set the child's FS_BASE from the newtls parameter.
 // Without this, the child inherits the parent's FS_BASE and corrupts the parent's TLS
 // when it writes its g pointer to FS:-8.
@@ -18,6 +20,15 @@ const cloneSETTLS = 0x80000
 //
 // Note: No //go:nosplit because CloneThread allocates memory for thread nodes.
 func SyscallClone(flags, stack, ptid, ctid, tls, _ uint64) int64 {
+	// A process-flavor clone (CLONE_THREAD clear) must NOT be turned into a
+	// thread here — see the arm64 SyscallClone in clone.go for the rationale.
+	// The dispatch gate only lets thread clones reach this path; a process
+	// clone arriving here means the shepherd clone handler is unregistered, so
+	// fail cleanly rather than spawn a thread inside the parent.
+	if linuxabi.IsProcessClone(flags) {
+		return -38 // ENOSYS
+	}
+
 	// Get mp/gp/fn from saved callee-saved registers (set by exception handler).
 	// R12 = fn (entry function pointer)
 	// R13 = mp (m pointer)

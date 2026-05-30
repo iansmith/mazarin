@@ -4,6 +4,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
+	"mazzy/shared/linuxabi"
 )
 
 // SyscallClone implements the clone(2) syscall for ARM64 and RISC-V.
@@ -11,13 +12,24 @@ import (
 // before calling clone. We extract these values from the stack.
 //
 // Stack layout (positive offsets from passed stack pointer, after Go's SUB $32):
-//   stack+0:  saved LR (Go's clone caller return address, not used by us)
-//   stack+8:  fn (entry function)
-//   stack+16: gp (g pointer)
-//   stack+24: mp (m pointer)
+//
+//	stack+0:  saved LR (Go's clone caller return address, not used by us)
+//	stack+8:  fn (entry function)
+//	stack+16: gp (g pointer)
+//	stack+24: mp (m pointer)
 //
 // Note: No //go:nosplit because CloneThread allocates memory for thread nodes.
 func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
+	// A process-flavor clone (CLONE_THREAD clear) must NOT be turned into a
+	// thread here. The dispatch gate (isThreadFlavorClone) only lets thread
+	// clones reach this in-kernel path; a process clone arriving here means the
+	// linux shepherd has not registered the clone handler, so there is nowhere
+	// to open its buffering window. Fail cleanly instead of silently spawning a
+	// thread inside the parent (MAZ-78 DoD item 3).
+	if linuxabi.IsProcessClone(flags) {
+		return -38 // ENOSYS
+	}
+
 	// Extract mp, gp, fn from the stack (same as Cardinal)
 	// Go writes values at negative offsets from the original stack pointer,
 	// then does SUB $32, but the syscall apparently receives the PRE-SUB stack.
@@ -44,7 +56,6 @@ func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
 	spsr := GetSyscallSPSR()
 
 	// Suppress unused warnings
-	_ = flags
 	_ = ptid
 	_ = tls
 	_ = ctid
