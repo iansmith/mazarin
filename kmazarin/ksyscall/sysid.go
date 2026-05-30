@@ -75,6 +75,7 @@ const (
 	SysIDFlock      = sysid.Flock
 	SysIDPread64      = sysid.Pread64
 	SysIDPwrite64     = sysid.Pwrite64
+	SysIDDup3         = sysid.Dup3
 
 	// Process-creation syscalls (Linux fork/exec — MAZ-62 container).
 	SysIDExecve    = sysid.Execve

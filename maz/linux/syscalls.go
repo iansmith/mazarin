@@ -205,6 +205,10 @@ func (h *syscallHandler) handle(req sys.SyscallRequest) {
 		h.sysFsync(req)
 	case sysid.Flock:
 		h.sysFlock(req)
+	case sysid.Dup3:
+		h.sysDup3(req)
+	case sysid.Fcntl:
+		h.sysFcntl(req)
 
 	// --- Metadata syscalls (via fs IPC) ---
 	case sysid.Openat:
@@ -275,8 +279,20 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 		req.Reply(EOK)
 		return
 	}
+	h.releaseFDResources(req.CallerPID, fd, e)
+	fdt.Free(fd)
+	req.Reply(EOK)
+}
+
+// releaseFDResources runs the close-time disposition for a single open file
+// entry — flushing any pending write buffer and releasing (or orphaning) the
+// fs-side handle — WITHOUT freeing the table slot. sysClose calls it then
+// frees the slot; sysDup3 calls it for the entry it is about to overwrite at
+// newfd. Stdio entries carry no handle/WriteBuf, so callers gate on Kind
+// before invoking it.
+func (h *syscallHandler) releaseFDResources(sid int16, fd int, e *fdtable.Entry) {
 	if e.WriteBuf != nil && len(e.WriteBuf) > 0 {
-		h.flushWriteBuf(req.CallerPID, fd, e) // best-effort; ignore error on close
+		h.flushWriteBuf(sid, fd, e) // best-effort; ignore error on close
 	}
 	// Linux semantics: mmap'd pages survive close. If the cache still has
 	// pages for this inode, leave the fs handle open so the eventual
@@ -286,14 +302,105 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 	// working. The handle is released by closeOrphanHandleIfDrained when
 	// the last page for this inum is removed, or by death cleanup.
 	if e.Handle != 0 {
-		if h.cache.HasPagesFor(req.CallerPID, e.Inum) {
-			h.markOrphanHandle(req.CallerPID, e.Inum, e.Handle)
+		if h.cache.HasPagesFor(sid, e.Inum) {
+			h.markOrphanHandle(sid, e.Inum, e.Handle)
 		} else {
 			h.fs.Close(e.Handle)
 		}
 	}
-	fdt.Free(fd)
-	req.Reply(EOK)
+}
+
+// sysDup3 implements dup3(oldfd, newfd, flags): newfd is made to refer to the
+// same open file as oldfd, after closing whatever previously occupied newfd.
+// EINVAL when oldfd == newfd, EBADF on a closed oldfd or out-of-range newfd.
+// The displaced newfd is disposed exactly like sysClose via releaseFDResources.
+func (h *syscallHandler) sysDup3(req sys.SyscallRequest) {
+	sid := req.CallerPID
+	fdt := h.getShepherd(sid).FDT
+	oldfd := int(req.Args[0])
+	newfd := int(req.Args[1])
+	flags := int32(req.Args[2])
+
+	newfd, errno := fdt.Dup3(oldfd, newfd, flags, func(displaced *fdtable.Entry) {
+		// Give the displaced entry the same close-time disposition sysClose
+		// would (WriteBuf flush + orphan/release of any fs handle).
+		h.releaseFDResources(sid, newfd, displaced)
+	})
+	if errno != EOK {
+		req.Reply(errno)
+		return
+	}
+	req.Reply(int64(newfd)) // Linux dup3 returns the new descriptor on success
+}
+
+// fcntl command numbers (identical on ARM64 and amd64).
+const (
+	fSETFD    = 2 // F_SETFD — set fd flags (only FD_CLOEXEC is meaningful)
+	fGETFD    = 1 // F_GETFD — get fd flags
+	fGETFL    = 3 // F_GETFL — get file status flags (access mode)
+	fSETFL    = 4 // F_SETFL — set file status flags
+	fdCLOEXEC = 1 // FD_CLOEXEC bit returned/accepted by F_GETFD/F_SETFD
+)
+
+// sysFcntl implements the fcntl commands the shepherd path owns: F_SETFD /
+// F_GETFD store and read the per-fd close-on-exec bit (MAZ-119), and the stdio
+// fast paths (fd 0/1/2) for F_GETFD/F_SETFD/F_GETFL/F_SETFL mirror the kernel's
+// in-kernel SyscallFcntl stub so the Go runtime's os.init() probes on
+// stdin/stdout/stderr keep working once fcntl is delegated here. Any other
+// command returns ENOSYS, matching the kernel stub for fd > 2.
+func (h *syscallHandler) sysFcntl(req sys.SyscallRequest) {
+	fdt := h.getShepherd(req.CallerPID).FDT
+	fd := int(req.Args[0])
+	cmd := req.Args[1]
+	arg := req.Args[2]
+
+	e := fdt.Get(fd)
+
+	switch cmd {
+	case fGETFD:
+		if e == nil {
+			req.Reply(EBADF)
+			return
+		}
+		if e.Cloexec {
+			req.Reply(fdCLOEXEC)
+		} else {
+			req.Reply(EOK) // stdio defaults to no flags, matching the kernel stub
+		}
+	case fSETFD:
+		if e == nil {
+			req.Reply(EBADF)
+			return
+		}
+		e.Cloexec = arg&fdCLOEXEC != 0
+		req.Reply(EOK)
+	case fGETFL:
+		// Access mode for the stdio fds, mirroring the kernel stub: stdin is
+		// read-only, stdout/stderr are write-only.
+		if e == nil {
+			req.Reply(EBADF)
+			return
+		}
+		if e.Kind == fdtable.KindStdin {
+			req.Reply(0) // O_RDONLY
+			return
+		}
+		if e.Kind == fdtable.KindStdout || e.Kind == fdtable.KindStderr {
+			req.Reply(1) // O_WRONLY
+			return
+		}
+		req.Reply(int64(e.Flags))
+	case fSETFL:
+		// Status-flag changes are a no-op here (and the kernel stub pretends
+		// to set them for stdio); only a closed fd is an error.
+		if e == nil {
+			req.Reply(EBADF)
+			return
+		}
+		req.Reply(EOK)
+	default:
+		req.Reply(ENOSYS)
+	}
 }
 
 func (h *syscallHandler) sysLseek(req sys.SyscallRequest) {
