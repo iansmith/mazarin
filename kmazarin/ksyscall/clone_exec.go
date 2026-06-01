@@ -210,14 +210,18 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	registerUringID(uringID, int16(p.PID))
 
 	// Register kernel-allocated VA ranges so CleanupShepherdPages reclaims
-	// the ELF segments + stack + framebuffer on the child's death.
-	// Constraint pages are intentionally NOT added — they are a
-	// system-lifetime shared resource (PD_PINNED), released by no shepherd.
+	// the ELF segments + stack on the child's death. The framebuffer and the
+	// constraint pages are intentionally NOT added — both are system-lifetime
+	// shared resources mapped into every shepherd from a single global PA, so
+	// Phase 1 must never releasePageByPA them (the first shepherd to die would
+	// free the shared pages; later deaths would underflow). Phase 2 still unmaps
+	// their PTEs from the dying shepherd. (MAZ-127: this child is the first
+	// shepherd that actually dies, which is why the latent framebuffer
+	// double-free surfaced here — see runshepherd.go for the full note.)
 	for j := 0; j < loadedProc.SegmentCount; j++ {
 		p.Spans.Add(loadedProc.SegmentSpans[j].VA, loadedProc.SegmentSpans[j].Size)
 	}
 	p.Spans.Add(loadedProc.StackBase, 64*1024)
-	p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
 
 	// Link the child into the parent's child list. Best-effort: an overflow
 	// (parent already has MaxChildrenPerShepherd live children) leaves the
@@ -231,15 +235,11 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	// On vfork success (MAZ-127): wake the parked parent with the child PID.
 	// The transient thread (current thread) is reaped (never returns to userspace).
 	// On non-vfork paths (boot), this is a no-op (no reserved PID or parent linkage).
-	if req.ReservedPID != 0 {
-		// This is a vfork child; wake the parked parent
-		// The transient thread's context is held in the worker, not the scheduler
-		// So we look up the parent directly via the linkage
-		currentTID := int16(GetCurrentThreadTID())
-		parentTID, _ := lookupVforkParent(currentTID)
-		if parentTID != 0 {
-			wakeVforkParent(currentTID, int64(newPID))
-		}
+	if req.ReservedPID != 0 && req.TransientTID != 0 {
+		// Vfork success: wake the parked parent. Use req.TransientTID — this
+		// function runs on the kernel worker (thread 0), so GetCurrentThreadTID()
+		// here would return the worker's TID, not the transient's.
+		wakeVforkParent(int16(req.TransientTID), int64(newPID))
 	}
 
 	// Deliver EventExecComplete to the parent (MAZ-71). The event lands in the

@@ -225,8 +225,9 @@ func LaunchFromMemory(elfData []byte, name string) int64 {
 			p.Spans.Add(loadedProc.SegmentSpans[j].VA, loadedProc.SegmentSpans[j].Size)
 		}
 		p.Spans.Add(loadedProc.StackBase, 64*1024)
-		p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
-		// UserConstraintPagesVA intentionally not in Spans — see runshepherd.go.
+		// UserFramebufferVA and UserConstraintPagesVA intentionally not in Spans —
+		// both are global shared system-lifetime resources; freeing them on one
+		// shepherd's death double-frees for the rest. See runshepherd.go.
 
 		return false // stop iteration — found our shepherd
 	})

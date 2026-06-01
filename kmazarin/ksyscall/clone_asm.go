@@ -25,6 +25,12 @@ func ReleaseChildPID(pid int16)
 // Retrieves the reserved PID for the current (transient) thread. Returns ShepherdId (int16).
 func GetVforkReservedPID() int16
 
+// IsTransientVforkThread is provided by main package via go:linkname.
+// Reports whether the current thread is a transient vfork thread (VforkTransient=1).
+//
+//go:nosplit
+func IsTransientVforkThread() bool
+
 // lookupVforkParent is provided by main package via go:linkname.
 // Looks up parent TID and reserved PID for a transient thread.
 func lookupVforkParent(transientTID int16) (parentTID int16, reservedPID int16)

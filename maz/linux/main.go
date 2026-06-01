@@ -228,11 +228,11 @@ func fileLaneWorker(workCh <-chan fileLaneWorkItem, handler *syscallHandler) {
 	for w := range workCh {
 		t0 := time.Now()
 		handler.handle(w.req)
-		// Log slow handler.handle() calls — anything >500ms is anomalous
-		// for a single syscall and indicates downstream contention worth
-		// investigating. Low-rate canary; left in place after the
-		// concurrent-boot-wedge fix.
-		if elapsed := time.Since(t0); elapsed > 500*time.Millisecond {
+		// Log only genuinely-stuck handler.handle() calls (>3s). The boot storm
+		// legitimately drives single syscalls to 1-2s under contention, so a 500ms
+		// threshold spammed dozens of low-value lines every boot; 3s keeps the
+		// canary for real downstream wedges without the noise.
+		if elapsed := time.Since(t0); elapsed > 3*time.Second {
 			fmt.Printf("[linux:wkr] SLOW sid=%d sysid=%d tid=%d elapsed=%dms\n",
 				w.req.CallerPID, w.req.SysID, w.req.CallerTID, elapsed.Milliseconds())
 		}

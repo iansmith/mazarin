@@ -145,13 +145,42 @@ TEXT ·NanoWaitStub(SB), NOSPLIT|NOFRAME, $0-8
 	RET                         // Immediate return (no wait)
 
 // spinlockDeadHandler writes diagnostic to PL011 UART and halts.
-// func spinlockDeadHandler()
-TEXT ·spinlockDeadHandler(SB), NOSPLIT|NOFRAME, $0
-	// Write '!' 'L' to PL011 UART at 0x09000000
-	MOVD	$0x09000000, R0
+// Prints "!L <16-hex-digit lock address>\n" so the deadlocked lock can be
+// identified (cross-reference the address with `bin/target-nm build/kmazarin.elf`).
+// Fully self-contained: no external calls, no locks — safe to run while a lock
+// is wedged. Uses only R0-R5; NOFRAME so no stack touched.
+// func spinlockDeadHandler(lockAddr uintptr)
+TEXT ·spinlockDeadHandler(SB), NOSPLIT|NOFRAME, $0-8
+	// Write '!' 'L' ' ' to PL011 UART via TTBR1 (kernel) mapping.
+	// Must use the high-address alias (0xFFFFFFFF09000000) — the physical
+	// address 0x09000000 is a low address (TTBR0) and may not be mapped when
+	// TTBR0 is set to a user shepherd's page table.
+	MOVD	$0xFFFFFFFF09000000, R0
 	MOVD	$'!', R1
 	MOVB	R1, (R0)
 	MOVD	$'L', R1
+	MOVB	R1, (R0)
+	MOVD	$' ', R1
+	MOVB	R1, (R0)
+
+	// Print the 64-bit lock address as 16 hex digits, MSB first.
+	MOVD	lockAddr+0(FP), R2  // R2 = value to print
+	MOVD	$60, R3             // R3 = shift amount, starts at bit 60
+hexloop_arm64:
+	LSR	R3, R2, R4          // R4 = value >> shift
+	AND	$0xF, R4, R4        // R4 = nibble (0..15)
+	CMP	$10, R4             // nibble < 10 ?
+	BLT	hex_digit_arm64
+	ADD	$('a'-10), R4, R4   // 'a'..'f'
+	B	hex_emit_arm64
+hex_digit_arm64:
+	ADD	$'0', R4, R4        // '0'..'9'
+hex_emit_arm64:
+	MOVB	R4, (R0)            // emit nibble char
+	SUBS	$4, R3, R3          // shift -= 4, set flags
+	BGE	hexloop_arm64       // continue while shift >= 0
+
+	MOVD	$'\n', R1
 	MOVB	R1, (R0)
 spinlock_dead_halt_arm64:
 	WFI

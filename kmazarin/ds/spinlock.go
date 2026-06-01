@@ -1,5 +1,7 @@
 package ds
 
+import "unsafe"
+
 // Spinlock implements a simple spinlock with calibrated backoff.
 //
 // Lock acquisition strategy:
@@ -132,7 +134,20 @@ func (s *Spinlock) Lock() {
 
 	// Failed to acquire after all attempts — call dead handler instead of panic.
 	// Panic in nosplit/IRQ context causes triple fault on x86_64.
-	spinlockDeadHandler()
+	// Pass the lock's address so the handler can print which lock deadlocked.
+	spinlockDeadHandler(uintptr(unsafe.Pointer(&s.locked)))
+}
+
+// IsLocked reports whether the lock is currently held. Non-mutating; for
+// diagnostic assertions only (e.g. detecting an illegal attempt to yield or
+// take an IRQ-context lock while a scheduler critical section is already held).
+// Not a synchronization primitive — do not gate acquisition on it.
+//
+//go:nosplit
+func (s *Spinlock) IsLocked() bool {
+	// Plain read: a stale value is acceptable for a diagnostic assertion, and we
+	// must not mutate the lock here.
+	return s.locked != 0
 }
 
 // Unlock releases the spinlock.
@@ -150,7 +165,7 @@ func (s *Spinlock) Unlock() {
 // Using this instead of panic() because panic in nosplit/IRQ context
 // causes triple fault on x86_64 (the Go runtime's panic handler needs
 // a working stack and g, neither of which are available in IRQ context).
-func spinlockDeadHandler()
+func spinlockDeadHandler(lockAddr uintptr)
 
 // Assembly functions implemented in spinlock_arm64.s
 //
