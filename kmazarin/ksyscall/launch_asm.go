@@ -28,9 +28,10 @@ func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) i
 // startup state (ParentPID + buffered intent + chdir target) UNDER schedulerLock
 // before enqueue, then returns the child TID and PID so DoCloneExecWork needn't
 // re-find the new shepherd by its L0 page-table address.
+// MAZ-127: reservedPID is the child PID reserved at vfork clone time (0 = none).
 //
 //go:linkname CreateCloneExecThread main.CreateCloneExecThread
-func CreateCloneExecThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, parentPID proc.ShepherdId, intent []proc.CloneExecIntentOp, cwd []byte) (int16, proc.ShepherdId)
+func CreateCloneExecThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, parentPID, reservedPID proc.ShepherdId, intent []proc.CloneExecIntentOp, cwd []byte) (int16, proc.ShepherdId)
 
 // unsafePointer is a helper to convert uintptr to pointer
 //

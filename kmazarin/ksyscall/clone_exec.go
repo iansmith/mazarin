@@ -183,7 +183,7 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	// nosplit, allocates pages, and takes the buddy lock, so it must never run
 	// under the scheduler spinlock.
 	_, newPID := CreateCloneExecThread(loadedProc.EntryPoint, loadedProc.StackTop, childL0PA,
-		req.CallerShepherd.PID, req.Intent, req.Cwd)
+		req.CallerShepherd.PID, req.ReservedPID, req.Intent, req.Cwd)
 
 	// O(1) lookup of the freshly created Shepherd (Allocate just registered it
 	// under newPID). ok is guaranteed true — the slot was allocated under the
@@ -226,6 +226,20 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	if aerr := req.CallerShepherd.AddChild(newPID); aerr != nil {
 		klog.Errf("[CloneExec] WARN: AddChild(parent=%d child=%d) failed: %v\n",
 			req.CallerShepherd.PID, newPID, aerr)
+	}
+
+	// On vfork success (MAZ-127): wake the parked parent with the child PID.
+	// The transient thread (current thread) is reaped (never returns to userspace).
+	// On non-vfork paths (boot), this is a no-op (no reserved PID or parent linkage).
+	if req.ReservedPID != 0 {
+		// This is a vfork child; wake the parked parent
+		// The transient thread's context is held in the worker, not the scheduler
+		// So we look up the parent directly via the linkage
+		currentTID := int16(GetCurrentThreadTID())
+		parentTID, _ := lookupVforkParent(currentTID)
+		if parentTID != 0 {
+			wakeVforkParent(currentTID, int64(newPID))
+		}
 	}
 
 	// Deliver EventExecComplete to the parent (MAZ-71). The event lands in the

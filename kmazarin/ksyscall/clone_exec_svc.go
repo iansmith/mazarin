@@ -99,6 +99,15 @@ func SyscallCloneExec(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		return ceENAMETOOLONG
 	}
 
+	// Retrieve the reserved PID for this vfork child, if any (MAZ-127).
+	// The clone_exec caller (transient thread) carries a reserved PID if this is
+	// a vfork child; otherwise the boot path uses 0.
+	reservedPIDValue := GetVforkReservedPID()
+	var reservedPID proc.ShepherdId
+	if reservedPIDValue != 0 {
+		reservedPID = proc.ShepherdId(reservedPIDValue)
+	}
+
 	ctxPtr := submitCloneExec(proc.CloneExecRequest{
 		ELFStartVA:     elfVA,
 		ELFNumBytes:    elfBytes,
@@ -109,6 +118,7 @@ func SyscallCloneExec(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		Envp:           params.Envp,
 		Intent:         params.Intent,
 		Cwd:            params.Cwd,
+		ReservedPID:    reservedPID,
 		Filename:       params.Filename,
 	})
 	if ctxPtr == 0 {

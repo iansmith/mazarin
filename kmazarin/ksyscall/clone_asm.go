@@ -7,6 +7,32 @@ package ksyscall
 // Returns TID (int16 = slot index, used as ASID for VM).
 func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int16
 
+// CloneVforkThread is provided by main package via go:linkname.
+// Implements kernel-emulated vfork: spawns a transient child-context thread
+// and suspends the parent. Returns transient TID or negative errno.
+// Types: ThreadId is int16, ShepherdId is int16.
+func CloneVforkThread(stack, returnAddr, spsr uint64, parentTID, reservedPID int16) int16
+
+// ReserveChildPID is provided by main package via go:linkname.
+// Acquires a child PID from the allocator at clone time. Returns ShepherdId (int16).
+func ReserveChildPID() int16
+
+// ReleaseChildPID is provided by main package via go:linkname.
+// Returns a reserved PID back to the allocator on failure/abort.
+func ReleaseChildPID(pid int16)
+
+// GetVforkReservedPID is provided by main package via go:linkname.
+// Retrieves the reserved PID for the current (transient) thread. Returns ShepherdId (int16).
+func GetVforkReservedPID() int16
+
+// lookupVforkParent is provided by main package via go:linkname.
+// Looks up parent TID and reserved PID for a transient thread.
+func lookupVforkParent(transientTID int16) (parentTID int16, reservedPID int16)
+
+// wakeVforkParent is provided by main package via go:linkname.
+// Wakes the parent thread and clears the linkage entry.
+func wakeVforkParent(transientTID int16, result int64)
+
 // GetSyscallELR is provided by main package via go:linkname.
 // Returns the ELR_EL1 (return address) for the current syscall.
 func GetSyscallELR() uint64

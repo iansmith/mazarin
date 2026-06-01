@@ -103,6 +103,12 @@ type CloneExecRequest struct {
 	Intent []CloneExecIntentOp // FD-flavored ops; cap-checked against MaxStartupIntentOps
 	Cwd    []byte              // chdir target; empty = no chdir; cap-checked against MaxStartupCwdBytes
 
+	// --- PID reservation (MAZ-127 vfork) ---
+	// ReservedPID is the child PID reserved at clone time. 0 = no reservation
+	// (boot path); non-zero = adopt this PID instead of allocating a fresh one.
+	// Set by SyscallCloneExec from the clone-time linkage.
+	ReservedPID ShepherdId
+
 	// --- Diagnostics ---
 	Filename []byte // shepherd-name for logging + symbol table cache
 }
