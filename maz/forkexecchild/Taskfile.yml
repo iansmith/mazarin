@@ -1,0 +1,40 @@
+version: '3'
+
+# forkexecchild.elf is the trivial child binary fork+exec'd by forkexectest
+# (MAZ-114). Built as a FULL ELF (plain `go build` + userspace overlay, the
+# fs.elf shape), NOT a .maz plugin: the kernel's clone_exec jumps to the ELF
+# entry and boots the Go runtime, which runs main() to completion.
+tasks:
+  arm64:
+    desc: Build forkexecchild child binary (full ELF, ARM64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - '{{.ROOT_DIR}}/maz/forkexecchild/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.FORKEXECCHILD_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building forkexecchild.elf for ARM64 (userspace-overlay)..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FORKEXECCHILD_ELF}} ./maz/forkexecchild'
+      - '{{.GO}} tool go-echo "forkexecchild.elf ARM64 built at {{.FORKEXECCHILD_ELF}}"'
+
+  x86_64:
+    desc: Build forkexecchild child binary (full ELF, x86_64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - '{{.ROOT_DIR}}/maz/forkexecchild/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.FORKEXECCHILD_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building forkexecchild.elf for x86_64 (userspace-overlay)..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FORKEXECCHILD_AMD64_ELF}} ./maz/forkexecchild'
+      - '{{.GO}} tool go-echo "forkexecchild.elf x86_64 built at {{.FORKEXECCHILD_AMD64_ELF}}"'

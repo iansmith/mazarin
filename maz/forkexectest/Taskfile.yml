@@ -1,0 +1,40 @@
+version: '3'
+
+# forkexectest.elf is the MAZ-114 fork+exec+wait4 boot-time acceptance smoke.
+# Built as a FULL ELF (plain `go build` + userspace overlay, the fs.elf shape),
+# NOT a .maz plugin: os/exec needs the Go runtime's init to have run, which a
+# .maz's MazarinMain entry skips.
+tasks:
+  arm64:
+    desc: Build forkexectest fork/exec acceptance smoke (full ELF, ARM64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - '{{.ROOT_DIR}}/maz/forkexectest/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.FORKEXECTEST_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building forkexectest.elf for ARM64 (userspace-overlay)..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FORKEXECTEST_ELF}} ./maz/forkexectest'
+      - '{{.GO}} tool go-echo "forkexectest.elf ARM64 built at {{.FORKEXECTEST_ELF}}"'
+
+  x86_64:
+    desc: Build forkexectest fork/exec acceptance smoke (full ELF, x86_64)
+    run: once
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - '{{.ROOT_DIR}}/maz/forkexectest/**/*.go'
+      - '{{.ROOT_DIR}}/mazarin/**/*.go'
+      - '{{.ROOT_DIR}}/shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.FORKEXECTEST_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building forkexectest.elf for x86_64 (userspace-overlay)..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FORKEXECTEST_AMD64_ELF}} ./maz/forkexectest'
+      - '{{.GO}} tool go-echo "forkexectest.elf x86_64 built at {{.FORKEXECTEST_AMD64_ELF}}"'
