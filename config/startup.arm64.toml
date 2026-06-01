@@ -42,6 +42,29 @@ path = "/net.elf"
 name = "xfertest"
 path = "/xfertest.maz"
 
+# MAZ-114 fork+exec+wait4 end-to-end acceptance smoke (the MAZ-62 umbrella DoD).
+# forkexectest.elf is a FULL ELF (not a .maz) that os/exec's /forkexecchild.elf
+# in four scenarios. PASS = `[forkexectest] all checks done` + per-stage
+# `[forkexectest] PASS ...` lines in the serial log.
+#
+# DISABLED AT BOOT — BLOCKED ON MAZ-127. The merged fork/exec chain parks the
+# process-flavor clone SVC in the linux shepherd's buffering window (MAZ-78) and
+# withholds the reply until a matching execve flushes it. But Go's os/exec
+# issues clone via syscall.rawVforkSyscall, whose single SVC must RETURN 0 (the
+# vfork "child" return) so the runtime can run the in-child dup3/close/chdir
+# setup and then execve. Because the kernel never returns from the parked clone,
+# the runtime never reaches execve: the delegate hangs indefinitely
+# (`delegate stuck: sysid=32` observed for 127s+ under HVF). This is an
+# architectural gap in MAZ-78/79/120 — the clone-parking model is incompatible
+# with the vfork double-return contract — not a forkexectest defect. Re-enable
+# this stanza once MAZ-127 makes process-clone honor the vfork return.
+#
+# forkexecchild.elf is NOT launched at boot either way — forkexectest fork/exec's
+# it on demand.
+# [[shepherd]]
+# name = "forkexectest"
+# path = "/forkexectest.elf"
+
 # MAZ-50 boot-time smoke for mazarin/transfer Mode 1. transfertest is the
 # server (registers + Waits); transferprobe is the client (Reserves + writes
 # + Commits). PASS = `[transfertest] PASS Mode 1 round-trip` in serial log.
