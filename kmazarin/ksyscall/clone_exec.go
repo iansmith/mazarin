@@ -55,12 +55,23 @@ const (
 	ceEAGAIN       int64 = -11 // EAGAIN — kernel worker busy / no thread to switch to
 )
 
+// maybeWakeVforkParentOnFailure wakes the parked vfork parent when a
+// clone_exec fails before reaching the success-path wake below. Without this,
+// KernelSVCWorker.run() wakes only the transient thread — the parent hangs
+// indefinitely. Safe from the kernel worker thread (growable stack, not nosplit).
+func maybeWakeVforkParentOnFailure(req *proc.CloneExecRequest, errno int64) {
+	if req.IsVforkCall() {
+		wakeVforkParent(int16(req.TransientTID), errno)
+	}
+}
+
 // DoCloneExecWork performs the combined clone+exec on the kernel worker
 // thread (thread 0's growable stack, via the KernelSVCWorker relay). Returns
 // the new child PID on success or a negative errno on failure.
 func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	if req.CallerShepherd == nil {
 		klog.Errf("[CloneExec] ERROR: nil CallerShepherd\n")
+		maybeWakeVforkParentOnFailure(req, ceEFAULT)
 		return ceEFAULT
 	}
 	// Reject malformed ELF sizing before any memory op: copyPagesFromUser does
@@ -72,6 +83,7 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	if req.ELFNumBytes <= 0 || req.ELFNumPages <= 0 {
 		klog.Errf("[CloneExec] ERROR: invalid ELF sizing bytes=%d pages=%d\n",
 			req.ELFNumBytes, req.ELFNumPages)
+		maybeWakeVforkParentOnFailure(req, ceENOEXEC)
 		return ceENOEXEC
 	}
 	// Cap-check the buffered intent + cwd before allocating anything. These
@@ -79,10 +91,12 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	// front keeps the failure free of teardown.
 	if len(req.Intent) > proc.MaxStartupIntentOps {
 		klog.Errf("[CloneExec] ERROR: intent ops %d > max %d\n", len(req.Intent), proc.MaxStartupIntentOps)
+		maybeWakeVforkParentOnFailure(req, ceE2BIG)
 		return ceE2BIG
 	}
 	if len(req.Cwd) > proc.MaxStartupCwdBytes {
 		klog.Errf("[CloneExec] ERROR: cwd len %d > max %d\n", len(req.Cwd), proc.MaxStartupCwdBytes)
+		maybeWakeVforkParentOnFailure(req, ceENAMETOOLONG)
 		return ceENAMETOOLONG
 	}
 
@@ -113,6 +127,7 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	unmapUserPages(req.ELFStartVA, req.ELFNumPages, req.CallerL0PA, req.CallerShepherd.PID)
 	if errno != 0 {
 		klog.Errf("[CloneExec] ERROR: ELF header pre-validation failed errno=%d\n", errno)
+		maybeWakeVforkParentOnFailure(req, errno)
 		return errno
 	}
 
@@ -122,6 +137,7 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	childL0PA := kmem.CreateProcessPageTable()
 	if childL0PA == 0 {
 		klog.Errf("[CloneExec] ERROR: CreateProcessPageTable failed\n")
+		maybeWakeVforkParentOnFailure(req, ceENOMEM)
 		return ceENOMEM
 	}
 
@@ -132,11 +148,13 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	if !kmem.MapUserFramebufferWithL0(fbPA, fbSize, childL0PA) {
 		kmem.FreeProcessPageTable(childL0PA) // reclaim the child page table (MAZ-108)
 		klog.Errf("[CloneExec] ERROR: MapUserFramebufferWithL0 failed\n")
+		maybeWakeVforkParentOnFailure(req, ceENOMEM)
 		return ceENOMEM
 	}
 	if !kmem.MapUserConstraintPagesWithL0(childL0PA) {
 		kmem.FreeProcessPageTable(childL0PA) // reclaim page table + framebuffer mapping (MAZ-108)
 		klog.Errf("[CloneExec] ERROR: MapUserConstraintPagesWithL0 failed\n")
+		maybeWakeVforkParentOnFailure(req, ceENOMEM)
 		return ceENOMEM
 	}
 
@@ -160,6 +178,7 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 		// below), so nothing else needs reclaiming.
 		kmem.FreeProcessPageTable(childL0PA)
 		klog.Errf("[CloneExec] ERROR: loadELF failed err=%v\n", err)
+		maybeWakeVforkParentOnFailure(req, ceENOEXEC)
 		return ceENOEXEC
 	}
 
@@ -192,6 +211,7 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	p, ok := proc.Shepherds.Get(newPID)
 	if !ok {
 		klog.Errf("[CloneExec] ERROR: child shepherd %d not found after thread create\n", newPID)
+		maybeWakeVforkParentOnFailure(req, ceENOMEM)
 		return ceENOMEM
 	}
 
@@ -235,7 +255,7 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	// On vfork success (MAZ-127): wake the parked parent with the child PID.
 	// The transient thread (current thread) is reaped (never returns to userspace).
 	// On non-vfork paths (boot), this is a no-op (no reserved PID or parent linkage).
-	if req.ReservedPID != 0 && req.TransientTID != 0 {
+	if req.IsVforkCall() {
 		// Vfork success: wake the parked parent. Use req.TransientTID — this
 		// function runs on the kernel worker (thread 0), so GetCurrentThreadTID()
 		// here would return the worker's TID, not the transient's.
