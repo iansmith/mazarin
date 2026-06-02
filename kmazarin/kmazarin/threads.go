@@ -1201,6 +1201,10 @@ func processStaticDeadlinesSchedLockHeld() {
 //go:nosplit
 //go:noinline
 func ProcessDeadlinesTopHalf() {
+	// Capture the interrupted PC FIRST (before anything clobbers ELR_EL1). If the
+	// violation below fires, this is the PC of the code that was running when the
+	// timer hit — i.e. the holder of schedulerLock with IRQs enabled.
+	interruptedPC := readELR_EL1()
 	// Increment arch-universal scan counter (used by KernelIdleLoop A/D scan).
 	// This is the only call site that fires on all 3 architectures.
 	cnt := atomic.AddUint64(&scanTimerCount, 1)
@@ -1212,7 +1216,9 @@ func ProcessDeadlinesTopHalf() {
 	// papering over it. A plain Lock() below would self-deadlock on a single CPU;
 	// that deadlock is the *correct* signal that the violation must be fixed.
 	if schedulerLock.IsLocked() {
-		serial.RawUARTPuts("[SCHEDLK-VIOLATION] timer top-half found schedulerLock held (IRQs enabled under lock)\r\n")
+		serial.RawUARTPuts("[SCHEDLK-VIOLATION] schedulerLock held with IRQs enabled; holder PC=")
+		serial.RawUARTHex64(interruptedPC)
+		serial.RawUARTPuts("\r\n")
 	}
 	schedulerLock.Lock()
 	processStaticDeadlinesSchedLockHeld()
@@ -1997,9 +2003,17 @@ func clearVforkParent(transientTID ThreadId) {
 //go:nosplit
 //go:linkname ReserveChildPID mazzy/kmazarin/ksyscall.ReserveChildPID
 func ReserveChildPID() proc.ShepherdId {
-	// shepherdIdAllocator is private, so we inline the Acquire call here.
-	// This is the same mechanism createCloneExecThreadImpl uses, just earlier.
-	return shepherdIdAllocator.Acquire()
+	// shepherdIdAllocator is scheduler-lock protected (it's the same allocator
+	// createCloneExecThreadImpl uses under the lock). Acquire is a non-atomic stack
+	// pop, so take schedulerLock + mask IRQs to stay race-free against a concurrent
+	// shepherd create/teardown (and SMP). Not called with the lock already held —
+	// this runs from the SyscallClone SVC path before CloneVforkThread locks.
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+	pid := shepherdIdAllocator.Acquire()
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
+	return pid
 }
 
 // ReleaseChildPID returns a reserved PID back to the allocator on failure/abort.
@@ -2007,7 +2021,11 @@ func ReserveChildPID() proc.ShepherdId {
 //go:nosplit
 //go:linkname ReleaseChildPID mazzy/kmazarin/ksyscall.ReleaseChildPID
 func ReleaseChildPID(pid proc.ShepherdId) {
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
 	shepherdIdAllocator.Release(pid)
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 }
 
 // GetVforkReservedPID retrieves the reserved PID for the current thread (transient).
@@ -2122,6 +2140,7 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	// The child must read fn/gp/mp from the stack before any preemption.
 	// This flag will be cleared on the child's first syscall.
 	t.InCloneSetup = 1
+	t.VforkTransient = 0 // Clear in case this slot was reused from a vfork transient (MAZ-127)
 
 	// CRITICAL: Inherit page table and shepherd ID from parent thread!
 	// Without this, cloned threads have PageTableL0PA=0 and won't
@@ -2442,6 +2461,12 @@ type DeferredCleanupEntry struct {
 // InUse=false; appendDeferredCleanup scans linearly for a free slot.
 var deferredCleanups [proc.MaxLiveShepherds]DeferredCleanupEntry
 
+// deferredRingFullCount counts how many times the deferred-cleanup ring was full
+// at a death (forcing the inline last-resort reclaim under schedulerLock). Bumped
+// non-yieldingly under the lock; emitted off-lock by DrainDeferredCleanups. Should
+// stay 0 in practice — a nonzero value means thread 0's drain is being starved.
+var deferredRingFullCount uint32
+
 // appendDeferredCleanup stores entry in the first free slot of deferredCleanups.
 // Returns false if the ring is full (all proc.MaxLiveShepherds=256 slots in use),
 // so the caller can fall back to synchronous reclamation rather than dropping the
@@ -2491,6 +2516,12 @@ func CompleteDeferredCleanup(deadSID int16) {
 // NOT nosplit: it calls CleanupShepherdPages, which grows the stack. Only safe to
 // call from a growable-stack context (thread 0's idle loop), never an SVC handler.
 func DrainDeferredCleanups() {
+	// Emit any deferred-ring-full telemetry recorded under schedulerLock by
+	// releaseShepherdSchedLockHeld. Done here (thread 0, no lock held) because
+	// logging under schedulerLock would recurse into the console/yield path.
+	if n := atomic.SwapUint32(&deferredRingFullCount, 0); n > 0 {
+		klog.Errf("[teardown] deferred-cleanup ring was full %d time(s); thread-0 drain is being starved\n", n)
+	}
 	for {
 		// Claim one ready entry under the lock so we don't race appendDeferredCleanup.
 		savedDAIF := SaveAndDisableIRQs()
@@ -2767,10 +2798,13 @@ func releaseShepherdSchedLockHeld(pid ShepherdId, deferPages bool) {
 		SID:      pid,
 		L0PA:     l0PA,
 	}) {
-		// Ring full (pathological — 256 un-drained deaths). Reclaim inline rather
-		// than drop the pages. This is the only path that still runs the heavy walk
-		// under schedulerLock; it is effectively unreachable in practice.
-		klog.Criticalf("[teardown]", " deferred ring full; reclaiming sid=%d inline\n", int(pid))
+		// Ring full (pathological — 256 un-drained deaths, only possible if thread 0
+		// never reached its idle loop across that many deaths). Reclaim inline as a
+		// last resort rather than drop the pages. Do NOT log here: klog.Criticalf
+		// would run the console/yield path under schedulerLock — the exact recursion
+		// this deferral change exists to avoid. Bump a non-yielding atomic counter;
+		// DrainDeferredCleanups emits it off-lock.
+		atomic.AddUint32(&deferredRingFullCount, 1)
 		// Use the live &shepherd.Spans pointer (NOT a stack-local LockedSpanGroup —
 		// that struct is ~24KB and would blow this nosplit function's 792-byte stack
 		// budget). freeLeaves=true reclaims everything via the page-table walk anyway.
@@ -2898,6 +2932,7 @@ func createCloneExecThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.GPtr = 0
 	t.EntryFunc = 0
 	t.InCloneSetup = 0         // Clear in case slot was reused from a clone child
+	t.VforkTransient = 0       // Clear in case slot was reused from a vfork transient (MAZ-127)
 	t.CloneNeedsParentRegs = 0 // Clear in case slot was reused from a clone child
 
 	// Set up initial context for userspace execution

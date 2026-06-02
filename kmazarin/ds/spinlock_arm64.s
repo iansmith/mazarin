@@ -149,6 +149,16 @@ TEXT ·NanoWaitStub(SB), NOSPLIT|NOFRAME, $0-8
 // identified (cross-reference the address with `bin/target-nm build/kmazarin.elf`).
 // Fully self-contained: no external calls, no locks — safe to run while a lock
 // is wedged. Uses only R0-R5; NOFRAME so no stack touched.
+//
+// DELIBERATE EXCEPTION to the "never write UART directly in asm; use
+// UART_PUTC_SAFE / print_hex64 / uartPutsDirect" rule: (1) those helpers live in
+// (or would live in) the kmazarin kernel package and are NOT reachable from this
+// low-level `ds` leaf package; (2) this is the last-resort handler that runs when
+// a spinlock is provably wedged — it must assume nothing about the rest of the
+// system (no valid g, no callable Go runtime, possibly mid-context-switch), so it
+// open-codes raw MMIO exactly as the kernel's own fault path does (see
+// `#define UART_BASE 0xFFFFFFFF09000000` in kmazarin/exceptions_arm64.s). Calling
+// into shared helpers here would risk faulting on the very state that's wedged.
 // func spinlockDeadHandler(lockAddr uintptr)
 TEXT ·spinlockDeadHandler(SB), NOSPLIT|NOFRAME, $0-8
 	// Write '!' 'L' ' ' to PL011 UART via TTBR1 (kernel) mapping.
