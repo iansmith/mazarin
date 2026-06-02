@@ -103,6 +103,18 @@ type CloneExecRequest struct {
 	Intent []CloneExecIntentOp // FD-flavored ops; cap-checked against MaxStartupIntentOps
 	Cwd    []byte              // chdir target; empty = no chdir; cap-checked against MaxStartupCwdBytes
 
+	// --- PID reservation (MAZ-127 vfork) ---
+	// ReservedPID is the child PID reserved at clone time. 0 = no reservation
+	// (boot path); non-zero = adopt this PID instead of allocating a fresh one.
+	// Set by SyscallCloneExec from the clone-time linkage.
+	ReservedPID ShepherdId
+
+	// TransientTID is the TID of the transient vfork thread that issued the
+	// CloneExec SVC. Used by DoCloneExecWork to wake the parked parent — the
+	// worker runs on thread 0, so GetCurrentThreadTID() there would return the
+	// wrong TID. 0 = non-vfork path (boot).
+	TransientTID int32
+
 	// --- Diagnostics ---
 	Filename []byte // shepherd-name for logging + symbol table cache
 }

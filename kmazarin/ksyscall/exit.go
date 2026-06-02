@@ -24,12 +24,30 @@ func SyscallExit(status, _, _, _, _, _ uint64) int64 {
 
 // SyscallExitGroup implements the exit_group(2) syscall (syscall 94)
 //
-// If this is the kernel (PID 0), exit_group means the Go runtime called
-// throw() — this is a fatal kernel error. Halt immediately rather than
-// silently switching threads and masking the real problem.
+// Nosplit trampoline — thin wrapper so the dispatch table entry keeps its
+// nosplit guarantee. All logic lives in exitGroupImpl (non-nosplit).
 //
 //go:nosplit
 func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
+	return exitGroupImpl(status)
+}
+
+// exitGroupImpl is the non-nosplit body of SyscallExitGroup. Separated to allow
+// calls to klog, TerminateShepherd, and IsTransientVforkThread without blowing
+// the nosplit stack budget.
+func exitGroupImpl(status uint64) int64 {
+	// Transient vfork thread (MAZ-127): the child block calls exit_group after
+	// execve returns. The transient shares the parent's PID, so we must NOT
+	// call TerminateShepherd — that would kill the parent. Just exit the thread.
+	if IsTransientVforkThread() {
+		nextCtx := ThreadExit()
+		if nextCtx == 0 {
+			haltForever()
+		}
+		SetSyscallSwitchTarget(nextCtx)
+		return 0
+	}
+
 	p := proc.CurrentShepherd()
 	pid := proc.ShepherdId(0)
 	if p != nil {

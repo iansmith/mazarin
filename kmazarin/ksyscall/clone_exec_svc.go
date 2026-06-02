@@ -99,6 +99,18 @@ func SyscallCloneExec(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		return ceENAMETOOLONG
 	}
 
+	// Retrieve the reserved PID and transient TID for this vfork child (MAZ-127).
+	// Both must be captured NOW while we are still in the transient thread's SVC
+	// context — DoCloneExecWork runs on the kernel worker (thread 0), so
+	// GetCurrentThreadTID() there would return the wrong TID.
+	reservedPIDValue := GetVforkReservedPID()
+	var reservedPID proc.ShepherdId
+	var transientTID int32
+	if reservedPIDValue != 0 {
+		reservedPID = proc.ShepherdId(reservedPIDValue)
+		transientTID = int32(GetCurrentThreadTID())
+	}
+
 	ctxPtr := submitCloneExec(proc.CloneExecRequest{
 		ELFStartVA:     elfVA,
 		ELFNumBytes:    elfBytes,
@@ -109,6 +121,8 @@ func SyscallCloneExec(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		Envp:           params.Envp,
 		Intent:         params.Intent,
 		Cwd:            params.Cwd,
+		ReservedPID:    reservedPID,
+		TransientTID:   transientTID,
 		Filename:       params.Filename,
 	})
 	if ctxPtr == 0 {

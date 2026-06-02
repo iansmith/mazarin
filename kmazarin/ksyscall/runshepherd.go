@@ -142,11 +142,9 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 		klog.Errf("[RunShepherd] ERROR: copyPagesFromUser failed name=%s\n", req.Name)
 		return int64(errNullPointer)
 	}
-	klog.Criticalf("[RS]", "[RunShepherd] %s: copied %d bytes from user\n", req.Name, len(elfData))
 
 	// Unmap the raw ELF pages from the caller (implicit cleanup).
 	unmapUserPages(req.StartVA, req.NumPages, req.CallerL0PA, req.CallerShepherd.PID)
-	klog.Criticalf("[RS]", "[RunShepherd] %s: unmapped %d caller pages\n", req.Name, req.NumPages)
 
 	// Validate ELF header
 	if len(elfData) < 64 {
@@ -188,7 +186,6 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 		klog.Errf("[RunShepherd] ERROR: MapUserConstraintPagesWithL0 failed name=%s\n", req.Name)
 		return int64(errNoSpace)
 	}
-	klog.Criticalf("[RS]", "[RunShepherd] %s: mapped FB+constraint pages\n", req.Name)
 
 	// Initialize kernel attribute manager (once, on first shepherd launch).
 	InitKernelAttrManager()
@@ -196,7 +193,6 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	// Build symbol table and find highest VA from the raw ELF
 	shepherdSymTable := buildSymbolTable(elfData, &hdr)
 	shepherdHighestVA := findHighestVA(elfData, &hdr)
-	klog.Criticalf("[RS]", "[RunShepherd] %s: pre-loadELF highestVA=0x%x\n", req.Name, shepherdHighestVA)
 
 	// Load ELF into the new shepherd's page table
 	loadedProc, err := loadELF(elfData, "/"+req.Name+".elf", processL0PA, 0, req.Args, nil)
@@ -207,17 +203,15 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 		klog.Errf("[RunShepherd] ERROR: loadELF failed name=%s err=%v\n", req.Name, err)
 		return int64(errInvalidELF)
 	}
-	klog.Criticalf("[RS]", "[RunShepherd] %s: loadELF ok entry=0x%x stackTop=0x%x\n",
-		req.Name, loadedProc.EntryPoint, loadedProc.StackTop)
 
 	// Final I-cache invalidation
 	kmem.InvalidateAllICache()
 	SetUserspaceActive()
 	kmem.FinalUserspaceSync()
 
-	// Create a new thread for this shepherd
-	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
-	klog.Criticalf("[RS]", "[RunShepherd] %s: created userspace thread tid=0x%x\n", req.Name, tid)
+	// Create a new thread for this shepherd. The returned TID isn't needed here
+	// (the shepherd is located below by its L0 page-table address).
+	CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
 
 	// Cache symbol table, highest VA, filename, allocate IPC uring ring, and
 	// register all kernel-allocated VA ranges in Spans so CleanupShepherdPages
@@ -241,11 +235,18 @@ func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 			p.Spans.Add(loadedProc.SegmentSpans[j].VA, loadedProc.SegmentSpans[j].Size)
 		}
 		p.Spans.Add(loadedProc.StackBase, 64*1024)
-		p.Spans.Add(UserFramebufferVA, UserFramebufferSize)
-		// UserConstraintPagesVA is intentionally NOT added to Spans.
-		// Constraint pages are a system-lifetime shared resource mapped
-		// read-only into every shepherd. CleanupShepherdPages must not
-		// release them; they are protected by PD_PINNED on the base page.
+		// UserFramebufferVA and UserConstraintPagesVA are intentionally NOT added
+		// to Spans. Both are system-lifetime shared resources mapped into EVERY
+		// shepherd from a single global PA (the framebuffer via device-page maps,
+		// the constraint block read-only). CleanupShepherdPages Phase 1 must never
+		// releasePageByPA them: the first shepherd to die would free the shared
+		// pages (dropping refcount to 0 and clearing the descriptor), and every
+		// later shepherd death would underflow on the already-freed pages. Phase 2
+		// still unmaps both ranges' PTEs from the dying shepherd's page table. The
+		// constraint block is additionally protected by PD_PINNED; the framebuffer
+		// is device memory whose descriptors are not pinned, so exclusion here is
+		// the sole guard. (MAZ-127: forkexectest was the first thing to make a
+		// shepherd die, exposing this latent framebuffer double-free.)
 
 		return false // stop iteration — found our shepherd
 	})

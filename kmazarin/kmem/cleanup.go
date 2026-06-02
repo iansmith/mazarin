@@ -72,14 +72,27 @@ func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGrou
 		}
 	})
 
-	// Phase 2: Walk the full page table hierarchy bottom-up.
-	// Frees all intermediate page table pages (L1/L2/L3 tables + L0 root).
-	// When freeLeaves is true, also frees leaf (data) pages by walking L3 entries
-	// before freeing the L3 table — used by the deferred cleanup path where Spans
-	// is empty and Phase 1 freed nothing.
-	// teardown=false: preserve existing shepherd-exit semantics (PT pages that
-	// happen to be PD_PINNED are left alone; every leaf goes through releasePageByPA).
-	walkAndFreePageTablePages(l0PA, freeLeaves, false)
+	// Phase 2: Walk the full page table hierarchy bottom-up and reclaim EVERY
+	// process-owned leaf page plus the intermediate page-table pages.
+	//
+	// LEAK FIX: we always free leaves here (freeLeaves=true) and use the teardown
+	// skip-rules (teardown=true). The old normal path passed freeLeaves=false on
+	// the assumption that Phase 1 (the Spans walk) had already freed all leaves —
+	// but the demand-paged user mmap / Go-heap region is tracked by the per-shepherd
+	// BumpPointer, NOT in Spans, so it was never added there. Result: every shepherd
+	// that died via the normal (non-deferred) path leaked its entire heap. Harmless
+	// for long-lived shepherds; fatal under fork/exec churn (forkexectest spawns and
+	// reaps children, each leaking tens of MB → buddy OOM, ~597K UserHeap pages).
+	//
+	// The page table is the authoritative record of what this process has mapped, so
+	// walking it reclaims the heap regardless of Spans coverage or the owner tag on
+	// the descriptor. teardown=true makes the leaf walk skip shared/pinned frames
+	// (framebuffer, constraint block — RefCount<=0 or PD_PINNED) and force-free the
+	// process-private PT pages (which are auto-pinned as PageKernelPT when built on
+	// the kernel worker). Phase 1 above is now redundant but harmless: any leaf it
+	// freed is RefCount<=0 by the time the leaf walk reaches it and is skipped.
+	walkAndFreePageTablePages(l0PA, true, true)
+	_ = freeLeaves // retained for ABI/call-site compatibility; reclamation is now unconditional
 }
 
 // releasePTPage frees a page-table page. When unpin is true it first clears
@@ -123,7 +136,11 @@ func releasePageByPA(pa uintptr) bool {
 		// both saw RefCount=1 and both decremented past 0. Either is a
 		// real bug we want to catch. Log loudly with type/owner/flags so
 		// we can correlate against the share-and-release flow.
-		klog.Errf("[kmem:UNDERFLOW] pa=%x refCount=%d type=%d owner=%d flags=%x\n",
+		// Criticalf (not Errf): this runs UNDER schedulerLock during shepherd
+		// cleanup. Errf routes through the soft-IRQ console ring, which yields to
+		// the scheduler (SaveThread0AndYield → schedulerLock.Lock) and deadlocks
+		// re-entrantly. Criticalf polls the UART directly — no yield, no re-lock.
+		klog.Criticalf("[kmem:UNDERFLOW]", " pa=%x refCount=%d type=%d owner=%d flags=%x\n",
 			uint64(pa), int(desc.RefCount), int(desc.Type), int(desc.Owner), uint64(desc.Flags))
 		return false // Already freed or untracked
 	}
@@ -136,7 +153,7 @@ func releasePageByPA(pa uintptr) bool {
 	// calling ReleasePageByPA). Any other caller releasing a FILE_BACKED page has
 	// a stale handler PTE → corruption. Block the free and log the site.
 	if desc.Flags&PD_FILE_BACKED != 0 {
-		klog.Errf("[kmem] BLOCKED: premature release of FILE_BACKED page pa=%x owner=%d\n",
+		klog.Criticalf("[kmem]", " BLOCKED: premature release of FILE_BACKED page pa=%x owner=%d\n",
 			uint64(pa), int(desc.Owner))
 		return false
 	}

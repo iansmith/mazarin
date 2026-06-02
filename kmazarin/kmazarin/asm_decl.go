@@ -34,6 +34,12 @@ func SaveAndDisableIRQs() uint64
 //go:nosplit
 func RestoreIRQs(savedDAIF uint64)
 
+// readELR_EL1 returns ELR_EL1 (the interrupted PC). Valid only when called early
+// in an exception/IRQ handler. Used by the [SCHEDLK-VIOLATION] detector to print
+// the PC of whoever held schedulerLock with IRQs enabled.
+//go:nosplit
+func readELR_EL1() uint64
+
 //go:nosplit
 func GetGRegister() uint64
 

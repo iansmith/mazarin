@@ -454,3 +454,15 @@ yield_restore_return:
 yield_no_thread:
 	// CurrentThread is nil — nothing to do
 	RET
+
+// readELR_EL1 returns ELR_EL1 — the interrupted PC. When called early in an
+// exception/IRQ handler (before ELR is clobbered or ERET runs), this is the PC
+// of the code that was running when the exception was taken. Used by the
+// [SCHEDLK-VIOLATION] detector to identify who held schedulerLock with IRQs
+// enabled when the timer fired.
+//
+// func readELR_EL1() uint64
+TEXT ·readELR_EL1(SB), NOSPLIT|NOFRAME, $0-8
+	MRS	ELR_EL1, R0
+	MOVD	R0, ret+0(FP)
+	RET

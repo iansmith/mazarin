@@ -83,8 +83,8 @@ const (
 	cloneExecRaceStackVA = uintptr(0x4001_0000)
 
 	cloneExecRaceParentPID proc.ShepherdId = proc.MinPID + 7
-	cloneExecRaceNumIntent uint32           = 2  // len(intent) below
-	cloneExecRaceCwdLen    uint32           = 25 // len(cwd) below
+	cloneExecRaceNumIntent uint32          = 2  // len(intent) below
+	cloneExecRaceCwdLen    uint32          = 25 // len(cwd) below
 )
 
 // cloneExecRaceResult captures one create/reap cycle's observations.
@@ -168,9 +168,10 @@ func runCloneExecRaceCycle() cloneExecRaceResult {
 	}
 
 	// --- Drive the real create primitive. ---
+	// No reserved PID for this test (0 = allocate fresh, non-vfork path).
 	childTID, childPID := createCloneExecThreadImpl(&selftestSF,
 		uint64(cloneExecRaceEntryVA), uint64(cloneExecRaceStackVA),
-		childL0PA, cloneExecRaceParentPID, intent, cwd)
+		childL0PA, cloneExecRaceParentPID, 0, intent, cwd)
 
 	// --- Reap the real child so frame / PID / TID counts stay balanced. The
 	// child must be plucked from the ready queue BEFORE its slot is released so

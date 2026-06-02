@@ -215,6 +215,22 @@ func wakeBlockedThread(tid int32, result int64) {
 	RestoreIRQs(savedDAIF)
 }
 
+// wakeVforkParent wakes the parent thread suspended by a vfork clone (MAZ-127),
+// injecting the child PID (success) or errno (failure). Clears the parent-linkage
+// entry on the transient TID.
+//
+//go:nosplit
+//go:linkname wakeVforkParent mazzy/kmazarin/ksyscall.wakeVforkParent
+func wakeVforkParent(transientTID ThreadId, result int64) {
+	parentTID, _ := lookupVforkParent(transientTID)
+	if parentTID == 0 {
+		klog.Errf("[vfork] no parent linkage for transient tid=0x%x\n", transientTID)
+		return
+	}
+	wakeBlockedThread(int32(parentTID), result)
+	clearVforkParent(transientTID)
+}
+
 // --- Worker implementations (one per subsystem) ---
 
 type runShepherdWorkerImpl struct{}
