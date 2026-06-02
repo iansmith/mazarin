@@ -1230,9 +1230,19 @@ sync_sp_ok:
 
 	// Restore ELR and SPSR
 	LDP	EXC_FRAME_ELR_SPSR(RSP), (R10, R11)
-	// CRITICAL: Force IRQs enabled in SPSR by clearing DAIF.I bit (bit 7 = 0x80)
-	// This ensures IRQs are enabled after ERET, preventing stuck-disabled-IRQ chains
-	BIC	$0x80, R11, R11
+	// Force IRQs enabled (clear SPSR.DAIF.I, bit 7) ONLY when returning to EL0.
+	// Userspace must always run with IRQs on, so the force-enable is correctness
+	// there. But for EL1 returns we MUST preserve the saved SPSR.DAIF: a sync
+	// exception (e.g. a demand-page fault) taken inside an IRQ-masked kernel
+	// critical section — such as while holding schedulerLock — must return with
+	// IRQs still masked. Unconditionally clearing I here re-enabled IRQs mid-
+	// critical-section, so the timer top-half re-entered schedulerLock and
+	// deadlocked (MAZ-127). SPSR.M[3:2] is the target EL: 00 = EL0, 01 = EL1.
+	LSR	$2, R11, R12        // R12 = SPSR >> 2; bits[1:0] = M[3:2] (target EL)
+	AND	$3, R12, R12        // isolate the EL field
+	CBNZ	R12, sync_keep_daif // EL1+ return → preserve saved DAIF (don't force IRQs on)
+	BIC	$0x80, R11, R11     // EL0 return → clear DAIF.I (IRQs enabled)
+sync_keep_daif:
 	// Mask IRQs before writing ELR/SPSR to prevent timer corruption.
 	// A nested page fault during the SVC handler's Go code clears DAIF.I
 	// (via sync_return's own BIC above). If a timer fires between MSR and

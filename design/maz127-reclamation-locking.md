@@ -59,39 +59,63 @@ The only spinlock is the **buddy free-list lock**, held **per-page for microseco
      This eliminated the buddy hang — but reliably surfaced cascade item 3.
 
 3. **`createCloneExecThreadImpl` `schedulerLock`-with-IRQs-enabled violation**
-   (OPEN). After the buddy fix, the full config deadlocks during `RunShepherd`
-   (rachel/linux launch). The `[SCHEDLK-VIOLATION]` detector + `ELR_EL1` capture
-   confirm the holder: `main.createCloneExecThreadImpl` at `0x4590c384` (a field
-   store deep inside its `schedulerLock` region) is running with **IRQs enabled**.
-   It *does* call `sf.DisableAndSaveDAIF()` before locking, and the disassembly
-   between `Lock` and that PC shows **no DAIF write and no call** — yet IRQs are on.
-   The buddy fix's logic was reviewed ~7× and cannot itself enable IRQs under
-   `schedulerLock` (it only restores the prior state). Working hypothesis: the
-   violation is **pre-existing** (a genuine IRQ-enable-under-`schedulerLock` in the
-   thread-creation path) and the buddy fix's IRQ-masking merely **perturbs timer
-   delivery** enough to make the timer reliably land in that window.
+   — **ROOT-CAUSED AND FIXED.** After the buddy fix, the full config deadlocked
+   during `RunShepherd` (rachel/linux launch). The `[SCHEDLK-VIOLATION]` detector +
+   `ELR_EL1` + DAIF probes localized it: IRQs are masked through `Lock`/`Acquire`/
+   `Shepherds.Allocate` but become enabled while writing the freshly-allocated
+   `Shepherd` (`p.*` / `SetStartupState`). That write **demand-faults** (the
+   `proc.Shepherds` storage page is non-resident under the lane's reclamation churn),
+   and **`sync_return` (the synchronous-exception return path) unconditionally cleared
+   `SPSR.DAIF.I` (`BIC $0x80`) before `ERET`** — force-enabling IRQs on *every* fault
+   return, including a fault taken inside an IRQ-masked kernel critical section.
+   So the page fault returned with IRQs enabled while still holding `schedulerLock`
+   → timer fired → top-half re-entered `schedulerLock` → deadlock.
+   - **Fix**: condition the `BIC` on the return EL. Force IRQs enabled only when
+     returning to **EL0** (userspace must run with IRQs on — there the BIC is
+     correctness); **preserve the saved `SPSR.DAIF` on EL1 returns** (a fault under
+     `schedulerLock` must return still-masked). Test `SPSR.M[3:2]` (0=EL0, 1=EL1).
+   - **Pre-existing**: master never hit it because, with no reclamation churn, the
+     Shepherd page is resident → no fault → `sync_return` never runs. The deferred
+     reclamation is what makes shepherd-allocation writes demand-fault under the lock,
+     reliably exposing this latent exception-return bug. Same mechanism (a fault under
+     `schedulerLock` re-enabling IRQs) underlies the teardown deadlock (item 1) too.
+
+## Second latent bug found (tracked as MAZ-128)
+
+`SaveAndDisableIRQs` (exceptions_arm64.s) reads **NZCV instead of DAIF** — `WORD
+$0xD53B4200` is `MRS X0, NZCV`; the correct `MRS X0, DAIF` is `$0xD53B4220` (op2=1).
+The *mask* (`MSR DAIFSET,#2`) is correct, but the *saved* value is NZCV (DAIF bits
+zero), so `RestoreIRQs` has never restored real DAIF — it always lands on
+IRQs-enabled. Benign by luck on the common path (callers want IRQs back on), but
+wrong for nested-mask scenarios. The buddy fix's `kmem`-local copy had the same typo
+(it made `restoreIRQsLocal` force-enable IRQs on every buddy unlock) — **that copy is
+corrected to `$0xD53B4220`**; master's `SaveAndDisableIRQs` original still has it.
 
 ## A/B evidence (full config, HVF)
 
 | Build | rachel `RunShepherd` violation | boot-complete |
 |-------|-------------------------------|---------------|
 | master (909d6425, no MAZ-127) | 0/7 | 7/7 |
-| 834adcec (deferred commit alone) | 0/4 | 4/4 (2/4 had a post-boot `!L`, the forkexectest-teardown path w/o the buddy fix) |
-| lane (834adcec + CodeRabbit fixes + buddy fix) | 5/5 | 0/5 |
+| 834adcec (deferred commit alone) | 0/4 | 4/4 (2/4 post-boot `!L`) |
+| lane, buddy fix, **before** `sync_return` fix | 5/5 | 0/5 |
+| lane, **after** `sync_return` EL-conditioning | **0/5** | 4/5 (others slow-boot, no deadlock) |
 
-So the rachel violation is reliably triggered only with the working-tree fixes
-(buddy fix the prime suspect via timing), and is NOT present on master in 7 runs.
+Long validation run (after the fix): full boot, `[pipe2test]`/`[xfertest] PASS`,
+forkexectest starts, child exits status=42, reclamation healthy
+(`heap≈10MB`, no Buddy OOM, no `UNDERFLOW`), no `!L`/`SCHEDLK`.
 
-## Decisive next test
+## How it was root-caused (record of method)
 
-Port **only** the detector (`ds.Spinlock.IsLocked` + `readELR_EL1` +
-`ProcessDeadlinesTopHalf` holder-PC capture) onto the clean master worktree — no
-buddy fix, no deferred work — and boot it many times.
-- If master **also** catches `createCloneExecThreadImpl` → the
-  IRQ-under-`schedulerLock` bug is **pre-existing**; fix that path, keep the buddy
-  fix + deferred design.
-- If master is **clean** even with the detector → my changes genuinely enable IRQs
-  there; keep digging on the mechanism.
+Detector-on-master (the detector ALONE on clean master, 8 boots) was **0/8** — so
+the violation was NOT pre-existing in master; my work triggered it. Bisect: 834adcec
+alone 0/4, lane 5/5. DAIF probes inside `createCloneExecThreadImpl` then localized
+the IRQ flip to the `p.*`/`SetStartupState` writes — and a probe-encoding slip
+(`MRS NZCV` vs `MRS DAIF`) incidentally exposed the second latent bug above. The
+final clue was the in-asm mask-then-read showing "masked", which pointed at the
+*call/return boundary* — i.e. a fault → `sync_return` → BIC. Reading `sync_return`
+confirmed it. (Lesson: trust the independent `SCHEDLK-VIOLATION` — the timer
+actually firing — over hand-rolled DAIF probes; and double-check `MRS`/`MSR` system
+register encodings.)
 
 ## The detector (keep, debug-gated)
 

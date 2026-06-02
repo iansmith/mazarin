@@ -20,7 +20,7 @@ TEXT ·yieldProcessor(SB), NOSPLIT, $0
 //
 // func saveAndDisableIRQsLocal() uint64
 TEXT ·saveAndDisableIRQsLocal(SB), NOSPLIT|NOFRAME, $0-8
-	WORD	$0xD53B4200   // MRS X0, DAIF — read current DAIF into R0
+	WORD	$0xD53B4220   // MRS X0, DAIF (op2=1; 0xD53B4200 was MRS NZCV) — read current DAIF into R0
 	WORD	$0xD50342DF   // MSR DAIFSET, #2 — set I bit (disable IRQs)
 	ISB	$15
 	MOVD	R0, ret+0(FP)
