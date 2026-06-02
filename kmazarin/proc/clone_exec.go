@@ -118,3 +118,11 @@ type CloneExecRequest struct {
 	// --- Diagnostics ---
 	Filename []byte // shepherd-name for logging + symbol table cache
 }
+
+// IsVforkCall reports whether this CloneExecRequest was submitted by a
+// vfork-flavored clone — i.e. both a reserved child PID and the transient
+// thread's TID are present. DoCloneExecWork uses this predicate to route the
+// completion result to the parked parent on failure as well as success.
+func (req *CloneExecRequest) IsVforkCall() bool {
+	return req.ReservedPID != 0 && req.TransientTID != 0
+}
