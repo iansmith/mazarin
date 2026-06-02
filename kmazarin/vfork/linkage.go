@@ -2,19 +2,21 @@
 // vfork clones. Extracted from kmazarin/kmazarin/threads.go (MAZ-130) to
 // make the locking logic unit-testable without the kernel runtime.
 //
-// All four table operations must hold Lock before accessing Table.
+// All table operations hold Lock (CAS spinlock) before accessing Table.
 // Lock ordering: Lock is always acquired INSIDE schedulerLock (never the
-// reverse), so callers holding schedulerLock may safely acquire Lock.
+// reverse), so callers already holding schedulerLock may safely acquire Lock.
 package vfork
 
 import (
+	"sync/atomic"
+
 	"mazzy/kmazarin/proc"
 )
 
 // Entry records the relationship between a transient child thread (spawned
 // by a vfork clone) and its suspended parent thread.
 //
-// Protocol: recordVforkParent inserts with TransientID=0 (placeholder);
+// Protocol: Record inserts with TransientID=0 (placeholder);
 // BackfillTransientID fills in TransientID once the TID is known. Lookup
 // and Clear operate on entries with a non-zero TransientID.
 type Entry struct {
@@ -27,8 +29,7 @@ type Entry struct {
 // nosplit-safe.
 var Table [16]Entry
 
-// Lock guards all Table accesses. Acquire with CAS(0→1); release with store(0).
-// Not yet wired into the accessors — MAZ-130 wires it up.
+// Lock guards all Table accesses. Acquired via CAS(0→1); released via store(0).
 var Lock uint32
 
 // Record inserts a new linkage entry with TransientID=0 (the transient TID is
@@ -37,13 +38,17 @@ var Lock uint32
 //
 //go:nosplit
 func Record(parentID int16, pid proc.ShepherdId) bool {
+	for !atomic.CompareAndSwapUint32(&Lock, 0, 1) {
+	}
 	for i := range Table {
 		if Table[i].TransientID == 0 && Table[i].ParentID == 0 {
 			Table[i].ParentID = parentID
 			Table[i].ReservedPID = pid
+			atomic.StoreUint32(&Lock, 0)
 			return true
 		}
 	}
+	atomic.StoreUint32(&Lock, 0)
 	return false
 }
 
@@ -52,12 +57,16 @@ func Record(parentID int16, pid proc.ShepherdId) bool {
 //
 //go:nosplit
 func BackfillTransientID(parentID, transientID int16) {
+	for !atomic.CompareAndSwapUint32(&Lock, 0, 1) {
+	}
 	for i := range Table {
 		if Table[i].TransientID == 0 && Table[i].ParentID == parentID {
 			Table[i].TransientID = transientID
+			atomic.StoreUint32(&Lock, 0)
 			return
 		}
 	}
+	atomic.StoreUint32(&Lock, 0)
 }
 
 // ClearByParent removes the placeholder entry for parentID (used on error
@@ -65,12 +74,16 @@ func BackfillTransientID(parentID, transientID int16) {
 //
 //go:nosplit
 func ClearByParent(parentID int16) {
+	for !atomic.CompareAndSwapUint32(&Lock, 0, 1) {
+	}
 	for i := range Table {
 		if Table[i].TransientID == 0 && Table[i].ParentID == parentID {
 			Table[i] = Entry{}
+			atomic.StoreUint32(&Lock, 0)
 			return
 		}
 	}
+	atomic.StoreUint32(&Lock, 0)
 }
 
 // Lookup retrieves the parent TID and reserved PID for a given transient TID.
@@ -78,11 +91,16 @@ func ClearByParent(parentID int16) {
 //
 //go:nosplit
 func Lookup(transientID int16) (parentID int16, pid proc.ShepherdId) {
+	for !atomic.CompareAndSwapUint32(&Lock, 0, 1) {
+	}
 	for i := range Table {
 		if Table[i].TransientID == transientID {
-			return Table[i].ParentID, Table[i].ReservedPID
+			p, pid := Table[i].ParentID, Table[i].ReservedPID
+			atomic.StoreUint32(&Lock, 0)
+			return p, pid
 		}
 	}
+	atomic.StoreUint32(&Lock, 0)
 	return 0, 0
 }
 
@@ -91,10 +109,14 @@ func Lookup(transientID int16) (parentID int16, pid proc.ShepherdId) {
 //
 //go:nosplit
 func Clear(transientID int16) {
+	for !atomic.CompareAndSwapUint32(&Lock, 0, 1) {
+	}
 	for i := range Table {
 		if Table[i].TransientID == transientID {
 			Table[i] = Entry{}
+			atomic.StoreUint32(&Lock, 0)
 			return
 		}
 	}
+	atomic.StoreUint32(&Lock, 0)
 }
