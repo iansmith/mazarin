@@ -4,10 +4,8 @@ package main
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
-	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/proc"
 	"mazzy/shared/hid"
 	"mazzy/shared/iouring"
 	"sync/atomic"
@@ -169,12 +167,16 @@ var dbgBlockCQEWritten uint32     // completions written to io_uring CQ
 var dbgBlockCQEMissed uint32      // completions routed to legacy path (ioRing was nil)
 
 // Block async completion state (Phase 4).
-// When blockAsyncMode=1, the top-half drains the Engine used ring,
-// pushes completion events to topHalfBlockRing, and wakes the slot.
+// When blockAsyncMode=1, the top-half drains the Engine used ring and
+// pushes CQEs to the fs shepherd's io_uring ring (see block_top_half.go).
 // When blockAsyncMode=0 (default), the top-half just sets IOComplete
-// for the synchronous WFI loop in blockReadBatch.
+// for the kernel's early-boot WFI spin loop in blockReadBatch.
+// Both modes are retained because early-boot kernel I/O (ramdisk load,
+// shepherd ELF loading) runs before the fs shepherd process exists and
+// before any io_uring ring is registered — the WFI path is the only
+// mechanism available at that stage.
 var blockEnginePtr uintptr // *virtio.Engine stored as uintptr (nosplit-safe)
-var blockAsyncMode uint32  // atomic: 0=sync, 1=async
+var blockAsyncMode uint32  // atomic: 0=sync (early boot), 1=async (shepherd active)
 var blockSidecarFreePtr *uint64 // pointer to SidecarPool.FreeBits for release
 
 // blockAsyncSlot tracks per-IOTag metadata for async completions.
@@ -418,129 +420,11 @@ func NonTimerIRQTopHalf() {
 		return
 	}
 
-	// Block device: acknowledge interrupt, then either drain async completions
-	// or signal IOComplete for the synchronous WFI loop.
+	// Block device: see blockTopHalf() in block_top_half.go for the full
+	// hot path (ISR ack → DMA barrier → VirtQ drain → CQE write → wake).
+	// Factored out to keep this function's nosplit frame small.
 	if irqNum == blockIRQNum && blockIRQNum != 0 {
-		atomic.AddUint32(&dbgBlockIRQCount, 1)
-		if blockISRBase != 0 {
-			_ = asm.MmioRead8(blockISRBase) // Acknowledge interrupt (deasserts INTx)
-		}
-		// DMA read barrier: ensure the device's used ring DMA writes are
-		// visible to this CPU before we access used ring entries or signal
-		// IOComplete. Under HVF the VirtIO backend runs on a separate host
-		// thread; without this barrier the CPU may see stale used ring data.
-		asm.DmaRmb()
-
-		if atomic.LoadUint32(&blockAsyncMode) != 0 && blockEnginePtr != 0 {
-			// Async mode: drain engine used ring, push completion events
-			eng := (*virtio.Engine)(unsafe.Pointer(blockEnginePtr))
-			drained := uint32(0)
-
-			for eng.HasUsed() {
-				info := eng.PopUsed()
-				if info.Tag == virtio.InvalidIOTag {
-					break
-				}
-				drained++
-				tag := uint16(info.Tag)
-				meta := &blockAsyncSlots[tag]
-
-				// Read status from sidecar (Device-nGnRnE, no cache mgmt needed)
-				status := uint16(0)
-				if meta.sidecarStatusVA != 0 {
-					status = uint16(*(*uint8)(unsafe.Pointer(meta.sidecarStatusVA)))
-				}
-
-				// Invalidate cache on data page so userspace sees device-written data
-				if meta.dataKernelVA != 0 && meta.dataLen > 0 {
-					asm.InvalidateDCacheRange(meta.dataKernelVA, uintptr(meta.dataLen))
-				}
-
-				// Release sidecar slot (bitmap OR — nosplit safe)
-				if blockSidecarFreePtr != nil {
-					*blockSidecarFreePtr |= uint64(1) << uint(meta.sidecarIdx)
-				}
-
-				// Decrement InFlight on DMA clump (if applicable).
-				// If the clump is pending release and InFlight hits 0,
-				// free the contiguous pages. This handles the case where
-				// munmap was called while I/O was in flight.
-				if meta.clumpAddr != 0 {
-					clump := (*proc.DMAClump)(unsafe.Pointer(meta.clumpAddr))
-					remaining := atomic.AddInt32(&clump.InFlight, -1)
-					if remaining == 0 && (clump.ShepherdDead || clump.PendingRelease) {
-						// Called via indirect pointer to break the nosplit chain.
-						// BuddyFreeTyped has large stack frames (buddyRemoveSpecific →
-						// buddyRemoveFree → duffzero) that exceed the 792-byte limit
-						// when called from the ExceptionVectorTable chain.
-						buddyFreeHook(clump.StartPA, clump.BuddyOrder, kmem.PageUserDMA)
-					}
-				}
-
-				atomic.AddUint32(&dbgBlockAsyncEvents, 1)
-
-				// Write completion: io_uring CQ if active, else legacy path.
-				_, ioRing := GetIOUringSlotForBlockIRQ()
-				if ioRing != nil {
-					atomic.AddUint32(&dbgBlockCQEWritten, 1)
-					cqTail := ioRing.CQTail
-					cqIdx := cqTail & iouring.CQMask
-					ioRing.CQEntries[cqIdx] = iouring.CQEntry{
-						UserData: meta.userData,
-						Res:      int32(info.UsedLen),
-					}
-					asm.Dsb()
-					atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
-				} else {
-					atomic.AddUint32(&dbgBlockCQEMissed, 1)
-					ev := hid.HIDEvent{
-						Type:  tag,
-						Code:  status,
-						Value: info.UsedLen,
-					}
-					crKVA := blockCompletionRingKVA
-					if crKVA != 0 {
-						if !completionRingPush(crKVA, ev) {
-							atomic.AddUint32(&dbgBlockRingFull, 1)
-						}
-					} else {
-						ringPush(&topHalfBlockRing, ev)
-					}
-				}
-
-				// Clear metadata slot
-				*meta = blockAsyncSlot{}
-			}
-
-			// Track drain stats via atomics (nosplit-safe, no printing)
-			atomic.AddUint32(&dbgBlockTotalDrained, drained)
-			if drained == 0 {
-				atomic.AddUint32(&dbgBlockEmptyIRQ, 1)
-				// Snapshot raw Used.Idx on first empty-drain (one-shot)
-				if atomic.CompareAndSwapUint32(&dbgBlockEmptySnapped, 0, 1) {
-					usedVA := uintptr(unsafe.Pointer(eng.VQ.Used))
-					asm.InvalidateDCacheRange(usedVA, 4)
-					atomic.StoreUint32(&dbgBlockEmptyRawUsedIdx, uint32(asm.MmioRead16(usedVA+2)))
-					atomic.StoreUint32(&dbgBlockEmptyLastUsedIdx, uint32(eng.VQ.LastUsedIdx))
-					atomic.StoreUint64(&dbgBlockEmptyUsedPtr, uint64(usedVA))
-				}
-			}
-			// Snapshot VQ state for SVC-side logging
-			atomic.StoreUint32(&dbgBlockLastNumFree, uint32(eng.VQ.NumFree))
-			atomic.StoreUint32(&dbgBlockLastUsedIdx, uint32(eng.VQ.LastUsedIdx))
-			atomic.StoreUint32(&dbgBlockLastAvailIdx, uint32(eng.VQ.Available.Idx))
-
-			atomic.AddUint32(&dbgBlockIRQAsync, 1)
-			// Wake: try io_uring direct wake, fall back to legacy slot.
-			WakeIOUringFromIRQ()
-			WakeSlotForIRQ(hid.BlockVirtualIRQ)
-		} else {
-			// Sync mode: just signal IOComplete for WFI loop
-			atomic.AddUint32(&dbgBlockIRQSync, 1)
-			if blockIOComplete != nil {
-				atomic.StoreUint32(blockIOComplete, 1)
-			}
-		}
+		blockTopHalf()
 		return
 	}
 
@@ -560,6 +444,12 @@ func NonTimerIRQTopHalf() {
 		return
 	}
 
+	// Keyboard / mouse: VirtIO input devices on PCI INTx (not MSI-X).
+	// IRQ hot path: assembly reads GICC_IAR → NonTimerIRQTopHalf → here.
+	// Note: GICv2.DispatchIRQ and RegisterHandler are NOT the event delivery
+	// path. input.DispatchIRQ (input.go) is wired but only acks the VirtIO ISR;
+	// all event draining happens below. input.DrainEvents is intentionally
+	// bypassed to avoid racing with this nosplit top-half.
 	var dev *topHalfDev
 	if irqNum == topHalfKbd.irqNum && topHalfKbd.usedVA != 0 {
 		dev = &topHalfKbd

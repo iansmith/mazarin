@@ -156,9 +156,15 @@ type pendingRearm struct {
 // Run drains CQEs forever, dispatching RX to the plugin and releasing
 // TX pages. Blocks; intended to be launched as `go dispatcher.Run()`.
 //
-// Uses IOUringEnterBlocking (NOT IOUringEnter) for the wait so the
-// Go P is released while parked in the kernel — other goroutines
-// (RxConsumer, TxWorkers) need the P to make progress.
+// Uses IOUringEnterBlocking (P-releasing) rather than IOUringEnter: this
+// goroutine is a pump — it forwards completions to gvisor consumer goroutines
+// via RecvChan rather than consuming them itself.  Releasing the P while
+// parked lets those consumers (and TxWorkers) run in parallel with the wait.
+//
+// Contrast with the fs shepherd's asyncBlockDev (maz/fs/main.go), which
+// uses IOUringEnter (P-holding): the goroutine that submits the SQE is the
+// same goroutine that waits for and immediately consumes the CQE, so there
+// is no other goroutine to hand the P to.
 func (d *Dispatcher) Run() {
 	var pending []pendingRearm
 	for {
