@@ -87,10 +87,15 @@ func ClearByParent(parentID int16) {
 }
 
 // Lookup retrieves the parent TID and reserved PID for a given transient TID.
-// Returns 0, 0 if not found.
+// Returns 0, 0 if not found. transientID == 0 is always a placeholder (not
+// yet backfilled) and must never match a resolved lookup — early-return to
+// avoid spurious hits on in-flight placeholder entries.
 //
 //go:nosplit
 func Lookup(transientID int16) (parentID int16, pid proc.ShepherdId) {
+	if transientID == 0 {
+		return 0, 0
+	}
 	for !atomic.CompareAndSwapUint32(&Lock, 0, 1) {
 	}
 	for i := range Table {
@@ -105,10 +110,14 @@ func Lookup(transientID int16) (parentID int16, pid proc.ShepherdId) {
 }
 
 // Clear removes the entry for transientID. Called after the parent has been
-// woken (success or failure path).
+// woken (success or failure path). transientID == 0 is a placeholder — not a
+// valid target for Clear (use ClearByParent instead); no-op to be safe.
 //
 //go:nosplit
 func Clear(transientID int16) {
+	if transientID == 0 {
+		return
+	}
 	for !atomic.CompareAndSwapUint32(&Lock, 0, 1) {
 	}
 	for i := range Table {
