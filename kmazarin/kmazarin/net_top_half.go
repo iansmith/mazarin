@@ -3,13 +3,29 @@
 // Factored out of bottom_half.go so the dispatcher's nosplit frame
 // stays small — the dispatcher's frame is the max of all branches, so
 // keeping net's locals (rxEng/txEng/dev/ioRing/descTable/descStride/
-// info/tag/...) in their own function lets the dispatcher's frame stay
+// info/tag/…) in their own function lets the dispatcher's frame stay
 // at the previous size while the net branch keeps its locals here.
+//
+// IRQ hot path (hardware → shepherd):
+//   hardware VirtIO net IRQ (MSI-X SPI via GICv2m)
+//   → assembly irq_exception_handler (exceptions_arm64.s):
+//       reads GICC_IAR (GIC-level ACK, latches IRQ number)
+//       switches to kmazarin g0
+//   → NonTimerIRQTopHalf (bottom_half.go): dispatches here
+//   → netTopHalf() [this file]:
+//       reads VirtIO ISR via MMIO (device-level ACK, deasserts PCI INTx)
+//       DMA read barrier
+//       drains RX VirtQ used ring → writes CQEs to shared io_uring page
+//       drains TX VirtQ used ring → writes CQEs to shared io_uring page
+//   → WakeIOUringFromIRQ: wakes net shepherd thread blocked on IOUringEnterBlocking
+//   → assembly: writes GICC_EOIR (GIC EOI) after NonTimerIRQTopHalf returns
+//
+// The block device uses the same pattern in block_top_half.go; see that file
+// for the parallel structure (including the sync-mode early-boot variant).
 //
 // RX uses slot-pinned PopUsedNoFree (net.elf re-arms via
 // IOUringOpNetRearmDesc). TX uses PopUsed with a TxTagByDescIdx lookup
-// for the CQE encoding. Wake at the end via WakeIOUringFromIRQ +
-// WakeSlotForIRQ(NetVirtualIRQ).
+// for the CQE encoding.
 
 package main
 

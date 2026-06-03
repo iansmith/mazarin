@@ -223,7 +223,13 @@ func RegisterIRQDevice(irqNum uint32, dev *VirtIOInputDevice) {
 }
 
 // DispatchIRQ is the nosplit handler called from the IRQ dispatch table.
-// It looks up the device by IRQ number and calls HandleIRQ.
+// It looks up the device by IRQ number and calls HandleIRQ (ISR ack only).
+//
+// NOTE: This is NOT the event delivery path. The actual VirtQ drain and
+// CQE writes happen in NonTimerIRQTopHalf (kmazarin/kmazarin/bottom_half.go)
+// which runs on the same IRQ. GICv2.DispatchIRQ / RegisterHandler are not
+// invoked for input IRQs — the assembly handler calls NonTimerIRQTopHalf
+// directly. DrainEvents is intentionally bypassed to prevent races.
 //
 //go:nosplit
 func DispatchIRQ(irqNum uint64) {

@@ -368,9 +368,20 @@ func bootSequence(fsys *ext2.FileSystem) {
 }
 
 // asyncBlockDev implements blockdev.BlockDevice backed by io_uring.
-// All ring access is serialized by a mutex. Uses IOUringEnter (P-holding,
-// RawSyscall) so the Go scheduler cannot steal the P during short I/O waits.
-// This avoids P contention with the boot sequence goroutine's polling loop.
+// All ring access is serialized by a mutex.
+//
+// Uses IOUringEnter (P-holding, RawSyscall) rather than IOUringEnterBlocking:
+// the goroutine that submits the SQE is the same goroutine that waits for and
+// immediately consumes the CQE — there is no handoff to another goroutine.
+// When the kernel wakes this goroutine via WakeIOUringFromIRQ, it must run
+// immediately to copy the data and return to the caller; re-acquiring a P from
+// the scheduler would add latency with no benefit.
+//
+// Contrast with the net shepherd's Dispatcher.Run (workers.go), which uses
+// IOUringEnterBlocking (P-releasing): the dispatcher is a pump goroutine that
+// forwards CQEs to gvisor consumer goroutines via RecvChan.  Holding the P
+// while idle would starve those consumers; releasing it lets them run in
+// parallel with the dispatcher's wait.
 type asyncBlockDev struct {
 	mu        sync.Mutex
 	scratchVA uintptr         // base of MAZARIN_CONTIGUOUS scratch pages
