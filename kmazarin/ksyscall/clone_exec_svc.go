@@ -100,15 +100,17 @@ func SyscallCloneExec(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	}
 
 	// Retrieve the reserved PID and transient TID for this vfork child (MAZ-127).
-	// Both must be captured NOW while we are still in the transient thread's SVC
-	// context — DoCloneExecWork runs on the kernel worker (thread 0), so
-	// GetCurrentThreadTID() there would return the wrong TID.
-	reservedPIDValue := GetVforkReservedPID()
+	// SyscallCloneExec runs in the linux-dispatcher worker thread's SVC context,
+	// not in the transient vfork thread. The linux-dispatcher passes the original
+	// CallerTID and CallerSID (the transient thread's TID and the real parent's SID)
+	// in params so we can look up the vfork table and set ParentPID correctly.
 	var reservedPID proc.ShepherdId
-	var transientTID int32
-	if reservedPIDValue != 0 {
-		reservedPID = proc.ShepherdId(reservedPIDValue)
-		transientTID = int32(GetCurrentThreadTID())
+	var transientTID int16
+	if params.VforkCallerTID != 0 {
+		if pid := GetVforkReservedPIDForTID(params.VforkCallerTID); pid != 0 {
+			reservedPID = proc.ShepherdId(pid)
+			transientTID = params.VforkCallerTID
+		}
 	}
 
 	ctxPtr := submitCloneExec(proc.CloneExecRequest{
@@ -122,7 +124,8 @@ func SyscallCloneExec(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		Intent:         params.Intent,
 		Cwd:            params.Cwd,
 		ReservedPID:    reservedPID,
-		TransientTID:   transientTID,
+		TransientTID:   int32(transientTID),
+		ParentSID:      proc.ShepherdId(params.VforkCallerSID),
 		Filename:       params.Filename,
 	})
 	if ctxPtr == 0 {
@@ -132,5 +135,20 @@ func SyscallCloneExec(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		return ceEAGAIN
 	}
 	SetSyscallSwitchTarget(ctxPtr)
+	return 0
+}
+
+// SyscallReapVforkTransient implements the SysReapVforkTransient SVC (MAZ-63).
+// Called by the linux dispatcher shepherd after a successful vfork execve to
+// terminate the transient thread without returning it to userspace.
+//
+// arg0 = transient thread TID (int16)
+//
+//go:noinline
+func SyscallReapVforkTransient(arg0, _, _, _, _, _ uint64) int64 {
+	tid := int16(arg0)
+	if !ReapVforkTransient(tid) {
+		return -3 // ESRCH — not found or not a vfork transient
+	}
 	return 0
 }

@@ -1993,18 +1993,15 @@ func ReleaseChildPID(pid proc.ShepherdId) {
 	RestoreIRQs(savedDAIF)
 }
 
-// GetVforkReservedPID retrieves the reserved PID for the current thread (transient).
-// Called by the transient thread's execve handler to retrieve the PID reserved at
-// clone time. Returns 0 if not found (non-vfork caller).
+// GetVforkReservedPIDForTID retrieves the reserved PID for the given kernel TID.
+// Called by SyscallCloneExec using the CallerTID from the params blob (the TID
+// of the transient vfork thread that issued execve to the linux dispatcher).
+// Returns 0 if tid is not a known transient vfork thread (non-vfork call).
 //
 //go:nosplit
-//go:linkname GetVforkReservedPID mazzy/kmazarin/ksyscall.GetVforkReservedPID
-func GetVforkReservedPID() proc.ShepherdId {
-	t := GetCurrentThread()
-	if t == nil {
-		return 0
-	}
-	_, reservedPID := lookupVforkParent(t.TID)
+//go:linkname GetVforkReservedPIDForTID mazzy/kmazarin/ksyscall.GetVforkReservedPIDForTID
+func GetVforkReservedPIDForTID(tid int16) proc.ShepherdId {
+	_, reservedPID := lookupVforkParent(ThreadId(tid))
 	return reservedPID
 }
 
@@ -2021,6 +2018,38 @@ func IsTransientVforkThread() bool {
 		return false
 	}
 	return t.VforkTransient == 1
+}
+
+// ReapVforkTransient terminates a transient vfork thread from outside its own SVC
+// context. Called by the linux dispatcher shepherd after a successful vfork execve
+// so the transient thread never returns to userspace and writes errno=0 to the errpipe.
+// The transient thread is currently blocked (delegate wait); we mark it Exited and
+// release its TID/slot. Returns true if the thread was reaped, false if not found or
+// not a transient vfork thread.
+//
+//go:linkname ReapVforkTransient mazzy/kmazarin/ksyscall.ReapVforkTransient
+func ReapVforkTransient(tid int16) bool {
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+
+	t := threadLookupByTID(int32(tid))
+	if t == nil || t.VforkTransient != 1 {
+		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
+		return false
+	}
+
+	t.State = ThreadExited
+	pluckFromAllQueues(t.TID)
+	clearVforkParent(t.TID)
+	threadIdAllocator.Release(t.TID)
+	threadList.Release(int(threadToIdx(t)))
+	// Do NOT touch shepherd thread count — transient shares parent's PID and
+	// CloneVforkThread never incremented the count (mirrors threadExitImpl comment).
+
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
+	return true
 }
 
 // CloneThread creates a new thread for Go runtime's clone syscall.
@@ -2573,17 +2602,22 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	})
 	// Remove the dying shepherd from the subscriber list.
 	ksyscall.CleanupDeathSubscriptionsForShepherd(int16(pid))
-	// Deliver EventChildExit to the parent (MAZ-77). Look up the dying child
-	// while its slot is still live (terminateShepherdImpl releases it), build
-	// the event with the RAW exit code, and publish to the parent's ring. The
-	// parent observes it when it next polls (wait4, MAZ-80). Boot shepherds
-	// (ParentPID == 0) yield ok=false and are skipped — no parent to notify.
+	// Deliver EventChildExit to the linux shepherd (MAZ-77). The linux shepherd
+	// manages wait4 bookkeeping (reaper.AddZombie, parked-waiter wakeup) for ALL
+	// shepherds — it reads notifications from its OWN ring (SID=LinuxDelegateSID),
+	// not the parent shepherd's ring. The event carries ParentPid so the linux
+	// shepherd can route it to the correct wait4 waiter.
+	//
+	// Boot shepherds (ParentPID == 0) yield ok=false and are skipped.
 	// Must run here in the non-nosplit pre-lock window: KernelPublishProcessNotify
 	// takes schedulerLock internally, so it cannot run inside terminateShepherdImpl's
-	// critical section. The returned (result, ctx) is discarded — same as MAZ-75.
+	// critical section.
 	if child := proc.FindShepherdBySID(pid); child != nil {
-		if ev, target, ok := proc.BuildChildExitEvent(child, int32(status)); ok {
-			KernelPublishProcessNotify(target, ev)
+		if ev, _, ok := proc.BuildChildExitEvent(child, int32(status)); ok {
+			linuxSID := proc.ShepherdId(ksyscall.LinuxDelegateSID())
+			if linuxSID >= 0 {
+				KernelPublishProcessNotify(linuxSID, ev)
+			}
 		}
 	}
 	// Flush deferred cleanups if the linux shepherd itself is dying.

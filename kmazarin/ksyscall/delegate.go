@@ -784,7 +784,7 @@ func packExecveDataPage(handlerSID int16, handlerShepherd *proc.Shepherd, pathVA
 	}
 
 	blob, err := linuxabi.MarshalCloneExecParams(
-		linuxabi.PackArgv(argv), linuxabi.PackArgv(envp), nil, nil, path)
+		linuxabi.PackArgv(argv), linuxabi.PackArgv(envp), nil, nil, path, 0, 0)
 	if err != nil || len(blob) > 4096 {
 		return 0, 0, 0, -7 // E2BIG
 	}

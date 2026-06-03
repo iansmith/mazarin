@@ -180,6 +180,12 @@ func (t *Table) Each(fn func(fd int, e *Entry) bool) {
 // or stdio) are freed without a callback. The callback decouples the sweep
 // from the fs IPC client so it is host-testable.
 //
+// For pipe entries, Pipe.Close() is called unconditionally so the shared
+// pipe buffer's writer reference count is decremented. This is the mechanism
+// by which the parent's errpipe read-end receives EOF after exec: the write-end
+// was opened O_CLOEXEC, so its Close() here drops writers to zero, unblocking
+// the parent's os/exec.Run().
+//
 // Unlike sysClose, this does not preserve orphaned handles for surviving
 // mmaps: exec replaces the address space, so there are no surviving mappings
 // to flush.
@@ -191,8 +197,41 @@ func (t *Table) CloseCloexecFDs(closeHandle func(handle uint32)) {
 		if e.Handle != 0 && closeHandle != nil {
 			closeHandle(e.Handle)
 		}
+		if e.Pipe != nil {
+			e.Pipe.Close()
+		}
 		t.Free(fd)
 	}
+}
+
+// Copy returns a deep copy of the Table for fork(2) FD inheritance. Each
+// entry gets an independent Entry struct so the child can freely close or dup
+// FDs without affecting the parent's table. Cwd is copied verbatim.
+//
+// Pipe entries are handled via Fork(): each End shares the same underlying
+// pipe buffer but gets its own closed/isWriter state. For write ends, Fork()
+// increments the shared writer count so that Close on the child's End
+// decrements it to the pre-fork count, and a later Close on the parent's End
+// decrements it to zero — only then does the read end see EOF. This mirrors
+// Linux's get_file() reference-count increment inside copy_files().
+//
+// WriteBuf is zeroed on every copied entry (write buffers are per-fd, like
+// Dup3 — they must not be shared across a fork boundary).
+func (t *Table) Copy() *Table {
+	child := &Table{Cwd: t.Cwd}
+	for fd, e := range t.entries {
+		if e == nil {
+			continue
+		}
+		dup := *e          // independent Entry struct (value copy of all fields)
+		dup.WriteBuf = nil // write buffers are per-fd, never inherited
+		dup.WriteBufOff = 0
+		if e.Pipe != nil {
+			dup.Pipe = e.Pipe.Fork()
+		}
+		child.entries[fd] = &dup
+	}
+	return child
 }
 
 // Dup3 implements dup3(oldfd, newfd, flags): it makes newfd refer to the same

@@ -56,7 +56,9 @@ func TestMarshalCloneExecParamsRoundtrip(t *testing.T) {
 	cwd := []byte("/work/src")
 	filename := []byte("/usr/bin/compile")
 
-	blob, err := MarshalCloneExecParams(PackArgv(argv), PackArgv(envp), intent, cwd, filename)
+	const wantTID int16 = 42
+	const wantSID int16 = 7
+	blob, err := MarshalCloneExecParams(PackArgv(argv), PackArgv(envp), intent, cwd, filename, wantTID, wantSID)
 	if err != nil {
 		t.Fatalf("MarshalCloneExecParams: %v", err)
 	}
@@ -84,12 +86,18 @@ func TestMarshalCloneExecParamsRoundtrip(t *testing.T) {
 			t.Errorf("intent[%d] = %+v, want %+v", i, got.Intent[i], intent[i])
 		}
 	}
+	if got.VforkCallerTID != wantTID {
+		t.Errorf("VforkCallerTID = %d, want %d", got.VforkCallerTID, wantTID)
+	}
+	if got.VforkCallerSID != wantSID {
+		t.Errorf("VforkCallerSID = %d, want %d", got.VforkCallerSID, wantSID)
+	}
 }
 
 // TestMarshalCloneExecParamsEmpty — a fully-empty request (no argv/envp/intent/
 // cwd/filename) still produces a valid header-only blob that round-trips.
 func TestMarshalCloneExecParamsEmpty(t *testing.T) {
-	blob, err := MarshalCloneExecParams(nil, nil, nil, nil, nil)
+	blob, err := MarshalCloneExecParams(nil, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("MarshalCloneExecParams(empty): %v", err)
 	}
@@ -117,7 +125,7 @@ func TestUnmarshalCloneExecParamsRejectsShort(t *testing.T) {
 // TestUnmarshalCloneExecParamsRejectsOverrun — a header that declares section
 // lengths past the blob end is rejected.
 func TestUnmarshalCloneExecParamsRejectsOverrun(t *testing.T) {
-	blob, err := MarshalCloneExecParams([]byte("a\x00b"), nil, nil, nil, nil)
+	blob, err := MarshalCloneExecParams([]byte("a\x00b"), nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -132,7 +140,7 @@ func TestUnmarshalCloneExecParamsRejectsOverrun(t *testing.T) {
 // CloneExecArgMax is rejected with ErrCloneExecArgTooBig (E2BIG at the SVC).
 func TestMarshalCloneExecParamsRejectsOversize(t *testing.T) {
 	huge := make([]byte, CloneExecArgMax+1)
-	if _, err := MarshalCloneExecParams(huge, nil, nil, nil, nil); err != ErrCloneExecArgTooBig {
+	if _, err := MarshalCloneExecParams(huge, nil, nil, nil, nil, 0, 0); err != ErrCloneExecArgTooBig {
 		t.Errorf("oversize err = %v, want ErrCloneExecArgTooBig", err)
 	}
 }

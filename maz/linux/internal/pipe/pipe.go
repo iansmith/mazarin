@@ -83,6 +83,32 @@ func New(flags int) (read *End, write *End) {
 	return &End{b: b}, &End{b: b, isWriter: true}
 }
 
+// Fork creates a new End that shares the same underlying pipe buffer as e,
+// modeling Linux fork(2) FD inheritance: the child gets an independent End
+// struct pointing at the same shared data plane.
+//
+// For a write end, Fork increments the shared writer count (buf.writers++) so
+// that Close on the fork decrements it to the pre-fork count, and Close on the
+// original decrements it further — only when both are closed does the reader
+// see EOF. This mirrors Linux's get_file() reference-count increment inside
+// copy_files() during fork.
+//
+// For a read end, Fork returns a new End pointing at the same buf without
+// changing the writer count (read ends carry no reference count of their own).
+//
+// Panics if e is already closed: forking a closed End is a programming error
+// (the caller must not inherit a file descriptor that has already been closed).
+func (e *End) Fork() *End {
+	if e.closed {
+		panic("pipe: Fork called on a closed End")
+	}
+	if e.isWriter {
+		e.b.writers++
+		return &End{b: e.b, isWriter: true}
+	}
+	return &End{b: e.b}
+}
+
 // Cloexec reports whether this end was created with O_CLOEXEC. The shepherd
 // copies this into the backing fdEntry.cloexec so the close-at-exec sweep
 // (MAZ-113) closes it.

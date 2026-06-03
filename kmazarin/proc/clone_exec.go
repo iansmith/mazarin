@@ -115,6 +115,14 @@ type CloneExecRequest struct {
 	// wrong TID. 0 = non-vfork path (boot).
 	TransientTID int32
 
+	// ParentSID is the shepherd SID of the REAL parent process (the one that
+	// called clone(CLONE_VFORK), e.g. forkexectest). For non-vfork paths this
+	// is 0 (boot / linux delegate itself). DoCloneExecWork passes this as the
+	// child's ParentPID so that EventChildExit reaches the correct shepherd and
+	// wait4 can complete. Distinct from CallerShepherd which is always the linux
+	// delegate (used only for page-table walks and AddChild bookkeeping).
+	ParentSID ShepherdId
+
 	// --- Diagnostics ---
 	Filename []byte // shepherd-name for logging + symbol table cache
 }

@@ -85,6 +85,17 @@ type syscallHandler struct {
 	// parked SyscallRequest (replied to later) plus the original pid/options
 	// so a child exit can re-run reaper.Decide for that waiter.
 	waiters map[waiterKey]wait4Waiter
+
+	// pendingChildFDTs holds the FD tables pre-built for children that have
+	// been fork+exec'd but have not yet made their first syscall. It is
+	// populated by sysExecve after sys.CloneExec() succeeds (keyed by child
+	// SID = child PID) and consumed by getShepherd() on the child's first
+	// contact. Protected by mu (the same lock that guards shepherds).
+	//
+	// This is the MAZ-63 Gap-1 fix: without it, getShepherd creates a fresh
+	// empty table for the child, losing the parent's open FDs (including the
+	// errpipe write-end that os/exec.Run() waits on for EOF).
+	pendingChildFDTs map[int16]*fdtable.Table
 }
 
 // waiterKey identifies a single parked wait4 caller thread. A thread blocks on
@@ -105,15 +116,16 @@ type wait4Waiter struct {
 
 func newSyscallHandler(fs fsclient.FSClient) *syscallHandler {
 	return &syscallHandler{
-		shepherds:      make(map[int16]*ShepherdFilesystemData),
-		flocks:         newFlockTable(),
-		fs:             fs,
-		cache:          newPageCache(),
-		orphanHandles:  make(map[int16]map[uint32]uint32),
-		cloneWindows:   cloneexec.New(),
-		cloneTIDsBySID: make(map[int16]map[int32]struct{}),
-		reaper:         wait.New(),
-		waiters:        make(map[waiterKey]wait4Waiter),
+		shepherds:        make(map[int16]*ShepherdFilesystemData),
+		flocks:           newFlockTable(),
+		fs:               fs,
+		cache:            newPageCache(),
+		orphanHandles:    make(map[int16]map[uint32]uint32),
+		cloneWindows:     cloneexec.New(),
+		cloneTIDsBySID:   make(map[int16]map[int32]struct{}),
+		reaper:           wait.New(),
+		waiters:          make(map[waiterKey]wait4Waiter),
+		pendingChildFDTs: make(map[int16]*fdtable.Table),
 	}
 }
 
@@ -188,9 +200,20 @@ func (h *syscallHandler) getShepherd(sid int16) *ShepherdFilesystemData {
 	defer h.mu.Unlock()
 	s := h.shepherds[sid]
 	if s == nil {
+		// MAZ-63 Gap-1: if sysExecve stashed a pre-built FDT for this child
+		// (parent's table copied + cloexec-swept), use it instead of a fresh
+		// empty table. This gives the child its inherited stdin/stdout/stderr
+		// plus any other FDs the parent had open, with O_CLOEXEC FDs already
+		// closed (so the errpipe write-end is gone and os/exec.Run() unblocks).
+		fdt := h.pendingChildFDTs[sid]
+		if fdt != nil {
+			delete(h.pendingChildFDTs, sid)
+		} else {
+			fdt = fdtable.New()
+		}
 		s = &ShepherdFilesystemData{
 			SID:   sid,
-			FDT:   fdtable.New(),
+			FDT:   fdt,
 			Locks: dlist.New[*flockEntry](),
 		}
 		h.shepherds[sid] = s
@@ -215,8 +238,22 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 
 	h.mu.Lock()
 	s := h.shepherds[sid]
+	pendingFDT := h.pendingChildFDTs[sid]
+	delete(h.pendingChildFDTs, sid)
 	if s == nil {
 		h.mu.Unlock()
+		if pendingFDT != nil {
+			// Child died before its first syscall: close any non-cloexec pipe ends
+			// it inherited (cloexec ends were already swept at exec time). Without
+			// this the shared pipe writer counts stay elevated and read ends waiting
+			// for EOF (e.g. os/exec errpipe) hang forever.
+			pendingFDT.Each(func(_ int, e *fdtable.Entry) bool {
+				if e.Pipe != nil {
+					e.Pipe.Close()
+				}
+				return true
+			})
+		}
 		return
 	}
 	delete(h.shepherds, sid)

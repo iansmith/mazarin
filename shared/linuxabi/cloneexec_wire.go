@@ -73,8 +73,11 @@ const intentOpBytes = 16
 // contiguous params region: a fixed header followed by packed argv, packed
 // envp, the intent ops, the cwd, and the filename. argv/envp are passed
 // already-packed (the marshaler is the terminal consumer of the caller's argv).
+// vforkCallerTID is the kernel TID of the vfork transient thread that issued
+// the execve, and vforkCallerSID is that thread's shepherd SID (the real parent,
+// not the linux delegate). Both are 0 for non-vfork calls.
 // Returns ErrCloneExecArgTooBig if the region would exceed CloneExecArgMax.
-func MarshalCloneExecParams(packedArgv, packedEnvp []byte, intent []IntentOp, cwd, filename []byte) ([]byte, error) {
+func MarshalCloneExecParams(packedArgv, packedEnvp []byte, intent []IntentOp, cwd, filename []byte, vforkCallerTID, vforkCallerSID int16) ([]byte, error) {
 	total := CloneExecParamsHeaderSize + len(packedArgv) + len(packedEnvp) +
 		len(intent)*intentOpBytes + len(cwd) + len(filename)
 	if total > CloneExecArgMax {
@@ -87,7 +90,10 @@ func MarshalCloneExecParams(packedArgv, packedEnvp []byte, intent []IntentOp, cw
 	binary.LittleEndian.PutUint32(out[8:12], uint32(len(intent)))
 	binary.LittleEndian.PutUint32(out[12:16], uint32(len(cwd)))
 	binary.LittleEndian.PutUint32(out[16:20], uint32(len(filename)))
-	// out[20:24] reserved (zero).
+	// [20:22] = vforkCallerTID (int16 LE), [22:24] = vforkCallerSID (int16 LE).
+	binary.LittleEndian.PutUint16(out[20:22], uint16(vforkCallerTID))
+	binary.LittleEndian.PutUint16(out[22:24], uint16(vforkCallerSID))
+
 
 	off := CloneExecParamsHeaderSize
 	off += copy(out[off:], packedArgv)
@@ -104,11 +110,13 @@ func MarshalCloneExecParams(packedArgv, packedEnvp []byte, intent []IntentOp, cw
 // CloneExecParams is the decoded view of a params region. Its byte slices ALIAS
 // the source blob; the caller keeps the blob alive for their lifetime.
 type CloneExecParams struct {
-	Argv     [][]byte
-	Envp     [][]byte
-	Intent   []IntentOp
-	Cwd      []byte
-	Filename []byte
+	Argv           [][]byte
+	Envp           [][]byte
+	Intent         []IntentOp
+	Cwd            []byte
+	Filename       []byte
+	VforkCallerTID int16 // kernel TID of the transient vfork thread, or 0
+	VforkCallerSID int16 // shepherd SID of the real parent (not linux delegate), or 0
 }
 
 // UnmarshalCloneExecParams decodes a params region produced by
@@ -123,6 +131,8 @@ func UnmarshalCloneExecParams(blob []byte) (CloneExecParams, error) {
 	intentCount := int(binary.LittleEndian.Uint32(blob[8:12]))
 	cwdLen := int(binary.LittleEndian.Uint32(blob[12:16]))
 	filenameLen := int(binary.LittleEndian.Uint32(blob[16:20]))
+	vforkCallerTID := int16(binary.LittleEndian.Uint16(blob[20:22]))
+	vforkCallerSID := int16(binary.LittleEndian.Uint16(blob[22:24]))
 
 	off := CloneExecParamsHeaderSize
 	end := off + argvLen + envpLen + intentCount*intentOpBytes + cwdLen + filenameLen
@@ -144,11 +154,13 @@ func UnmarshalCloneExecParams(blob []byte) (CloneExecParams, error) {
 	filename := blob[off : off+filenameLen]
 
 	return CloneExecParams{
-		Argv:     UnpackArgv(argvBlob),
-		Envp:     UnpackArgv(envpBlob),
-		Intent:   intent,
-		Cwd:      cwd,
-		Filename: filename,
+		Argv:           UnpackArgv(argvBlob),
+		Envp:           UnpackArgv(envpBlob),
+		Intent:         intent,
+		Cwd:            cwd,
+		Filename:       filename,
+		VforkCallerTID: vforkCallerTID,
+		VforkCallerSID: vforkCallerSID,
 	}, nil
 }
 

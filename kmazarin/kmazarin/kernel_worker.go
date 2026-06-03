@@ -227,6 +227,7 @@ func wakeVforkParent(transientTID ThreadId, result int64) {
 		klog.Errf("[vfork] no parent linkage for transient tid=0x%x\n", transientTID)
 		return
 	}
+	klog.Criticalf("[VF]", "[VF] waking parent tid=0x%x result=%d\n", parentTID, result)
 	wakeBlockedThread(int32(parentTID), result)
 	clearVforkParent(transientTID)
 }

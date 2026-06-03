@@ -44,3 +44,18 @@ func CloneExec(elfVA uintptr, elfPages, elfBytes int, paramsVA uintptr, paramsPa
 	)
 	return int64(r1)
 }
+
+// ReapVforkTransient tells the kernel to terminate the transient vfork thread
+// with the given TID without resuming it (MAZ-63). Called by the linux
+// shepherd's execve handler after a successful vfork execve so the transient
+// thread never returns to userspace and writes errno=0 to the errpipe.
+// Returns true if the thread was found and reaped (it was a vfork transient),
+// false if the TID was not a vfork transient thread (bare execve path).
+//
+// SVC argument layout:
+//
+//	arg0 = tid (int16 — the transient thread's kernel TID)
+func ReapVforkTransient(tid int16) bool {
+	r1, _, _ := syscall.RawSyscall(mazzy.SysReapVforkTransient, uintptr(tid), 0, 0)
+	return int64(r1) == 0
+}

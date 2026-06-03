@@ -92,7 +92,7 @@ func (h *syscallHandler) sysExecve(req sys.SyscallRequest) {
 	// filename) and stage them into their own mmap region.
 	paramsBlob, perr := linuxabi.MarshalCloneExecParams(
 		linuxabi.PackArgv(ceReq.Argv), linuxabi.PackArgv(ceReq.Envp),
-		ceReq.Intent, ceReq.Cwd, []byte(ceReq.Filename))
+		ceReq.Intent, ceReq.Cwd, []byte(ceReq.Filename), req.CallerTID, req.CallerPID)
 	if perr != nil {
 		munmapStage(elfVA, elfPages)
 		req.Reply(E2BIG)
@@ -113,7 +113,43 @@ func (h *syscallHandler) sysExecve(req sys.SyscallRequest) {
 	munmapStage(elfVA, elfPages)
 	munmapStage(paramsVA, paramsPages)
 
-	// 8. Reply the child PID / negative errno to the parked caller.
+	// 7a. On success: build the child's inherited FD table (parent copy +
+	// cwd + cloexec sweep), stash it for the child's first syscall, and
+	// synchronously register the child in the reaper.
+	//
+	// childFDT is built here (not before step 4) so that pipe.End.Fork()
+	// writer-count increments are only paid on the success path — building
+	// it speculatively and then discarding on ELF-load / mmap failures
+	// would leak pipe writer references, keeping read ends from seeing EOF.
+	//
+	// RegisterChild closes the wait4 race: for vfork, wakeVforkParent fires
+	// inside DoCloneExecWork before sys.CloneExec returns, so the parent can
+	// call wait4 before EventExecComplete is processed. Registering here
+	// (synchronously, before any reply) ensures the reaper already knows
+	// about the child when that wait4 arrives.
+	if ret > 0 {
+		childFDT := fdt.Copy()
+		if len(cwd) > 0 {
+			childFDT.Cwd = string(cwd)
+		}
+		childFDT.CloseCloexecFDs(func(handle uint32) { h.fs.Close(handle) })
+		h.mu.Lock()
+		h.pendingChildFDTs[int16(ret)] = childFDT
+		h.mu.Unlock()
+		h.reaper.RegisterChild(int32(req.CallerPID), int32(ret))
+	}
+
+	// 8. If this was a vfork execve (CallerTID is a transient vfork thread) and it
+	// succeeded, reap the transient thread instead of replying to it. The parent was
+	// already woken by wakeVforkParent inside DoCloneExecWork; the transient must
+	// not return to userspace (it would write errno=0 to the errpipe and confuse
+	// os/exec). On failure we still reply to the transient so it can write the real
+	// errno to the errpipe, letting the parent's cmd.Start() return the correct error.
+	// For bare execves (non-vfork), ReapVforkTransient returns false and we fall
+	// through to req.Reply.
+	if ret > 0 && sys.ReapVforkTransient(req.CallerTID) {
+		return
+	}
 	req.Reply(ret)
 }
 
