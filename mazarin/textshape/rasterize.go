@@ -525,12 +525,14 @@ func computeFontMetricsWithData(face *goFont.Face, scale float32, fontID int32, 
 		asc, desc, gap = ext.Ascender, ext.Descender, ext.LineGap
 	}
 	return FontMetrics{
-		FontID:    fontID,
-		Height:    int32((asc - desc + gap) * scale * 64),
-		Ascent:    int32(asc * scale * 64),
-		Descent:   int32(-desc * scale * 64),
-		XHeight:   int32(face.LineMetric(goFont.XHeight) * scale * 64),
-		CapHeight: int32(face.LineMetric(goFont.CapHeight) * scale * 64),
+		FontID:             fontID,
+		Height:             int32((asc - desc + gap) * scale * 64),
+		Ascent:             int32(asc * scale * 64),
+		Descent:            int32(-desc * scale * 64),
+		XHeight:            int32(face.LineMetric(goFont.XHeight) * scale * 64),
+		CapHeight:          int32(face.LineMetric(goFont.CapHeight) * scale * 64),
+		UnderlinePosition:  int32(face.LineMetric(goFont.UnderlinePosition) * scale * 64),
+		UnderlineThickness: int32(face.LineMetric(goFont.UnderlineThickness) * scale * 64),
 	}
 }
 
