@@ -72,12 +72,14 @@ type OpenFontRequest struct {
 // All metric values use fixed.Int26_6 encoding (int32, 6 fractional bits;
 // divide by 64.0 to get the float value).
 type FontMetrics struct {
-	FontID    int32
-	Height    int32 // line height
-	Ascent    int32 // baseline to top
-	Descent   int32 // baseline to bottom (positive)
-	XHeight   int32 // height of lowercase 'x'
-	CapHeight int32 // height of uppercase letters
+	FontID             int32
+	Height             int32 // line height
+	Ascent             int32 // baseline to top
+	Descent            int32 // baseline to bottom (positive)
+	XHeight            int32 // height of lowercase 'x'
+	CapHeight          int32 // height of uppercase letters
+	UnderlinePosition  int32 // 'post' table; negative = below baseline
+	UnderlineThickness int32 // 'post' table
 }
 
 // GlyphInfo holds per-glyph metrics.
@@ -224,7 +226,7 @@ type ShapedRun struct {
 
 // PositionedGlyph is a glyph with its final pixel position and alpha bitmap.
 type PositionedGlyph struct {
-	X, Y    int32  // pixel position relative to text origin
+	X, Y    int32 // pixel position relative to text origin
 	Width   uint16
 	Height  uint16
 	Alpha   []byte // 8-bit alpha, row-major
