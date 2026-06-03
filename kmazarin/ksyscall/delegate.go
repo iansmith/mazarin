@@ -345,11 +345,28 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataLen = 4096
 		}
 
-	case sysid.Getdents64, sysid.Getcwd:
-		// Output buffer syscalls: handler fills data page, kernel copies back.
-		// Like Read: allocate empty page for handler to fill.
+	case sysid.Getdents64:
+		// getdents64(fd, dirp, count): arg1=dirp (output buf), arg2=count.
 		if arg1 != 0 && arg2 > 0 {
 			count := arg2
+			if count > 4096 {
+				count = 4096
+			}
+			pa, va := allocEmptyDataPage(handlerSID, handlerShepherd)
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = uint32(count)
+		}
+
+	case sysid.Getcwd:
+		// getcwd(buf, size): arg0=buf (output), arg1=size.
+		// Condition was wrong when sharing the Getdents64 case (used arg2 which is
+		// always 0 for getcwd's 2-arg signature, so the page was never allocated).
+		if arg0 != 0 && arg1 > 0 {
+			count := arg1
 			if count > 4096 {
 				count = 4096
 			}
