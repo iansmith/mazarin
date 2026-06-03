@@ -12,6 +12,7 @@ import (
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/util"
+	"mazzy/kmazarin/vfork"
 	"mazzy/shared/constants"
 	"mazzy/shared/ipc"
 	"sync/atomic"
@@ -1931,38 +1932,13 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	return uint64(uintptr(unsafe.Pointer(&thread.Context)))
 }
 
-// vforkParentLinkageEntry records the relationship between a transient child
-// thread spawned by a vfork clone and its suspended parent thread.
-// Used to wake the parent when the child execs or fails.
-//
-// Keyed by transient (child) TID; indexed into vforkParentLinkage array.
-// The table is fixed-size, static allocation, no-heap (nosplit-safe).
-type vforkParentLinkageEntry struct {
-	transientTID ThreadId        // Child's transient TID (lookup key)
-	parentTID    ThreadId        // Parent thread's TID (to wake)
-	reservedPID  proc.ShepherdId // PID reserved at clone time, adopted by execve
-}
-
-// vforkParentLinkage holds the transient→parent linkages for in-flight vforks.
-// Max 16 concurrent vforks per shepherd (conservative bound for boot).
-// Fixed-size, no heap, nosplit-safe.
-var vforkParentLinkage [16]vforkParentLinkageEntry
-var vforkParentLinkageLock uint32 // atomic CAS for vforkParentLinkage updates
-
-// recordVforkParent records a transient-TID → (parent-TID, reserved-PID) linkage.
-// Returns true on success, false if the table is full (vfork count > 16).
+// recordVforkParent records a (parent-TID, reserved-PID) linkage placeholder.
+// BackfillTransientID fills in the transient TID later, once it is allocated.
+// Returns true on success, false if the table is full (>16 concurrent vforks).
 //
 //go:nosplit
-func recordVforkParent(transientTID, parentTID ThreadId, reservedPID proc.ShepherdId) bool {
-	for i := 0; i < len(vforkParentLinkage); i++ {
-		if vforkParentLinkage[i].transientTID == 0 {
-			vforkParentLinkage[i].transientTID = transientTID
-			vforkParentLinkage[i].parentTID = parentTID
-			vforkParentLinkage[i].reservedPID = reservedPID
-			return true
-		}
-	}
-	return false // Table exhausted
+func recordVforkParent(parentTID ThreadId, reservedPID proc.ShepherdId) bool {
+	return vfork.Record(int16(parentTID), reservedPID)
 }
 
 // lookupVforkParent retrieves the parent TID and reserved PID for a transient TID.
@@ -1971,26 +1947,15 @@ func recordVforkParent(transientTID, parentTID ThreadId, reservedPID proc.Shephe
 //go:nosplit
 //go:linkname lookupVforkParent mazzy/kmazarin/ksyscall.lookupVforkParent
 func lookupVforkParent(transientTID ThreadId) (parentTID ThreadId, reservedPID proc.ShepherdId) {
-	for i := 0; i < len(vforkParentLinkage); i++ {
-		if vforkParentLinkage[i].transientTID == transientTID {
-			return vforkParentLinkage[i].parentTID, vforkParentLinkage[i].reservedPID
-		}
-	}
-	return 0, 0
+	p, pid := vfork.Lookup(int16(transientTID))
+	return ThreadId(p), pid
 }
 
 // clearVforkParent clears a transient TID's linkage entry after wake or abort.
 //
 //go:nosplit
 func clearVforkParent(transientTID ThreadId) {
-	for i := 0; i < len(vforkParentLinkage); i++ {
-		if vforkParentLinkage[i].transientTID == transientTID {
-			vforkParentLinkage[i].transientTID = 0
-			vforkParentLinkage[i].parentTID = 0
-			vforkParentLinkage[i].reservedPID = 0
-			return
-		}
-	}
+	vfork.Clear(int16(transientTID))
 }
 
 // ReserveChildPID acquires a shepherd PID from the allocator for the child of a vfork.
@@ -2265,7 +2230,7 @@ func CloneVforkThread(stack, returnAddr, spsr uint64, parentTID ThreadId, reserv
 	// Record vfork parent linkage BEFORE spawning transient thread.
 	// This is critical: if the linkage allocation fails, we abort cleanly
 	// before modifying any thread state.
-	if !recordVforkParent(0, parentTID, reservedPID) {
+	if !recordVforkParent(parentTID, reservedPID) {
 		// Table exhausted — rare, but fail cleanly
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
@@ -2275,7 +2240,7 @@ func CloneVforkThread(stack, returnAddr, spsr uint64, parentTID ThreadId, reserv
 	// Acquire transient thread ID and slot
 	transientTID := threadIdAllocator.Acquire()
 	if transientTID == 0 {
-		clearVforkParent(0)
+		vfork.ClearByParent(int16(parentTID))
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
 		return -11 // EAGAIN — TID allocator exhausted
@@ -2283,7 +2248,7 @@ func CloneVforkThread(stack, returnAddr, spsr uint64, parentTID ThreadId, reserv
 	_, t := threadList.Allocate()
 	if t == nil {
 		threadIdAllocator.Release(transientTID)
-		clearVforkParent(0)
+		vfork.ClearByParent(int16(parentTID))
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
 		return -11 // EAGAIN — thread slot table full
@@ -2320,12 +2285,7 @@ func CloneVforkThread(stack, returnAddr, spsr uint64, parentTID ThreadId, reserv
 	t.CloneNeedsParentRegs = 1 // Copy parent's full registers to transient
 
 	// NOW update the vfork linkage with the transient TID
-	for i := 0; i < len(vforkParentLinkage); i++ {
-		if vforkParentLinkage[i].transientTID == 0 && vforkParentLinkage[i].parentTID == parentTID {
-			vforkParentLinkage[i].transientTID = transientTID
-			break
-		}
-	}
+	vfork.BackfillTransientID(int16(parentTID), int16(transientTID))
 
 	// Suspend the PARENT: mark it as blocked on the child's execve
 	parent.State = ThreadBlockedKernelWork
