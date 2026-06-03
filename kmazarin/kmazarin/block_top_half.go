@@ -61,6 +61,9 @@ func blockTopHalf() {
 		// Async mode: drain engine used ring, push completion events
 		eng := (*virtio.Engine)(unsafe.Pointer(blockEnginePtr))
 		drained := uint32(0)
+		// Hoist ring lookup: stable for the entire batch (IOUringTable doesn't
+		// change during an IRQ handler; MaxIORings=4 scan per completion is waste).
+		_, ioRing := GetIOUringSlotForBlockIRQ()
 
 		for eng.HasUsed() {
 			info := eng.PopUsed()
@@ -105,19 +108,25 @@ func blockTopHalf() {
 
 			atomic.AddUint32(&dbgBlockAsyncEvents, 1)
 
-			// Write completion: io_uring CQ if active, else legacy path.
-			_, ioRing := GetIOUringSlotForBlockIRQ()
+			// Write completion: io_uring CQ if active and not full, else legacy path.
+			cqWritten := false
 			if ioRing != nil {
-				atomic.AddUint32(&dbgBlockCQEWritten, 1)
 				cqTail := ioRing.CQTail
-				cqIdx := cqTail & iouring.CQMask
-				ioRing.CQEntries[cqIdx] = iouring.CQEntry{
-					UserData: meta.userData,
-					Res:      int32(info.UsedLen),
+				cqHead := atomic.LoadUint32(&ioRing.CQHead)
+				if cqTail-cqHead < iouring.CQCapacity {
+					atomic.AddUint32(&dbgBlockCQEWritten, 1)
+					cqIdx := cqTail & iouring.CQMask
+					ioRing.CQEntries[cqIdx] = iouring.CQEntry{
+						UserData: meta.userData,
+						Res:      int32(info.UsedLen),
+					}
+					asm.Dsb()
+					atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
+					cqWritten = true
 				}
-				asm.Dsb()
-				atomic.StoreUint32(&ioRing.CQTail, cqTail+1)
-			} else {
+			}
+			if !cqWritten {
+				// No active CQ, or CQ full: fall back to the legacy completion ring.
 				atomic.AddUint32(&dbgBlockCQEMissed, 1)
 				ev := hid.HIDEvent{
 					Type:  tag,
