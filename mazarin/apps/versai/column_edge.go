@@ -72,43 +72,68 @@ func (c *ColumnEdgeToEdge) ScrollerWidthURI() string {
 	return c.SV.ScrollerWidthURI()
 }
 
-// LayoutChildren assigns Y positions to each child of the Scroller
-// so they stack vertically with 1px gaps. Call this after all children
-// have been added and before the first Draw. Sets VirtualHeight on
-// the Scroller, which flows to MaxScrollY → Scrollbar.Max.
+// LayoutChildren wires each Scroller child's Y as a live constraint so
+// that height changes propagate automatically through the stack:
+//
+//	child[0].Y = 0  (value)
+//	child[i].Y = child[i-1].Y + child[i-1].Height + 1  (constraint)
+//	VirtualHeight  = last.Y + last.Height               (constraint)
+//
+// This replaces the old one-shot imperative assignment. Call this after
+// adding children and again after removing one (DeleteUnitEntry).
+// MaxScrollY and the scrollbar track VirtualHeight through existing
+// constraint wiring in ScrollerVertical — no further updates needed.
 func (c *ColumnEdgeToEdge) LayoutChildren() {
 	children := c.SV.Scroller.GetChildren()
 	if len(children) == 0 {
+		// No children: snap VirtualHeight back to a plain 0 value so the
+		// scroller's fast path doesn't draw phantoms.
+		attr.SwapToValue(c.SV.Scroller.VirtualHeight, int64(0))
 		return
 	}
-	var y int64
-	for i, child := range children {
-		l, ok := child.(mancini.Layouter)
-		if !ok {
-			continue
-		}
-		clh := l.GetLayout()
-		if clh == nil {
-			continue
-		}
-		if i > 0 {
-			prev := children[i-1]
-			if pl, ok := prev.(mancini.Layouter); ok {
-				if plh := pl.GetLayout(); plh != nil {
-					y = plh.Y.Get() + plh.Height.Get() + 1
-				}
+
+	// child[0].Y is always the plain value 0. If it was previously a
+	// constraint (re-layout of a child that used to be at index ≥1), swap it
+	// back to a value; otherwise the cheap Set skips the write when unchanged.
+	if first, ok := children[0].(mancini.Layouter); ok {
+		if flh := first.GetLayout(); flh != nil {
+			flh.X.Set(0)
+			if flh.Y.IsConstraint() {
+				attr.SwapToValue(flh.Y, int64(0))
+			} else {
+				flh.Y.Set(0)
 			}
 		}
-		clh.X.Set(0)
-		clh.Y.Set(y)
 	}
 
-	// Set virtual height to total content height.
+	// For each subsequent child, wire Y as a live constraint derived from
+	// the previous child's Y and Height. SwapToConstraint handles both the
+	// first-time (value → constraint) and re-layout (old constraint →
+	// new constraint) cases.
+	for i := 1; i < len(children); i++ {
+		prevL, prevOK := children[i-1].(mancini.Layouter)
+		curL, curOK := children[i].(mancini.Layouter)
+		if !prevOK || !curOK {
+			continue
+		}
+		prevLH := prevL.GetLayout()
+		curLH := curL.GetLayout()
+		if prevLH == nil || curLH == nil {
+			continue
+		}
+		curLH.X.Set(0)
+		attr.SwapToConstraint(curLH.Y,
+			mancini.ChildAfterI64(prevLH.Y.URI(), prevLH.Height.URI()))
+	}
+
+	// VirtualHeight = last.Y + last.Height — stays live as the last child
+	// resizes (OnHeightChanged fires Height.Set, constraint re-evaluates,
+	// MaxScrollY and the scrollbar Max update automatically).
 	last := children[len(children)-1]
 	if l, ok := last.(mancini.Layouter); ok {
 		if lh := l.GetLayout(); lh != nil {
-			totalH := lh.Y.Get() + lh.Height.Get()
-			c.SV.Scroller.VirtualHeight.Set(totalH)
+			attr.SwapToConstraint(c.SV.Scroller.VirtualHeight,
+				mancini.AddI64(lh.Y.URI(), lh.Height.URI()))
 		}
 	}
 }

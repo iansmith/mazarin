@@ -161,6 +161,23 @@ func SubI64(aURI, bURI string) *vm.Program {
 	return BindStrings(ProgSubDeref, "_a_", aURI, "_b_", bURI)
 }
 
+// AddI64 returns a constraint program that computes aURI + bURI.
+func AddI64(aURI, bURI string) *vm.Program {
+	return AddSubI64(aURI, bURI, constI64(0))
+}
+
+// ChildAfterI64 returns a constraint program for the Y of a child stacked
+// directly below the previous child with a 1-pixel gap:
+//
+//	result = prevYURI + prevHeightURI + 1
+//
+// Used by stacking layouts (e.g. ColumnEdgeToEdge) to keep each child's
+// Y live when its predecessor's height changes.
+func ChildAfterI64(prevYURI, prevHeightURI string) *vm.Program {
+	// AddSubI64 computes a + b - c, so c = -1 yields the +1 gap.
+	return AddSubI64(prevYURI, prevHeightURI, constI64(-1))
+}
+
 // AddSubI64 returns a constraint program that computes aURI + bURI - cURI.
 func AddSubI64(aURI, bURI, cURI string) *vm.Program {
 	return BindStrings(ProgAddSubDeref, "_a_", aURI, "_b_", bURI, "_c_", cURI)
