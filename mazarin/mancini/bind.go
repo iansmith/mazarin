@@ -2,6 +2,7 @@ package mancini
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"mazzy/mazarin/attr"
@@ -161,9 +162,17 @@ func SubI64(aURI, bURI string) *vm.Program {
 	return BindStrings(ProgSubDeref, "_a_", aURI, "_b_", bURI)
 }
 
+// constI64 mints a fresh kernel attr on every call, so AddI64 and
+// ChildAfterI64 — which may run on every LayoutChildren invocation — memoize
+// their constant sentinels, creating each exactly once on first use.
+var (
+	constZeroURI   = sync.OnceValue(func() string { return constI64(0) })
+	constNegOneURI = sync.OnceValue(func() string { return constI64(-1) })
+)
+
 // AddI64 returns a constraint program that computes aURI + bURI.
 func AddI64(aURI, bURI string) *vm.Program {
-	return AddSubI64(aURI, bURI, constI64(0))
+	return AddSubI64(aURI, bURI, constZeroURI())
 }
 
 // ChildAfterI64 returns a constraint program for the Y of a child stacked
@@ -174,8 +183,8 @@ func AddI64(aURI, bURI string) *vm.Program {
 // Used by stacking layouts (e.g. ColumnEdgeToEdge) to keep each child's
 // Y live when its predecessor's height changes.
 func ChildAfterI64(prevYURI, prevHeightURI string) *vm.Program {
-	// AddSubI64 computes a + b - c, so c = -1 yields the +1 gap.
-	return AddSubI64(prevYURI, prevHeightURI, constI64(-1))
+	// AddSubI64 computes a + b - c; passing c = -1 gives prevY + prevH + 1.
+	return AddSubI64(prevYURI, prevHeightURI, constNegOneURI())
 }
 
 // AddSubI64 returns a constraint program that computes aURI + bURI - cURI.
