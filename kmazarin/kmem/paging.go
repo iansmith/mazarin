@@ -357,9 +357,16 @@ func paToVA(pa uintptr) uintptr {
 //
 //go:nosplit
 func cachePTVA(pa, va uintptr) {
-	if ptVACacheSize < len(ptVACache) {
-		ptVACache[ptVACacheSize] = ptVACacheEntry{pa: pa, va: va}
-		ptVACacheSize++
+	// Hoist the global index into a local and compare unsigned so the compiler
+	// can prove the store is in bounds (0 <= n < len) and elide the bounds
+	// check entirely. Indexing the global directly — or comparing signed, which
+	// leaves the n>=0 lower-bound check live — pulls runtime.panicBounds64 into
+	// this nosplit chain and overflows the 792 B exception-stack budget on the
+	// syscallEntry→HandleUserPageFault path.
+	n := ptVACacheSize
+	if uint(n) < uint(len(ptVACache)) {
+		ptVACache[n] = ptVACacheEntry{pa: pa, va: va}
+		ptVACacheSize = n + 1
 	} else {
 		// CACHE FULL - this will cause page table lookup failures!
 		serial.RawUARTPuts("[kmem] WARN: ptVACache FULL!\r\n")

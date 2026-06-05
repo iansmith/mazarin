@@ -168,6 +168,15 @@ TEXT ·GetPC(SB), NOSPLIT, $0-8
 	MOVQ	AX, ret+0(FP)
 	RET
 
+// readELR_EL1 returns the interrupted PC. On ARM64 this reads the ELR_EL1
+// system register; x86_64 has no equivalent register holding the interrupted
+// RIP by the time Go code runs (it lives on the exception/IST stack frame),
+// so this stub returns 0. The sole caller is the [SCHEDLK-VIOLATION] diagnostic,
+// which simply prints PC=0 on amd64 — acceptable for a should-never-fire path.
+TEXT ·readELR_EL1(SB), NOSPLIT|NOFRAME, $0-8
+	MOVQ	$0, ret+0(FP)
+	RET
+
 
 // ============================================================================
 // RunFirstThread - Load context and IRETQ to first thread
