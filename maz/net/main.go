@@ -56,6 +56,7 @@ const (
 )
 
 func main() {
+	sys.MarkShepherdStart("net")
 	fmt.Println("net: up")
 
 	fc := setupFSClient()

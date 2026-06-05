@@ -553,6 +553,7 @@ func MazarinShepherd(injected any) error {
 }
 
 func MazarinMain() {
+	sys.MarkShepherdStart("linux")
 	fmt.Printf("[linux] MazarinMain() entered\n")
 
 	// MAZ-121: pipe2 data-plane boot self-test. Runs first — it is self-contained
