@@ -329,6 +329,13 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	// Frame pointer = SP
 	MOVQ	SP, DI		// DI = frame pointer (first arg for Go calls)
 
+	// Stash the interrupted RIP for readELR_EL1 — the x86 software equivalent of
+	// ARM64's ELR_EL1. Frame offset 128 holds the interrupted PC (CS is at 136,
+	// checked below). AX is free here: its interrupted value is already saved at
+	// 0(SP), and the next user of AX (RDMSR below) reloads it.
+	MOVQ	128(SP), AX	// interrupted RIP from the exception frame
+	MOVQ	AX, ·interruptedRIP(SB)
+
 	// Save FS_BASE — but ONLY when exception came from userspace (CS=0x1B).
 	// Nested kernel exceptions (CS=0x08) must NOT overwrite savedExcFSBase,
 	// because it already holds the user FS_BASE from the outermost exception.
