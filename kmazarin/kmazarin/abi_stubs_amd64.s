@@ -168,13 +168,15 @@ TEXT ·GetPC(SB), NOSPLIT, $0-8
 	MOVQ	AX, ret+0(FP)
 	RET
 
-// readELR_EL1 returns the interrupted PC. On ARM64 this reads the ELR_EL1
-// system register; x86_64 has no equivalent register holding the interrupted
-// RIP by the time Go code runs (it lives on the exception/IST stack frame),
-// so this stub returns 0. The sole caller is the [SCHEDLK-VIOLATION] diagnostic,
-// which simply prints PC=0 on amd64 — acceptable for a should-never-fire path.
+// readELR_EL1 returns the interrupted PC. ARM64 reads the ELR_EL1 system
+// register; x86_64 has no equivalent, so common_exception_entry stashes the
+// interrupted RIP (exception frame offset 128) into ·interruptedRIP on every
+// exception entry. Same semantics as ELR_EL1: holds the most-recent exception's
+// PC, valid until the next exception clobbers it. Used by the [SCHEDLK-VIOLATION]
+// diagnostic to report the PC of whoever held schedulerLock with IRQs enabled.
 TEXT ·readELR_EL1(SB), NOSPLIT|NOFRAME, $0-8
-	MOVQ	$0, ret+0(FP)
+	MOVQ	·interruptedRIP(SB), AX
+	MOVQ	AX, ret+0(FP)
 	RET
 
 

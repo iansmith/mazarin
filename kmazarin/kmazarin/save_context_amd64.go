@@ -10,6 +10,14 @@ import (
 // common_exception_entry saves XMM0-XMM15 on exception entry.
 var xmmSaveArea [256]byte
 
+// interruptedRIP is the x86 software equivalent of ARM64's ELR_EL1 register.
+// common_exception_entry stashes the interrupted RIP (exception frame offset
+// 128) here on EVERY exception entry, so readELR_EL1() can return it from any
+// handler. Like ELR_EL1 it holds the most-recent exception's PC and is valid
+// only until the next exception clobbers it. Global (single-CPU, matching
+// xmmSaveArea above); per-CPU-ize alongside xmmSaveArea when x86 goes SMP.
+var interruptedRIP uint64
+
 // SaveContextFromFrame saves the current thread's context from an x86_64 exception frame.
 //
 // Frame layout (pushed by exception handler):
