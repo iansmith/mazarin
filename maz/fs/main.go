@@ -71,6 +71,7 @@ func (mt *mountTable) getFS(kind mountKind) *ext2.FileSystem {
 
 
 func main() {
+	sys.MarkShepherdStart("fs")
 	fmt.Println("[fs] starting filesystem shepherd")
 
 	// Timing hooks disabled — enable for block I/O debugging.
@@ -337,22 +338,29 @@ func launchShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB, 
 // fs for IPC and rachel for fonts/WM). TOML shepherds launch last since
 // they may need linux's syscall delegation active.
 func bootSequence(fsys *ext2.FileSystem) {
+	// Readiness waits below are PATIENT and NON-FATAL. A slow shepherd (e.g.
+	// linux blocked in an fs read loading the 11 MB linux-ui.maz off a slow
+	// cloud disk) must NOT abort the whole boot — that strands every app
+	// shepherd (maildb, mail, net, ...). The budget is generous, and on
+	// timeout we log and CONTINUE: every app self-gates via WaitForCoreServices,
+	// so launching them is strictly better than abandoning the desktop.
+	const readyBudgetSecs = 180
+
 	// 1. Launch rachel and wait — provides window manager + font service.
 	// Rachel only depends on fs (already ready) for loading fontsvc.maz.
 	launchShepherd(fsys, "rachel", "/rachel.maz", 0, 0)
-	if err := sys.WaitForShepherdReady("rachel", 30); err != nil {
-		sys.UartWriteString("[fs] FATAL: rachel not ready\n")
-		return
+	if err := sys.WaitForShepherdReady("rachel", readyBudgetSecs); err != nil {
+		sys.UartWriteString("[fs] WARN: rachel not ready after wait (" + err.Error() + "); continuing\n")
 	}
 	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
 	// Linux depends on both fs (IPC) and rachel (fonts/WM).
 	launchShepherd(fsys, "linux", "/linux.maz", 0, 0)
 	fmt.Printf("[fs] waiting for linux ready...\n")
-	if err := sys.WaitForShepherdReady("linux", 30); err != nil {
-		sys.UartWriteString("[fs] FATAL: linux not ready: " + err.Error() + "\n")
-		return
+	if err := sys.WaitForShepherdReady("linux", readyBudgetSecs); err != nil {
+		sys.UartWriteString("[fs] WARN: linux not ready after wait (" + err.Error() + "); continuing\n")
+	} else {
+		fmt.Printf("[fs] linux is ready!\n")
 	}
-	fmt.Printf("[fs] linux is ready!\n")
 	// 3. Read startup config and launch remaining application shepherds.
 	fmt.Printf("[fs] reading startup.toml...\n")
 	cfg := readStartupConfig(fsys)

@@ -15,6 +15,7 @@ package mazhost
 import (
 	"fmt"
 	"runtime"
+	"time"
 
 	merror "mazzy/mazarin/error"
 	"mazzy/mazarin/fsclient"
@@ -130,6 +131,7 @@ func loadMazInternal(fc fsclient.FSClient, filename string) (func(), uintptr, *m
 		return nil, 0, merror.ErrInvalidELF.Wrap(fmt.Sprintf("%s: RegisterHost: %v", filename, err))
 	}
 
+	tRead := time.Now()
 	data, err := fc.ReadFile(filename)
 	if err != nil {
 		return nil, 0, merror.ErrFileNotFound.Wrap(fmt.Sprintf("%s: %v", filename, err))
@@ -137,11 +139,19 @@ func loadMazInternal(fc fsclient.FSClient, filename string) (func(), uintptr, *m
 	if len(data) == 0 {
 		return nil, 0, merror.ErrFileNotFound.Wrap(fmt.Sprintf("%s: ReadFile returned 0 bytes", filename))
 	}
+	dRead := time.Since(tRead)
 
+	tOpen := time.Now()
 	h, err := mazdl.OpenBytes(filename, data)
 	if err != nil {
 		return nil, 0, merror.ErrInvalidELF.Wrap(fmt.Sprintf("%s: OpenBytes: %v", filename, err))
 	}
+	dOpen := time.Since(tOpen)
+	// PERF instrumentation: split .maz load into IPC-read vs relocate phases to
+	// locate the ~30s boot stall. Times are captured before printing, so print
+	// latency does not skew them.
+	fmt.Printf("[mazhost] %s: ReadFile=%dms (%d bytes) OpenBytes=%dms\n",
+		filename, dRead.Milliseconds(), len(data), dOpen.Milliseconds())
 
 	entryAddr, err := h.Sym("MazarinMain")
 	if err != nil {
