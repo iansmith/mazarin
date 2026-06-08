@@ -79,3 +79,12 @@ const (
 	SysUnshareFromTarget         = MazzySyscallBase + 70 // 0x1046 - Revoke caller's shared mapping from target shepherd (MAZ-53 Mode 2 Release)
 	SysCloneExec                 = MazzySyscallBase + 71 // 0x1047 - Combined clone+execve: load staged ELF into a fresh child with faithful argv[0]/envp + buffered intent (MAZ-120)
 )
+
+// IOUringEnterPReleased is an arg3 (flags) bit for SysIOUringEnter signaling
+// that the caller released its Go P before blocking (IOUringEnterBlocking, via
+// entersyscallblock). The kernel uses it to suppress the immediate IRQ-return
+// priority-wake switch for this waiter on amd64: fast-resuming a P-released
+// waiter races the Go runtime's P-handoff (handoffp→startm) and corrupts the
+// goroutine's g/SP (morestack-on-g0 / traceback-fail). P-held waiters
+// (IOUringEnter, RawSyscall) keep the fast path. MAZ-135.
+const IOUringEnterPReleased = 1 << 31

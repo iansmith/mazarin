@@ -665,6 +665,14 @@ func simpleMain() {
 		ksyscall.SetShepherdMemLimitMB(kernelCfg.GoMemLimitMB)
 	}
 
+	// MAZ-135 context-marshal value-flow self-test (amd64; no-op arm64). Gated by
+	// config; OFF by default. Drives the real savers with synthetic inputs on a
+	// scratch thread and asserts every ThreadContext field is populated. Self-masks
+	// IRQs around the global swaps; only thread 0 runs here.
+	if kernelCfg.CtxMarshalTest {
+		runContextMarshalSelfTest()
+	}
+
 	// MAZ-108 kmem teardown leak-soak self-test. Gated by config; OFF by
 	// default. Runs before launchEmbeddedFS, so no shepherd threads exist yet
 	// — but CPU IRQs were already enabled earlier in simpleMain (only the

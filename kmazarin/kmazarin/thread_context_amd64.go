@@ -53,6 +53,15 @@ type ThreadContext struct {
 	CS     uint64 // Code segment selector for IRETQ (Ring 0: 0x08, Ring 3: 0x1B)
 	SS     uint64 // Stack segment selector for IRETQ (Ring 0: 0x10, Ring 3: 0x23)
 	XMM    [256]byte // XMM0-XMM15 saved state, 16 bytes each (offset 168)
+	// TLSG (offset 424) is the SECOND home of the Go g on amd64: the value at
+	// the thread's [FS_BASE-8] TLS slot. amd64 keeps g in BOTH R14 and TLS;
+	// `systemstack`'s g0→curg exit transiently restores only TLS (leaving R14
+	// stale), so the two homes can disagree at preempt time. Saving TLSG and
+	// restoring it independently (instead of forcing TLS-g = R14) keeps the
+	// restore faithful and avoids `morestack on g0`. MAZ-135.
+	// IMPORTANT: load_context_and_iretq reads this at offset 424 — keep it the
+	// last field, after XMM, and update the asm if the layout changes.
+	TLSG uint64
 }
 
 // GetGRegister returns the g register (R14 on x86_64).

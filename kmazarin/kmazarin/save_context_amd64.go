@@ -26,6 +26,8 @@ var interruptedRIP uint64
 //	[7]=R8 [8]=R9 [9]=R10 [10]=R11 [11]=R12 [12]=R13 [13]=R14 [14]=R15
 //	[15]=error_code [16]=RIP [17]=CS [18]=RFLAGS [19]=RSP [20]=SS
 //
+// frameaudit:save — must populate every ThreadContext field.
+//
 //go:nosplit
 //go:noinline
 func SaveContextFromFrame(framePtr uintptr) {
@@ -66,8 +68,25 @@ func SaveContextFromFrame(framePtr uintptr) {
 	// value. But when preempting a kernel thread, we need the kernel FSBase.
 	if frame[17] == kernelCS {
 		t.Context.FSBase = kmazarinFSBase
+		// MAZ-135: kernel TLS-g ([kmazarinFSBase-8]) was overwritten by
+		// common_exception_entry with the handler's g, so the interrupted kernel
+		// thread's TLS-g is unrecoverable here. Fall back to R14 (kernel threads
+		// are not the morestack victims).
+		t.Context.TLSG = frame[13]
 	} else {
 		t.Context.FSBase = savedExcFSBase
+		// MAZ-135: capture the SECOND g home — the live user TLS-g at
+		// [user-FS_BASE - 8]. Entry only switched FS_BASE + wrote the KERNEL TLS,
+		// so the USER TLS slot still holds the interrupted thread's g (= curg even
+		// when R14 is the stale g0 of systemstack's exit window). Restoring this
+		// faithfully (instead of forcing TLS-g = R14) is the fix. Ring-0 read of
+		// the user TLS page is safe (SMAP effectively off; the page is mapped — the
+		// thread was using g via it).
+		if savedExcFSBase != 0 {
+			t.Context.TLSG = *(*uint64)(unsafe.Pointer(uintptr(savedExcFSBase - 8)))
+		} else {
+			t.Context.TLSG = frame[13]
+		}
 	}
 	// Copy XMM state from global save area to per-thread context.
 	// common_exception_entry saved XMM0-15 to xmmSaveArea before any Go code
@@ -104,6 +123,8 @@ func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
 // SaveCurrentThreadContext saves the current thread's context from individual x86_64 registers.
 // Called from assembly with all 15 GPRs plus RIP, RFLAGS, and RSP.
 //
+// frameaudit:save — must populate every ThreadContext field.
+//
 //go:nosplit
 func SaveCurrentThreadContext(
 	rax, rbx, rcx, rdx, rsi, rdi, rbp uint64,
@@ -137,6 +158,11 @@ func SaveCurrentThreadContext(
 	// so hardcode kernel segment selectors.
 	t.Context.CS = kernelCS
 	t.Context.SS = kernelSS
+	// MAZ-135: TLSG is the second g home ([FS_BASE-8]). This is a kernel-context
+	// save, so mirror SaveContextFromFrame's kernel-CS branch: the kernel TLS-g
+	// may have been clobbered by common_exception_entry, and kernel threads are
+	// not the morestack victims, so use R14 as the dual-home g.
+	t.Context.TLSG = r14
 	// Copy XMM state from global save area (same as SaveContextFromFrame).
 	copy(t.Context.XMM[:], xmmSaveArea[:])
 }

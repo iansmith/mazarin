@@ -29,6 +29,7 @@
 
 #include "textflag.h"
 #include "go_abi_macros_amd64.h"
+#include "frame_dsl_amd64.h"
 
 // ============================================================================
 // ISR Stubs - each pushes a dummy error code (if needed) and vector number
@@ -602,23 +603,23 @@ pf_skip_fsbase_setup:
 	MOVB	$'0', AX; OUTB
 	MOVB	$'R', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	// threadListData[0].Context.RIP = threadListData + ThreadContextOffset + 120
+	// R12 = &threadListData[0].Context; read fields by symbolic offset
 	MOVQ	·ThreadContextOffset(SB), R13
 	LEAQ	·threadListData(SB), R12
 	ADDQ	R13, R12		// R12 = &threadListData[0].Context
-	MOVQ	120(R12), R15		// Context.RIP
+	FLD(R12, ThreadContext_RIP, R15)	// Context.RIP
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
 	MOVB	$' ', AX; OUTB
 	MOVB	$'S', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	136(R12), R15		// Context.RSP
+	FLD(R12, ThreadContext_RSP, R15)	// Context.RSP
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
 	MOVB	$' ', AX; OUTB
 	MOVB	$'C', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	152(R12), R15		// Context.CS
+	FLD(R12, ThreadContext_CS, R15)		// Context.CS
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
@@ -1039,6 +1040,53 @@ handle_device_irq:
 	MOVQ	$(0xFEE00000 + 0xFFFFFFFF00000000), AX
 	MOVL	$0, 0xB0(AX)		// LAPIC_EOI = 0
 
+	// ====================================================================
+	// MAZ-135: priority-wake fast path. Immediately schedule an io_uring-woken
+	// thread instead of waiting for the next timer quantum. Mirrors
+	// exceptions_arm64.s (priority-wake block) and reuses handle_timer_irq's
+	// kernel-mode guards. The switch is done by ·CheckThreadPreemption (the same
+	// scheduler entry the timer path uses); correctness relies on the faithful
+	// dual-home g restore in load_context_and_iretq (ThreadContext.TLSG).
+	// ====================================================================
+	MOVL	·priorityWakePending(SB), AX
+	TESTL	AX, AX
+	JZ	irq_exception_return
+	MOVL	$0, ·priorityWakePending(SB)		// consume
+	LEAQ	·dbgPWakeChecked(SB), AX
+	INCL	(AX)
+
+	// Kernel-mode guard, identical to the timer path: user mode (CS=0x1B) is
+	// always allowed; kernel mode (CS=0x08) only post-boot, outside a syscall,
+	// and only if CheckKernelGoroutinePreempt does not inject asyncPreempt.
+	CMPQ	136(SP), $0x08				// interrupted CS
+	JNE	device_pwake_allowed			// user mode — allow
+	MOVL	runtime·kmazarinSyscallReady(SB), AX
+	TESTL	AX, AX
+	JZ	irq_exception_return			// early boot — no threads
+	MOVL	·svcDepth(SB), AX
+	TESTL	AX, AX
+	JZ	device_pwake_ksafe
+	LEAQ	·dbgPWakeSVC(SB), AX			// inside a syscall — unsafe
+	INCL	(AX)
+	JMP	irq_exception_return
+device_pwake_ksafe:
+	MOVQ	SP, R13
+	GO_CALL_1_1(·CheckKernelGoroutinePreempt, R13)
+	TESTQ	AX, AX
+	JNZ	irq_exception_return			// asyncPreempt injected — done
+
+device_pwake_allowed:
+	MOVQ	SP, R13
+	GO_CALL_1_1(·CheckThreadPreemption, R13)
+	MOVQ	AX, R12					// new ThreadContext (or 0)
+	TESTQ	R12, R12
+	JZ	device_pwake_noctx
+	LEAQ	·dbgPWakeSwitched(SB), AX
+	INCL	(AX)
+	JMP	load_context_and_iretq
+device_pwake_noctx:
+	LEAQ	·dbgPWakeNoCtx(SB), AX
+	INCL	(AX)
 	JMP	irq_exception_return
 
 handle_generic_irq:
@@ -1494,8 +1542,9 @@ eret_rip_ok:
 // ============================================================================
 // R12 = pointer to ThreadContext
 load_context_and_iretq:
+	// FRAME-RESTORE-BEGIN load-context-iretq
 	// Validate CS from context before building IRETQ frame
-	MOVQ	152(R12), R13		// CS from context
+	FLD(R12, ThreadContext_CS, R13)
 	CMPQ	R13, $0x08		// kernelCS
 	JE	cs_valid
 	CMPQ	R13, $0x1B		// userCS
@@ -1552,7 +1601,7 @@ cs_valid:
 	// skip BOTH the WRMSR and the TLS sync write. Otherwise the TLS sync
 	// reads the stale FS_BASE from the previous thread and writes g to
 	// a user-space address, corrupting user heap data (allgs corruption).
-	MOVQ	144(R12), AX		// FSBase from ThreadContext
+	FLD(R12, ThreadContext_FSBase, AX)
 	TESTQ	AX, AX
 	JZ	skip_fsbase_and_tls	// FSBase==0 → skip WRMSR AND TLS sync
 	MOVQ	AX, DX
@@ -1560,14 +1609,20 @@ cs_valid:
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	WRMSR				// Restore FS_BASE
 
-	// Sync TLS: write the new thread's g register to the TLS slot.
+	// Sync TLS: write the thread's SAVED TLS-g to the TLS slot.
 	// TLS layout on Linux amd64: g is at FS_BASE - 8 (i.e. FS:-8).
+	// MAZ-135: restore context.TLSG (offset 424) — the g-home as it actually was
+	// at save time — NOT context.R14. amd64 keeps g in two homes (R14 + TLS), and
+	// `systemstack`'s exit can leave R14 stale (=g0) while TLS-g is correct
+	// (=curg). Forcing TLS-g = R14 here would propagate the stale g0 into the TLS
+	// home → `morestack on g0`. Restoring the saved TLS-g keeps both homes
+	// faithful to the captured state (mirrors ARM64's verbatim single-home restore).
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	RDMSR				// EAX=low32, EDX=high32
 	SHLQ	$32, DX
 	ORQ	DX, AX			// RAX = FS_BASE
-	MOVQ	104(R12), DX		// DX = new g (context.R14)
-	MOVQ	DX, -8(AX)		// Write g to TLS slot
+	FLD(R12, ThreadContext_TLSG, DX)	// DX = saved TLS-g (ctx.TLSG, the faithful dual-home restore)
+	MOVQ	DX, -8(AX)		// Write saved TLS-g to TLS slot
 skip_fsbase_and_tls:
 
 	// Use the context's RSP to build the IRETQ frame
@@ -1575,8 +1630,8 @@ skip_fsbase_and_tls:
 	// For now, just build on current stack after adjusting.
 
 	// Clear the frame and build fresh IRETQ frame
-	MOVQ	136(R12), AX		// new RSP
-	MOVQ	128(R12), BX		// new RFLAGS
+	FLD(R12, ThreadContext_RSP, AX)		// new RSP
+	FLD(R12, ThreadContext_RFLAGS, BX)	// new RFLAGS
 	// Force IF=1 in RFLAGS for threads restored after boot.
 	// During early boot (kmazarinSyscallReady=0), threads inherit IF=0 to
 	// prevent APIC timer interrupts before IDT/LAPIC are ready. After boot,
@@ -1584,7 +1639,7 @@ skip_fsbase_and_tls:
 	// works. Without this, kernel clone children (sysmon, templateThread)
 	// created during init with IF=0 run forever without timer interrupts,
 	// starving thread 0 and halting the system.
-	MOVQ	152(R12), R13		// CS from context
+	FLD(R12, ThreadContext_CS, R13)		// CS from context
 	CMPQ	R13, $0x1B		// userCS?
 	JE	rflags_force_if		// User thread: always force IF=1
 	// Kernel thread: force IF=1 only after boot
@@ -1594,7 +1649,7 @@ skip_fsbase_and_tls:
 rflags_force_if:
 	ORQ	$0x200, BX		// Force IF=1
 rflags_no_fix:
-	MOVQ	120(R12), CX		// new RIP
+	FLD(R12, ThreadContext_RIP, CX)		// new RIP
 
 	// DEBUG: Validate RIP before IRETQ — catch null/low pointers
 	CMPQ	CX, $0x100000
@@ -1658,50 +1713,39 @@ rip_ok:
 	LEAQ	-48(SP), SP		// Make room
 
 	// Build IRETQ frame with CS/SS from ThreadContext
-	MOVQ	160(R12), R13		// SS from context (offset 20*8)
+	FLD(R12, ThreadContext_SS, R13)		// SS from context
 	MOVQ	R13, 32(SP)		// SS in IRETQ frame
 	MOVQ	AX, 24(SP)		// RSP
 	MOVQ	BX, 16(SP)		// RFLAGS
-	MOVQ	152(R12), R13		// CS from context (offset 19*8)
+	FLD(R12, ThreadContext_CS, R13)		// CS from context
 	MOVQ	R13, 8(SP)		// CS in IRETQ frame
 	MOVQ	CX, 0(SP)		// RIP
 
-	// Restore XMM registers from per-thread ThreadContext.XMM (offset 168).
-	// SaveContextFromFrame copied xmmSaveArea → ThreadContext.XMM when the
-	// thread was last saved, so this restores the correct per-thread XMM state.
-	MOVOU	168(R12), X0
-	MOVOU	184(R12), X1
-	MOVOU	200(R12), X2
-	MOVOU	216(R12), X3
-	MOVOU	232(R12), X4
-	MOVOU	248(R12), X5
-	MOVOU	264(R12), X6
-	MOVOU	280(R12), X7
-	MOVOU	296(R12), X8
-	MOVOU	312(R12), X9
-	MOVOU	328(R12), X10
-	MOVOU	344(R12), X11
-	MOVOU	360(R12), X12
-	MOVOU	376(R12), X13
-	MOVOU	392(R12), X14
-	MOVOU	408(R12), X15
+	// Restore XMM registers from per-thread ctx.XMM. SaveContextFromFrame copied
+	// xmmSaveArea → ctx.XMM when the thread was last saved, so this restores the
+	// correct per-thread XMM state.
+	MOVOU	ThreadContext_XMM+0(R12), X0
+	MOVOU	ThreadContext_XMM+16(R12), X1
+	MOVOU	ThreadContext_XMM+32(R12), X2
+	MOVOU	ThreadContext_XMM+48(R12), X3
+	MOVOU	ThreadContext_XMM+64(R12), X4
+	MOVOU	ThreadContext_XMM+80(R12), X5
+	MOVOU	ThreadContext_XMM+96(R12), X6
+	MOVOU	ThreadContext_XMM+112(R12), X7
+	MOVOU	ThreadContext_XMM+128(R12), X8
+	MOVOU	ThreadContext_XMM+144(R12), X9
+	MOVOU	ThreadContext_XMM+160(R12), X10
+	MOVOU	ThreadContext_XMM+176(R12), X11
+	MOVOU	ThreadContext_XMM+192(R12), X12
+	MOVOU	ThreadContext_XMM+208(R12), X13
+	MOVOU	ThreadContext_XMM+224(R12), X14
+	MOVOU	ThreadContext_XMM+240(R12), X15
 
-	// Load GPRs from context
-	MOVQ	0(R12), AX
-	MOVQ	8(R12), BX
-	MOVQ	16(R12), CX
-	MOVQ	24(R12), DX
-	MOVQ	32(R12), SI
-	MOVQ	40(R12), DI
-	MOVQ	48(R12), BP
-	MOVQ	56(R12), R8
-	MOVQ	64(R12), R9
-	MOVQ	72(R12), R10
-	MOVQ	80(R12), R11
-	MOVQ	96(R12), R13
-	MOVQ	104(R12), R14		// g
-	MOVQ	112(R12), R15
-	MOVQ	88(R12), R12		// Load R12 last
+	// Load GPRs from ctx via the shared CTX_GPRS list; R12 (the base pointer) is
+	// loaded last, outside the list.
+	CTX_GPRS(FLD, R12)
+	FLD(R12, ThreadContext_R12, R12)	// Load R12 last
+	// FRAME-RESTORE-END
 
 	IRETQ
 

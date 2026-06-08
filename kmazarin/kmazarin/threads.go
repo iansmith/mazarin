@@ -453,6 +453,13 @@ type Thread struct {
 	// fast path to reacquire the P immediately (no 100ms futex safety-net delay).
 	// Cleared by the scheduler when the thread is picked.
 	PriorityWoken bool
+
+	// PReleasedWaiter: set at block time when this thread released its Go P
+	// before blocking (entersyscallblock — IOUringEnterBlocking / RecvWithRing).
+	// On amd64 the wake paths suppress the immediate IRQ-return priority-wake
+	// switch for such waiters: fast-resuming a P-released thread races the Go
+	// runtime's P-handoff and corrupts g/SP (morestack-on-g0). MAZ-135.
+	PReleasedWaiter bool
 }
 
 // Thread struct field offsets for assembly access.
