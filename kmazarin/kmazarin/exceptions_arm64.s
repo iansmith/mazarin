@@ -8,6 +8,7 @@
 
 #include "textflag.h"
 #include "go_abi_macros_arm64.h"
+#include "frame_dsl_arm64.h"
 
 // UART base for minimal debug output
 // NOTE: Use high-memory UART address since kmazarin runs at high memory
@@ -400,53 +401,11 @@ copy_context_to_frame:
 	// Copy ThreadContext to exception frame, then sync_return will restore it
 	// ThreadContext: X[31], SP, ELR, SPSR
 	// R21 must point to the ThreadContext to load.
-	// Copy X0-X7 (0-64 in ThreadContext, 0-64 in frame)
-	LDP	0(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0(RSP)
-	LDP	16(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0+16(RSP)
-	LDP	32(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0+32(RSP)
-	LDP	48(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0+48(RSP)
-
-	// Copy X8-X27 (64-224 in ThreadContext, 64-224 in frame)
-	LDP	64(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8(RSP)
-	LDP	80(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+16(RSP)
-	LDP	96(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+32(RSP)
-	LDP	112(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+48(RSP)
-	LDP	128(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+64(RSP)
-	LDP	144(R21), (R0, R1)      // x18, x19
-	WORD	$0xf9004be0  // str x0, [sp, #144]  x18
-	WORD	$0xf9004fe1  // str x1, [sp, #152]  x19
-	LDP	160(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+96(RSP)
-	LDP	176(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+112(RSP)
-	LDP	192(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+128(RSP)
-	LDP	208(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+144(RSP)
-
-	// Copy X28-X30 (224-248 in ThreadContext)
-	MOVD	224(R21), R0
-	WORD	$0xf90073e0  // str x0, [sp, #224]  x28
-	LDP	232(R21), (R0, R1)
-	WORD	$0xf90077e0  // str x0, [sp, #232]  x29
-	MOVD	R1, EXC_FRAME_X28+16(RSP)  // x30 at frame offset 248
-
-	// Copy SP_EL0 (248 in ThreadContext)
-	MOVD	248(R21), R0
-	MOVD	R0, EXC_FRAME_SP_EL0(RSP)
-
-	// Copy ELR and SPSR (256, 264 in ThreadContext)
-	LDP	256(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
+	// Copy the whole ThreadContext (R21) into the exception frame via the shared
+	// CTX_RESTORE_TO_FRAME macro; sync_return then restores it.
+	// FRAME-RESTORE-BEGIN ctx-to-frame-svc
+	CTX_RESTORE_TO_FRAME(R21)
+	// FRAME-RESTORE-END
 
 	B	svc_return
 
@@ -1563,53 +1522,10 @@ timer_switch_ok:
 	// Context switch happened - copy new ThreadContext to exception frame
 	// ThreadContext layout: X[31]*8=248 bytes, SP(8), ELR(8), SPSR(8) = 272 bytes total
 
-	// Copy X0-X7 (0-64 in ThreadContext)
-	LDP	0(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0(RSP)
-	LDP	16(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0+16(RSP)
-	LDP	32(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0+32(RSP)
-	LDP	48(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0+48(RSP)
-
-	// Copy X8-X27 (64-224 in ThreadContext)
-	LDP	64(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8(RSP)
-	LDP	80(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+16(RSP)
-	LDP	96(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+32(RSP)
-	LDP	112(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+48(RSP)
-	LDP	128(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+64(RSP)
-	LDP	144(R21), (R0, R1)      // x18, x19
-	WORD	$0xf9004be0  // str x0, [sp, #144]  x18
-	WORD	$0xf9004fe1  // str x1, [sp, #152]  x19
-	LDP	160(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+96(RSP)
-	LDP	176(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+112(RSP)
-	LDP	192(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+128(RSP)
-	LDP	208(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+144(RSP)
-
-	// Copy X28-X30 (224-248 in ThreadContext)
-	MOVD	224(R21), R0
-	WORD	$0xf90073e0  // str x0, [sp, #224]  x28
-	LDP	232(R21), (R0, R1)
-	WORD	$0xf90077e0  // str x0, [sp, #232]  x29
-	MOVD	R1, EXC_FRAME_X28+16(RSP)  // x30 at frame offset 248
-
-	// Copy SP_EL0 (248 in ThreadContext)
-	MOVD	248(R21), R0
-	MOVD	R0, EXC_FRAME_SP_EL0(RSP)
-
-	// Copy ELR and SPSR (256, 264 in ThreadContext)
-	LDP	256(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
+	// Copy the new ThreadContext (R21) into the exception frame via the shared macro.
+	// FRAME-RESTORE-BEGIN ctx-to-frame-switch
+	CTX_RESTORE_TO_FRAME(R21)
+	// FRAME-RESTORE-END
 
 	// Skip async preemption - we already switched threads
 	B	timer_no_preempt
@@ -2076,53 +1992,10 @@ el0_copy_context_to_frame:
 	// Copy ThreadContext to exception frame, then el0_return will restore it
 	// ThreadContext: X[31], SP, ELR, SPSR
 	// R21 must point to the ThreadContext to load.
-	// Copy X0-X7 (0-64 in ThreadContext, 0-64 in frame)
-	LDP	0(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0(RSP)
-	LDP	16(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0+16(RSP)
-	LDP	32(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0+32(RSP)
-	LDP	48(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X0+48(RSP)
-
-	// Copy X8-X27 (64-224 in ThreadContext, 64-224 in frame)
-	LDP	64(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8(RSP)
-	LDP	80(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+16(RSP)
-	LDP	96(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+32(RSP)
-	LDP	112(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+48(RSP)
-	LDP	128(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+64(RSP)
-	LDP	144(R21), (R0, R1)      // x18, x19
-	WORD	$0xf9004be0  // str x0, [sp, #144]  x18
-	WORD	$0xf9004fe1  // str x1, [sp, #152]  x19
-	LDP	160(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+96(RSP)
-	LDP	176(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+112(RSP)
-	LDP	192(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+128(RSP)
-	LDP	208(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_X8+144(RSP)
-
-	// Copy X28-X30 (224-248 in ThreadContext)
-	MOVD	224(R21), R0
-	WORD	$0xf90073e0  // str x0, [sp, #224]  x28
-	LDP	232(R21), (R0, R1)
-	WORD	$0xf90077e0  // str x0, [sp, #232]  x29
-	MOVD	R1, EXC_FRAME_X28+16(RSP)  // x30 at frame offset 248
-
-	// Copy SP_EL0 (248 in ThreadContext)
-	MOVD	248(R21), R0
-	MOVD	R0, EXC_FRAME_SP_EL0(RSP)
-
-	// Copy ELR and SPSR (256, 264 in ThreadContext)
-	LDP	256(R21), (R0, R1)
-	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
+	// Copy the new ThreadContext (R21) into the exception frame via the shared macro.
+	// FRAME-RESTORE-BEGIN ctx-to-frame-el0
+	CTX_RESTORE_TO_FRAME(R21)
+	// FRAME-RESTORE-END
 
 	B	el0_return
 
@@ -2225,20 +2098,21 @@ skip_g_switch_el0_nsc:
 	// Load context and ERET to next thread
 	MOVD	R0, R20  // R20 = context pointer
 
-	// Load ELR_EL1 (offset 256)
-	MOVD	256(R20), R0
+	// FRAME-RESTORE-BEGIN ctx-to-regs-eret
+	// Load ELR_EL1
+	MOVD	ThreadContext_ELR(R20), R0
 	MSR	R0, ELR_EL1
 
-	// Load SPSR_EL1 (offset 264)
-	MOVD	264(R20), R0
+	// Load SPSR_EL1
+	MOVD	ThreadContext_SPSR(R20), R0
 	MSR	R0, SPSR_EL1
 
 	// Switch to EL1h mode to safely set SP_EL0
 	MOVD	$1, R0
 	MSR	R0, SPSel
 
-	// Load SP_EL0 (offset 248)
-	MOVD	248(R20), R0
+	// Load SP_EL0
+	MOVD	ThreadContext_SP(R20), R0
 	MSR	R0, SP_EL0
 
 	// I-cache and TLB invalidation
@@ -2250,29 +2124,30 @@ skip_g_switch_el0_nsc:
 
 	// Load all GPRs from new ThreadContext (same pattern as RunFirstThread)
 	// X28 (g register) first using R0 as temp
-	MOVD	224(R20), R0
+	MOVD	ThreadContext_X+224(R20), R0
 	WORD	$0xAA0003FC  // MOV X28, X0
 
-	LDP	16(R20), (R2, R3)
-	LDP	32(R20), (R4, R5)
-	LDP	48(R20), (R6, R7)
-	LDP	64(R20), (R8, R9)
-	LDP	80(R20), (R10, R11)
-	LDP	96(R20), (R12, R13)
-	LDP	112(R20), (R14, R15)
-	LDP	128(R20), (R16, R17)
-	MOVD	152(R20), R19
-	MOVD	168(R20), R21
-	LDP	176(R20), (R22, R23)
-	LDP	192(R20), (R24, R25)
-	LDP	208(R20), (R26, R27)
-	LDP	232(R20), (R29, R30)
+	LDP	ThreadContext_X+16(R20), (R2, R3)
+	LDP	ThreadContext_X+32(R20), (R4, R5)
+	LDP	ThreadContext_X+48(R20), (R6, R7)
+	LDP	ThreadContext_X+64(R20), (R8, R9)
+	LDP	ThreadContext_X+80(R20), (R10, R11)
+	LDP	ThreadContext_X+96(R20), (R12, R13)
+	LDP	ThreadContext_X+112(R20), (R14, R15)
+	LDP	ThreadContext_X+128(R20), (R16, R17)
+	MOVD	ThreadContext_X+152(R20), R19
+	MOVD	ThreadContext_X+168(R20), R21
+	LDP	ThreadContext_X+176(R20), (R22, R23)
+	LDP	ThreadContext_X+192(R20), (R24, R25)
+	LDP	ThreadContext_X+208(R20), (R26, R27)
+	LDP	ThreadContext_X+232(R20), (R29, R30)
 
 	// Reload R0, R1 (corrupted by X28 load)
-	LDP	0(R20), (R0, R1)
+	LDP	ThreadContext_X+0(R20), (R0, R1)
 
 	// Load R20 LAST
-	MOVD	160(R20), R20
+	MOVD	ThreadContext_X+160(R20), R20
+	// FRAME-RESTORE-END
 
 	// Deallocate exception frame before ERET
 	ADD	$EXC_FRAME_SIZE, RSP

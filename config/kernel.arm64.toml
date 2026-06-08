@@ -49,6 +49,10 @@ kmem_leak_test = false
 # true to re-run the verification.
 clone_exec_race_test = false
 
-# MAZ-135: context-marshal self-test. No-op on arm64 (single g-home, no dual-home
-# hazard); key present for config parity.
+# MAZ-135: context-marshal value-flow self-test at boot. Drives the real arm64
+# SaveContextFromFrame with synthetic sentinel inputs on a scratch thread and
+# asserts every ThreadContext field is populated. OFF by default (like the other
+# boot selftests); the build-time cmd/frameaudit gate is the always-on guard.
+# Verified non-regressive via an HVF boot (boots to GUI, selftest OK). Flip to
+# true to re-validate the arm64 savers after a context change.
 ctx_marshal_test = false

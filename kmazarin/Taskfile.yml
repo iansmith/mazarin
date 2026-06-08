@@ -34,6 +34,7 @@ tasks:
     sources:
       - '**/*.go'
       - '**/*.s'
+      - '**/*.h'
       - '{{.FS_ELF}}'
       - 'config/kernel.arm64.toml'
       - '../shared/**/*.go'
@@ -45,6 +46,10 @@ tasks:
     generates:
       - '{{.KMAZARIN_ELF}}'
     cmds:
+      # MAZ-135 guard: every ThreadContext field must be handled by every arm64
+      # save/restore site (parity with the amd64 gate). See cmd/frameaudit.
+      - '{{.GO}} tool go-echo "Auditing arm64 ThreadContext save/restore consistency (frameaudit)..."'
+      - '{{.GO}} tool frameaudit -struct {{.ROOT_DIR}}/kmazarin/kmazarin/thread_context_arm64.go -prefix ThreadContext -go {{.ROOT_DIR}}/kmazarin/kmazarin/save_context_arm64.go -asm {{.ROOT_DIR}}/kmazarin/kmazarin/exceptions_arm64.s -dsl {{.ROOT_DIR}}/kmazarin/kmazarin/frame_dsl_arm64.h -list CTX_RESTORE_TO_FRAME'
       - '{{.GO}} tool go-echo "Building kmazarin kernel (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.KMAZARIN_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_ELF}} ./kmazarin/kmazarin'
       - '{{.GO}} tool go-echo "Fixing kmazarin ELF for QEMU compatibility..."'
