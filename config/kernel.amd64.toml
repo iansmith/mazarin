@@ -28,3 +28,11 @@ suppress_kernel_serial = false
 # blocked on a separate nosplit-overflow bug, so this flag is plumbed for parity
 # but not currently exercisable on amd64.)
 clone_exec_race_test = false
+
+# MAZ-135: run the context-marshal value-flow self-test at boot. Drives the real
+# SaveContextFromFrame / SaveCurrentThreadContext with synthetic sentinel inputs
+# on a scratch thread and asserts every ThreadContext field is populated. OFF by
+# default (like the other boot selftests); the build-time cmd/frameaudit gate is
+# the always-on guard. Verified non-regressive over 10 GCP KVM boots (10/10 OK,
+# 0 deadlock/morestack); enable to re-validate the savers after a context change.
+ctx_marshal_test = false

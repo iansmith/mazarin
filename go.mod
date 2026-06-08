@@ -180,6 +180,7 @@ tool (
 	mazzy/cmd/compile-constraints
 	mazzy/cmd/elf-diff
 	mazzy/cmd/fix-go-elf
+	mazzy/cmd/frameaudit
 	mazzy/cmd/gen-ast-stubs
 	mazzy/cmd/gen-overlay
 	mazzy/cmd/gen-test-stubs

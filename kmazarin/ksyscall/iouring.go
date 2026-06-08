@@ -143,6 +143,9 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	ringID := int(arg0)
 	toSubmit := uint32(arg1)
 	minComplete := uint32(arg2)
+	// MAZ-135: P-released waiters (IOUringEnterBlocking) flag themselves here so
+	// the kernel suppresses the immediate IRQ-return fast switch for them.
+	pReleased := uint32(arg3)&mazzy.IOUringEnterPReleased != 0
 
 	if ringID < 0 || ringID >= maxIORings() {
 		return -22 // EINVAL
@@ -283,7 +286,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		}
 
 		// Block: find next thread, context-switch.
-		ctxPtr := blockForIOUring(ringID, minComplete, uint64(mazzy.SysIOUringEnter))
+		ctxPtr := blockForIOUring(ringID, minComplete, uint64(mazzy.SysIOUringEnter), pReleased)
 
 		if ctxPtr == ^uintptr(0) {
 			// Sentinel: completions arrived between fast-path check and
@@ -319,7 +322,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 // Bridge functions — reach kmazarin/kmazarin (main package) via go:linkname.
 
 //go:linkname blockForIOUring main.BlockForIOUring
-func blockForIOUring(ringID int, minComplete uint32, syscallNum uint64) uintptr
+func blockForIOUring(ringID int, minComplete uint32, syscallNum uint64, pReleased bool) uintptr
 
 //go:linkname initIOUringTimeout main.InitIOUringTimeout
 func initIOUringTimeout()

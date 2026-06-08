@@ -599,7 +599,13 @@ func KernelWriteToRingFromIRQ(targetSID int16, msg *ipc.UringIPCMsg) {
 			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
 			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 			enqueueReadyPrioritySchedLockHeld(t)
-			atomic.StoreUint32(&priorityWakePending, 1)
+			// MAZ-135: RecvWithRing is always P-released (entersyscallblock).
+			// On amd64 fastWakeAllowedForWaiter returns false → no immediate
+			// switch (the timer resumes it). On ARM64 it returns true (current
+			// behavior). PReleasedWaiter is set true in BlockForUringRecv.
+			if fastWakeAllowedForWaiter(t.PReleasedWaiter) {
+				atomic.StoreUint32(&priorityWakePending, 1)
+			}
 			asm.Dsb()
 		}
 	}
@@ -711,6 +717,7 @@ func BlockForUringRecv(shepherdIdx int, ringIdx int, bufPtr uint64) uintptr {
 	}
 
 	t.State = ThreadBlockedUringRecv
+	t.PReleasedWaiter = true     // MAZ-135: RecvWithRing is always P-released (entersyscallblock)
 	t.SoftIRQSlotArg = bufPtr    // arg0 for rewind
 	t.SoftIRQSyscallNum = 0x1015 // SysUringRecv
 	if shepherdIdx >= 0 && shepherdIdx < proc.MaxLiveShepherds && ringIdx >= 0 && ringIdx < ipc.MaxRingsPerShepherd {

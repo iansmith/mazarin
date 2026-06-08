@@ -34,6 +34,7 @@ tasks:
     sources:
       - '**/*.go'
       - '**/*.s'
+      - '**/*.h'
       - '{{.FS_ELF}}'
       - 'config/kernel.arm64.toml'
       - '../shared/**/*.go'
@@ -45,6 +46,10 @@ tasks:
     generates:
       - '{{.KMAZARIN_ELF}}'
     cmds:
+      # MAZ-135 guard: every ThreadContext field must be handled by every arm64
+      # save/restore site (parity with the amd64 gate). See cmd/frameaudit.
+      - '{{.GO}} tool go-echo "Auditing arm64 ThreadContext save/restore consistency (frameaudit)..."'
+      - '{{.GO}} tool frameaudit -struct {{.ROOT_DIR}}/kmazarin/kmazarin/thread_context_arm64.go -prefix ThreadContext -go {{.ROOT_DIR}}/kmazarin/kmazarin/save_context_arm64.go -asm {{.ROOT_DIR}}/kmazarin/kmazarin/exceptions_arm64.s -dsl {{.ROOT_DIR}}/kmazarin/kmazarin/frame_dsl_arm64.h -list CTX_RESTORE_TO_FRAME'
       - '{{.GO}} tool go-echo "Building kmazarin kernel (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.KMAZARIN_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_ELF}} ./kmazarin/kmazarin'
       - '{{.GO}} tool go-echo "Fixing kmazarin ELF for QEMU compatibility..."'
@@ -62,6 +67,7 @@ tasks:
     sources:
       - '**/*.go'
       - '**/*.s'
+      - '**/*.h'
       - '{{.FS_AMD64_ELF}}'
       - 'config/kernel.amd64.toml'
       - '../shared/**/*.go'
@@ -73,6 +79,11 @@ tasks:
     generates:
       - '{{.KMAZARIN_AMD64_ELF}}'
     cmds:
+      # MAZ-135 guard: every ThreadContext field must be handled by every amd64
+      # save/restore site. Fails the build if a field is added to the struct but
+      # missed by a save func or a FRAME-SAVE/RESTORE asm region. See cmd/frameaudit.
+      - '{{.GO}} tool go-echo "Auditing amd64 ThreadContext save/restore consistency (frameaudit)..."'
+      - '{{.GO}} tool frameaudit -struct {{.ROOT_DIR}}/kmazarin/kmazarin/thread_context_amd64.go -prefix ThreadContext -go {{.ROOT_DIR}}/kmazarin/kmazarin/save_context_amd64.go -asm {{.ROOT_DIR}}/kmazarin/kmazarin/abi_stubs_amd64.s,{{.ROOT_DIR}}/kmazarin/kmazarin/exceptions_amd64.s -dsl {{.ROOT_DIR}}/kmazarin/kmazarin/frame_dsl_amd64.h -list CTX_GPRS'
       - '{{.GO}} tool go-echo "Building kmazarin kernel for x86_64 (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
       - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -tags mazhost -overlay={{.ROOT_DIR}}/{{.KMAZARIN_AMD64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_AMD64_ELF}} ./kmazarin/kmazarin'
       - '{{.GO}} tool go-echo "Fixing kmazarin-amd64 ELF headers..."'

@@ -49,6 +49,10 @@ func IOUringEnter(ringID int, toSubmit, minComplete, flags uint32) (int, error) 
 // this thread waits for completions. Use this for long-duration waits (e.g.
 // waiting for HID input events) where holding the P would freeze the shepherd.
 func IOUringEnterBlocking(ringID int, toSubmit, minComplete, flags uint32) (int, error) {
+	// MAZ-135: mark this as a P-released waiter so the kernel does NOT
+	// immediately switch to it on IRQ return (fast-resuming a thread that
+	// released its P mid-entersyscallblock corrupts the runtime on amd64).
+	flags |= mazzy.IOUringEnterPReleased
 	runtime_entersyscallblock()
 	r1, _, errno := syscall.RawSyscall6(mazzy.SysIOUringEnter,
 		uintptr(ringID),

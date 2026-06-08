@@ -453,6 +453,13 @@ type Thread struct {
 	// fast path to reacquire the P immediately (no 100ms futex safety-net delay).
 	// Cleared by the scheduler when the thread is picked.
 	PriorityWoken bool
+
+	// PReleasedWaiter: set at block time when this thread released its Go P
+	// before blocking (entersyscallblock — IOUringEnterBlocking / RecvWithRing).
+	// On amd64 the wake paths suppress the immediate IRQ-return priority-wake
+	// switch for such waiters: fast-resuming a P-released thread races the Go
+	// runtime's P-handoff and corrupts g/SP (morestack-on-g0). MAZ-135.
+	PReleasedWaiter bool
 }
 
 // Thread struct field offsets for assembly access.
@@ -1440,6 +1447,23 @@ func printEpochStatus() {
 
 	uartDropped := atomic.LoadUint64(&softIRQDroppedBytes)
 
+	// Optional diagnostic lines — emitted only when they carry information, so a
+	// healthy/idle system doesn't repeat empty "svc/delegated:" / "gc cycles:" /
+	// "delegate stuck:" / "uart-ring: dropped=0" lines on every status print.
+	extra := ""
+	if sysIDDelegDelta != "" {
+		extra += fmt.Sprintf("  svc/delegated:%s\n", sysIDDelegDelta)
+	}
+	if gcInfo != "" {
+		extra += fmt.Sprintf("  gc cycles:%s\n", gcInfo)
+	}
+	if delegateInfo != "" {
+		extra += fmt.Sprintf("  delegate stuck:%s\n", delegateInfo)
+	}
+	if uartDropped > 0 {
+		extra += fmt.Sprintf("  uart-ring: dropped=%d\n", uartDropped)
+	}
+
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
 			"  threads: running=%d ready=%d futex=%d sleep=%d softirq=%d uring=%d blk_io=%d delegate=%d\n"+
@@ -1448,10 +1472,7 @@ func printEpochStatus() {
 			"  blk: irqs=%d drained=%d emptyIRQ=%d cqe=%d missed=%d wakeOK=%d wakeLow=%d wakeNW=%d tmoBlkNE=%d emptySnap=%d/raw=%d/last=%d\n"+
 			"  svc/shepherd:%s\n"+
 			"  svc/sysid:%s\n"+
-			"  svc/delegated:%s\n"+
-			"  gc cycles:%s\n"+
-			"  delegate stuck:%s\n"+
-			"  uart-ring: dropped=%d\n",
+			"%s",
 		uptimeSec, totalSVC, actualHz, tcs,
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nIOUring, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
@@ -1459,10 +1480,7 @@ func printEpochStatus() {
 		blkIRQs, blkDrained, blkEmpty, blkCQEW, blkCQEM, wakeOK, wakeLow, wakeNW, tmoBlkNE, blkEmptySnapped, blkEmptyRawIdx, blkEmptyLastIdx,
 		svcDelta,
 		sysIDDelta,
-		sysIDDelegDelta,
-		gcInfo,
-		delegateInfo,
-		uartDropped,
+		extra,
 	)
 }
 
