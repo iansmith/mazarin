@@ -1622,6 +1622,9 @@ cs_valid:
 	SHLQ	$32, DX
 	ORQ	DX, AX			// RAX = FS_BASE
 	FLD(R12, ThreadContext_TLSG, DX)	// DX = saved TLS-g (ctx.TLSG, the faithful dual-home restore)
+	TESTQ	DX, DX
+	JZ	skip_fsbase_and_tls	// g==0 → skip TLS write (user TLS page may not be faulted in yet),
+					// matching RunFirstThread / YieldToReadyThread (CodeRabbit, PR #70)
 	MOVQ	DX, -8(AX)		// Write saved TLS-g to TLS slot
 skip_fsbase_and_tls:
 
