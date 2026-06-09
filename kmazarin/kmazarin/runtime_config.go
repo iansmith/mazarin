@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -286,32 +285,39 @@ func GetKernelBudgetMB() uint64 {
 // linkname interface to maintain compatibility with those packages' local
 // runtimeConfigStruct types.
 type fullConfig struct {
-	KernelVAOffset          uint64
-	KmazarinSize            uint64
-	KmazarinPhysAddr        uint64
-	FramePoolStart          uint64
-	FramePoolEnd            uint64
-	KernelPTPoolStart       uint64
-	KernelPTPoolEnd         uint64
-	KernelHeapStart         uint64
-	KernelHeapEnd           uint64
-	G0StackBottom           uint64
-	G0StackTop              uint64
-	G0StackSize             uint64
-	ExceptionStackBottom    uint64
-	ExceptionStackTop       uint64
-	ExceptionStackSize      uint64
-	FramebufferPhysAddr     uint64
-	FramebufferSize         uint64
-	BootImagePhysAddr       uint64
-	BootImageSize           uint64
-	TotalRAMSize            uint64
-	RAMBaseAddr             uint64
-	UserspaceFramePoolStart uint64
-	UserspaceFramePoolEnd   uint64
-	UserspacePTPoolStart    uint64
-	UserspacePTPoolEnd      uint64
-	DtbPhysAddr             uint64
+	KernelVAOffset       uint64
+	KmazarinSize         uint64
+	KmazarinPhysAddr     uint64
+	FramePoolStart       uint64
+	FramePoolEnd         uint64
+	KernelPTPoolStart    uint64
+	KernelPTPoolEnd      uint64
+	KernelHeapStart      uint64
+	KernelHeapEnd        uint64
+	G0StackBottom        uint64
+	G0StackTop           uint64
+	G0StackSize          uint64
+	ExceptionStackBottom uint64
+	ExceptionStackTop    uint64
+	ExceptionStackSize   uint64
+	// _reservedFramebufferPhysAddr / _reservedFramebufferSize are dead padding
+	// (formerly the static framebuffer phys addr + size). The live framebuffer is
+	// allocated dynamically, sized to the detected display resolution and capped by
+	// framebuffer_max_mb (kernel TOML); nothing reads these slots. They are kept as
+	// padding — NOT deleted — so this struct's field offsets stay byte-identical to
+	// the kmem.FrameConfig / ksyscall.runtimeConfigStruct copies that read the same
+	// memory via //go:linkname. (Same pattern as _reservedAsyncPreempt1/2.)
+	_reservedFramebufferPhysAddr uint64
+	_reservedFramebufferSize     uint64
+	BootImagePhysAddr            uint64
+	BootImageSize                uint64
+	TotalRAMSize                 uint64
+	RAMBaseAddr                  uint64
+	UserspaceFramePoolStart      uint64
+	UserspaceFramePoolEnd        uint64
+	UserspacePTPoolStart         uint64
+	UserspacePTPoolEnd           uint64
+	DtbPhysAddr                  uint64
 }
 
 var cachedFullConfig fullConfig
@@ -351,8 +357,7 @@ func populateFullConfig() {
 	cachedFullConfig.ExceptionStackBottom = uint64(constants.KernelExcStackBottom)
 	cachedFullConfig.ExceptionStackTop = uint64(constants.KernelExcStackTop)
 	cachedFullConfig.ExceptionStackSize = uint64(constants.KernelExcStackSize)
-	cachedFullConfig.FramebufferPhysAddr = uint64(constants.FramebufferPhysAddr)
-	cachedFullConfig.FramebufferSize = uint64(constants.FramebufferSize)
+
 	cachedFullConfig.TotalRAMSize = derivedRAMSize
 	cachedFullConfig.RAMBaseAddr = derivedRAMBase
 	cachedFullConfig.UserspaceFramePoolStart = derivedUserspaceFramePoolStart

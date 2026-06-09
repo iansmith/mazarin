@@ -24,8 +24,7 @@ const (
 // The framebuffer is mapped at a fixed VA for all shepherds to allow UI rendering.
 // Located below the stack region to avoid conflicts.
 const (
-	UserFramebufferVA   = 0x00007FFE00000000 // Fixed VA for framebuffer in shepherd space
-	UserFramebufferSize = 0x2000000          // 32MB - matches FramebufferSize in shared/constants
+	UserFramebufferVA = 0x00007FFE00000000 // Fixed VA for framebuffer in shepherd space
 )
 
 // Constraint shared page mapping constants.
@@ -510,32 +509,32 @@ func kernelBumpAlloc(size uint64) uint64 {
 // runtimeConfigStruct is the full config view returned by main package.
 // Layout MUST match main.fullConfig exactly.
 type runtimeConfigStruct struct {
-	KernelVAOffset          uint64
-	KmazarinSize            uint64
-	KmazarinPhysAddr        uint64
-	FramePoolStart          uint64
-	FramePoolEnd            uint64
-	KernelPTPoolStart       uint64
-	KernelPTPoolEnd         uint64
-	KernelHeapStart         uint64
-	KernelHeapEnd           uint64
-	G0StackBottom           uint64
-	G0StackTop              uint64
-	G0StackSize             uint64
-	ExceptionStackBottom    uint64
-	ExceptionStackTop       uint64
-	ExceptionStackSize      uint64
-	FramebufferPhysAddr     uint64
-	FramebufferSize         uint64
-	BootImagePhysAddr       uint64
-	BootImageSize           uint64
-	TotalRAMSize            uint64
-	RAMBaseAddr             uint64
-	UserspaceFramePoolStart uint64
-	UserspaceFramePoolEnd   uint64
-	UserspacePTPoolStart    uint64
-	UserspacePTPoolEnd      uint64
-	DtbPhysAddr             uint64
+	KernelVAOffset               uint64
+	KmazarinSize                 uint64
+	KmazarinPhysAddr             uint64
+	FramePoolStart               uint64
+	FramePoolEnd                 uint64
+	KernelPTPoolStart            uint64
+	KernelPTPoolEnd              uint64
+	KernelHeapStart              uint64
+	KernelHeapEnd                uint64
+	G0StackBottom                uint64
+	G0StackTop                   uint64
+	G0StackSize                  uint64
+	ExceptionStackBottom         uint64
+	ExceptionStackTop            uint64
+	ExceptionStackSize           uint64
+	_reservedFramebufferPhysAddr uint64 // dead padding; see main.fullConfig
+	_reservedFramebufferSize     uint64 // dead padding; see main.fullConfig
+	BootImagePhysAddr            uint64
+	BootImageSize                uint64
+	TotalRAMSize                 uint64
+	RAMBaseAddr                  uint64
+	UserspaceFramePoolStart      uint64
+	UserspaceFramePoolEnd        uint64
+	UserspacePTPoolStart         uint64
+	UserspacePTPoolEnd           uint64
+	DtbPhysAddr                  uint64
 }
 
 // getRuntimeConfigTyped returns the runtime config with proper type.

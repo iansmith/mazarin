@@ -47,9 +47,9 @@ func Init() bool {
 		dispH = DisplayHeight
 	}
 
-	// Cap to what fits in the framebuffer (with 2x height for scrolling).
-	// 64MB / 4 bytes-per-pixel / 2 (resource height) = max 8,388,608 pixels.
-	maxPixels := uint32(virtioGPUFramebufferSize / 4 / 2)
+	// Cap to what fits under framebuffer_max_mb (with 2x height for scrolling):
+	// maxBytes / 4 bytes-per-pixel / 2 (resource height) pixels.
+	maxPixels := framebufferMaxBytes / 4 / 2
 	for dispW*dispH > maxPixels {
 		// Scale down by 75% until it fits.
 		dispW = dispW * 3 / 4
