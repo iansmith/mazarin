@@ -6,7 +6,11 @@
 
 package main
 
-import "unsafe"
+import (
+	"unsafe"
+
+	"mazzy/shared/bootmem"
+)
 
 // EFI_MP_SERVICES_PROTOCOL GUID: {3FDDA605-A76E-4F46-AD29-12F4531B3D08}
 var mpServicesGUID = [16]byte{
@@ -131,32 +135,29 @@ func queryRAM(hw *HardwareInfo) {
 		return
 	}
 
-	// Walk descriptors to find RAM regions
-	minAddr := uint64(0xFFFFFFFFFFFFFFFF)
-	maxAddr := uint64(0)
+	// Collect usable RAM regions, then take the largest contiguous run. qemu virt
+	// reports contiguous RAM, so this matches the old lowest..highest span; using
+	// the shared helper (with no address cap — ARM64 can map all of RAM) keeps
+	// the two arches' logic identical and still does the right thing should the
+	// firmware ever report a gap. See shared/bootmem.
 	numDescs := mapSize / descSize
-
-	for i := uint64(0); i < numDescs; i++ {
+	n := 0
+	for i := uint64(0); i < numDescs && n < len(ramRegionScratch); i++ {
 		desc := (*efiMemoryDescriptor)(unsafe.Pointer(uintptr(unsafe.Pointer(&memMapQueryBuf[0])) + uintptr(i*descSize)))
 
-		// Count usable RAM types
 		switch desc.Type {
 		case EfiConventionalMemory, EfiBootServicesCode, EfiBootServicesData, EfiLoaderCode, EfiLoaderData:
-			start := desc.PhysicalStart
-			end := start + desc.NumberOfPages*4096
-
-			if start < minAddr {
-				minAddr = start
+			ramRegionScratch[n] = bootmem.Region{
+				Start: desc.PhysicalStart,
+				End:   desc.PhysicalStart + desc.NumberOfPages*4096,
 			}
-			if end > maxAddr {
-				maxAddr = end
-			}
+			n++
 		}
 	}
 
-	if minAddr < maxAddr {
-		hw.RAMBase = minAddr
-		hw.RAMSize = maxAddr - minAddr
+	if base, size, ok := bootmem.LargestContiguousRAM(ramRegionScratch[:n], ^uint64(0)); ok {
+		hw.RAMBase = base
+		hw.RAMSize = size
 	} else {
 		hw.RAMBase = 0x40000000
 		hw.RAMSize = 1024 * 1024 * 1024
