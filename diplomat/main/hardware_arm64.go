@@ -135,11 +135,13 @@ func queryRAM(hw *HardwareInfo) {
 		return
 	}
 
-	// Collect usable RAM regions, then take the largest contiguous run. qemu virt
-	// reports contiguous RAM, so this matches the old lowest..highest span; using
-	// the shared helper (with no address cap — ARM64 can map all of RAM) keeps
-	// the two arches' logic identical and still does the right thing should the
-	// firmware ever report a gap. See shared/bootmem.
+	// Collect usable RAM regions, then take the largest contiguous run below the
+	// linear-map cap. The ARM64 kernel linear map (createDiplomatLinearMap in
+	// kernelvm_arm64.go) clamps mapped PA to linearMapMaxPA (4GB), so RAMSize must
+	// be bounded by that same cap — otherwise it would overstate usable RAM beyond
+	// what is actually mapped and the kernel would derive pools over unmapped
+	// memory. This matches hardware_amd64.go. qemu virt reports contiguous RAM, so
+	// today this also matches the old lowest..highest span. See shared/bootmem.
 	numDescs := mapSize / descSize
 	n := 0
 	for i := uint64(0); i < numDescs && n < len(ramRegionScratch); i++ {
@@ -155,7 +157,7 @@ func queryRAM(hw *HardwareInfo) {
 		}
 	}
 
-	if base, size, ok := bootmem.LargestContiguousRAM(ramRegionScratch[:n], ^uint64(0)); ok {
+	if base, size, ok := bootmem.LargestContiguousRAM(ramRegionScratch[:n], linearMapMaxPA); ok {
 		hw.RAMBase = base
 		hw.RAMSize = size
 	} else {
