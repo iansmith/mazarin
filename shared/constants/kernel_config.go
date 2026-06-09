@@ -61,3 +61,8 @@ type KernelConfig struct {
 // the GPU sizes the actual framebuffer to the detected display resolution and
 // panics if it would exceed the cap.
 const DefaultFramebufferMaxMB = 64
+
+// MaxFramebufferMB is the largest framebuffer_max_mb whose byte size still fits
+// the uint32 GPU cap (framebuffer_max_mb * 1 MiB). A larger value in the TOML
+// would wrap uint32 and silently produce a bogus cap, so the kernel rejects it.
+const MaxFramebufferMB = (1<<32 - 1) / (1024 * 1024) // 4095

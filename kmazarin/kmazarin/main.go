@@ -548,6 +548,14 @@ func simpleMain() {
 	// (framebuffer_max_mb, the single source of truth) is applied before the GPU
 	// allocates its framebuffer below. The config is reused for the rest of boot.
 	kernelCfg := parseKernelConfig()
+	// framebuffer_max_mb is operator-supplied; reject a value that is negative or
+	// large enough that *1MiB would wrap the uint32 cap, rather than silently
+	// installing a bogus (tiny) cap.
+	if mb := kernelCfg.FramebufferMaxMB; mb < 0 || mb > constants.MaxFramebufferMB {
+		klog.Fatalf("BAD FB CAP\n",
+			"[boot] framebuffer_max_mb out of range: %d (0 = default, max %d)\n",
+			mb, constants.MaxFramebufferMB)
+	}
 	gpu.SetFramebufferMaxBytes(uint32(kernelCfg.FramebufferMaxMB) * 1024 * 1024)
 
 	// Initialize VirtIO GPU BEFORE switching exception vectors.

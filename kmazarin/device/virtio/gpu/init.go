@@ -50,7 +50,9 @@ func Init() bool {
 	// Cap to what fits under framebuffer_max_mb (with 2x height for scrolling):
 	// maxBytes / 4 bytes-per-pixel / 2 (resource height) pixels.
 	maxPixels := framebufferMaxBytes / 4 / 2
-	for dispW*dispH > maxPixels {
+	// 64-bit comparison: a hypervisor-reported dispW*dispH can itself overflow
+	// uint32 before the cap loop runs, so widen both sides.
+	for uint64(dispW)*uint64(dispH) > uint64(maxPixels) {
 		// Scale down by 75% until it fits.
 		dispW = dispW * 3 / 4
 		dispH = dispH * 3 / 4
