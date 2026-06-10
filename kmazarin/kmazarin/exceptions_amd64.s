@@ -326,6 +326,68 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	PUSHQ	BX
 	PUSHQ	AX
 
+	// ════════════════════════ IST ROTATION (MAZ-136) ════════════════════════
+	// ‼ MINEFIELD — read this WHOLE banner before touching ANY line of it, and
+	// ‼ read ThreadContext.ISTBase (thread_context_amd64.go) for the context-
+	// ‼ switch half of the scheme. Getting this wrong does not crash here; it
+	// ‼ resurfaces hours later as silent stack corruption far from the cause.
+	//
+	// WHY: #PF, timer, and device vectors are IST1-gated (idt_amd64.go). Raw
+	// IST semantics reload RSP = TSS.IST1 — a FIXED top — on EVERY delivery.
+	// A nested IST-vectored exception (a kernel #PF inside the #PF handler;
+	// an IRQ after IF is re-enabled mid-handler) would restart at that same
+	// top and TRAMPLE the suspended outer chain. That trample was the
+	// MAZ-136 corruption: a RET through an overwritten return-address slot
+	// into dead stack (the deterministic 0xFFFFFFFF44125BF0), and
+	// HandleUserPageFault's spilled pageAddr zeroed mid-flight (run-5 catch).
+	//
+	// SCHEME: every entry through here SUBTRACTS one stride from TSS.IST1;
+	// every normal return ADDS it back (exception_return). The CPU reads the
+	// IST fields from TSS MEMORY at each delivery (LTR caches only the base),
+	// so the next nested delivery lands one stride below this level's start —
+	// underneath every live frame of this chain.
+	//
+	// INVARIANT: TSS.IST1 < the live SP of every running-or-suspended
+	// exception chain, at all times. Induction: each level starts at the
+	// then-current IST1 (IST delivery) or at the live SP (nested-in-place
+	// ring-0 SYSCALL / INT $0x80), immediately reserves its stride, and
+	// physically uses less than one stride (168 B frame + bounded handler
+	// chain ≪ 2 KiB) — so its own growth never reaches the lowered IST1, and
+	// deeper levels inherit the same argument.
+	//
+	// BALANCE: the SUB here pairs with the ADD at exception_return. EVERY
+	// exit from a common_exception_entry frame is exactly one of:
+	//   exception_return IRETQ ......... does the ADD ............ (balanced)
+	//   load_context_and_iretq ......... ABSOLUTE ctx.ISTBase restore (the
+	//                                    abandoned chain's debt is wiped)
+	//   diagnostic halt (KX / !F: / BADIRETQ / BADCTX / ISTOVF) ... (moot)
+	// If you add a NEW exit path you MUST give it one of these treatments,
+	// or the arithmetic leaks one stride per traversal until ISTOVF halts.
+	//
+	// GATE: ist1Floor is 0 until copyGDTToOwnedBuffer publishes the split;
+	// both the SUB and the ADD skip while it is 0. The floor cannot change
+	// between one exception's entry and its return (single CPU; the only
+	// writer is straight-line init code that this exception interrupted —
+	// see ist1Floor's doc), so the two gates can never disagree within one
+	// exception.
+	//
+	// REGISTERS: all GPRs are already saved in the frame above; R12/R13 are
+	// scratch and are reloaded by exception_return's POPs. Flags are dead
+	// (the interrupted RFLAGS lives in the CPU frame).
+	MOVQ	·ist1Floor(SB), R13
+	TESTQ	R13, R13
+	JZ	ist_rotate_done		// split not published yet (early boot): no rotation
+	MOVQ	·tssBuffer+36(SB), R12	// live IST1 (TSS bytes 36-43; unaligned qword is fine on WB memory)
+	SUBQ	$const_istRotateStride, R12
+	CMPQ	R12, R13		// would rotate below ist1Floor → nesting deeper
+	JB	ist_rotate_ovf_tramp	//   than the 8 reserved levels → halt loudly
+	MOVQ	R12, ·tssBuffer+36(SB)	// commit: the next delivery lands one stride lower
+	JMP	ist_rotate_done
+ist_rotate_ovf_tramp:
+	JMP	ist_overflow_dump(SB)	// terminal: prints state, then cli;hlt
+ist_rotate_done:
+	// ═══════════════════════ end IST ROTATION entry ═════════════════════════
+
 	// SP now points to the exception frame
 	// Frame pointer = SP
 	MOVQ	SP, DI		// DI = frame pointer (first arg for Go calls)
@@ -1405,6 +1467,18 @@ irq_exception_return:
 // Exception return - restore GPRs and IRETQ
 // ============================================================================
 exception_return:
+	// IST ROTATION (MAZ-136) — the balancing ADD for the SUB at the top of
+	// common_exception_entry. ‼ Read the banner there BEFORE changing this.
+	// Same gate as the entry side: skip while ist1Floor==0 (the floor cannot
+	// change between this exception's entry and now — see the banner's GATE
+	// paragraph). AX is scratch: the interrupted AX is restored by the POPs
+	// below. ADDQ imm,mem keeps it a single instruction (no torn window).
+	MOVQ	·ist1Floor(SB), AX
+	TESTQ	AX, AX
+	JZ	eret_ist_done
+	ADDQ	$const_istRotateStride, ·tssBuffer+36(SB)	// retire this level's reservation
+eret_ist_done:
+
 	// FS_BASE handling depends on whether we're returning to user or kernel mode.
 	//
 	// User return (CS=0x1B): WRMSR to restore savedExcFSBase (user TLS base).
@@ -1630,6 +1704,33 @@ cs_valid:
 	// Flush TLB
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
+
+	// IST ROTATION (MAZ-136): install the resumed context's TSS.IST1
+	// ABSOLUTELY from ctx.ISTBase. ‼ A context switch bypasses
+	// exception_return, so the entry/return arithmetic cannot balance here —
+	// the absolute restore wipes the abandoned chains' stride debt and, for a
+	// preempted KERNEL chain being resumed, re-establishes exactly the value
+	// its still-pending exception_returns will ADD against (the saver already
+	// retired its own level — see ThreadContext.ISTBase). ISTBase outside
+	// [ist1Floor, ist1Top] (fresh context = 0, or captured before the split
+	// was published) → reset to ist1Top: no live chains exist for such a
+	// context. This is one of THREE sanctioned restore sites (here,
+	// YieldToReadyThread, RunFirstThread) — keep all three identical.
+	// AX/R13 are scratch here: both are reloaded from ctx before IRETQ.
+	MOVQ	·ist1Floor(SB), AX
+	TESTQ	AX, AX
+	JZ	lc_ist_done		// rotation not armed (early boot)
+	FLD(R12, ThreadContext_ISTBase, R13)
+	CMPQ	R13, AX			// ISTBase < ist1Floor → stale or fresh → reset
+	JB	lc_ist_reset
+	MOVQ	·ist1Top(SB), AX
+	CMPQ	R13, AX			// ISTBase <= ist1Top → plausible → install it
+	JBE	lc_ist_install
+lc_ist_reset:
+	MOVQ	·ist1Top(SB), R13	// no live chains for this context: full stack
+lc_ist_install:
+	MOVQ	R13, ·tssBuffer+36(SB)
+lc_ist_done:
 
 	// Restore FS_BASE from context (per-thread TLS base).
 	// Without this, userspace threads that called arch_prctl(ARCH_SET_FS)
@@ -2064,6 +2165,59 @@ TEXT bad_ctx_dump(SB), NOSPLIT|NOFRAME, $0
 bad_ctx_halt:
 	HLT
 	JMP	bad_ctx_halt
+
+// ist_overflow_dump — the IST rotation would lower TSS.IST1 below ist1Floor:
+// exception nesting exceeded the 8 reserved stride levels. Either something
+// is recursively faulting, or a new exit path was added without its balancing
+// ADD / absolute restore (see the IST ROTATION banner in
+// common_exception_entry) and the leak finally hit the floor. Halting here is
+// the POINT — the alternative is the silent stack trample this scheme exists
+// to prevent. Prints vector, svcDepth, the live IST1, the floor, and SP,
+// then halts. Never returns; registers are free.
+TEXT ist_overflow_dump(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+36(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·ist1Floor(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	SP, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+ist_ovf_halt:
+	HLT
+	JMP	ist_ovf_halt
 
 // ============================================================================
 // SYSCALL Entry - entered via x86_64 SYSCALL instruction

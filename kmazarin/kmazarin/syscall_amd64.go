@@ -37,7 +37,47 @@ var gdtrDesc [10]byte
 
 // tssBuffer is the 104-byte Task State Segment for x86_64.
 // Used for RSP0 (kernel stack on Ring 3 → Ring 0 transitions).
+//
+// MINEFIELD (MAZ-136 IST rotation): the IST1 field (bytes 36-43) is NOT a
+// boot-time constant. The exception entry/exit paths in exceptions_amd64.s
+// continuously rotate it (entry: -istRotateStride, return: +istRotateStride)
+// and every context-restore site rewrites it absolutely from ctx.ISTBase.
+// The CPU reads IST fields from this memory at EVERY delivery (LTR caches
+// only the TSS base), which is exactly what makes runtime rotation work.
+// Do not cache, snapshot, or "fix up" tssBuffer[36:44] anywhere else —
+// tssIST1() below is the only sanctioned Go-side reader; all writes go
+// through the assembly rotation and restore paths.
 var tssBuffer [128]byte
+
+// istRotateStride is the per-nesting-level reservation the IST rotation
+// subtracts from TSS.IST1 on every exception entry. It must exceed the worst
+// single-level stack use on the exception stack: the 168-byte CPU+GPR frame
+// plus one handler's Go call chain. Handlers run effectively nosplit-bounded
+// (the 792 B budget; non-nosplit Go in handlers runs against g0's stackguard
+// and never legitimately morestacks), so 2 KiB has ~2.4× headroom over the
+// theoretical bound. Exported to assembly via go_asm.h as
+// $const_istRotateStride — this Go const is the ONLY definition.
+const istRotateStride = 0x800
+
+// ist1Floor / ist1Top bound the IST1 half of the exception stack, published
+// by copyGDTToOwnedBuffer AFTER the TSS split is final. The asm rotation
+// gates on ist1Floor != 0: before publication every exception skips both the
+// entry SUB and the return ADD, so the arithmetic can never go unbalanced
+// across the publication moment. (Single writer, straight-line init code on
+// a single CPU: the floor value one exception sees at entry is necessarily
+// the value it sees at return — copyGDTToOwnedBuffer cannot run in between,
+// because it IS the interrupted code, and a handler that context-switches
+// away instead exits through an absolute ctx.ISTBase restore.)
+var ist1Floor uint64
+var ist1Top uint64
+
+// tssIST1 reads the live TSS.IST1 value. bytes 36-43 are not 8-aligned; x86
+// permits the unaligned qword load on WB memory.
+//
+//go:nosplit
+func tssIST1() uint64 {
+	return *(*uint64)(unsafe.Pointer(&tssBuffer[36]))
+}
 
 // doubleFaultStack is the dedicated IST2 stack for the #DF handler.
 // Separate from IST1 (used by #PF, timer, device IRQs) so that a double
@@ -74,9 +114,14 @@ func copyGDTToOwnedBuffer() {
 	// if both used the same stack region. Bottom half → SYSCALL/RSP0 entry,
 	// top half → IST1 for timer/device interrupts.
 	//
+	// The IST1 half is 16 KiB: the MAZ-136 IST rotation reserves
+	// istRotateStride (2 KiB) per exception-nesting level, so 16 KiB gives 8
+	// levels before the rotation-overflow tripwire halts. (The whole exception
+	// stack is 128 KiB; the RSP0 half keeps the remaining 112 KiB.)
+	//
 	// RSP0 at offset 4-11: kernel stack for Ring 3 → Ring 0 transitions.
 	// Also used by excStackTopForSyscall for SYSCALL instruction entry.
-	excStackTopForSyscall -= 8192 // Bottom half of exception stack
+	excStackTopForSyscall -= 8 * istRotateStride // Bottom half of exception stack
 	rsp0 := excStackTopForSyscall
 	tssBuffer[4] = byte(rsp0)
 	tssBuffer[5] = byte(rsp0 >> 8)
@@ -87,12 +132,20 @@ func copyGDTToOwnedBuffer() {
 	tssBuffer[10] = byte(rsp0 >> 48)
 	tssBuffer[11] = byte(rsp0 >> 56)
 
-	// IST1 at offset 36-43: dedicated stack for timer/device interrupts.
-	// Uses the TOP half of the exception stack (8KB), separate from SYSCALL.
-	// On ARM64/RISC-V, exceptions always switch to SP_EL1/sscratch. On x86_64,
-	// ring 0→ring 0 interrupts push to the current RSP by default. IST forces
-	// the CPU to load a dedicated stack for the interrupt.
-	ist1 := excStackTopForSyscall + 8192 // Top half = original excStackTop
+	// IST1 at offset 36-43: dedicated stack for #PF + timer/device interrupts.
+	// Uses the TOP 16 KiB of the exception stack, separate from SYSCALL.
+	//
+	// MINEFIELD (MAZ-136): raw IST semantics are a trap — the CPU reloads
+	// RSP = IST1 on EVERY delivery, so a second IST-vectored exception while
+	// a chain is live on this half (a nested kernel #PF inside the #PF
+	// handler, or an IRQ after IF is re-enabled mid-handler) would restart
+	// from the SAME fixed top and trample the suspended chain. That was the
+	// MAZ-136 corruption. The rotation in exceptions_amd64.s (see the IST
+	// ROTATION banner there) lowers this field one istRotateStride per live
+	// nesting level so every delivery lands below all live frames. ARM64
+	// needs none of this: SP_EL1 nests naturally (EL1h→EL1h pushes at the
+	// CURRENT SP_EL1) — the value written here is only the rotation's BASE.
+	ist1 := excStackTopForSyscall + 8*istRotateStride // Top half = original excStackTop
 	tssBuffer[36] = byte(ist1)
 	tssBuffer[37] = byte(ist1 >> 8)
 	tssBuffer[38] = byte(ist1 >> 16)
@@ -170,6 +223,14 @@ func copyGDTToOwnedBuffer() {
 
 	writeGDTR(uintptr(unsafe.Pointer(&gdtrDesc[0])))
 	loadTR(0x28)
+
+	// Publish the IST1 half bounds LAST — this arms the IST rotation in
+	// exceptions_amd64.s (it gates on ist1Floor != 0). Everything the
+	// rotation depends on (tssBuffer IST1 bytes, LTR) is final above.
+	// Order matters: write ist1Top before ist1Floor so any exception
+	// delivered between the two stores still sees floor==0 and skips.
+	ist1Top = ist1
+	ist1Floor = rsp0
 }
 
 // SetupSyscallMSRs takes ownership of the GDT (copying from diplomat's buffer

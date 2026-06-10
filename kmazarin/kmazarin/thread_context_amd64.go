@@ -53,15 +53,41 @@ type ThreadContext struct {
 	CS     uint64 // Code segment selector for IRETQ (Ring 0: 0x08, Ring 3: 0x1B)
 	SS     uint64 // Stack segment selector for IRETQ (Ring 0: 0x10, Ring 3: 0x23)
 	XMM    [256]byte // XMM0-XMM15 saved state, 16 bytes each (offset 168)
-	// TLSG (offset 424) is the SECOND home of the Go g on amd64: the value at
+	// TLSG is the SECOND home of the Go g on amd64: the value at
 	// the thread's [FS_BASE-8] TLS slot. amd64 keeps g in BOTH R14 and TLS;
 	// `systemstack`'s g0→curg exit transiently restores only TLS (leaving R14
 	// stale), so the two homes can disagree at preempt time. Saving TLSG and
 	// restoring it independently (instead of forcing TLS-g = R14) keeps the
 	// restore faithful and avoids `morestack on g0`. MAZ-135.
-	// IMPORTANT: load_context_and_iretq reads this at offset 424 — keep it the
-	// last field, after XMM, and update the asm if the layout changes.
+	// (All asm access is via the go_asm.h symbolic offset ThreadContext_TLSG.)
 	TLSG uint64
+	// ISTBase is the TSS.IST1 value to install when this context is resumed —
+	// part of the MAZ-136 IST-rotation scheme (see the IST ROTATION banner in
+	// exceptions_amd64.s for the full invariant and proof).
+	//
+	// ╔══ MINEFIELD ══════════════════════════════════════════════════════════╗
+	// ║ Rotation makes TSS.IST1 a MOVING value: every exception entry lowers   ║
+	// ║ it one stride, every exception_return raises it back. A context switch ║
+	// ║ bypasses exception_return, so the arithmetic would leak one stride per ║
+	// ║ preempt/resume cycle unless the switch restores IST1 ABSOLUTELY. This  ║
+	// ║ field carries that absolute value across the suspend:                  ║
+	// ║                                                                        ║
+	// ║  • Exception-context saves (SaveContextFromFrame /                     ║
+	// ║    SaveCurrentThreadContext) store tssIST1() + istRotateStride — the   ║
+	// ║    "+ stride" RETIRES the saving handler's own rotation level, because ║
+	// ║    load_context_and_iretq skips that handler's exception_return (and   ║
+	// ║    therefore its ADD) when it IRETQs straight to this context.         ║
+	// ║  • The voluntary save (YieldToReadyThread FRAME-SAVE) stores tssIST1() ║
+	// ║    VERBATIM — Yield is not an exception, there is no pending ADD to    ║
+	// ║    retire. The asymmetry is load-bearing; do not "unify" it.           ║
+	// ║  • Restore sites (load_context_and_iretq, YieldToReadyThread restore,  ║
+	// ║    RunFirstThread) install this value into TSS.IST1 only if it lies    ║
+	// ║    inside [ist1Floor, ist1Top]; anything else (fresh context = 0,      ║
+	// ║    value captured before the TSS split was published) resets to        ║
+	// ║    ist1Top. A user context saved at depth 1 stores exactly ist1Top,    ║
+	// ║    so the range check needs no CS discrimination.                      ║
+	// ╚════════════════════════════════════════════════════════════════════════╝
+	ISTBase uint64
 }
 
 // GetGRegister returns the g register (R14 on x86_64).
