@@ -544,6 +544,20 @@ func simpleMain() {
 	// when the framebuffer is allocated at PA 0xFF000000 (~16MB).
 	copyFDTToSafeLocation()
 
+	// Parse the embedded kernel config early so the framebuffer size cap
+	// (framebuffer_max_mb, the single source of truth) is applied before the GPU
+	// allocates its framebuffer below. The config is reused for the rest of boot.
+	kernelCfg := parseKernelConfig()
+	// framebuffer_max_mb is operator-supplied; reject a value that is negative or
+	// large enough that *1MiB would wrap the uint32 cap, rather than silently
+	// installing a bogus (tiny) cap.
+	if mb := kernelCfg.FramebufferMaxMB; mb < 0 || mb > constants.MaxFramebufferMB {
+		klog.Fatalf("BAD FB CAP\n",
+			"[boot] framebuffer_max_mb out of range: %d (0 = default, max %d)\n",
+			mb, constants.MaxFramebufferMB)
+	}
+	gpu.SetFramebufferMaxBytes(uint32(kernelCfg.FramebufferMaxMB) * 1024 * 1024)
+
 	// Initialize VirtIO GPU BEFORE switching exception vectors.
 	// On x86_64, kmazarin's HandlePageFault uses ARM64 PTE format and can't
 	// handle demand paging. By doing GPU init here, heap allocations in
@@ -643,8 +657,8 @@ func simpleMain() {
 
 	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
 
-	// Parse embedded kernel config (no disk I/O — compiled into the binary).
-	kernelCfg := parseKernelConfig()
+	// kernelCfg was parsed earlier (before initVirtIOGPU) so the framebuffer cap
+	// is known before the GPU allocates; reuse it here.
 
 	// Initialize constraint system and publish kernel attributes before
 	// launching shepherds, so they can discover kernel attrs at startup.

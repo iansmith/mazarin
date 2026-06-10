@@ -10,6 +10,13 @@ type KernelConfig struct {
 	GoMemLimitMB   int `toml:"go_mem_limit"`
 	KernelMemLimitMB int `toml:"kernel_mem_limit"`
 
+	// FramebufferMaxMB caps the GPU framebuffer allocation (megabytes). This is
+	// the single source of truth for the framebuffer size bound: the actual
+	// framebuffer is sized to the detected display resolution, and the kernel
+	// panics at boot if that would exceed this cap (rather than over-allocating).
+	// 0 means "use the built-in default" (DefaultFramebufferMaxMB).
+	FramebufferMaxMB int `toml:"framebuffer_max_mb"`
+
 	// GC tuning
 	GCPercentage    int `toml:"gc_percentage"`
 	GCPercentKernel int `toml:"gc_percent_kernel"`
@@ -48,3 +55,14 @@ type KernelConfig struct {
 	// is kept OFF the default boot path; enable in test/CI configs.
 	CtxMarshalTest bool `toml:"ctx_marshal_test"`
 }
+
+// DefaultFramebufferMaxMB is the framebuffer cap (megabytes) used when the kernel
+// TOML does not set framebuffer_max_mb. Single source of truth for the default;
+// the GPU sizes the actual framebuffer to the detected display resolution and
+// panics if it would exceed the cap.
+const DefaultFramebufferMaxMB = 64
+
+// MaxFramebufferMB is the largest framebuffer_max_mb whose byte size still fits
+// the uint32 GPU cap (framebuffer_max_mb * 1 MiB). A larger value in the TOML
+// would wrap uint32 and silently produce a bogus cap, so the kernel rejects it.
+const MaxFramebufferMB = (1<<32 - 1) / (1024 * 1024) // 4095

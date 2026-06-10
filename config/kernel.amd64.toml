@@ -7,6 +7,11 @@ kernel_budget_mb = 32
 go_mem_limit = 24
 kernel_mem_limit = 24
 
+# Framebuffer: single source of truth for the GPU framebuffer size cap (MB). The
+# actual framebuffer is sized to the detected display resolution; the kernel
+# panics at boot if that would exceed this cap.
+framebuffer_max_mb = 64
+
 # GC tuning — Go's stdlib default (100). See kernel.arm64.toml for the
 # full rationale; the short version: 10000 disables routine GC and lets
 # the heap drift large until GOMEMLIMIT kicks in, but by then the

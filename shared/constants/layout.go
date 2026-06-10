@@ -24,10 +24,15 @@ const (
 	BootAddress = 0x40000000
 
 	// Allocation sizes for each component
-	DtbSize                = 0x100000  // 1 MB - Device Tree Blob
-	CardinalAllocationSize = 0xF00000  // 15 MB - Cardinal code+data+bss+heap
-	FramebufferSize        = 0x4000000 // 64 MB - VirtIO GPU framebuffer (supports Retina displays)
-	PageTableSize          = 0x800000  // 8 MB - ARM64 page tables (L0/L1/L2/L3)
+	DtbSize                = 0x100000 // 1 MB - Device Tree Blob
+	CardinalAllocationSize = 0xF00000 // 15 MB - Cardinal code+data+bss+heap
+	// FramebufferSize is a STATIC LAYOUT RESERVATION (load-bearing): it shifts
+	// PageTableStart/KmazarinLoadAddr, i.e. the kernel's physical load address.
+	// It is NOT the GPU framebuffer allocation cap — that is framebuffer_max_mb in
+	// the kernel TOML (see KernelConfig / gpu.SetFramebufferMaxBytes). Changing
+	// this value moves the kernel load address (a coordinated both-arch rebuild).
+	FramebufferSize = 0x4000000 // 64 MB reserved before the kernel in the layout
+	PageTableSize   = 0x800000  // 8 MB - ARM64 page tables (L0/L1/L2/L3)
 )
 
 // ============================================================================
@@ -96,10 +101,6 @@ const (
 	// QEMU fw_cfg device (firmware configuration)
 	FwcfgBase = 0x09020000
 	FwcfgSize = 0x00010000 // 64 KB
-
-	// bochs-display framebuffer (graphics)
-	BochsDisplayBase = 0x10000000
-	BochsDisplaySize = 0x01000000 // 16 MB
 
 	// PCI BAR allocation pool
 	// Used for VirtIO devices and other PCI peripherals
