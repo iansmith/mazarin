@@ -1853,8 +1853,9 @@ func SaveThread0AndYield() uint64 {
 	}
 	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
-	if next.Context.GetPC() == 0 {
-		klog.Criticalf("[BUG] ", "Yield RIP=0 TID=%d\n", next.TID)
+	if badResumeRIP(next) {
+		klog.Criticalf("[BUG] ", "BAD RESUME RIP=%#x TID=%d SP=%#x g=%#x (yield)\n",
+			next.Context.GetPC(), next.TID, next.Context.GetSP(), next.Context.GetGRegister())
 		for {
 			WaitForInterrupt()
 		}
@@ -3885,8 +3886,9 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
-	if next.Context.GetPC() == 0 {
-		klog.Criticalf("[BUG] ", "Pickup RIP=0 TID=%d\n", next.TID)
+	if badResumeRIP(next) {
+		klog.Criticalf("[BUG] ", "BAD RESUME RIP=%#x TID=%d SP=%#x g=%#x (pickup)\n",
+			next.Context.GetPC(), next.TID, next.Context.GetSP(), next.Context.GetGRegister())
 		for {
 			WaitForInterrupt()
 		}
@@ -4305,6 +4307,14 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// exception frame into the NEW thread's context, corrupting it.
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
+
+	if badResumeRIP(newThread) {
+		klog.Criticalf("[BUG] ", "BAD RESUME RIP=%#x TID=%d SP=%#x g=%#x (ctxswitch)\n",
+			newThread.Context.GetPC(), newThread.TID, newThread.Context.GetSP(), newThread.Context.GetGRegister())
+		for {
+			WaitForInterrupt()
+		}
+	}
 
 	return &newThread.Context
 }
