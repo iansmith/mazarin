@@ -197,6 +197,14 @@ var syscallDiagCount uint64
 // so we must do it manually.
 var excStackTopForSyscall uint64
 
+// excStackBottom / excStackTop bound the whole exception stack (both halves
+// of the RSP0/IST1 split). Read by syscallEntry (exceptions_amd64.s): a
+// ring-0 SYSCALL issued from a handler chain already resident on the
+// exception stack must nest at the current SP — resetting to
+// excStackTopForSyscall tramples the suspended chain (MAZ-136, variant 1).
+var excStackBottom uint64
+var excStackTop uint64
+
 // ThreadState represents the state of a thread
 type ThreadState int8
 
@@ -975,9 +983,13 @@ func InitThreads() {
 	// Must happen while FS_BASE still points to kernel TLS, before any userspace runs.
 	platformSaveKernelTLS()
 
-	// Save the exception stack top for SYSCALL entry stack switch.
-	_, _, excTop, _ := platformCPU0Stacks()
+	// Save the exception stack bounds for the SYSCALL entry stack switch.
+	// copyGDTToOwnedBuffer later moves excStackTopForSyscall down to the
+	// RSP0 half; excStackBottom/Top keep covering the whole stack.
+	_, _, excTop, excBottom := platformCPU0Stacks()
 	excStackTopForSyscall = excTop
+	excStackBottom = excBottom
+	excStackTop = excTop
 
 	// Initialize all thread DATA to free state (direct access OK during init)
 	for i := 0; i < MaxThreads; i++ {

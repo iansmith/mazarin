@@ -2086,9 +2086,29 @@ TEXT ·syscallEntry(SB), NOSPLIT|NOFRAME, $0
 	MOVQ	CX, ·syscallScratchRCX(SB)
 	MOVQ	R11, ·syscallScratchR11(SB)
 
-	// Switch to kernel exception stack
+	// Switch to the kernel exception stack — UNLESS the caller is already
+	// on it. A ring-0 SYSCALL (Go runtime nanotime / rawSyscallNoError
+	// fallbacks) issued from a handler chain resident on the exception
+	// stack must NEST at the current SP: resetting to the fixed top
+	// tramples the suspended chain, which then RETs through an overwritten
+	// return-address slot into dead stack — the MAZ-136 deterministic
+	// RIP=0xFFFFFFFF44125BF0 corruption. Callers on other stacks (user,
+	// g0, goroutine) still switch for guaranteed dispatch headroom.
+	// Mirrors ARM64: EL1t→EL1h switches to SP_EL1, EL1h→EL1h nests.
+	// CX is free: the caller's CX is already in syscallScratchRCX and CX
+	// is reloaded from the scratch globals below. Bounds zero until
+	// InitThreads publishes them → both compares fail low → switch (the
+	// pre-fix behavior; SYSCALLs cannot occur that early).
 	MOVQ	SP, ·syscallScratchRSP(SB)
+	MOVQ	·excStackBottom(SB), CX
+	CMPQ	SP, CX
+	JB	syscall_do_switch	// below the exception stack → switch
+	MOVQ	·excStackTop(SB), CX
+	CMPQ	SP, CX
+	JB	syscall_keep_stack	// inside [excStackBottom, excStackTop) → nest in place
+syscall_do_switch:
 	MOVQ	·excStackTopForSyscall(SB), SP
+syscall_keep_stack:
 
 	// Detect Ring 0 vs Ring 3 SYSCALL by checking the caller's RSP.
 	// Kernel stacks use high canonical addresses (bit 63 = 1).
