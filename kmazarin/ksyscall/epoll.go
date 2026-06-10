@@ -6,12 +6,50 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"sync/atomic"
+	"unsafe"
 )
 
 const (
 	magicEpollFd = 0x7ef
 	magicEventFd = 0x7ee
 )
+
+// callerShepherd resolves the syscall caller to its shepherd, mapping the
+// KERNEL caller (PID 0 — proc.CurrentShepherd() returns nil) to
+// proc.KernelShepherd. The kernel's OWN Go runtime does netpoll exactly like
+// a shepherd's (epoll_create1 + eventfd + epoll_ctl at netpollGenericInit,
+// epoll_pwait from findRunnable, eventfd write from netpollBreak) — without
+// this mapping those syscalls saw a nil shepherd, epoll_ctl returned EINVAL,
+// and the kernel runtime threw at its first timer-heap insertion (stock
+// netpoll_epoll.go:40 "epollctl failed") — the MAZ-136 "netpoll family"
+// KERNEL EXIT GROUP, intermittent because the trigger was bgscavenge's
+// memory-pressure-timed sleep. isKernel tells callers to access the
+// caller's pointers DIRECTLY (they are plain kernel VAs) instead of through
+// the user-page-table accessors, which fail on kernel addresses.
+//
+//go:nosplit
+func callerShepherd() (p *proc.Shepherd, isKernel bool) {
+	if p := proc.CurrentShepherd(); p != nil {
+		return p, false
+	}
+	return &proc.KernelShepherd, true
+}
+
+// epollDeliverEvent writes one synthetic EPOLLIN epoll_event {Events=1,
+// Data=data} to the caller's events buffer. Kernel caller → direct store
+// (eventsPtr is a kernel VA); shepherd caller → user-page-table write.
+// EpollEvent layout: Events(uint32 @ +0), Data(uint64 @ +4).
+//
+//go:nosplit
+func epollDeliverEvent(eventsPtr, data uint64, isKernel bool) {
+	if isKernel {
+		*(*uint32)(unsafe.Pointer(uintptr(eventsPtr))) = 1 // EPOLLIN
+		*(*uint64)(unsafe.Pointer(uintptr(eventsPtr + 4))) = data
+		return
+	}
+	kmem.WriteUserUint32(uintptr(eventsPtr), 1) // Events = EPOLLIN
+	kmem.WriteUserUint64(uintptr(eventsPtr+4), data)
+}
 
 // EpollWorkRequest contains the parameters for a goroutine-dispatched epoll_ctl.
 type EpollWorkRequest struct {
@@ -37,10 +75,12 @@ func IsMagicFdSyscall(sysID SysID, fd uint64) bool {
 	if sysID != SysIDRead && sysID != SysIDWrite && sysID != SysIDClose {
 		return false
 	}
-	p := proc.CurrentShepherd()
-	if p == nil {
-		return false
-	}
+	// callerShepherd, NOT CurrentShepherd: the KERNEL's netpollBreak writes
+	// to ITS eventfd, and the post-wake read(eventfd) follows — both must
+	// stay local. With a nil shepherd here they fell through to the
+	// delegation gate and were forwarded to the linux shepherd, which knows
+	// nothing of the magic fds.
+	p, _ := callerShepherd()
 	return (p.EpollFd != 0 && fd == uint64(p.EpollFd)) ||
 		(p.EventFd != 0 && fd == uint64(p.EventFd))
 }
@@ -51,13 +91,11 @@ func IsMagicFdSyscall(sysID SysID, fd uint64) bool {
 //
 //go:nosplit
 func SyscallEpollCreate(_, _, _, _, _, _ uint64) int64 {
-	p := proc.CurrentShepherd()
-	if p != nil {
-		if p.EpollFd != 0 {
-			KernelPanic("SyscallEpollCreate: epoll fd already created for shepherd")
-		}
-		p.EpollFd = magicEpollFd
+	p, _ := callerShepherd()
+	if p.EpollFd != 0 {
+		KernelPanic("SyscallEpollCreate: epoll fd already created for shepherd")
 	}
+	p.EpollFd = magicEpollFd
 	return magicEpollFd
 }
 
@@ -66,10 +104,8 @@ func SyscallEpollCreate(_, _, _, _, _, _ uint64) int64 {
 //
 //go:nosplit
 func SyscallEventfd(_, _, _, _, _, _ uint64) int64 {
-	p := proc.CurrentShepherd()
-	if p != nil {
-		p.EventFd = magicEventFd
-	}
+	p, _ := callerShepherd()
+	p.EventFd = magicEventFd
 	return magicEventFd
 }
 
@@ -88,10 +124,7 @@ func SyscallEventfd(_, _, _, _, _, _ uint64) int64 {
 //go:nosplit
 func SyscallEpollCtl(epfd, op, fd, evtPtr, _, _ uint64) int64 {
 	const EPOLL_CTL_ADD = 1
-	p := proc.CurrentShepherd()
-	if p == nil {
-		return -22 // EINVAL
-	}
+	p, isKernel := callerShepherd()
 	if p.EpollFd != 0 && uint64(p.EpollFd) != epfd {
 		return -9 // EBADF — epfd doesn't match our magic epoll fd
 	}
@@ -100,6 +133,15 @@ func SyscallEpollCtl(epfd, op, fd, evtPtr, _, _ uint64) int64 {
 	// Capture that pointer so we can return it in synthetic epoll events.
 	// EpollEvent layout: Events(uint32 @ offset 0), Data(uint64 @ offset 4).
 	if op == EPOLL_CTL_ADD && p.EventFd != 0 && fd == uint64(p.EventFd) && evtPtr != 0 {
+		if isKernel {
+			// Kernel caller: ev is a kernel object (the runtime's own
+			// netpollGenericInit local) — read it directly. The
+			// user-page-table accessors below FAIL on kernel VAs, which
+			// (with the old nil-shepherd EINVAL) was the MAZ-136
+			// netpoll-family KERNEL EXIT GROUP.
+			p.EventDataPtr = *(*uint64)(unsafe.Pointer(uintptr(evtPtr + 4)))
+			return 0
+		}
 		// Fast path: try to read ev.Data directly.
 		data, ok := kmem.ReadUserUint64(uintptr(evtPtr + 4))
 		if ok {
@@ -170,13 +212,11 @@ func DoEpollCtlWork(req *EpollWorkRequest) int64 {
 //
 //go:nosplit
 func SyscallEpollPwait(epfd, eventsPtr, maxEvents, timeoutMS, _, _ uint64) int64 {
-	p := proc.CurrentShepherd()
+	p, isKernel := callerShepherd()
 
 	// Validate epfd matches the shepherd's epoll instance.
-	if p != nil && p.EpollFd != 0 {
-		if uint64(p.EpollFd) != epfd {
-			return -9 // EBADF
-		}
+	if p.EpollFd != 0 && uint64(p.EpollFd) != epfd {
+		return -9 // EBADF
 	}
 
 	ms := int32(timeoutMS)
@@ -193,10 +233,9 @@ func SyscallEpollPwait(epfd, eventsPtr, maxEvents, timeoutMS, _, _ uint64) int64
 
 	// Non-blocking poll (ms==0): check if an event is pending, return immediately.
 	if ms == 0 {
-		if p != nil && atomic.SwapUint32(&p.EventFdPending, 0) != 0 {
+		if atomic.SwapUint32(&p.EventFdPending, 0) != 0 {
 			if eventsPtr != 0 && maxEvents > 0 && p.EventDataPtr != 0 {
-				kmem.WriteUserUint32(uintptr(eventsPtr), 1) // Events = EPOLLIN
-				kmem.WriteUserUint64(uintptr(eventsPtr+4), p.EventDataPtr)
+				epollDeliverEvent(eventsPtr, p.EventDataPtr, isKernel)
 				return 1
 			}
 			// Can't report event without EventDataPtr — put pending back.
@@ -207,22 +246,19 @@ func SyscallEpollPwait(epfd, eventsPtr, maxEvents, timeoutMS, _, _ uint64) int64
 
 	currentTID := int32(GetCurrentThreadTID())
 
-	if p != nil {
-		// Check if a prior eventfd write is pending. On real Linux, eventfd
-		// writes accumulate in a counter; when the fd is in the epoll set,
-		// epoll_wait returns immediately because the fd is readable.
-		if atomic.SwapUint32(&p.EventFdPending, 0) != 0 {
-			if eventsPtr != 0 && maxEvents > 0 && p.EventDataPtr != 0 {
-				kmem.WriteUserUint32(uintptr(eventsPtr), 1) // Events = EPOLLIN
-				kmem.WriteUserUint64(uintptr(eventsPtr+4), p.EventDataPtr)
-				return 1
-			}
-			// Can't deliver without EventDataPtr — put pending back.
-			atomic.StoreUint32(&p.EventFdPending, 1)
-			return 0
+	// Check if a prior eventfd write is pending. On real Linux, eventfd
+	// writes accumulate in a counter; when the fd is in the epoll set,
+	// epoll_wait returns immediately because the fd is readable.
+	if atomic.SwapUint32(&p.EventFdPending, 0) != 0 {
+		if eventsPtr != 0 && maxEvents > 0 && p.EventDataPtr != 0 {
+			epollDeliverEvent(eventsPtr, p.EventDataPtr, isKernel)
+			return 1
 		}
-		p.NetpollWaiterTID = currentTID
+		// Can't deliver without EventDataPtr — put pending back.
+		atomic.StoreUint32(&p.EventFdPending, 1)
+		return 0
 	}
+	p.NetpollWaiterTID = currentTID
 
 	// Add deadline only for explicit timeouts (ms > 0).
 	// Indefinite blocking (ms < 0) relies on write(eventfd) -> WakeNetpollThread.
@@ -244,17 +280,13 @@ func SyscallEpollPwait(epfd, eventsPtr, maxEvents, timeoutMS, _, _ uint64) int64
 	}
 
 	// Clear the waiter registration on return (we've been woken).
-	if p != nil {
-		p.NetpollWaiterTID = 0
-	}
+	p.NetpollWaiterTID = 0
 
 	// Return 1 synthetic EPOLLIN event pointing to the eventfd.
 	// Stock netpoll_epoll.go checks ev.Data == &netpollEventFd; when it matches,
 	// it calls read(eventfd) and resets netpollWakeSig to 0.
-	// EpollEvent layout: Events(uint32 @ +0), Data(uint64 @ +4).
-	if eventsPtr != 0 && maxEvents > 0 && p != nil && p.EventDataPtr != 0 {
-		kmem.WriteUserUint32(uintptr(eventsPtr), 1) // Events = EPOLLIN
-		kmem.WriteUserUint64(uintptr(eventsPtr+4), p.EventDataPtr)
+	if eventsPtr != 0 && maxEvents > 0 && p.EventDataPtr != 0 {
+		epollDeliverEvent(eventsPtr, p.EventDataPtr, isKernel)
 		return 1
 	}
 	return 0

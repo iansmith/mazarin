@@ -754,6 +754,18 @@ func simpleMain() {
 	ksyscall.StartKernelAttrUpdaters()
 	SetupTopHalfTimeUpdate()
 
+	// Eagerly initialize the KERNEL runtime's netpoll (mirrors the userspace
+	// overlay's netpoll_maz_init.go, which does the same for shepherds).
+	// Without this, netpollGenericInit runs at the first kernel timer-heap
+	// insertion — typically bgscavenge's timed sleep under the app-launch
+	// demand-paging burst — so a failure in the kernel's epoll syscall path
+	// kills the boot at an arbitrary later moment (the MAZ-136 "netpoll
+	// family" KERNEL EXIT GROUP, intermittent because the trigger is
+	// memory-pressure timing). Eager init turns kernel netpoll into a
+	// deterministic boot-time canary: if the kernel's magic-fd epoll path
+	// regresses, the boot dies HERE, loudly, every time.
+	kernelNetpollEagerInit()
+
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Shepherd threads are already running. The timer IRQ
 	// preempts thread 0 and context-switches to shepherd threads naturally.
