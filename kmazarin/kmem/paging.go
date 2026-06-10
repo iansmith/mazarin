@@ -137,6 +137,38 @@ const (
 // Memory layout constants come from runtime configuration (auxv).
 // NO hardcoded addresses - everything is derived at runtime from Cardinal.
 
+// pfDbg* mirror HandleUserPageFault's stack-resident locals into .bss just
+// before zeroPageSlow runs (MAZ-136 trample hunt). If the local pageAddr or
+// framePA differs from its mirror right after the zero, the handler's OWN
+// stack frame was zeroed — i.e. the freshly-allocated frame's scratch
+// mapping aliased the exception stack. See the [PGCLOB] check at the
+// zeroPageSlow call site.
+var (
+	pfDbgPageAddr  uint64
+	pfDbgFramePA   uint64
+	pfDbgScratchVA uint64
+)
+
+// pgClobDiagnostic prints the [PGCLOB] stack-zeroed-under-us evidence.
+// Deliberately NOT nosplit (and noinline): its frame would push the
+// exception-vector nosplit chain over the 792 B budget. Only reached when
+// HandleUserPageFault's own frame was provably corrupted — terminal path.
+//
+//go:noinline
+func pgClobDiagnostic(pageAddrNow, framePANow uint64) {
+	serial.RawUARTPuts("[PGCLOB] stack zeroed under us: pageAddr=0x")
+	serial.RawUARTHex64(pageAddrNow)
+	serial.RawUARTPuts(" was=0x")
+	serial.RawUARTHex64(pfDbgPageAddr)
+	serial.RawUARTPuts(" framePA now=0x")
+	serial.RawUARTHex64(framePANow)
+	serial.RawUARTPuts(" was=0x")
+	serial.RawUARTHex64(pfDbgFramePA)
+	serial.RawUARTPuts(" scratchVA=0x")
+	serial.RawUARTHex64(pfDbgScratchVA)
+	serial.RawUARTPuts("\r\n")
+}
+
 // Globals set during initialization
 // All globals use lazy initialization to avoid relocation issues.
 // The relocation script would corrupt compile-time initialized values
@@ -834,7 +866,28 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	if scratchVA == 0 {
 		return false // FAIL - can't give uninitialized page to userspace
 	}
+	// DEBUG (MAZ-136 trample hunt): mirror this invocation's stack-resident
+	// state into globals BEFORE zeroing. The deterministic !F: signature is
+	// this function's spilled pageAddr reading back as ZERO at the
+	// verify-at-user deref below, with IST-rotation accounting PERFECTLY
+	// balanced — i.e. nothing delivered onto this stack; something ZEROED it.
+	// The prime suspect is zeroPageSlow itself: if framePA aliases the
+	// exception stack's physical page (allocator double-hand-out) or the
+	// scratch mapping resolves to the wrong PA, the next line zeroes OUR OWN
+	// frame. The globals survive (they're in .bss, not on this stack); the
+	// post-zero comparison below catches the clobber in the act.
+	pfDbgPageAddr = uint64(pageAddr)
+	pfDbgFramePA = uint64(framePA)
+	pfDbgScratchVA = uint64(scratchVA)
 	zeroPageSlow(scratchVA)
+	if uint64(pageAddr) != pfDbgPageAddr || uint64(framePA) != pfDbgFramePA {
+		// Non-nosplit diagnostic (repeatFaultDiagnostic pattern): the print
+		// bodies blow the 792 B nosplit chain budget if inlined here. The
+		// kernel is provably corrupt on this path, so the morestack hazard
+		// of leaving the nosplit chain is moot.
+		pgClobDiagnostic(uint64(pageAddr), uint64(framePA))
+		return false // → pf_neither_handled: full register/ISTCT dump + halt
+	}
 
 	// CRITICAL SYNCHRONIZATION SEQUENCE:
 	// 1. Clean the data cache for the entire page to push zeros to memory

@@ -61,7 +61,7 @@ var tssBuffer [128]byte
 // $const_istRotateStride — this Go const is the ONLY definition.
 const istRotateStride = 0x800
 
-// ist1Floor is the bottom of the IST1 half of the exception stack, published
+// ist1Floor / ist1Ceil bound the IST1 half of the exception stack, published
 // by copyGDTToOwnedBuffer AFTER the TSS split is final. The asm rotation
 // gates on ist1Floor != 0: before publication every exception skips the
 // entry SUB, the return ADD, and the switch-retire ADD, so the arithmetic
@@ -69,8 +69,23 @@ const istRotateStride = 0x800
 // straight-line init code on a single CPU: the floor value one exception
 // sees at entry is necessarily the value it sees at exit —
 // copyGDTToOwnedBuffer cannot run in between, because it IS the interrupted
-// code.)
+// code.) ist1Ceil is the cursor's resting-state value (the IST1-half top):
+// the ADD sites tripwire-halt if an ADD would raise the cursor ABOVE it —
+// an over-retire, i.e. some exit path released a still-live reservation
+// (the precursor of an IST-half trample).
 var ist1Floor uint64
+var ist1Ceil uint64
+
+// IST-rotation accounting counters (diagnostic, incremented from the three
+// asm rotation sites). Invariant when healthy:
+// istSubCount − istEretAddCount − istLcAddCount == number of LIVE exception
+// chains. The kernel-mode unhandled-fault dump (pf_neither_handled) prints
+// all three plus the live cursor as "ISTCT ..." so a single over-retire —
+// which lands the cursor exactly AT ist1Ceil and is therefore invisible to
+// the ISTOVR value tripwire — is attributable to its site after the fact.
+var istSubCount uint64
+var istEretAddCount uint64
+var istLcAddCount uint64
 
 // doubleFaultStack is the dedicated IST2 stack for the #DF handler.
 // Separate from IST1 (used by #PF, timer, device IRQs) so that a double
@@ -217,10 +232,11 @@ func copyGDTToOwnedBuffer() {
 	writeGDTR(uintptr(unsafe.Pointer(&gdtrDesc[0])))
 	loadTR(0x28)
 
-	// Publish the IST1 floor LAST — this arms the IST rotation in
-	// exceptions_amd64.s (it gates on ist1Floor != 0). Everything the
-	// rotation depends on (tssBuffer IST1 bytes = the cursor's initial
-	// top value, LTR) is final above.
+	// Publish the IST1 bounds, floor LAST — the floor write arms the IST
+	// rotation in exceptions_amd64.s (it gates on ist1Floor != 0).
+	// Everything the rotation depends on (tssBuffer IST1 bytes = the
+	// cursor's initial top value, LTR) is final above.
+	ist1Ceil = ist1
 	ist1Floor = rsp0
 }
 

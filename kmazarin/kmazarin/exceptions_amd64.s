@@ -406,6 +406,7 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	CMPQ	R12, R13		// would rotate below ist1Floor → nesting deeper
 	JB	ist_rotate_ovf_tramp	//   than the 8 reserved levels → halt loudly
 	MOVQ	R12, ·tssBuffer+36(SB)	// commit: the next delivery lands one stride lower
+	INCQ	·istSubCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
 	JMP	ist_rotate_done
 ist_rotate_ovf_tramp:
 	JMP	ist_overflow_dump(SB)	// terminal: prints state, then cli;hlt
@@ -976,6 +977,41 @@ pf_cs2:	OUTB
 	MOVQ	40(R12), R15
 	CALL	pf_print_hex16(SB)
 
+	// IST-rotation accounting at the moment of death (see ISTCT comment in
+	// syscall_amd64.go): subs, eret ADDs, load_context ADDs, live cursor.
+	// subs−adds must equal the number of LIVE chains; a deficit names the
+	// over-retiring site that an exactly-at-ceiling cursor cannot.
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·istSubCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'E', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·istEretAddCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·istLcAddCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+36(SB), R15
+	CALL	pf_print_hex16(SB)
+
 	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
 	JMP	pf_unhandled_halt
@@ -1500,7 +1536,18 @@ exception_return:
 	MOVQ	·ist1Floor(SB), AX
 	TESTQ	AX, AX
 	JZ	eret_ist_done
-	ADDQ	$const_istRotateStride, ·tssBuffer+36(SB)	// retire this level's reservation
+	MOVQ	·tssBuffer+36(SB), AX
+	ADDQ	$const_istRotateStride, AX	// retire this level's reservation
+	CMPQ	AX, ·ist1Ceil(SB)
+	JA	eret_ist_overshoot	// cursor above the half top = OVER-RETIRE: some
+					//   exit released a still-live reservation — halt
+					//   BEFORE the resulting trample, with context
+	MOVQ	AX, ·tssBuffer+36(SB)
+	INCQ	·istEretAddCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	JMP	eret_ist_done
+eret_ist_overshoot:
+	MOVQ	$1, R14			// site code 1 = exception_return (halting; R14 free)
+	JMP	ist_overshoot_dump(SB)
 eret_ist_done:
 
 	// FS_BASE handling depends on whether we're returning to user or kernel mode.
@@ -1746,7 +1793,16 @@ cs_valid:
 	MOVQ	·ist1Floor(SB), AX
 	TESTQ	AX, AX
 	JZ	lc_ist_done		// rotation not armed (early boot)
-	ADDQ	$const_istRotateStride, ·tssBuffer+36(SB)	// retire the dying level
+	MOVQ	·tssBuffer+36(SB), AX
+	ADDQ	$const_istRotateStride, AX	// retire the dying level
+	CMPQ	AX, ·ist1Ceil(SB)
+	JA	lc_ist_overshoot	// over-retire — see exception_return's twin check
+	MOVQ	AX, ·tssBuffer+36(SB)
+	INCQ	·istLcAddCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	JMP	lc_ist_done
+lc_ist_overshoot:
+	MOVQ	$2, R14			// site code 2 = load_context_and_iretq (halting)
+	JMP	ist_overshoot_dump(SB)
 lc_ist_done:
 
 	// Restore FS_BASE from context (per-thread TLS base).
@@ -2235,6 +2291,65 @@ TEXT ist_overflow_dump(SB), NOSPLIT|NOFRAME, $0
 ist_ovf_halt:
 	HLT
 	JMP	ist_ovf_halt
+
+// ist_overshoot_dump — an IST-rotation ADD would raise the cursor ABOVE the
+// IST1-half top (ist1Ceil): an OVER-RETIRE. Some exit path released a
+// reservation belonging to a still-live chain; the next IST delivery would
+// land on top of that chain (the MAZ-136 trample). Halting here catches the
+// guilty exit in the act, with its site code and vector, BEFORE the trample.
+// In: R14 = site code (1 = exception_return, 2 = load_context_and_iretq).
+// Prints site, vector, svcDepth, the live cursor, the ceiling, and SP, then
+// halts. Never returns; registers are free.
+TEXT ist_overshoot_dump(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	R14, R15		// site code
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+36(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·ist1Ceil(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	SP, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+ist_ovr_halt:
+	HLT
+	JMP	ist_ovr_halt
 
 // ============================================================================
 // SYSCALL Entry - entered via x86_64 SYSCALL instruction
