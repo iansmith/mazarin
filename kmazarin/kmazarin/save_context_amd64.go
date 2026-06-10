@@ -28,6 +28,17 @@ var interruptedRIP uint64
 // per-CPU-ize for SMP. MAZ-135/MAZ-136.
 var savedExcKernelTLSG uint64
 
+// gLooksValid reports whether v is a plausible kernel goroutine pointer: nonzero
+// and low-canonical (bits 63:47 clear). Every kernel g — g0 and heap-allocated
+// g's alike — lives in the low half of the address space, so a high-half or
+// non-canonical value means the captured TLS-g slot held garbage (early boot /
+// clone-child bringup before TLS-g was established) and must not be trusted.
+//
+//go:nosplit
+func gLooksValid(v uint64) bool {
+	return v != 0 && v < 0x0000800000000000
+}
+
 // SaveContextFromFrame saves the current thread's context from an x86_64 exception frame.
 //
 // Frame layout (pushed by exception handler):
@@ -80,12 +91,23 @@ func SaveContextFromFrame(framePtr uintptr) {
 		t.Context.FSBase = kmazarinFSBase
 		// MAZ-135/MAZ-136: the live kernel TLS-g was captured into
 		// savedExcKernelTLSG at the first instructions of common_exception_entry,
-		// before the handler overwrote [kmazarinFSBase-8] with its own g0. Use it
-		// instead of frame R14: in the systemstack exit window R14 is the stale
-		// g0 while the real curg lives only in that TLS slot, and restoring the
-		// stale value scrambles the runtime's g state (GC checkmark failures,
-		// netpoll-init throws, corrupted resume RIPs — the MAZ-136 crash family).
-		t.Context.TLSG = savedExcKernelTLSG
+		// before the handler overwrote [kmazarinFSBase-8] with its own g0. Prefer
+		// it over frame R14: in the systemstack exit window R14 is the stale g0
+		// while the real curg lives only in that TLS slot, and restoring the stale
+		// value scrambles the runtime's g state (GC checkmark failures, netpoll
+		// throws, corrupted resume RIPs — the MAZ-136 crash family).
+		//
+		// BUT the TLS slot is only meaningful once the interrupted kernel code has
+		// established its TLS-g. During early boot and clone-child bringup it holds
+		// garbage (a non-canonical value), and propagating that gives the resumed
+		// thread a garbage g -> #GP the moment the runtime syncs TLS-g into R14.
+		// Fall back to the always-valid frame R14 when the captured slot is not a
+		// plausible kernel g pointer.
+		if gLooksValid(savedExcKernelTLSG) {
+			t.Context.TLSG = savedExcKernelTLSG
+		} else {
+			t.Context.TLSG = frame[13]
+		}
 	} else {
 		t.Context.FSBase = savedExcFSBase
 		// MAZ-135: capture the SECOND g home — the live user TLS-g at
