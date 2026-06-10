@@ -172,7 +172,7 @@ func (s *fsIPCServer) handleConnect(sid int16, req *ipc.FSIPCReqPayload) {
 		dataLen:  int(req.DataLen),
 		respRing: req.RespRing,
 	}
-	fmt.Printf("[fs] IPC connect from SID=%d dataVA=0x%x len=%d respRing=%d\n", sid, req.DataVA, req.DataLen, req.RespRing)
+	// MAZ-136: per-connect "[fs] IPC connect" line silenced (serial-cost).
 
 	resp := ipc.FSIPCRespPayload{ReqID: req.ReqID}
 	s.respond(sid, &resp)

@@ -27,6 +27,11 @@ const (
 	VIRTQ_USED_F_NO_NOTIFY = 1 << 0 // Don't notify guest
 )
 
+// VirtQueue transport feature bits (low feature dword, negotiated in Handshake).
+const (
+	VIRTIO_F_RING_EVENT_IDX = 1 << 29 // used_event/avail_event index-based interrupt suppression
+)
+
 // VirtQDesc is a VirtQueue descriptor
 // Each descriptor describes a buffer in guest memory
 type VirtQDesc struct {
@@ -510,6 +515,24 @@ func VirtqueueAddToAvailable(vq *VirtQueue, descIdx uint16) bool {
 	vq.Available.Idx = newIdx
 
 	return true
+}
+
+// VirtqueueSetUsedEvent writes the used_event field used by VIRTIO_F_RING_EVENT_IDX:
+// it asks the device to raise a completion interrupt only when the used-ring index
+// reaches `idx`, rather than on every completion. The field lives immediately after
+// the available ring array — avail_base + 4 (flags+idx) + QueueSize*2. Used by the
+// driver to arm one interrupt per in-flight batch (MAZ-136). No effect unless
+// VIRTIO_F_RING_EVENT_IDX was negotiated.
+//
+//go:nosplit
+func VirtqueueSetUsedEvent(vq *VirtQueue, idx uint16) {
+	availBase := PointerToUintptr(unsafe.Pointer(vq.Available))
+	ueAddr := availBase + 4 + uintptr(vq.QueueSize)*2
+	asm.MmioWrite16(ueAddr, idx)
+	// Clean the cache line so the device (non-cache-coherent DMA on ARM64) sees the
+	// new threshold before the kick that follows.
+	asm.CleanDCacheRange(ueAddr, 2)
+	asm.Dsb()
 }
 
 // virtqueueHasUsed checks if there are used descriptors to process

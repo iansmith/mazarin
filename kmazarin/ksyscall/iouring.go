@@ -263,10 +263,24 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 				dataKernelVA, uint32(totalBytes), uintptr(unsafe.Pointer(clump)),
 				sqe.UserData)
 
-			// Notify device after each submit.
+			submitted++
+		}
+
+		// Single doorbell for the whole batch. Each Submit() above already
+		// placed its chain in the avail ring (with its own DSB + avail.idx
+		// bump), so one Notify here kicks the device for all of them. This
+		// collapses N per-block doorbell writes into one: on x86 nested-KVM
+		// each doorbell is a guest→host VM exit (~ms-scale) that dominated
+		// .maz read throughput (MAZ-136). Shared path — both arches benefit,
+		// no new x86/ARM divergence.
+		if submitted > 0 {
+			// EVENT_IDX (MAZ-136): arm the completion-IRQ threshold BEFORE the
+			// kick so the device raises one interrupt when this batch finishes,
+			// not one per block. Must precede Notify so the threshold is in place
+			// before the device starts completing requests.
+			armBlockCompletionEvent(minComplete)
 			asm.Dsb()
 			dev.Eng.Notify()
-			submitted++
 		}
 
 		// Advance SQ head.
@@ -323,6 +337,9 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 //go:linkname blockForIOUring main.BlockForIOUring
 func blockForIOUring(ringID int, minComplete uint32, syscallNum uint64, pReleased bool) uintptr
+
+//go:linkname armBlockCompletionEvent main.ArmBlockCompletionEvent
+func armBlockCompletionEvent(minComplete uint32)
 
 //go:linkname initIOUringTimeout main.InitIOUringTimeout
 func initIOUringTimeout()
