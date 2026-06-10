@@ -239,26 +239,10 @@ run_guard_bad:
 	JMP	bad_ctx_dump(SB)
 run_guard_ok:
 
-	// MAZ-136 IST rotation: ABSOLUTE TSS.IST1 restore from the target's
-	// ctx.ISTBase; out-of-range (fresh ctx = 0, pre-publication capture) →
-	// reset to ist1Top. One of THREE sanctioned restore sites (here,
-	// load_context_and_iretq, YieldToReadyThread) — keep all three identical;
-	// the invariant lives in the IST ROTATION banner (exceptions_amd64.s)
-	// and ThreadContext.ISTBase. AX/R13 scratch (reloaded from ctx below).
-	MOVQ	·ist1Floor(SB), AX
-	TESTQ	AX, AX
-	JZ	run_ist_done		// rotation not armed (early boot)
-	FLD(R12, ThreadContext_ISTBase, R13)
-	CMPQ	R13, AX			// ISTBase < ist1Floor → stale or fresh → reset
-	JB	run_ist_reset
-	MOVQ	·ist1Top(SB), AX
-	CMPQ	R13, AX			// ISTBase <= ist1Top → plausible → install it
-	JBE	run_ist_install
-run_ist_reset:
-	MOVQ	·ist1Top(SB), R13	// no live chains for this context: full stack
-run_ist_install:
-	MOVQ	R13, ·tssBuffer+36(SB)
-run_ist_done:
+	// MAZ-136 IST rotation rev B: deliberately NO TSS.IST1 action — boot-time
+	// first switch, no exception chains exist, and the cursor (global, set to
+	// the IST1-half top by copyGDTToOwnedBuffer) is already correct. See the
+	// IST ROTATION banner in exceptions_amd64.s before "fixing" this absence.
 
 	// Build IRETQ frame: SS, RSP, RFLAGS, CS, RIP (push in reverse order)
 	PUSHQ	ThreadContext_SS(R12)		// SS from context
@@ -341,12 +325,11 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	// ctx.TLSG, so a stale TLSG here would resurface "morestack on g0" at the
 	// next stack growth. R14 is the authoritative g at a voluntary yield.
 	FST(R12, ThreadContext_TLSG, R14)
-	// MAZ-136 IST rotation: record TSS.IST1 VERBATIM. ‼ NO "+stride" here,
-	// unlike SaveContextFromFrame: Yield is a voluntary CALL, not an
-	// exception — there is no bypassed exception_return whose ADD must be
-	// retired. The asymmetry is load-bearing (ThreadContext.ISTBase doc).
-	MOVQ	·tssBuffer+36(SB), AX
-	FST(R12, ThreadContext_ISTBase, AX)
+	// MAZ-136 IST rotation rev B: deliberately NO TSS.IST1 save here.
+	// The cursor is GLOBAL (never per-thread); Yield is a voluntary CALL,
+	// not an exception, so no chain dies and there is nothing to retire.
+	// See the IST ROTATION banner in exceptions_amd64.s before "fixing"
+	// this absence.
 
 	// Save RIP = return address (pushed by CALL to us)
 	MOVQ	0(SP), AX
@@ -484,26 +467,12 @@ yr_rip_ok:
 yr_guard_bad:
 	JMP	bad_ctx_dump(SB)
 yr_guard_ok:
-	// MAZ-136 IST rotation: ABSOLUTE TSS.IST1 restore from the target's
-	// ctx.ISTBase; out-of-range (fresh ctx = 0, pre-publication capture) →
-	// reset to ist1Top. One of THREE sanctioned restore sites (here,
-	// load_context_and_iretq, RunFirstThread) — keep all three identical;
-	// the invariant lives in the IST ROTATION banner (exceptions_amd64.s)
-	// and ThreadContext.ISTBase. AX/R13 scratch (reloaded from ctx below).
-	MOVQ	·ist1Floor(SB), AX
-	TESTQ	AX, AX
-	JZ	yr_ist_done		// rotation not armed (early boot)
-	FLD(R12, ThreadContext_ISTBase, R13)
-	CMPQ	R13, AX			// ISTBase < ist1Floor → stale or fresh → reset
-	JB	yr_ist_reset
-	MOVQ	·ist1Top(SB), AX
-	CMPQ	R13, AX			// ISTBase <= ist1Top → plausible → install it
-	JBE	yr_ist_install
-yr_ist_reset:
-	MOVQ	·ist1Top(SB), R13	// no live chains for this context: full stack
-yr_ist_install:
-	MOVQ	R13, ·tssBuffer+36(SB)
-yr_ist_done:
+	// MAZ-136 IST rotation rev B: deliberately NO TSS.IST1 action on this
+	// switch. Yield is not an exception (no chain dies → nothing to retire),
+	// and the cursor is GLOBAL — it already protects the suspended chains of
+	// every context, including a preempted kernel target's. Writing any
+	// per-context value here re-creates the KVM-run-4 shared-stack trample.
+	// See the IST ROTATION banner in exceptions_amd64.s.
 	// Restore XMM registers from target thread's ctx.XMM
 	MOVOU	ThreadContext_XMM+0(R12), X0
 	MOVOU	ThreadContext_XMM+16(R12), X1

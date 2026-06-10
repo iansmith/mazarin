@@ -39,14 +39,16 @@ var gdtrDesc [10]byte
 // Used for RSP0 (kernel stack on Ring 3 → Ring 0 transitions).
 //
 // MINEFIELD (MAZ-136 IST rotation): the IST1 field (bytes 36-43) is NOT a
-// boot-time constant. The exception entry/exit paths in exceptions_amd64.s
-// continuously rotate it (entry: -istRotateStride, return: +istRotateStride)
-// and every context-restore site rewrites it absolutely from ctx.ISTBase.
-// The CPU reads IST fields from this memory at EVERY delivery (LTR caches
-// only the TSS base), which is exactly what makes runtime rotation work.
-// Do not cache, snapshot, or "fix up" tssBuffer[36:44] anywhere else —
-// tssIST1() below is the only sanctioned Go-side reader; all writes go
-// through the assembly rotation and restore paths.
+// boot-time constant. It is a GLOBAL nesting cursor — exceptions_amd64.s
+// rotates it on every exception entry (-istRotateStride), every normal
+// return (+istRotateStride), and every context switch made from a handler
+// (+istRotateStride, retiring the abandoning handler's level). The CPU reads
+// IST fields from this memory at EVERY delivery (LTR caches only the TSS
+// base), which is exactly what makes runtime rotation work. Do not cache,
+// snapshot, "fix up", or per-thread-restore tssBuffer[36:44] anywhere —
+// a per-thread restore reused the shared IST half over another thread's
+// suspended live chain (the KVM-run-4 trample). All writes go through the
+// assembly rotation paths; there is no sanctioned Go-side writer.
 var tssBuffer [128]byte
 
 // istRotateStride is the per-nesting-level reservation the IST rotation
@@ -59,25 +61,16 @@ var tssBuffer [128]byte
 // $const_istRotateStride — this Go const is the ONLY definition.
 const istRotateStride = 0x800
 
-// ist1Floor / ist1Top bound the IST1 half of the exception stack, published
+// ist1Floor is the bottom of the IST1 half of the exception stack, published
 // by copyGDTToOwnedBuffer AFTER the TSS split is final. The asm rotation
-// gates on ist1Floor != 0: before publication every exception skips both the
-// entry SUB and the return ADD, so the arithmetic can never go unbalanced
-// across the publication moment. (Single writer, straight-line init code on
-// a single CPU: the floor value one exception sees at entry is necessarily
-// the value it sees at return — copyGDTToOwnedBuffer cannot run in between,
-// because it IS the interrupted code, and a handler that context-switches
-// away instead exits through an absolute ctx.ISTBase restore.)
+// gates on ist1Floor != 0: before publication every exception skips the
+// entry SUB, the return ADD, and the switch-retire ADD, so the arithmetic
+// can never go unbalanced across the publication moment. (Single writer,
+// straight-line init code on a single CPU: the floor value one exception
+// sees at entry is necessarily the value it sees at exit —
+// copyGDTToOwnedBuffer cannot run in between, because it IS the interrupted
+// code.)
 var ist1Floor uint64
-var ist1Top uint64
-
-// tssIST1 reads the live TSS.IST1 value. bytes 36-43 are not 8-aligned; x86
-// permits the unaligned qword load on WB memory.
-//
-//go:nosplit
-func tssIST1() uint64 {
-	return *(*uint64)(unsafe.Pointer(&tssBuffer[36]))
-}
 
 // doubleFaultStack is the dedicated IST2 stack for the #DF handler.
 // Separate from IST1 (used by #PF, timer, device IRQs) so that a double
@@ -224,12 +217,10 @@ func copyGDTToOwnedBuffer() {
 	writeGDTR(uintptr(unsafe.Pointer(&gdtrDesc[0])))
 	loadTR(0x28)
 
-	// Publish the IST1 half bounds LAST — this arms the IST rotation in
+	// Publish the IST1 floor LAST — this arms the IST rotation in
 	// exceptions_amd64.s (it gates on ist1Floor != 0). Everything the
-	// rotation depends on (tssBuffer IST1 bytes, LTR) is final above.
-	// Order matters: write ist1Top before ist1Floor so any exception
-	// delivered between the two stores still sees floor==0 and skips.
-	ist1Top = ist1
+	// rotation depends on (tssBuffer IST1 bytes = the cursor's initial
+	// top value, LTR) is final above.
 	ist1Floor = rsp0
 }
 

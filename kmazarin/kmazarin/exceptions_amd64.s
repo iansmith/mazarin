@@ -326,11 +326,10 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	PUSHQ	BX
 	PUSHQ	AX
 
-	// ════════════════════════ IST ROTATION (MAZ-136) ════════════════════════
-	// ‼ MINEFIELD — read this WHOLE banner before touching ANY line of it, and
-	// ‼ read ThreadContext.ISTBase (thread_context_amd64.go) for the context-
-	// ‼ switch half of the scheme. Getting this wrong does not crash here; it
-	// ‼ resurfaces hours later as silent stack corruption far from the cause.
+	// ════════════════════ IST ROTATION (MAZ-136, rev B) ═════════════════════
+	// ‼ MINEFIELD — read this WHOLE banner before touching ANY line of it.
+	// ‼ Getting this wrong does not crash here; it resurfaces hours later as
+	// ‼ silent stack corruption far from the cause.
 	//
 	// WHY: #PF, timer, and device vectors are IST1-gated (idt_amd64.go). Raw
 	// IST semantics reload RSP = TSS.IST1 — a FIXED top — on EVERY delivery.
@@ -341,35 +340,60 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	// into dead stack (the deterministic 0xFFFFFFFF44125BF0), and
 	// HandleUserPageFault's spilled pageAddr zeroed mid-flight (run-5 catch).
 	//
-	// SCHEME: every entry through here SUBTRACTS one stride from TSS.IST1;
-	// every normal return ADDS it back (exception_return). The CPU reads the
-	// IST fields from TSS MEMORY at each delivery (LTR caches only the base),
-	// so the next nested delivery lands one stride below this level's start —
-	// underneath every live frame of this chain.
+	// SCHEME: TSS.IST1 is a single GLOBAL nesting cursor — the x86 equivalent
+	// of ARM64's SP_EL1, which nests continuously and never resets per
+	// delivery or per thread. Every entry through here SUBTRACTS one stride;
+	// every normal return ADDS it back (exception_return); a context switch
+	// made from inside a handler ADDS once (load_context_and_iretq — retiring
+	// exactly the abandoning handler's own level). The CPU reads the IST
+	// fields from TSS MEMORY at each delivery (LTR caches only the base), so
+	// the next nested delivery lands one stride below the lowest live
+	// reservation — underneath every live frame of every chain.
 	//
-	// INVARIANT: TSS.IST1 < the live SP of every running-or-suspended
-	// exception chain, at all times. Induction: each level starts at the
-	// then-current IST1 (IST delivery) or at the live SP (nested-in-place
-	// ring-0 SYSCALL / INT $0x80), immediately reserves its stride, and
-	// physically uses less than one stride (168 B frame + bounded handler
-	// chain ≪ 2 KiB) — so its own growth never reaches the lowered IST1, and
-	// deeper levels inherit the same argument.
+	// INVARIANT: TSS.IST1 = (IST1-half top) − stride × (number of LIVE
+	// exception chains — running or suspended, across ALL threads).
+	// Equivalently: the cursor sits below the live frames of every live
+	// chain. Induction: each level starts at the then-current IST1 (IST
+	// delivery) or at the live SP (nested-in-place ring-0 SYSCALL /
+	// INT $0x80), immediately reserves its stride, and physically uses less
+	// than one stride (168 B frame + bounded handler chain ≪ 2 KiB) — so its
+	// own growth never reaches the lowered cursor, and deeper levels inherit
+	// the same argument.
 	//
-	// BALANCE: the SUB here pairs with the ADD at exception_return. EVERY
-	// exit from a common_exception_entry frame is exactly one of:
-	//   exception_return IRETQ ......... does the ADD ............ (balanced)
-	//   load_context_and_iretq ......... ABSOLUTE ctx.ISTBase restore (the
-	//                                    abandoned chain's debt is wiped)
+	// ‼ PER-THREAD IST STATE IS FORBIDDEN. Revision A carried a per-thread
+	// ctx.ISTBase restored absolutely at context switch. WRONG: the IST half
+	// is ONE shared physical region — when thread A was suspended mid-#PF-
+	// handler (live chain at the top of the half) and thread B's fresh
+	// context reset the cursor to the top, B's next #PF delivered ON TOP of
+	// A's live chain (KVM-run-4 trample, identical !F: signature). The
+	// cursor must outlive any one thread's tenure on the CPU.
+	//
+	// BALANCE: every exit from a common_exception_entry frame is exactly one
+	// of:
+	//   exception_return IRETQ ........ ADD: this level RETURNS .. (balanced)
+	//   load_context_and_iretq ........ ADD: this level DIES — its
+	//                                   exception_return never runs; any
+	//                                   SHALLOWER suspended chains keep
+	//                                   their reservations ....... (balanced)
 	//   diagnostic halt (KX / !F: / BADIRETQ / BADCTX / ISTOVF) ... (moot)
-	// If you add a NEW exit path you MUST give it one of these treatments,
-	// or the arithmetic leaks one stride per traversal until ISTOVF halts.
+	// YieldToReadyThread / RunFirstThread deliberately touch NOTHING: they
+	// are not exceptions, no chain dies there, and the global cursor already
+	// accounts for the suspended chains of every context they switch
+	// between. If you add a NEW exit path you MUST give it one of these
+	// treatments, or the arithmetic drifts one stride per traversal until
+	// ISTOVF halts.
+	//
+	// KNOWN LEAK (accepted, documented): a thread KILLED while it still owns
+	// a suspended live chain never runs that chain's ADDs — those strides
+	// leak until ISTOVF flags the drift. If ISTOVF fires with shallow
+	// nesting, hunt for exactly this.
 	//
 	// GATE: ist1Floor is 0 until copyGDTToOwnedBuffer publishes the split;
-	// both the SUB and the ADD skip while it is 0. The floor cannot change
-	// between one exception's entry and its return (single CPU; the only
-	// writer is straight-line init code that this exception interrupted —
-	// see ist1Floor's doc), so the two gates can never disagree within one
-	// exception.
+	// the SUB, the return ADD, and the switch ADD all skip while it is 0.
+	// The floor cannot change between one exception's entry and its exit
+	// (single CPU; the only writer is straight-line init code that this
+	// exception interrupted — see ist1Floor's doc), so the gates can never
+	// disagree within one exception.
 	//
 	// REGISTERS: all GPRs are already saved in the frame above; R12/R13 are
 	// scratch and are reloaded by exception_return's POPs. Flags are dead
@@ -1705,31 +1729,24 @@ cs_valid:
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
 
-	// IST ROTATION (MAZ-136): install the resumed context's TSS.IST1
-	// ABSOLUTELY from ctx.ISTBase. ‼ A context switch bypasses
-	// exception_return, so the entry/return arithmetic cannot balance here —
-	// the absolute restore wipes the abandoned chains' stride debt and, for a
-	// preempted KERNEL chain being resumed, re-establishes exactly the value
-	// its still-pending exception_returns will ADD against (the saver already
-	// retired its own level — see ThreadContext.ISTBase). ISTBase outside
-	// [ist1Floor, ist1Top] (fresh context = 0, or captured before the split
-	// was published) → reset to ist1Top: no live chains exist for such a
-	// context. This is one of THREE sanctioned restore sites (here,
-	// YieldToReadyThread, RunFirstThread) — keep all three identical.
-	// AX/R13 are scratch here: both are reloaded from ctx before IRETQ.
+	// IST ROTATION (MAZ-136 rev B): retire the ABANDONING handler's own
+	// reservation. Every path into load_context_and_iretq is a context
+	// switch made FROM INSIDE an exception handler (syscall-exit switch,
+	// sigreturn, #PF block/switch) — that handler's chain dies right here,
+	// and its exception_return (which would have done this ADD) never runs.
+	// Any SHALLOWER suspended chains — this thread's or another's — keep
+	// their reservations: the cursor is GLOBAL (top − stride × live chains)
+	// and a suspended chain's stride is released only when it resumes and
+	// returns. ‼ Do NOT "restore", reset, or install any per-context value
+	// into TSS.IST1 here — the IST half is ONE shared region, and a
+	// per-thread reset reuses it over another thread's suspended live chain
+	// (the KVM-run-4 trample). See the IST ROTATION banner at
+	// common_exception_entry. Same gate as entry/return. AX is scratch
+	// (reloaded from ctx before IRETQ).
 	MOVQ	·ist1Floor(SB), AX
 	TESTQ	AX, AX
 	JZ	lc_ist_done		// rotation not armed (early boot)
-	FLD(R12, ThreadContext_ISTBase, R13)
-	CMPQ	R13, AX			// ISTBase < ist1Floor → stale or fresh → reset
-	JB	lc_ist_reset
-	MOVQ	·ist1Top(SB), AX
-	CMPQ	R13, AX			// ISTBase <= ist1Top → plausible → install it
-	JBE	lc_ist_install
-lc_ist_reset:
-	MOVQ	·ist1Top(SB), R13	// no live chains for this context: full stack
-lc_ist_install:
-	MOVQ	R13, ·tssBuffer+36(SB)
+	ADDQ	$const_istRotateStride, ·tssBuffer+36(SB)	// retire the dying level
 lc_ist_done:
 
 	// Restore FS_BASE from context (per-thread TLS base).

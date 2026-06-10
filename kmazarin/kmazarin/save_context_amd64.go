@@ -128,15 +128,9 @@ func SaveContextFromFrame(framePtr uintptr) {
 	// could clobber them. We must copy to ThreadContext so that when this thread
 	// is rescheduled, load_context_and_iretq restores the correct XMM state.
 	copy(t.Context.XMM[:], xmmSaveArea[:])
-	// MAZ-136 IST rotation: record the TSS.IST1 value to install when this
-	// context resumes. "+ istRotateStride" RETIRES this (saving) handler's own
-	// rotation level: load_context_and_iretq will IRETQ straight to the saved
-	// context, bypassing this handler's exception_return and therefore its
-	// balancing ADD. Without the +stride, every preempt/resume cycle would
-	// leak one stride and walk IST1 into the rotation-overflow tripwire.
-	// (Full invariant: ThreadContext.ISTBase doc + the IST ROTATION banner in
-	// exceptions_amd64.s.)
-	t.Context.ISTBase = tssIST1() + istRotateStride
+	// MAZ-136: no IST state is saved per context — TSS.IST1 is a global
+	// nesting cursor; the abandoning handler's level is retired by
+	// load_context_and_iretq itself (IST ROTATION banner, exceptions_amd64.s).
 }
 
 // doContextSwitchABI0 is the ABI0 entry point for context switching.
@@ -209,8 +203,4 @@ func SaveCurrentThreadContext(
 	t.Context.TLSG = r14
 	// Copy XMM state from global save area (same as SaveContextFromFrame).
 	copy(t.Context.XMM[:], xmmSaveArea[:])
-	// MAZ-136 IST rotation: this save also runs INSIDE an exception (the
-	// INT $0x80 path), so the saving handler's rotation level is retired with
-	// "+ istRotateStride", same as SaveContextFromFrame — see there.
-	t.Context.ISTBase = tssIST1() + istRotateStride
 }

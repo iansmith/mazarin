@@ -61,33 +61,13 @@ type ThreadContext struct {
 	// restore faithful and avoids `morestack on g0`. MAZ-135.
 	// (All asm access is via the go_asm.h symbolic offset ThreadContext_TLSG.)
 	TLSG uint64
-	// ISTBase is the TSS.IST1 value to install when this context is resumed —
-	// part of the MAZ-136 IST-rotation scheme (see the IST ROTATION banner in
-	// exceptions_amd64.s for the full invariant and proof).
-	//
-	// ╔══ MINEFIELD ══════════════════════════════════════════════════════════╗
-	// ║ Rotation makes TSS.IST1 a MOVING value: every exception entry lowers   ║
-	// ║ it one stride, every exception_return raises it back. A context switch ║
-	// ║ bypasses exception_return, so the arithmetic would leak one stride per ║
-	// ║ preempt/resume cycle unless the switch restores IST1 ABSOLUTELY. This  ║
-	// ║ field carries that absolute value across the suspend:                  ║
-	// ║                                                                        ║
-	// ║  • Exception-context saves (SaveContextFromFrame /                     ║
-	// ║    SaveCurrentThreadContext) store tssIST1() + istRotateStride — the   ║
-	// ║    "+ stride" RETIRES the saving handler's own rotation level, because ║
-	// ║    load_context_and_iretq skips that handler's exception_return (and   ║
-	// ║    therefore its ADD) when it IRETQs straight to this context.         ║
-	// ║  • The voluntary save (YieldToReadyThread FRAME-SAVE) stores tssIST1() ║
-	// ║    VERBATIM — Yield is not an exception, there is no pending ADD to    ║
-	// ║    retire. The asymmetry is load-bearing; do not "unify" it.           ║
-	// ║  • Restore sites (load_context_and_iretq, YieldToReadyThread restore,  ║
-	// ║    RunFirstThread) install this value into TSS.IST1 only if it lies    ║
-	// ║    inside [ist1Floor, ist1Top]; anything else (fresh context = 0,      ║
-	// ║    value captured before the TSS split was published) resets to        ║
-	// ║    ist1Top. A user context saved at depth 1 stores exactly ist1Top,    ║
-	// ║    so the range check needs no CS discrimination.                      ║
-	// ╚════════════════════════════════════════════════════════════════════════╝
-	ISTBase uint64
+	// ‼ MAZ-136 NOTE — there is deliberately NO per-thread IST field here.
+	// TSS.IST1 is a GLOBAL nesting cursor (mirroring ARM64's SP_EL1), managed
+	// entirely by the rotation arithmetic in exceptions_amd64.s. An earlier
+	// revision carried a per-thread ISTBase restored at context switch; that
+	// was WRONG — the IST half is one shared region, and a per-thread reset
+	// reused it over another thread's suspended live chain (KVM-run-4
+	// trample). Do not reintroduce per-thread IST state.
 }
 
 // GetGRegister returns the g register (R14 on x86_64).
