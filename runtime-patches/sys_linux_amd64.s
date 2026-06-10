@@ -103,11 +103,19 @@ TEXT runtime·closefd(SB),NOSPLIT,$0-12
 
 // write1 - write bytes to COM1 serial port
 // func write1(fd uintptr, p unsafe.Pointer, n int32) int32
-// When suppressSerial is set (SoftIRQ console active), skip UART output.
+// When suppressSerial is set (SoftIRQ console active), skip UART output —
+// UNLESS the runtime is dying (panicking != 0): a throw's println/traceback
+// must reach the serial port even while the SoftIRQ console owns the UART.
+// Without this bypass, kernel throws die silently as a bare
+// "KERNEL EXIT GROUP" with the reason lost (MAZ-136 netpoll hunt).
 TEXT runtime·write1(SB),NOSPLIT,$0-28
 	MOVL	runtime·suppressSerial(SB), AX
 	TESTL	AX, AX
-	JNZ	write1_suppressed
+	JZ	write1_go
+	MOVL	runtime·panicking(SB), AX	// fatal throw/panic in progress?
+	TESTL	AX, AX
+	JZ	write1_suppressed
+write1_go:
 	MOVQ	p+8(FP), SI		// buffer pointer
 	MOVL	n+16(FP), CX		// byte count
 	MOVW	COM1_PORT, DX		// COM1 port
