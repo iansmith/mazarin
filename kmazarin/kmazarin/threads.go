@@ -1854,11 +1854,7 @@ func SaveThread0AndYield() uint64 {
 	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
 	if badResumeRIP(next) {
-		klog.Criticalf("[BUG] ", "BAD RESUME RIP=%#x TID=%d SP=%#x g=%#x (yield)\n",
-			next.Context.GetPC(), next.TID, next.Context.GetSP(), next.Context.GetGRegister())
-		for {
-			WaitForInterrupt()
-		}
+		badResumeHalt(next, "yield")
 	}
 
 	// Deliver pending signals before ERET to this thread.
@@ -3887,11 +3883,7 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
 	if badResumeRIP(next) {
-		klog.Criticalf("[BUG] ", "BAD RESUME RIP=%#x TID=%d SP=%#x g=%#x (pickup)\n",
-			next.Context.GetPC(), next.TID, next.Context.GetSP(), next.Context.GetGRegister())
-		for {
-			WaitForInterrupt()
-		}
+		badResumeHalt(next, "pickup")
 	}
 
 	// NOTE: Signal delivery moved to caller (checkThreadPreemptionImpl)
@@ -4124,11 +4116,8 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
 
-	if next.Context.GetPC() == 0 {
-		klog.Criticalf("[BUG] ", "Preempt RIP=0 TID=%d\n", next.TID)
-		for {
-			WaitForInterrupt()
-		}
+	if badResumeRIP(next) {
+		badResumeHalt(next, "preempt")
 	}
 
 	// Deliver pending signals before ERET to this thread.
@@ -4309,11 +4298,7 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	_ = savedDAIF // Keep compiler happy
 
 	if badResumeRIP(newThread) {
-		klog.Criticalf("[BUG] ", "BAD RESUME RIP=%#x TID=%d SP=%#x g=%#x (ctxswitch)\n",
-			newThread.Context.GetPC(), newThread.TID, newThread.Context.GetSP(), newThread.Context.GetGRegister())
-		for {
-			WaitForInterrupt()
-		}
+		badResumeHalt(newThread, "ctxswitch")
 	}
 
 	return &newThread.Context

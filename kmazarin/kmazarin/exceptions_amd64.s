@@ -337,6 +337,20 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	MOVQ	128(SP), AX	// interrupted RIP from the exception frame
 	MOVQ	AX, ·interruptedRIP(SB)
 
+	// MAZ-135/MAZ-136: capture the interrupted thread's live kernel TLS-g BEFORE
+	// any handler overwrites [kmazarinFSBase-8] with the handler g0 (syscall
+	// :403, timer :930, device :1023). For a kernel-mode exception this is the
+	// interrupted kernel goroutine's curg — even in the systemstack exit window
+	// where frame R14 is the stale g0. The kernel-mode branch of
+	// SaveContextFromFrame reads this instead of frame R14, so a preempted
+	// kernel thread resumes with a faithful dual-home g. (User-mode exceptions
+	// also write this slot with an irrelevant value — unused; the user branch
+	// reads [savedExcFSBase-8]. Ring-0 read of mapped kernel memory. Global,
+	// single-CPU — same caveat as interruptedRIP/xmmSaveArea.)
+	MOVQ	·kmazarinFSBase(SB), AX
+	MOVQ	-8(AX), AX
+	MOVQ	AX, ·savedExcKernelTLSG(SB)
+
 	// Save FS_BASE — but ONLY when exception came from userspace (CS=0x1B).
 	// Nested kernel exceptions (CS=0x08) must NOT overwrite savedExcFSBase,
 	// because it already holds the user FS_BASE from the outermost exception.

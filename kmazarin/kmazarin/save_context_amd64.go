@@ -18,6 +18,16 @@ var xmmSaveArea [256]byte
 // xmmSaveArea above); per-CPU-ize alongside xmmSaveArea when x86 goes SMP.
 var interruptedRIP uint64
 
+// savedExcKernelTLSG holds the interrupted kernel thread's live TLS-g
+// ([kmazarinFSBase-8]) captured at the first instructions of
+// common_exception_entry, before the handler overwrites that slot with the
+// handler g0. The kernel-mode branch of SaveContextFromFrame uses it for a
+// faithful dual-home g restore (in the systemstack exit window frame R14 is
+// the stale g0 while the real curg lives only in this TLS slot). Global
+// (single-CPU, like savedExcFSBase / interruptedRIP / xmmSaveArea);
+// per-CPU-ize for SMP. MAZ-135/MAZ-136.
+var savedExcKernelTLSG uint64
+
 // SaveContextFromFrame saves the current thread's context from an x86_64 exception frame.
 //
 // Frame layout (pushed by exception handler):
@@ -68,11 +78,14 @@ func SaveContextFromFrame(framePtr uintptr) {
 	// value. But when preempting a kernel thread, we need the kernel FSBase.
 	if frame[17] == kernelCS {
 		t.Context.FSBase = kmazarinFSBase
-		// MAZ-135: kernel TLS-g ([kmazarinFSBase-8]) was overwritten by
-		// common_exception_entry with the handler's g, so the interrupted kernel
-		// thread's TLS-g is unrecoverable here. Fall back to R14 (kernel threads
-		// are not the morestack victims).
-		t.Context.TLSG = frame[13]
+		// MAZ-135/MAZ-136: the live kernel TLS-g was captured into
+		// savedExcKernelTLSG at the first instructions of common_exception_entry,
+		// before the handler overwrote [kmazarinFSBase-8] with its own g0. Use it
+		// instead of frame R14: in the systemstack exit window R14 is the stale
+		// g0 while the real curg lives only in that TLS slot, and restoring the
+		// stale value scrambles the runtime's g state (GC checkmark failures,
+		// netpoll-init throws, corrupted resume RIPs — the MAZ-136 crash family).
+		t.Context.TLSG = savedExcKernelTLSG
 	} else {
 		t.Context.FSBase = savedExcFSBase
 		// MAZ-135: capture the SECOND g home — the live user TLS-g at
