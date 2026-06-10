@@ -940,6 +940,10 @@ func InitThreads() {
 	InitPerCPU()
 	initPerCPUOffsets()
 
+	// Publish kernel .text bounds for the asm-level IRETQ resume guards
+	// (must happen before IRQs are enabled; no-op on ARM64)
+	initResumeGuardBounds()
+
 	// Initialize spinlock timing based on detected timer frequency
 	// This must happen before any spinlocks are used (including in ID allocators)
 	ds.InitSpinlockTiming(timerFrequencyHz)

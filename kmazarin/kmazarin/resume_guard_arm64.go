@@ -13,3 +13,9 @@ package main
 func badResumeRIP(next *Thread) bool {
 	return next.Context.GetPC() == 0
 }
+
+// initResumeGuardBounds is a no-op on ARM64: the asm-level IRETQ guards that
+// consume the published bounds are amd64-only (see resume_guard_amd64.go).
+//
+//go:nosplit
+func initResumeGuardBounds() {}

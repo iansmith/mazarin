@@ -1549,6 +1549,31 @@ eret_rip_ok:
 	MOVOU	·xmmSaveArea+208(SB), X13
 	MOVOU	·xmmSaveArea+224(SB), X14
 	MOVOU	·xmmSaveArea+240(SB), X15
+
+	// MAZ-136 IRETQ guard: a kernel-CS return must land inside kernel .text.
+	// The frame-path corruption (resume into dead exception-stack memory)
+	// never touches a ThreadContext, so the Go-level badResumeRIP guard
+	// cannot see it — this is the last instant the bad RIP is data.
+	// All GPRs hold interrupted values: AX is pushed (frame reads offset
+	// +8) and restored on the OK path. Flags are free — IRETQ reloads
+	// RFLAGS from the frame. kernelTextHi==0 → bounds not yet published
+	// (early boot) → skip.
+	PUSHQ	AX
+	CMPQ	16(SP), $0x08		// CS (8(SP) before the push)
+	JNE	eret_guard_ok		// user return: any RIP is plausible
+	MOVQ	·kernelTextHi(SB), AX
+	TESTQ	AX, AX
+	JZ	eret_guard_ok		// bounds not initialized yet
+	CMPQ	8(SP), AX		// RIP >= etext?
+	JAE	eret_guard_bad
+	MOVQ	·kernelTextLo(SB), AX
+	CMPQ	8(SP), AX		// RIP >= text?
+	JAE	eret_guard_ok
+eret_guard_bad:
+	LEAQ	8(SP), R12		// R12 = &iretq 5-tuple (skip pushed AX)
+	JMP	bad_iretq_dump(SB)	// prints frame + context, halts
+eret_guard_ok:
+	POPQ	AX
 	IRETQ
 
 // ============================================================================
@@ -1725,6 +1750,24 @@ ctx_diag_ok:
 	POPQ	CX
 	// Continue with IRETQ anyway (will page fault, but handler will print more info)
 rip_ok:
+	// MAZ-136 IRETQ guard: a kernel-CS context must resume inside kernel
+	// .text. Covers the asm paths that JMP here without passing the Go-level
+	// badResumeRIP guard (sigreturn, syscall-exit DoContextSwitch). CX = new
+	// RIP; R13 is scratch (reloaded below). kernelTextHi==0 → bounds not yet
+	// published (early boot) → skip.
+	MOVQ	·kernelTextHi(SB), R13
+	TESTQ	R13, R13
+	JZ	ctx_guard_ok		// bounds not initialized yet
+	CMPQ	ThreadContext_CS(R12), $0x08
+	JNE	ctx_guard_ok		// user context: any RIP is plausible
+	CMPQ	CX, R13			// RIP >= etext?
+	JAE	ctx_guard_bad
+	MOVQ	·kernelTextLo(SB), R13
+	CMPQ	CX, R13			// RIP >= text?
+	JAE	ctx_guard_ok
+ctx_guard_bad:
+	JMP	bad_ctx_dump(SB)	// R12 = ctx; prints context, halts
+ctx_guard_ok:
 
 	// Find a safe SP location (below current frame)
 	LEAQ	-48(SP), SP		// Make room
@@ -1822,6 +1865,205 @@ pf_ph_ok:
 	SUBQ	$4, CX
 	JGE	pf_ph_loop
 	RET
+
+// ============================================================================
+// MAZ-136 IRETQ-level resume-guard dumps (raw COM1, then halt forever)
+// ============================================================================
+// The frame-path corruption resumes the kernel into dead exception-stack
+// memory without the bad RIP ever appearing in a ThreadContext, so only a
+// check at the IRETQ itself can catch the corrupt frame intact. klog is
+// FORBIDDEN here (IRQ-off, arbitrary nesting depth); pf_print_hex16 only.
+
+// bad_iretq_dump — a kernel-CS iretq frame's RIP is outside kernel .text.
+// In: R12 = &frame 5-tuple [RIP CS RFLAGS RSP SS]. Never returns.
+// Prints the 5-tuple, vector/svcDepth/TLS-g, the frame address, then
+// LO= the 16 qwords below the frame (the just-popped GPR save area, in
+// pop order: AX BX CX DX SI DI BP R8..R15 errcode — R14 slot = the g)
+// and HI= the 8 qwords above it (the interrupted stack = nesting context).
+TEXT bad_iretq_dump(SB), NOSPLIT|NOFRAME, $0
+	LEAQ	-0x200(R12), SP		// scratch stack clear of the dump window
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'A', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'E', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'Q', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	0(R12), R15		// RIP
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	8(R12), R15		// CS
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	16(R12), R15		// RFLAGS
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	24(R12), R15		// RSP
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	32(R12), R15		// SS
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'G', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·savedExcKernelTLSG(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	R12, R15		// frame address (pre-IRETQ SP)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	LEAQ	-128(R12), R14		// base of the popped GPR save area
+	XORQ	BX, BX
+bad_iq_lo:
+	MOVQ	(R14)(BX*1), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	ADDQ	$8, BX
+	CMPQ	BX, $128
+	JL	bad_iq_lo
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'H', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	LEAQ	40(R12), R14		// first qword past the 5-tuple
+	XORQ	BX, BX
+bad_iq_hi:
+	MOVQ	(R14)(BX*1), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	ADDQ	$8, BX
+	CMPQ	BX, $64
+	JL	bad_iq_hi
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+bad_iq_halt:
+	HLT
+	JMP	bad_iq_halt
+
+// bad_ctx_dump — a kernel-CS ThreadContext's RIP is outside kernel .text.
+// In: R12 = &ThreadContext. Never returns. Shared by load_context_and_iretq
+// and the context restores in abi_stubs_amd64.s (RunFirstThread,
+// YieldToReadyThread). Uses the caller's SP (valid in all three).
+TEXT bad_ctx_dump(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'A', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_RIP, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_CS, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_RSP, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_RBP, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'G', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_R14, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'G', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_TLSG, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	R12, R15		// the context pointer itself
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·CurrentThread(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+bad_ctx_halt:
+	HLT
+	JMP	bad_ctx_halt
 
 // ============================================================================
 // SYSCALL Entry - entered via x86_64 SYSCALL instruction

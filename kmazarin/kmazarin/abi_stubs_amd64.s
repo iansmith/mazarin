@@ -221,6 +221,24 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 run_skip_tls:
 
+	// MAZ-136 IRETQ guard: a kernel-CS context must resume inside kernel
+	// .text (bounds zero = not yet published, skip; bad_ctx_dump in
+	// exceptions_amd64.s prints from R12 and halts).
+	MOVQ	·kernelTextHi(SB), AX
+	TESTQ	AX, AX
+	JZ	run_guard_ok		// bounds not initialized yet
+	CMPQ	ThreadContext_CS(R12), $0x08
+	JNE	run_guard_ok		// user context: any RIP is plausible
+	FLD(R12, ThreadContext_RIP, R13)
+	CMPQ	R13, AX			// RIP >= etext?
+	JAE	run_guard_bad
+	MOVQ	·kernelTextLo(SB), AX
+	CMPQ	R13, AX			// RIP >= text?
+	JAE	run_guard_ok
+run_guard_bad:
+	JMP	bad_ctx_dump(SB)
+run_guard_ok:
+
 	// Build IRETQ frame: SS, RSP, RFLAGS, CS, RIP (push in reverse order)
 	PUSHQ	ThreadContext_SS(R12)		// SS from context
 	PUSHQ	ThreadContext_RSP(R12)		// RSP from context
@@ -422,6 +440,23 @@ yr_halt:
 	HLT
 	JMP	yr_halt
 yr_rip_ok:
+	// MAZ-136 IRETQ guard: a kernel-CS context must resume inside kernel
+	// .text (bounds zero = not yet published, skip; bad_ctx_dump in
+	// exceptions_amd64.s prints from R12 and halts).
+	MOVQ	·kernelTextHi(SB), AX
+	TESTQ	AX, AX
+	JZ	yr_guard_ok		// bounds not initialized yet
+	CMPQ	ThreadContext_CS(R12), $0x08
+	JNE	yr_guard_ok		// user context: any RIP is plausible
+	FLD(R12, ThreadContext_RIP, R13)
+	CMPQ	R13, AX			// RIP >= etext?
+	JAE	yr_guard_bad
+	MOVQ	·kernelTextLo(SB), AX
+	CMPQ	R13, AX			// RIP >= text?
+	JAE	yr_guard_ok
+yr_guard_bad:
+	JMP	bad_ctx_dump(SB)
+yr_guard_ok:
 	// Restore XMM registers from target thread's ctx.XMM
 	MOVOU	ThreadContext_XMM+0(R12), X0
 	MOVOU	ThreadContext_XMM+16(R12), X1

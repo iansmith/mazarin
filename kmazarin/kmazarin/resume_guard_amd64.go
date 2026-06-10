@@ -26,6 +26,25 @@ var kernelTextStart [0]byte
 //go:linkname kernelTextEnd runtime.etext
 var kernelTextEnd [0]byte
 
+// kernelTextLo / kernelTextHi mirror the marker addresses into plain globals
+// for the asm-level pre-IRETQ guards (exceptions_amd64.s, abi_stubs_amd64.s):
+// asm cannot take the address of a linknamed [0]byte marker reliably across
+// linker layouts. Both are zero until initResumeGuardBounds runs; the asm
+// guards treat kernelTextHi==0 as "not yet published" and skip the check.
+var (
+	kernelTextLo uint64
+	kernelTextHi uint64
+)
+
+// initResumeGuardBounds publishes the kernel .text bounds for the asm-level
+// IRETQ guards. Called from InitThreads, before IRQs are enabled.
+//
+//go:nosplit
+func initResumeGuardBounds() {
+	kernelTextLo = uint64(uintptr(unsafe.Pointer(&kernelTextStart)))
+	kernelTextHi = uint64(uintptr(unsafe.Pointer(&kernelTextEnd)))
+}
+
 // badResumeRIP reports whether next's saved RIP is implausible for resumption.
 // Kernel-mode contexts must resume within kernel .text; user-mode contexts only
 // fail the cheap impossible value RIP==0 (any user address is plausible). The
