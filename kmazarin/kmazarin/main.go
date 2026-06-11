@@ -698,9 +698,10 @@ func simpleMain() {
 		RestoreIRQs(savedDAIF)
 	}
 
-	// Launch the embedded fs shepherd from memory — no disk I/O needed.
-	// fs reads /startup.toml from disk and launches all [[shepherd]] entries.
-	launchEmbeddedFS()
+	// NOTE: launchEmbeddedFS() used to run HERE — it was moved below
+	// kernelNetpollEagerInit() (MAZ-136). Do not move it back above the
+	// canary: shepherd syscall traffic must not exist while kernel main
+	// parks in the canary's time.Sleep (see the ORDERING comment there).
 
 	// Reconfigure timer policy from kernel config.
 	// Must happen before EnableTimerIRQ so the first tick uses correct values.
@@ -764,7 +765,30 @@ func simpleMain() {
 	// memory-pressure timing). Eager init turns kernel netpoll into a
 	// deterministic boot-time canary: if the kernel's magic-fd epoll path
 	// regresses, the boot dies HERE, loudly, every time.
+	//
+	// ORDERING (MAZ-136, the eager-netpoll × shepherd-launch race): the
+	// canary MUST complete before the first shepherd launches. Its
+	// time.Sleep is the one deliberate boot-time park of kernel main —
+	// m0 releases its P for the whole sleep. User-syscall dispatch
+	// (vector 129) borrows the g0/m0 identity for every handler, so an
+	// allocating handler (e.g. SyscallQueryInputDevices' escaping array)
+	// arriving in that window does mallocgc with m0.p == 0 and mcache0
+	// already cleared by procresize → nil-deref inside the allocator ON
+	// the exception stack (!F:0 @mallocgcSmallNoscan, 5/5 KVM, TCG-proven
+	// by stretching this sleep — run 60). TCG never saw it because the
+	// 1 ms sleep finished before fs's first syscalls; KVM (~100×)
+	// interleaved them. Launching shepherds only AFTER the canary returns
+	// closes the window by construction. The general invariant question —
+	// Go malloc in a g0-borrowed dispatch chain whenever m0 is without a
+	// P (GC STW, assist parks) — is tracked separately; do NOT "fix" it
+	// here by reordering back.
 	kernelNetpollEagerInit()
+
+	// Launch the embedded fs shepherd from memory — no disk I/O needed.
+	// fs reads /startup.toml from disk and launches all [[shepherd]]
+	// entries. Must stay AFTER kernelNetpollEagerInit() — see the
+	// ORDERING comment above.
+	launchEmbeddedFS()
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Shepherd threads are already running. The timer IRQ
