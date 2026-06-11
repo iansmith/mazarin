@@ -1128,6 +1128,114 @@ pf_cs2:	OUTB
 	MOVQ	·tssBuffer+4(SB), R15
 	CALL	pf_print_hex16(SB)
 
+	// ---- MAZ-136 KVM-race diagnostics (eager-netpoll × shepherd-launch) ----
+	// Three extra lines naming the dying chain, added for the 5/5 KVM-only
+	// `!F:0 @mallocgcSmallNoscan` family (continuation-netpoll-kvm-race.md).
+	//
+	// VEC/SVD: currentVector is global save-state — by dump time it reads
+	// this #PF's own vector (0E); printed anyway to expose unexpected entry
+	// paths. svcDepth is NOT touched by exception entry, so it still shows
+	// whether the dying chain sat inside syscall dispatch.
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'E', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15	// 32-bit load zero-extends into R15
+	CALL	pf_print_hex16(SB)
+
+	// GMP: discriminate the two possible nil sources behind the allocator
+	// fault (`test %al,(%rsi)` with RSI=0 in mallocgcSmallNoscan): m.p == 0
+	// with runtime.mcache0 already cleared by procresize, vs m.p != 0 with
+	// a nil p.mcache. Field offsets g.m=48, m.p=208, p.mcache=56 are
+	// disasm-verified against THIS pinned toolchain's (Go 1.26.2)
+	// mallocgcSmallNoscan — diagnostics-only, do not build logic on them.
+	// Walked only when the frame's g is the kernel g0, so every load stays
+	// inside known-mapped kernel data. Values are read at dump time, i.e.
+	// microseconds after the fault — indicative, not a snapshot.
+	MOVQ	104(SP), R12		// g (R14) from exception frame
+	CMPQ	R12, ·kmazarinG0Addr(SB)
+	JNE	pf_gmp_done
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'G', AX; OUTB
+	MOVB	$'M', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'M', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	48(R12), R12		// m = g.m
+	MOVQ	R12, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	208(R12), R12		// p = m.p
+	MOVQ	R12, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'M', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	XORQ	R15, R15		// p == 0 → MC prints 0 (field is moot)
+	TESTQ	R12, R12
+	JZ	pf_gmp_mc
+	MOVQ	56(R12), R15		// mcache = p.mcache
+pf_gmp_mc:
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'M', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'0', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	runtime·mcache0(SB), R15
+	CALL	pf_print_hex16(SB)
+pf_gmp_done:
+
+	// BPW: frame-pointer chain walk, up to 8 return addresses. The walker
+	// dereferences BP only while it lies inside the exception stack
+	// [excStackBottom, excStackTop) — always mapped, so the walk itself
+	// cannot fault; the first frame outside (g0/goroutine stack) or a
+	// broken chain ends it early.
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'W', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	48(SP), R12		// walker = RBP from exception frame
+	MOVQ	$8, R11			// frame budget
+pf_bpw_loop:
+	MOVQ	·excStackBottom(SB), AX
+	TESTQ	AX, AX
+	JZ	pf_bpw_done		// bounds not yet published — cannot walk safely
+	CMPQ	R12, AX
+	JB	pf_bpw_done		// walker left the exception stack (below)
+	MOVQ	·excStackTop(SB), AX
+	SUBQ	$16, AX
+	CMPQ	R12, AX
+	JA	pf_bpw_done		// walker left the exception stack (above)
+	MOVQ	8(R12), R15		// this frame's return address
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVQ	0(R12), R12		// next frame pointer
+	DECQ	R11
+	JNZ	pf_bpw_loop
+pf_bpw_done:
+
 	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
 	JMP	pf_unhandled_halt
