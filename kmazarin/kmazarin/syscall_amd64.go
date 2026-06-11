@@ -38,17 +38,20 @@ var gdtrDesc [10]byte
 // tssBuffer is the 104-byte Task State Segment for x86_64.
 // Used for RSP0 (kernel stack on Ring 3 → Ring 0 transitions).
 //
-// MINEFIELD (MAZ-136 IST rotation): the IST1 field (bytes 36-43) is NOT a
-// boot-time constant. It is a GLOBAL nesting cursor — exceptions_amd64.s
-// rotates it on every exception entry (-istRotateStride), every normal
-// return (+istRotateStride), and every context switch made from a handler
-// (+istRotateStride, retiring the abandoning handler's level). The CPU reads
-// IST fields from this memory at EVERY delivery (LTR caches only the TSS
-// base), which is exactly what makes runtime rotation work. Do not cache,
-// snapshot, "fix up", or per-thread-restore tssBuffer[36:44] anywhere —
-// a per-thread restore reused the shared IST half over another thread's
-// suspended live chain (the KVM-run-4 trample). All writes go through the
-// assembly rotation paths; there is no sanctioned Go-side writer.
+// MINEFIELD (MAZ-136 rotations): NEITHER stack field in here is a boot-time
+// constant. BOTH are GLOBAL nesting cursors rotated by exceptions_amd64.s —
+// the IST1 field (bytes 36-43, stride istRotateStride) AND the RSP0 field
+// (bytes 4-11, stride rsp0RotateStride). Each is rotated on every exception
+// entry (-stride), every normal return (+stride), and every context switch
+// made from a handler (+stride, retiring the abandoning handler's level).
+// The CPU reads the IST and RSP0 fields from this memory at EVERY delivery
+// (LTR caches only the TSS base), which is exactly what makes runtime
+// rotation work. Do not cache, snapshot, "fix up", or per-thread-restore
+// tssBuffer[4:12] or tssBuffer[36:44] anywhere — a per-thread restore reused
+// the shared IST half over another thread's suspended live chain (the
+// KVM-run-4 trample); the RSP0 half is shared the same way (parked
+// SyscallWaitSoftIRQ chains). All writes go through the assembly rotation
+// paths; there is no sanctioned Go-side writer.
 var tssBuffer [128]byte
 
 // istRotateStride is the per-nesting-level reservation the IST rotation
@@ -60,6 +63,22 @@ var tssBuffer [128]byte
 // theoretical bound. Exported to assembly via go_asm.h as
 // $const_istRotateStride — this Go const is the ONLY definition.
 const istRotateStride = 0x800
+
+// rsp0RotateStride is the per-nesting-level reservation the RSP0 rotation
+// (the SECOND cursor — see the RSP0 ROTATION banner in exceptions_amd64.s)
+// subtracts from TSS.RSP0 on every exception entry. RSP0-half chains run
+// DEEPER than IST-half ones: a ring-3 syscall's full Go dispatch (syscall
+// table, klog, delegate machinery) executes on this half via GO_CALL — the
+// parked SyscallWaitSoftIRQ chain was observed at ~0x410 bytes and live
+// dispatch chains grow past that. 8 KiB is ~8× that observation.
+//
+// ‼ ONE-LEVEL-USE BOUND: a single nesting level on the RSP0 half MUST stay
+// under this stride, or its frames can reach below the lowered cursor and
+// the next delivery lands inside them anyway. The RSPOVF floor tripwire and
+// the IRETQ guard convert violations into diagnosable halts, not silent
+// corruption. 14 levels fit the 112 KiB RSP0 half. Exported to assembly via
+// go_asm.h as $const_rsp0RotateStride — this Go const is the ONLY definition.
+const rsp0RotateStride = 0x2000
 
 // ist1Floor / ist1Ceil bound the IST1 half of the exception stack, published
 // by copyGDTToOwnedBuffer AFTER the TSS split is final. The asm rotation
@@ -86,6 +105,30 @@ var ist1Ceil uint64
 var istSubCount uint64
 var istEretAddCount uint64
 var istLcAddCount uint64
+
+// rsp0Floor / rsp0Ceil bound the RSP0 half of the exception stack — the twin
+// of ist1Floor/ist1Ceil for the SECOND rotation cursor, TSS.RSP0 (tssBuffer
+// bytes 4-11). Same publication discipline (each ceil before its floor; the
+// floor write ARMS the rotation), same single-writer/straight-line-init
+// consistency argument as ist1Floor above, same tripwire pair (RSPOVF on a
+// floor-crossing entry SUB, RSPOVR on a ceiling-crossing exit ADD).
+// rsp0Floor is the bottom of the WHOLE exception stack (the RSP0 half is the
+// stack's lower portion); rsp0Ceil is the post-split RSP0-half top — the
+// cursor's resting-state value, and numerically the same address as
+// ist1Floor (the split boundary between the two halves).
+var rsp0Floor uint64
+var rsp0Ceil uint64
+
+// RSP0-rotation accounting counters — twins of the IST set above, printed as
+// a "RSPCT ..." line next to ISTCT in the kernel-mode unhandled-fault dump.
+// Same healthy invariant: rsp0SubCount − rsp0EretAddCount − rsp0LcAddCount
+// == number of LIVE exception chains, and the same purpose: a single
+// over-retire parks the cursor exactly AT rsp0Ceil, invisible to the RSPOVR
+// value tripwire — only this accounting can name the guilty site after the
+// fact.
+var rsp0SubCount uint64
+var rsp0EretAddCount uint64
+var rsp0LcAddCount uint64
 
 // doubleFaultStack is the dedicated IST2 stack for the #DF handler.
 // Separate from IST1 (used by #PF, timer, device IRQs) so that a double
@@ -125,10 +168,20 @@ func copyGDTToOwnedBuffer() {
 	// The IST1 half is 16 KiB: the MAZ-136 IST rotation reserves
 	// istRotateStride (2 KiB) per exception-nesting level, so 16 KiB gives 8
 	// levels before the rotation-overflow tripwire halts. (The whole exception
-	// stack is 128 KiB; the RSP0 half keeps the remaining 112 KiB.)
+	// stack is 128 KiB; the RSP0 half keeps the remaining 112 KiB, rotated at
+	// rsp0RotateStride (8 KiB) per level = 14 levels.)
 	//
 	// RSP0 at offset 4-11: kernel stack for Ring 3 → Ring 0 transitions.
-	// Also used by excStackTopForSyscall for SYSCALL instruction entry.
+	// SYSCALL instruction entry lands on the same half via syscallEntry's
+	// software switch (which reads these same TSS bytes — the live cursor).
+	//
+	// MINEFIELD (MAZ-136): like IST1 below, raw RSP0 semantics are a trap —
+	// the CPU reloads RSP = TSS.RSP0 on EVERY non-IST ring3→ring0 transition,
+	// so a fixed top tramples any chain PARKED live on this half
+	// (SyscallWaitSoftIRQ's STI+HLT parks exactly such a chain; run-45 caught
+	// the trample as execute-the-stack at RSP0top−0x410). The RSP0 ROTATION
+	// in exceptions_amd64.s keeps every delivery below all live frames — the
+	// value written here is only the rotation's BASE (= rsp0Ceil).
 	excStackTopForSyscall -= 8 * istRotateStride // Bottom half of exception stack
 	rsp0 := excStackTopForSyscall
 	tssBuffer[4] = byte(rsp0)
@@ -232,12 +285,19 @@ func copyGDTToOwnedBuffer() {
 	writeGDTR(uintptr(unsafe.Pointer(&gdtrDesc[0])))
 	loadTR(0x28)
 
-	// Publish the IST1 bounds, floor LAST — the floor write arms the IST
-	// rotation in exceptions_amd64.s (it gates on ist1Floor != 0).
-	// Everything the rotation depends on (tssBuffer IST1 bytes = the
-	// cursor's initial top value, LTR) is final above.
+	// Publish the rotation bounds, each FLOOR last — a floor write is what
+	// arms its cursor's rotation in exceptions_amd64.s (the SUB/ADD sites
+	// gate on floor != 0). Everything the rotations depend on (tssBuffer
+	// RSP0/IST1 bytes = the cursors' initial top values, LTR) is final
+	// above. An exception arriving between the two floor writes sees a
+	// consistent world for its whole lifetime — the writer is THIS
+	// straight-line code, suspended until that exception returns (the GATE
+	// paragraph of the IST ROTATION banner). excStackBottom (the RSP0
+	// floor) was published by InitThreads long before any exception.
 	ist1Ceil = ist1
+	rsp0Ceil = rsp0
 	ist1Floor = rsp0
+	rsp0Floor = excStackBottom
 }
 
 // SetupSyscallMSRs takes ownership of the GDT (copying from diplomat's buffer

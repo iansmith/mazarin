@@ -128,9 +128,10 @@ func SaveContextFromFrame(framePtr uintptr) {
 	// could clobber them. We must copy to ThreadContext so that when this thread
 	// is rescheduled, load_context_and_iretq restores the correct XMM state.
 	copy(t.Context.XMM[:], xmmSaveArea[:])
-	// MAZ-136: no IST state is saved per context — TSS.IST1 is a global
-	// nesting cursor; the abandoning handler's level is retired by
-	// load_context_and_iretq itself (IST ROTATION banner, exceptions_amd64.s).
+	// MAZ-136: no IST or RSP0 state is saved per context — TSS.IST1 AND
+	// TSS.RSP0 are global nesting cursors; the abandoning handler's level
+	// on each is retired by load_context_and_iretq itself (IST ROTATION and
+	// RSP0 ROTATION banners, exceptions_amd64.s).
 }
 
 // doContextSwitchABI0 is the ABI0 entry point for context switching.

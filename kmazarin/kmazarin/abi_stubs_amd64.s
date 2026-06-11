@@ -239,10 +239,11 @@ run_guard_bad:
 	JMP	bad_ctx_dump(SB)
 run_guard_ok:
 
-	// MAZ-136 IST rotation rev B: deliberately NO TSS.IST1 action — boot-time
-	// first switch, no exception chains exist, and the cursor (global, set to
-	// the IST1-half top by copyGDTToOwnedBuffer) is already correct. See the
-	// IST ROTATION banner in exceptions_amd64.s before "fixing" this absence.
+	// MAZ-136 rotations: deliberately NO TSS.IST1 or TSS.RSP0 action —
+	// boot-time first switch, no exception chains exist, and both cursors
+	// (global, set to their half tops by copyGDTToOwnedBuffer) are already
+	// correct. See the IST ROTATION and RSP0 ROTATION banners in
+	// exceptions_amd64.s before "fixing" this absence.
 
 	// Build IRETQ frame: SS, RSP, RFLAGS, CS, RIP (push in reverse order)
 	PUSHQ	ThreadContext_SS(R12)		// SS from context
@@ -325,11 +326,11 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	// ctx.TLSG, so a stale TLSG here would resurface "morestack on g0" at the
 	// next stack growth. R14 is the authoritative g at a voluntary yield.
 	FST(R12, ThreadContext_TLSG, R14)
-	// MAZ-136 IST rotation rev B: deliberately NO TSS.IST1 save here.
-	// The cursor is GLOBAL (never per-thread); Yield is a voluntary CALL,
-	// not an exception, so no chain dies and there is nothing to retire.
-	// See the IST ROTATION banner in exceptions_amd64.s before "fixing"
-	// this absence.
+	// MAZ-136 rotations: deliberately NO TSS.IST1 or TSS.RSP0 save here.
+	// Both cursors are GLOBAL (never per-thread); Yield is a voluntary
+	// CALL, not an exception, so no chain dies and there is nothing to
+	// retire on either. See the IST ROTATION and RSP0 ROTATION banners in
+	// exceptions_amd64.s before "fixing" this absence.
 
 	// Save RIP = return address (pushed by CALL to us)
 	MOVQ	0(SP), AX
@@ -467,12 +468,13 @@ yr_rip_ok:
 yr_guard_bad:
 	JMP	bad_ctx_dump(SB)
 yr_guard_ok:
-	// MAZ-136 IST rotation rev B: deliberately NO TSS.IST1 action on this
+	// MAZ-136 rotations: deliberately NO TSS.IST1 or TSS.RSP0 action on this
 	// switch. Yield is not an exception (no chain dies → nothing to retire),
-	// and the cursor is GLOBAL — it already protects the suspended chains of
-	// every context, including a preempted kernel target's. Writing any
-	// per-context value here re-creates the KVM-run-4 shared-stack trample.
-	// See the IST ROTATION banner in exceptions_amd64.s.
+	// and both cursors are GLOBAL — they already protect the suspended chains
+	// of every context, including a preempted kernel target's and parked
+	// SyscallWaitSoftIRQ chains. Writing any per-context value here
+	// re-creates the KVM-run-4 shared-stack trample. See the IST ROTATION
+	// and RSP0 ROTATION banners in exceptions_amd64.s.
 	// Restore XMM registers from target thread's ctx.XMM
 	MOVOU	ThreadContext_XMM+0(R12), X0
 	MOVOU	ThreadContext_XMM+16(R12), X1

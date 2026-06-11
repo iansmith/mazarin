@@ -375,7 +375,8 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	//                                   exception_return never runs; any
 	//                                   SHALLOWER suspended chains keep
 	//                                   their reservations ....... (balanced)
-	//   diagnostic halt (KX / !F: / BADIRETQ / BADCTX / ISTOVF) ... (moot)
+	//   diagnostic halt (KX / !F: / BADIRETQ / BADCTX / ISTOVF /
+	//                    RSPOVF / RSPOVR) ...................... (moot)
 	// YieldToReadyThread / RunFirstThread deliberately touch NOTHING: they
 	// are not exceptions, no chain dies there, and the global cursor already
 	// accounts for the suspended chains of every context they switch
@@ -412,6 +413,87 @@ ist_rotate_ovf_tramp:
 	JMP	ist_overflow_dump(SB)	// terminal: prints state, then cli;hlt
 ist_rotate_done:
 	// ═══════════════════════ end IST ROTATION entry ═════════════════════════
+
+	// ═══════════ RSP0 ROTATION — THE SECOND CURSOR (MAZ-136) ════════════════
+	// ‼ MINEFIELD — this is the IST scheme's twin for the OTHER fixed top.
+	// ‼ Read the IST ROTATION banner above end to end FIRST; everything there
+	// ‼ (invariant, induction, exit-path table, GATE proof, the per-thread
+	// ‼ prohibition, the known kill-leak) applies verbatim to this cursor.
+	//
+	// WHY A SECOND CURSOR: TSS.RSP0 (tssBuffer bytes 4-11) is hardware-
+	// loaded as RSP on EVERY ring3→ring0 transition that is NOT IST-vectored
+	// (INT $0x80 and user-mode #GP/#DE/#UD — any IDT entry with IST index 0;
+	// #PF/timer/device are IST1-vectored and land on the other half). Ring-3
+	// SYSCALLs reach the SAME half through syscallEntry's SOFTWARE switch.
+	// SyscallWaitSoftIRQ PARKS a live, resumable syscall chain on this half
+	// (STI+HLT, interrupts enabled): with a fixed top, the next ring-3 entry
+	// landed AT the top and trampled the parked chain, which later RETs
+	// through an overwritten return-address slot into dead stack — run 45's
+	// execute-the-stack at RIP = RSP0top−0x410, the original deterministic
+	// 0xFFFFFFFF44125BF0 geometry. Variant 1 (d15893b2) gated only the
+	// SOFTWARE reset in syscallEntry; the HARDWARE reset has no software
+	// gate, so the only fix is making TSS.RSP0 itself the moving cursor.
+	//
+	// UNIFORM ARITHMETIC: both cursors rotate on EVERY entry through here,
+	// regardless of which half this frame physically landed on (or neither —
+	// a ring-0 #GP nests in place on g0). No per-half classification branch,
+	// no second proof: the IST banner's exit-path table balances BOTH
+	// cursors, because every listed exit performs both ADDs. The price is
+	// pure accounting slack — a chain reserves a stride on the half it does
+	// NOT occupy — paid for by the halves' depth budgets (8 IST levels,
+	// 14 RSP0 levels of $const_rsp0RotateStride = 8 KiB in the 112 KiB half).
+	//
+	// THE PARKED-CHAIN RESERVATION IS THE FIX: a suspended chain's entry SUB
+	// stays un-retired until that chain itself exits. While SyscallWaitSoftIRQ
+	// is parked, its reservation stands — every later ring3→ring0 delivery
+	// (hardware RSP0 load or syscallEntry's cursor read) lands one stride
+	// BELOW the parked frames instead of on top of them. This is exactly the
+	// IST banner's "shallower suspended chains keep their reservations" case;
+	// the suspended-resumable mid-syscall kernel threads of the documented
+	// svcDepth holes are the same hazard class and are covered the same way.
+	//
+	// ‼ ONE-LEVEL-USE BOUND (the assumption that keeps 8 KiB safe): one
+	// nesting level on the RSP0 half must use LESS than one stride — the
+	// 168 B CPU+GPR frame plus the full ring-3 syscall Go dispatch, which
+	// GO_CALL runs ON THIS STACK (syscall table, klog, delegate machinery;
+	// the parked chain was observed at ~0x410 B). A level that outgrows its
+	// stride reaches below the lowered cursor and the next delivery lands
+	// inside it anyway — the RSPOVF floor tripwire and the IRETQ guard turn
+	// that into a diagnosable halt instead of silent corruption.
+	//
+	// ‼ THE COUPLING TRAP (the one place this cursor differs from IST1):
+	// rotating ONLY the TSS field does NOT fix ring-3 SYSCALLs — SYSCALL
+	// switches no stacks in hardware; those entries take syscallEntry's
+	// software switch. That switch MUST read this live cursor
+	// (·tssBuffer+4), never a fixed top — see the matching banner at
+	// syscall_do_switch before touching either site. excStackTopForSyscall
+	// is BOOT-WINDOW-ONLY (threads.go).
+	//
+	// ‼ PER-THREAD RSP0 STATE IS FORBIDDEN — the IST banner's rev-A lesson,
+	// same shared-region argument: the RSP0 half is ONE region holding every
+	// thread's parked syscall chains; any per-thread reset reuses it over
+	// another thread's live chain.
+	//
+	// INVARIANT: TSS.RSP0 = rsp0Ceil − rsp0RotateStride × (live exception
+	// chains, ALL threads). GATE: rsp0Floor (published LAST by
+	// copyGDTToOwnedBuffer, after the IST pair; the IST banner's GATE
+	// paragraph covers why entry and exit can never disagree). REGISTERS:
+	// R12/R13 scratch again — the IST block above is done with them; flags
+	// dead (interrupted RFLAGS lives in the CPU frame).
+	MOVQ	·rsp0Floor(SB), R13
+	TESTQ	R13, R13
+	JZ	rsp0_rotate_done	// split not published yet (early boot): no rotation
+	MOVQ	·tssBuffer+4(SB), R12	// live RSP0 (TSS bytes 4-11; unaligned qword is fine on WB memory)
+	SUBQ	$const_rsp0RotateStride, R12
+	CMPQ	R12, R13		// would rotate below rsp0Floor → nesting deeper
+	JB	rsp0_rotate_ovf_tramp	//   than the 14 reserved levels → halt loudly
+	MOVQ	R12, ·tssBuffer+4(SB)	// commit: the next ring3→ring0 delivery lands lower
+	INCQ	·rsp0SubCount(SB)	// accounting (see RSPCT in syscall_amd64.go)
+	JMP	rsp0_rotate_done
+rsp0_rotate_ovf_tramp:
+	JMP	rsp0_overflow_dump(SB)	// terminal: prints state, then cli;hlt
+rsp0_rotate_done:
+	// ══════════════════════ end RSP0 ROTATION entry ═════════════════════════
 
 	// SP now points to the exception frame
 	// Frame pointer = SP
@@ -1012,6 +1094,40 @@ pf_cs2:	OUTB
 	MOVQ	·tssBuffer+36(SB), R15
 	CALL	pf_print_hex16(SB)
 
+	// RSP0-rotation accounting — the second cursor's twin line (see the
+	// RSPCT comment in syscall_amd64.go): subs, eret ADDs, load_context
+	// ADDs, live RSP0 cursor. Same deficit arithmetic as ISTCT above.
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·rsp0SubCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'E', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·rsp0EretAddCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·rsp0LcAddCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+4(SB), R15
+	CALL	pf_print_hex16(SB)
+
 	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
 	JMP	pf_unhandled_halt
@@ -1550,6 +1666,27 @@ eret_ist_overshoot:
 	JMP	ist_overshoot_dump(SB)
 eret_ist_done:
 
+	// RSP0 ROTATION (MAZ-136) — the second cursor's balancing ADD, twin of
+	// the IST ADD above with the identical gate/tripwire shape. ‼ Read the
+	// RSP0 ROTATION banner in common_exception_entry BEFORE changing this.
+	// An over-retire here would park the cursor above a still-live parked
+	// syscall chain — the next ring-3 delivery lands on it (the run-45
+	// trample). AX scratch, single-instruction memory ADD: same as above.
+	MOVQ	·rsp0Floor(SB), AX
+	TESTQ	AX, AX
+	JZ	eret_rsp0_done
+	MOVQ	·tssBuffer+4(SB), AX
+	ADDQ	$const_rsp0RotateStride, AX	// retire this level's reservation
+	CMPQ	AX, ·rsp0Ceil(SB)
+	JA	eret_rsp0_overshoot	// over-retire — halt BEFORE the trample, with context
+	MOVQ	AX, ·tssBuffer+4(SB)
+	INCQ	·rsp0EretAddCount(SB)	// accounting (see RSPCT in syscall_amd64.go)
+	JMP	eret_rsp0_done
+eret_rsp0_overshoot:
+	MOVQ	$1, R14			// site code 1 = exception_return (halting; R14 free)
+	JMP	rsp0_overshoot_dump(SB)
+eret_rsp0_done:
+
 	// FS_BASE handling depends on whether we're returning to user or kernel mode.
 	//
 	// User return (CS=0x1B): WRMSR to restore savedExcFSBase (user TLS base).
@@ -1804,6 +1941,29 @@ lc_ist_overshoot:
 	MOVQ	$2, R14			// site code 2 = load_context_and_iretq (halting)
 	JMP	ist_overshoot_dump(SB)
 lc_ist_done:
+
+	// RSP0 ROTATION (MAZ-136): retire the ABANDONING handler's RSP0
+	// reservation — the second cursor's twin of the IST ADD above; the same
+	// "shallower suspended chains keep their reservations" argument is what
+	// protects the parked SyscallWaitSoftIRQ chain this rotation exists for.
+	// ‼ Do NOT "restore", reset, or install any per-context value into
+	// TSS.RSP0 here — the RSP0 half is ONE shared region (see the RSP0
+	// ROTATION banner at common_exception_entry). Same gate as entry/return.
+	// AX is scratch (reloaded from ctx before IRETQ).
+	MOVQ	·rsp0Floor(SB), AX
+	TESTQ	AX, AX
+	JZ	lc_rsp0_done		// rotation not armed (early boot)
+	MOVQ	·tssBuffer+4(SB), AX
+	ADDQ	$const_rsp0RotateStride, AX	// retire the dying level
+	CMPQ	AX, ·rsp0Ceil(SB)
+	JA	lc_rsp0_overshoot	// over-retire — see exception_return's twin check
+	MOVQ	AX, ·tssBuffer+4(SB)
+	INCQ	·rsp0LcAddCount(SB)	// accounting (see RSPCT in syscall_amd64.go)
+	JMP	lc_rsp0_done
+lc_rsp0_overshoot:
+	MOVQ	$2, R14			// site code 2 = load_context_and_iretq (halting)
+	JMP	rsp0_overshoot_dump(SB)
+lc_rsp0_done:
 
 	// Restore FS_BASE from context (per-thread TLS base).
 	// Without this, userspace threads that called arch_prctl(ARCH_SET_FS)
@@ -2351,6 +2511,120 @@ ist_ovr_halt:
 	HLT
 	JMP	ist_ovr_halt
 
+// rsp0_overflow_dump — the RSP0 rotation would lower TSS.RSP0 below
+// rsp0Floor: twin of ist_overflow_dump for the second cursor. Either
+// exception nesting exceeded the 14 reserved levels, a single level broke
+// the one-level-use bound (grew past rsp0RotateStride — see the RSP0
+// ROTATION banner in common_exception_entry), or an exit path leaked strides
+// until the drift hit the floor. Halting here is the POINT — the alternative
+// is the silent parked-chain trample this scheme exists to prevent. Prints
+// vector, svcDepth, the live RSP0, the floor, and SP, then halts. Never
+// returns; registers are free.
+TEXT rsp0_overflow_dump(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+4(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·rsp0Floor(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	SP, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+rsp0_ovf_halt:
+	HLT
+	JMP	rsp0_ovf_halt
+
+// rsp0_overshoot_dump — an RSP0-rotation ADD would raise the cursor ABOVE
+// the RSP0-half top (rsp0Ceil): an OVER-RETIRE; twin of ist_overshoot_dump
+// for the second cursor. Some exit path released a reservation belonging to
+// a still-live chain — most dangerously a PARKED SyscallWaitSoftIRQ chain;
+// the next ring3→ring0 delivery would land on top of it (the MAZ-136 run-45
+// trample). Halting here catches the guilty exit in the act, BEFORE the
+// trample. In: R14 = site code (1 = exception_return,
+// 2 = load_context_and_iretq). Prints site, vector, svcDepth, the live
+// cursor, the ceiling, and SP, then halts. Never returns; registers are free.
+TEXT rsp0_overshoot_dump(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	R14, R15		// site code
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+4(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·rsp0Ceil(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	SP, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+rsp0_ovr_halt:
+	HLT
+	JMP	rsp0_ovr_halt
+
 // ============================================================================
 // SYSCALL Entry - entered via x86_64 SYSCALL instruction
 // ============================================================================
@@ -2393,7 +2667,26 @@ TEXT ·syscallEntry(SB), NOSPLIT|NOFRAME, $0
 	CMPQ	SP, CX
 	JB	syscall_keep_stack	// inside [excStackBottom, excStackTop) → nest in place
 syscall_do_switch:
-	MOVQ	·excStackTopForSyscall(SB), SP
+	// ‼ RSP0 ROTATION COUPLING (MAZ-136) — this switch MUST track the LIVE
+	// cursor. SYSCALL switches no stacks in hardware, so ring-3 SYSCALLs
+	// bypass the rotating TSS.RSP0 load entirely — this software switch is
+	// their ONLY stack reset. Pointing it at a fixed top resurrects the
+	// parked-chain trample the RSP0 rotation exists to fix (run 45:
+	// execute-the-stack at RSP0top−0x410 over SyscallWaitSoftIRQ's parked
+	// chain). Read TSS.RSP0 (·tssBuffer+4 — the cursor the rotation
+	// maintains; see the RSP0 ROTATION banner in common_exception_entry),
+	// NEVER excStackTopForSyscall, which is boot-window-only (threads.go).
+	// Gate: before copyGDTToOwnedBuffer publishes rsp0Floor the cursor
+	// bytes are 0 — fall back to the boot-window top (pre-rotation
+	// behavior; common_exception_entry's SUB skips on the same gate, so
+	// entry and exit stay balanced). CX is free here (see above).
+	MOVQ	·rsp0Floor(SB), CX
+	TESTQ	CX, CX
+	JZ	syscall_switch_boot
+	MOVQ	·tssBuffer+4(SB), SP	// live RSP0 cursor: land BELOW parked chains
+	JMP	syscall_keep_stack
+syscall_switch_boot:
+	MOVQ	·excStackTopForSyscall(SB), SP	// boot window only (rsp0Floor==0)
 syscall_keep_stack:
 
 	// Detect Ring 0 vs Ring 3 SYSCALL by checking the caller's RSP.

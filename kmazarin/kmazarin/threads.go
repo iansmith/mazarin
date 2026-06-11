@@ -191,10 +191,15 @@ var scanLastTick uint64
 // syscallDiagCount counts total syscalls from user threads.
 var syscallDiagCount uint64
 
-// excStackTopForSyscall is the kernel exception stack top address.
-// Used by the SYSCALL entry handler to switch from the user stack to a
-// valid kernel stack. SYSCALL (unlike INT) does NOT switch stacks via TSS,
-// so we must do it manually.
+// excStackTopForSyscall is the kernel exception stack top address — BOOT
+// WINDOW ONLY. It is NOT the live syscall-entry stack top: after
+// copyGDTToOwnedBuffer splits the stack and arms the rotations, the live top
+// is the rotating TSS.RSP0 cursor (tssBuffer bytes 4-11 — see the RSP0
+// ROTATION banner in exceptions_amd64.s). syscallEntry reads this var only
+// while rsp0Floor == 0 (SYSCALL lands before the split is published);
+// afterwards its sole role is having fed copyGDTToOwnedBuffer's split
+// arithmetic. Do not read it as "the" syscall stack top — a fixed top is
+// exactly the parked-chain trample MAZ-136's RSP0 rotation exists to fix.
 var excStackTopForSyscall uint64
 
 // excStackBottom / excStackTop bound the whole exception stack (both halves
