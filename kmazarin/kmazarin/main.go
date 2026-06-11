@@ -525,6 +525,16 @@ func initVirtIOInputDevices() {
 var kernelBootTick uint64
 
 func simpleMain() {
+	// INVARIANT (MAZ-136): kernel main MUST NEVER GOPARK. The exception-
+	// dispatch design borrows the g0/m0 identity for every vector-129
+	// handler, which is only safe while m0 holds a P — and that holds
+	// precisely because kernel main runs on m0 forever (KernelIdleLoop
+	// never goparks; workers run ON m0 via async preemption so the P
+	// never leaves). One gopark migrates kernel main off m0 and m0 sits
+	// parked WITHOUT a P from then on; the first allocating user-syscall
+	// handler nil-derefs in mallocgc. Full story + the LockOSThread
+	// non-fix: the canary comment in netpoll_init.go.
+
 	kernelBootTick = kirq.ReadCounterValue()
 
 	// Test runtime readiness FIRST (before unmapping Cardinal)

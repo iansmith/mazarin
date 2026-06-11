@@ -1,10 +1,17 @@
 package main
 
 import (
-	"time"
+	_ "unsafe" // for go:linkname
 
 	"mazzy/kmazarin/klog"
 )
+
+// runtimeNetpollGenericInit pulls runtime.netpollGenericInit via linkname
+// (established pattern, see linkname_impl.go). It is idempotent and
+// lock-protected in the runtime, and — critically — it does NOT gopark.
+//
+//go:linkname runtimeNetpollGenericInit runtime.netpollGenericInit
+func runtimeNetpollGenericInit()
 
 // kernelNetpollEagerInit forces the KERNEL runtime's netpollGenericInit to
 // run now, at a deterministic boot point, instead of at the first kernel
@@ -13,14 +20,6 @@ import (
 // in ticket-active/MAZ-136: bgscavenge → scavengerState.sleep → timer.reset
 // → timers.addHeap → netpollGenericInit → throw at netpoll_epoll.go:40).
 //
-// Mechanism: timers.addHeap (runtime/time.go:455) calls netpollGenericInit
-// when netpollInited == 0. ‼ time.NewTimer does NOT work as the trigger:
-// since go1.23, channel-based timers are LAZY — they touch the heap only
-// once the channel is received from, so NewTimer+Stop never reaches addHeap
-// (verified: run 41 printed "init OK" yet the scavenger still ran the real
-// init a minute later). time.Sleep arms a sleep timer via timer.reset —
-// the scavenger's exact path — and reaches addHeap synchronously.
-//
 // netpollGenericInit issues epoll_create1 + eventfd + epoll_ctl through the
 // kernel's own syscall path (ksyscall's magic-fd netpoll emulation,
 // kmazarin/ksyscall/epoll.go). If that path regresses for KERNEL-context
@@ -28,8 +27,29 @@ import (
 // HERE, loudly and every time — instead of intermittently, minutes later.
 // The userspace overlay (runtime-patches for shepherds, netpoll_maz_init.go)
 // does the same eager init for every shepherd; this is the kernel's twin.
+//
+// ‼ The init MUST be triggered by the direct linkname call — NOT by
+// time.Sleep, and NOT by time.NewTimer:
+//   - time.Sleep (the original mechanism) GOPARKS kernel main. The whole
+//     exception-dispatch design borrows the g0/m0 identity for vector-129
+//     handlers, which is only safe while m0 holds a P — and that holds
+//     precisely because kernel main runs on m0 forever (KernelIdleLoop
+//     never goparks) so workers run ON m0 via async preemption and the P
+//     never leaves. One gopark lets the scheduler resume kernel main on a
+//     DIFFERENT M; m0 then sits parked WITHOUT a P and the first
+//     allocating user-syscall handler nil-derefs in mallocgc
+//     (getMCache(m0): m.p==0, mcache0 cleared post-bootstrap). Observed
+//     5/5 under KVM (GMP dump: P=0 MC0=0; BPW chain QueryInputDevices →
+//     newobject → mallocgc); TCG never interleaved tightly enough.
+//     KERNEL MAIN MUST NEVER GOPARK (MAZ-136).
+//     (runtime.LockOSThread is NOT the fix: a locked M runs ONLY its
+//     locked goroutine, so with GOMAXPROCS=1 every worker timeslice would
+//     force the P OFF m0 — reopening the window far more often.)
+//   - time.NewTimer never reaches the timer heap at all: since go1.23
+//     channel-based timers are LAZY (verified empirically, run 41 printed
+//     OK without initializing).
 func kernelNetpollEagerInit() {
 	klog.Logf("[netpoll] kernel eager netpoll init...\n")
-	time.Sleep(time.Millisecond) // timer.reset → addHeap → netpollGenericInit
+	runtimeNetpollGenericInit()
 	klog.Logf("[netpoll] kernel eager netpoll init OK\n")
 }
