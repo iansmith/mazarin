@@ -278,16 +278,11 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			// kick so the device raises one interrupt when this batch finishes,
 			// not one per block. Must precede Notify so the threshold is in place
 			// before the device starts completing requests.
-			//
-			// LIMITATION (intentional — current callers use the full-batch
-			// pattern): this arms `used_event` exactly once, gated on
-			// submitted>0, using THIS call's minComplete. A wait-only follow-up
-			// (toSubmit=0, minComplete>0) submits nothing, so it never rearms;
-			// if it needs a higher threshold than the last submit armed, the
-			// device may not re-raise and the wait sleeps until timeout. The
-			// only caller today (maz/fs/main.go) submits and waits in one
-			// IOUringEnter, so this never triggers. If a wait-only/partial-wait
-			// caller is added, rearm used_event in the Phase B wait path below.
+			// This arms `used_event` for the submit+wait (full-batch) pattern.
+			// A submit-less wait on a block ring (toSubmit=0, minComplete>0)
+			// skips this block (submitted==0) and instead rearms in Phase B
+			// before blocking — see the rearm there — so wait-only block
+			// callers don't sleep until timeout on a stale threshold.
 			armBlockCompletionEvent(minComplete)
 			asm.Dsb()
 			dev.Eng.Notify()
@@ -307,6 +302,27 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 		if completions >= minComplete {
 			return int64(completions)
+		}
+
+		// EVENT_IDX rearm for the submit-less wait (MAZ-136, CodeRabbit PR #74).
+		// The Phase A arm is gated on submitted>0, so a wait-only IOUringEnter
+		// (toSubmit=0, minComplete>0) never armed the block VirtQ used_event and
+		// would sleep until the I/O timeout. Arm the current threshold here,
+		// before blocking, so the device raises the completion IRQ for THIS
+		// wait. Scoped to submitted==0 to leave the throughput-critical
+		// full-batch path (already armed at submit) untouched.
+		//
+		// MUST also gate on the ring being a block ring: armBlockCompletionEvent
+		// keys off the single global blockEnginePtr, NOT the calling ring, so its
+		// only no-op case is "no block device present at all". rachel's input
+		// reader (deviceType==1) and the net RX worker (deviceType==2) both block
+		// here on IOUringEnter(ring, 0, 1, 0) — without the device-type gate they
+		// would rewrite the BLOCK VirtQ's used_event on every idle input/packet
+		// wait, racing the fs shepherd's legitimate arm and the block IRQ
+		// top-half, and potentially stalling block I/O.
+		if submitted == 0 && ioUringSlotDeviceType(ringID) == 0 {
+			armBlockCompletionEvent(minComplete)
+			asm.Dsb()
 		}
 
 		// Block: find next thread, context-switch.
