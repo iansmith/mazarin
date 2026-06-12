@@ -1484,6 +1484,16 @@ func printEpochStatus() {
 	if uartDropped > 0 {
 		extra += fmt.Sprintf("  uart-ring: dropped=%d\n", uartDropped)
 	}
+	// MAZ-141: priority-wake counters (written from the IRQ-return path).
+	// Surfaced here so pwake activity is observable; a fresh ring dump on
+	// abnormal shepherd exit lives in pwake_trace_amd64.go. el1h/nog0 are the
+	// ARM64-only block reasons (always 0 on amd64, which gates on svc instead).
+	if pwChecked := atomic.LoadUint32(&dbgPWakeChecked); pwChecked > 0 {
+		extra += fmt.Sprintf("  pwake: checked=%d switched=%d svc=%d noctx=%d el1h=%d nog0=%d\n",
+			pwChecked, atomic.LoadUint32(&dbgPWakeSwitched),
+			atomic.LoadUint32(&dbgPWakeSVC), atomic.LoadUint32(&dbgPWakeNoCtx),
+			atomic.LoadUint32(&dbgPWakeEL1h), atomic.LoadUint32(&dbgPWakeNoG0))
+	}
 
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+

@@ -1,2 +1,8 @@
 system = "linear"
 key    = "MAZ"
+
+# PR code review backend for /slopstop-pr.
+# "claude" → in-house /code-review (Skill); "coderabbit" → CodeRabbit bot.
+[pr_review]
+backend = "claude"
+effort  = "high"

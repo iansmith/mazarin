@@ -5,6 +5,13 @@ import (
 	"mazzy/kmazarin/proc"
 )
 
+// OnShepherdExit, if set, is invoked from exitGroupImpl when a shepherd exits
+// with an abnormal (non-zero) status. MAZ-141 registers it (amd64 only) to dump
+// the priority-wake diagnostic ring while it is still fresh, so a `morestack on
+// g0` / spill-zero death can be correlated to the pwake event that woke the
+// dying shepherd. nil by default (e.g. ARM64) — then this is a no-op.
+var OnShepherdExit func()
+
 // SyscallExit implements the exit(2) syscall (syscall 93)
 // Gracefully exits the current thread and switches to another.
 //
@@ -62,6 +69,15 @@ func exitGroupImpl(status uint64) int64 {
 
 	// Log shepherd exit to UART for diagnostics (Criticalf uses polling, always visible).
 	klog.Criticalf("E", "E%02d status=%d\n", int16(pid), int64(status))
+
+	// MAZ-141: on any abnormal exit (non-zero status — status=2 for a Go
+	// `runtime.throw` like `morestack on g0`, or 128+signum for a signal-killed
+	// shepherd), dump the priority-wake ring while it is still fresh so the death
+	// can be correlated to the pwake event that woke this shepherd. No-op when
+	// unregistered (e.g. ARM64).
+	if status != 0 && OnShepherdExit != nil {
+		OnShepherdExit()
+	}
 
 	// Userspace exit_group — kill all threads of this shepherd
 	nextCtx := TerminateShepherd(pid, int64(status))
