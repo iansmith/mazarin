@@ -586,6 +586,50 @@ handle_syscall:
 	MOVQ	DX, -8(AX)		// Write kernel g to kernel TLS slot
 	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
 
+	// MAZ-136 MPNIL tripwire. The borrowed g0 identity we just installed is
+	// only safe to ALLOCATE against while mallocgc can find a live mcache.
+	// mallocgc reads it via getMCache(g0.m): p.mcache if g0.m.p != 0, else
+	// the global runtime.mcache0. The MAZ-136 crash was the exact pair
+	// p==0 AND mcache0==0 — procresize clears mcache0 once real Ps exist,
+	// so a P-less m0 post-bootstrap nil-derefs deep inside mallocgc with a
+	// cryptic `!F:0 @mallocgcSmallNoscan` signature (KVM GMP dump: P=0
+	// MC0=0). The deterministic boot-time cause is fixed (kernel main never
+	// goparks, d94cc06b); this catches the RESIDUAL — any future regression
+	// that strips m0's P (a new gopark of kernel main, a P handoff) — at the
+	// borrow site instead of as a far-away allocator crash.
+	//
+	// The mcache0 fall-through is LOAD-BEARING, not belt-and-suspenders:
+	// during EARLY boot (before procresize) m0 legitimately has p==0 while
+	// mcache0 is still the valid bootstrap cache, so allocations succeed —
+	// halting on p==0 alone false-fires there (it did, on ARM64, right
+	// after the kernel jump). Only p==0 AND mcache0==0 is the real fault.
+	//
+	// Offsets g.m=48 / m.p=208 are disasm-pinned to Go 1.26.2 (same as the
+	// GMP diagnostic dump). DX = g0; AX/DX are dead (the dispatch reloads
+	// its args from the frame below). NOTE: does NOT cover the GC-STW
+	// mcache-mid-flush window where p!=0 — that is MAZ-140. amd64 reaches
+	// here only for vector 129 (userspace SYSCALL — the only path that
+	// borrows g0; kernel INT-0x80 keeps its own g), so this guard scopes to
+	// the user-syscall borrow exactly.
+	MOVQ	48(DX), AX		// m = g0.m
+	MOVQ	208(AX), AX		// p = m.p
+	TESTQ	AX, AX
+	JNZ	syscall_mpok		// p != 0 → mallocgc uses p.mcache (MAZ-140 covers p!=0/flush)
+	MOVQ	runtime·mcache0(SB), AX	// p == 0 → mallocgc falls back to mcache0
+	TESTQ	AX, AX
+	JNZ	syscall_mpok		// mcache0 valid (early boot, pre-procresize) → alloc OK
+	MOVW	$0x3F8, DX
+	MOVB	$'M', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'N', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'\n', AX; OUTB
+mpnil_halt:
+	HLT
+	JMP	mpnil_halt
+syscall_mpok:
+
 syscall_skip_g_setup:
 	// Save ELR (RIP) and SPSR (RFLAGS) for clone
 	MOVQ	128(SP), R13		// RIP from frame (callee-saved scratch)

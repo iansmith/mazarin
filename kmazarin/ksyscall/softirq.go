@@ -159,6 +159,36 @@ func SyscallRegisterCompletionRing(ringVA, deviceType, _, _, _, _ uint64) int64 
 // arg0 = pointer to InputDeviceInfo array in userspace (max 8 entries)
 // Returns: number of devices found, or negative errno.
 //
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ ALLOCATION-FREE CONTRACT (MAZ-136) — this handler and its whole call tree  │
+// │ must never heap-allocate.                                                  │
+// └──────────────────────────────────────────────────────────────────────────┘
+// A user syscall runs INLINE on the exception stack under the kernel's
+// borrowed g0/m0 identity (the g0 switch in exceptions_{amd64,arm64}.s). Heap
+// allocation on that path reads the mcache via getMCache(g0.m) — g0.m.p.mcache,
+// or the global mcache0 when m0 is P-less — and nil-derefs deep inside mallocgc
+// whenever m0 has no P and mcache0 is cleared (the MAZ-136 crash:
+// `!F:0 @mallocgcSmallNoscan`). The MPNIL tripwire at the borrow site halts on
+// that exact condition; this contract keeps handlers from ever reaching an
+// allocator on that path in the first place. The transitive must-stay-
+// allocation-free set is:
+//
+//	SyscallQueryInputDevices
+//	  ├─ kmem.WalkUserPageTable / WalkUserPageTableWithL0  (page-table walk)
+//	  ├─ kmem.HandleUserPageFault                          (demand-page fill)
+//	  ├─ kmem.MapPAToKernelScratch                         (scratch remap)
+//	  └─ QueryInputDevicesKernel (soft_irq_slots.go)       (see its own contract)
+//
+// The user destination is filled DIRECTLY through the scratch mapping (non-heap
+// memory) instead of via a local [maxDevices]hid.InputDeviceInfo array: that
+// array escaped to the heap (newobject, 128-byte class) across the //go:noinline
+// cross-package QueryInputDevicesKernel call and was the convicted allocation.
+// Do NOT reintroduce escaping locals, slices, maps, closures, interface boxing,
+// or fmt here. VERIFY after any change: the handler's frame must show no call to
+// runtime.newobject / runtime.mallocgc in the FINAL ELF (disassemble the symbol
+// with gobjdump for amd64 / llvm-objdump for arm64). The residual GC-STW window
+// where p != 0 but the mcache is mid-flush is tracked separately as MAZ-140.
+//
 //go:noinline
 func SyscallQueryInputDevices(bufPtr, _, _, _, _, _ uint64) int64 {
 	if bufPtr == 0 {
@@ -166,21 +196,23 @@ func SyscallQueryInputDevices(bufPtr, _, _, _, _, _ uint64) int64 {
 	}
 
 	const maxDevices = 8
-	var infos [maxDevices]hid.InputDeviceInfo
-	n := QueryInputDevicesKernel(infos[:], maxDevices)
 
-	if n == 0 {
-		return 0
-	}
-
-	// Ensure user page is mapped (demand-page if needed)
+	// Map the user page FIRST, then have QueryInputDevicesKernel fill it
+	// DIRECTLY through the scratch mapping — no intermediate
+	// [maxDevices]hid.InputDeviceInfo array. That local array used to escape
+	// to the heap (newobject, 128-byte size class) across the //go:noinline
+	// cross-package QueryInputDevicesKernel call, and a user syscall runs on
+	// the borrowed g0/m0 identity: if m0 is P-less, the escape nil-derefs
+	// deep inside mallocgc on the exception stack (MAZ-136). The scratch
+	// mapping is non-heap memory, so the slice over it does not allocate —
+	// this handler is now allocation-free (MAZ-136 Option D). The paging /
+	// single-page-scratch behavior is unchanged from the prior version.
 	if kmem.WalkUserPageTable(uintptr(bufPtr)) == 0 {
 		if !kmem.HandleUserPageFault(uintptr(bufPtr), 0) {
 			return -14 // EFAULT
 		}
 	}
 
-	// Write to userspace via scratch mapping
 	userPA := kmem.WalkUserPageTable(uintptr(bufPtr))
 	if userPA == 0 {
 		return -14 // EFAULT
@@ -193,9 +225,7 @@ func SyscallQueryInputDevices(bufPtr, _, _, _, _, _ uint64) int64 {
 	}
 
 	dst := (*[maxDevices]hid.InputDeviceInfo)(unsafe.Pointer(scratchVA + uintptr(pageOffset)))
-	for i := 0; i < n; i++ {
-		dst[i] = infos[i]
-	}
+	n := QueryInputDevicesKernel(dst[:], maxDevices)
 
 	return int64(n)
 }
