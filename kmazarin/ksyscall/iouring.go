@@ -278,6 +278,16 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			// kick so the device raises one interrupt when this batch finishes,
 			// not one per block. Must precede Notify so the threshold is in place
 			// before the device starts completing requests.
+			//
+			// LIMITATION (intentional — current callers use the full-batch
+			// pattern): this arms `used_event` exactly once, gated on
+			// submitted>0, using THIS call's minComplete. A wait-only follow-up
+			// (toSubmit=0, minComplete>0) submits nothing, so it never rearms;
+			// if it needs a higher threshold than the last submit armed, the
+			// device may not re-raise and the wait sleeps until timeout. The
+			// only caller today (maz/fs/main.go) submits and waits in one
+			// IOUringEnter, so this never triggers. If a wait-only/partial-wait
+			// caller is added, rearm used_event in the Phase B wait path below.
 			armBlockCompletionEvent(minComplete)
 			asm.Dsb()
 			dev.Eng.Notify()

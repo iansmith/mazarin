@@ -40,15 +40,22 @@ func callerShepherd() (p *proc.Shepherd, isKernel bool) {
 // (eventsPtr is a kernel VA); shepherd caller → user-page-table write.
 // EpollEvent layout: Events(uint32 @ +0), Data(uint64 @ +4).
 //
+// Returns false if a shepherd-side user write fails (unmapped / partially
+// mapped eventsPtr). Callers MUST propagate that as -EFAULT rather than
+// reporting a delivered event — otherwise an unmapped buffer silently looks
+// like a successful epoll_wait return.
+//
 //go:nosplit
-func epollDeliverEvent(eventsPtr, data uint64, isKernel bool) {
+func epollDeliverEvent(eventsPtr, data uint64, isKernel bool) bool {
 	if isKernel {
 		*(*uint32)(unsafe.Pointer(uintptr(eventsPtr))) = 1 // EPOLLIN
 		*(*uint64)(unsafe.Pointer(uintptr(eventsPtr + 4))) = data
-		return
+		return true
 	}
-	kmem.WriteUserUint32(uintptr(eventsPtr), 1) // Events = EPOLLIN
-	kmem.WriteUserUint64(uintptr(eventsPtr+4), data)
+	if !kmem.WriteUserUint32(uintptr(eventsPtr), 1) { // Events = EPOLLIN
+		return false
+	}
+	return kmem.WriteUserUint64(uintptr(eventsPtr+4), data)
 }
 
 // EpollWorkRequest contains the parameters for a goroutine-dispatched epoll_ctl.
@@ -235,7 +242,10 @@ func SyscallEpollPwait(epfd, eventsPtr, maxEvents, timeoutMS, _, _ uint64) int64
 	if ms == 0 {
 		if atomic.SwapUint32(&p.EventFdPending, 0) != 0 {
 			if eventsPtr != 0 && maxEvents > 0 && p.EventDataPtr != 0 {
-				epollDeliverEvent(eventsPtr, p.EventDataPtr, isKernel)
+				if !epollDeliverEvent(eventsPtr, p.EventDataPtr, isKernel) {
+					atomic.StoreUint32(&p.EventFdPending, 1) // undo consume
+					return -14                               // EFAULT — events buffer unmapped
+				}
 				return 1
 			}
 			// Can't report event without EventDataPtr — put pending back.
@@ -251,7 +261,10 @@ func SyscallEpollPwait(epfd, eventsPtr, maxEvents, timeoutMS, _, _ uint64) int64
 	// epoll_wait returns immediately because the fd is readable.
 	if atomic.SwapUint32(&p.EventFdPending, 0) != 0 {
 		if eventsPtr != 0 && maxEvents > 0 && p.EventDataPtr != 0 {
-			epollDeliverEvent(eventsPtr, p.EventDataPtr, isKernel)
+			if !epollDeliverEvent(eventsPtr, p.EventDataPtr, isKernel) {
+				atomic.StoreUint32(&p.EventFdPending, 1) // undo consume
+				return -14                               // EFAULT — events buffer unmapped
+			}
 			return 1
 		}
 		// Can't deliver without EventDataPtr — put pending back.
@@ -286,7 +299,9 @@ func SyscallEpollPwait(epfd, eventsPtr, maxEvents, timeoutMS, _, _ uint64) int64
 	// Stock netpoll_epoll.go checks ev.Data == &netpollEventFd; when it matches,
 	// it calls read(eventfd) and resets netpollWakeSig to 0.
 	if eventsPtr != 0 && maxEvents > 0 && p.EventDataPtr != 0 {
-		epollDeliverEvent(eventsPtr, p.EventDataPtr, isKernel)
+		if !epollDeliverEvent(eventsPtr, p.EventDataPtr, isKernel) {
+			return -14 // EFAULT — events buffer unmapped
+		}
 		return 1
 	}
 	return 0

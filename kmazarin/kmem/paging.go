@@ -880,7 +880,10 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	pfDbgFramePA = uint64(framePA)
 	pfDbgScratchVA = uint64(scratchVA)
 	zeroPageSlow(scratchVA)
-	if uint64(pageAddr) != pfDbgPageAddr || uint64(framePA) != pfDbgFramePA {
+	// Validate all three mirrored values, including scratchVA: if only the
+	// scratch VA slot was clobbered, the downstream CleanPageCache/TLB ops below
+	// would otherwise run on a wrong VA undetected.
+	if uint64(pageAddr) != pfDbgPageAddr || uint64(framePA) != pfDbgFramePA || uint64(scratchVA) != pfDbgScratchVA {
 		// Non-nosplit diagnostic (repeatFaultDiagnostic pattern): the print
 		// bodies blow the 792 B nosplit chain budget if inlined here. The
 		// kernel is provably corrupt on this path, so the morestack hazard

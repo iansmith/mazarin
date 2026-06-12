@@ -516,9 +516,21 @@ rsp0_rotate_done:
 	// also write this slot with an irrelevant value — unused; the user branch
 	// reads [savedExcFSBase-8]. Ring-0 read of mapped kernel memory. Global,
 	// single-CPU — same caveat as interruptedRIP/xmmSaveArea.)
+	// Guard the zero-base window: during early Go runtime init (before
+	// kmazarin's init() sets kmazarinFSBase) the base is 0, so [base-8] would
+	// dereference 0xFFFFFFFFFFFFFFF8 and fault INSIDE the entry path — a nested
+	// fault before any later guard runs. Store 0 instead; gLooksValid(0) is
+	// false, so SaveContextFromFrame falls back to frame R14. Mirrors the same
+	// kmazarinFSBase==0 guard at handle_page_fault (pf_skip_fsbase_setup).
 	MOVQ	·kmazarinFSBase(SB), AX
+	TESTQ	AX, AX
+	JZ	skip_tlsg_capture
 	MOVQ	-8(AX), AX
 	MOVQ	AX, ·savedExcKernelTLSG(SB)
+	JMP	tlsg_capture_done
+skip_tlsg_capture:
+	MOVQ	$0, ·savedExcKernelTLSG(SB)
+tlsg_capture_done:
 
 	// Save FS_BASE — but ONLY when exception came from userspace (CS=0x1B).
 	// Nested kernel exceptions (CS=0x08) must NOT overwrite savedExcFSBase,
