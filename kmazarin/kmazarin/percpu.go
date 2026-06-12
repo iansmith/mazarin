@@ -131,6 +131,12 @@ func getPerCPUPtrAsm() uintptr
 //
 //go:nosplit
 func InitPerCPU() {
+	// MAZ-136: probe + cache the CPU's APIC ID once, so hot-path per-CPU access
+	// (getCPUIDAsm / the timer IRQ handler) reads the cache instead of executing
+	// CPUID — an unconditional VM-exit that stormed the nested-KVM x86 host.
+	// No-op on arm64 (getCPUIDAsm reads MPIDR_EL1, which never traps).
+	initCPUIDCacheArch()
+
 	// Zero all per-CPU structures and initialize local ready queues
 	for i := 0; i < MaxCPUs; i++ {
 		perCPUData[i].currentThread = nil

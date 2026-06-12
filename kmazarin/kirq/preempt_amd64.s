@@ -41,12 +41,13 @@ TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
 	MOVQ	AX, ·TimerIRQCount(SB)
 	// AX = current tick
 
-	// Get per-CPU data pointer
-	// On x86_64, we use CPUID to get APIC ID
+	// Get per-CPU data pointer.
+	// MAZ-136: read the cached APIC ID (main.cpuIDCache) instead of executing
+	// CPUID here. CPUID is an unconditional VM-exit; running it every timer tick
+	// fed the nested-KVM x86 exit storm. The cache is filled once at boot
+	// (initCPUIDCacheArch); 0 before then, which is the correct BSP id.
 	MOVQ	AX, SI			// Save tick in SI
-	MOVL	$1, AX
-	CPUID
-	SHRL	$24, BX			// BX = APIC ID (CPU ID)
+	MOVQ	main·cpuIDCache(SB), BX	// BX = cached APIC ID (CPU ID)
 
 	// Compute perCPU pointer: &perCPUData + cpuID * PerCPUSize
 	MOVQ	main·PerCPUSize(SB), CX

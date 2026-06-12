@@ -326,6 +326,175 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	PUSHQ	BX
 	PUSHQ	AX
 
+	// ════════════════════ IST ROTATION (MAZ-136, rev B) ═════════════════════
+	// ‼ MINEFIELD — read this WHOLE banner before touching ANY line of it.
+	// ‼ Getting this wrong does not crash here; it resurfaces hours later as
+	// ‼ silent stack corruption far from the cause.
+	//
+	// WHY: #PF, timer, and device vectors are IST1-gated (idt_amd64.go). Raw
+	// IST semantics reload RSP = TSS.IST1 — a FIXED top — on EVERY delivery.
+	// A nested IST-vectored exception (a kernel #PF inside the #PF handler;
+	// an IRQ after IF is re-enabled mid-handler) would restart at that same
+	// top and TRAMPLE the suspended outer chain. That trample was the
+	// MAZ-136 corruption: a RET through an overwritten return-address slot
+	// into dead stack (the deterministic 0xFFFFFFFF44125BF0), and
+	// HandleUserPageFault's spilled pageAddr zeroed mid-flight (run-5 catch).
+	//
+	// SCHEME: TSS.IST1 is a single GLOBAL nesting cursor — the x86 equivalent
+	// of ARM64's SP_EL1, which nests continuously and never resets per
+	// delivery or per thread. Every entry through here SUBTRACTS one stride;
+	// every normal return ADDS it back (exception_return); a context switch
+	// made from inside a handler ADDS once (load_context_and_iretq — retiring
+	// exactly the abandoning handler's own level). The CPU reads the IST
+	// fields from TSS MEMORY at each delivery (LTR caches only the base), so
+	// the next nested delivery lands one stride below the lowest live
+	// reservation — underneath every live frame of every chain.
+	//
+	// INVARIANT: TSS.IST1 = (IST1-half top) − stride × (number of LIVE
+	// exception chains — running or suspended, across ALL threads).
+	// Equivalently: the cursor sits below the live frames of every live
+	// chain. Induction: each level starts at the then-current IST1 (IST
+	// delivery) or at the live SP (nested-in-place ring-0 SYSCALL /
+	// INT $0x80), immediately reserves its stride, and physically uses less
+	// than one stride (168 B frame + bounded handler chain ≪ 2 KiB) — so its
+	// own growth never reaches the lowered cursor, and deeper levels inherit
+	// the same argument.
+	//
+	// ‼ PER-THREAD IST STATE IS FORBIDDEN. Revision A carried a per-thread
+	// ctx.ISTBase restored absolutely at context switch. WRONG: the IST half
+	// is ONE shared physical region — when thread A was suspended mid-#PF-
+	// handler (live chain at the top of the half) and thread B's fresh
+	// context reset the cursor to the top, B's next #PF delivered ON TOP of
+	// A's live chain (KVM-run-4 trample, identical !F: signature). The
+	// cursor must outlive any one thread's tenure on the CPU.
+	//
+	// BALANCE: every exit from a common_exception_entry frame is exactly one
+	// of:
+	//   exception_return IRETQ ........ ADD: this level RETURNS .. (balanced)
+	//   load_context_and_iretq ........ ADD: this level DIES — its
+	//                                   exception_return never runs; any
+	//                                   SHALLOWER suspended chains keep
+	//                                   their reservations ....... (balanced)
+	//   diagnostic halt (KX / !F: / BADIRETQ / BADCTX / ISTOVF /
+	//                    RSPOVF / RSPOVR) ...................... (moot)
+	// YieldToReadyThread / RunFirstThread deliberately touch NOTHING: they
+	// are not exceptions, no chain dies there, and the global cursor already
+	// accounts for the suspended chains of every context they switch
+	// between. If you add a NEW exit path you MUST give it one of these
+	// treatments, or the arithmetic drifts one stride per traversal until
+	// ISTOVF halts.
+	//
+	// KNOWN LEAK (accepted, documented): a thread KILLED while it still owns
+	// a suspended live chain never runs that chain's ADDs — those strides
+	// leak until ISTOVF flags the drift. If ISTOVF fires with shallow
+	// nesting, hunt for exactly this.
+	//
+	// GATE: ist1Floor is 0 until copyGDTToOwnedBuffer publishes the split;
+	// the SUB, the return ADD, and the switch ADD all skip while it is 0.
+	// The floor cannot change between one exception's entry and its exit
+	// (single CPU; the only writer is straight-line init code that this
+	// exception interrupted — see ist1Floor's doc), so the gates can never
+	// disagree within one exception.
+	//
+	// REGISTERS: all GPRs are already saved in the frame above; R12/R13 are
+	// scratch and are reloaded by exception_return's POPs. Flags are dead
+	// (the interrupted RFLAGS lives in the CPU frame).
+	MOVQ	·ist1Floor(SB), R13
+	TESTQ	R13, R13
+	JZ	ist_rotate_done		// split not published yet (early boot): no rotation
+	MOVQ	·tssBuffer+36(SB), R12	// live IST1 (TSS bytes 36-43; unaligned qword is fine on WB memory)
+	SUBQ	$const_istRotateStride, R12
+	CMPQ	R12, R13		// would rotate below ist1Floor → nesting deeper
+	JB	ist_rotate_ovf_tramp	//   than the 8 reserved levels → halt loudly
+	MOVQ	R12, ·tssBuffer+36(SB)	// commit: the next delivery lands one stride lower
+	INCQ	·istSubCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	JMP	ist_rotate_done
+ist_rotate_ovf_tramp:
+	JMP	ist_overflow_dump(SB)	// terminal: prints state, then cli;hlt
+ist_rotate_done:
+	// ═══════════════════════ end IST ROTATION entry ═════════════════════════
+
+	// ═══════════ RSP0 ROTATION — THE SECOND CURSOR (MAZ-136) ════════════════
+	// ‼ MINEFIELD — this is the IST scheme's twin for the OTHER fixed top.
+	// ‼ Read the IST ROTATION banner above end to end FIRST; everything there
+	// ‼ (invariant, induction, exit-path table, GATE proof, the per-thread
+	// ‼ prohibition, the known kill-leak) applies verbatim to this cursor.
+	//
+	// WHY A SECOND CURSOR: TSS.RSP0 (tssBuffer bytes 4-11) is hardware-
+	// loaded as RSP on EVERY ring3→ring0 transition that is NOT IST-vectored
+	// (INT $0x80 and user-mode #GP/#DE/#UD — any IDT entry with IST index 0;
+	// #PF/timer/device are IST1-vectored and land on the other half). Ring-3
+	// SYSCALLs reach the SAME half through syscallEntry's SOFTWARE switch.
+	// SyscallWaitSoftIRQ PARKS a live, resumable syscall chain on this half
+	// (STI+HLT, interrupts enabled): with a fixed top, the next ring-3 entry
+	// landed AT the top and trampled the parked chain, which later RETs
+	// through an overwritten return-address slot into dead stack — run 45's
+	// execute-the-stack at RIP = RSP0top−0x410, the original deterministic
+	// 0xFFFFFFFF44125BF0 geometry. Variant 1 (d15893b2) gated only the
+	// SOFTWARE reset in syscallEntry; the HARDWARE reset has no software
+	// gate, so the only fix is making TSS.RSP0 itself the moving cursor.
+	//
+	// UNIFORM ARITHMETIC: both cursors rotate on EVERY entry through here,
+	// regardless of which half this frame physically landed on (or neither —
+	// a ring-0 #GP nests in place on g0). No per-half classification branch,
+	// no second proof: the IST banner's exit-path table balances BOTH
+	// cursors, because every listed exit performs both ADDs. The price is
+	// pure accounting slack — a chain reserves a stride on the half it does
+	// NOT occupy — paid for by the halves' depth budgets (8 IST levels,
+	// 14 RSP0 levels of $const_rsp0RotateStride = 8 KiB in the 112 KiB half).
+	//
+	// THE PARKED-CHAIN RESERVATION IS THE FIX: a suspended chain's entry SUB
+	// stays un-retired until that chain itself exits. While SyscallWaitSoftIRQ
+	// is parked, its reservation stands — every later ring3→ring0 delivery
+	// (hardware RSP0 load or syscallEntry's cursor read) lands one stride
+	// BELOW the parked frames instead of on top of them. This is exactly the
+	// IST banner's "shallower suspended chains keep their reservations" case;
+	// the suspended-resumable mid-syscall kernel threads of the documented
+	// svcDepth holes are the same hazard class and are covered the same way.
+	//
+	// ‼ ONE-LEVEL-USE BOUND (the assumption that keeps 8 KiB safe): one
+	// nesting level on the RSP0 half must use LESS than one stride — the
+	// 168 B CPU+GPR frame plus the full ring-3 syscall Go dispatch, which
+	// GO_CALL runs ON THIS STACK (syscall table, klog, delegate machinery;
+	// the parked chain was observed at ~0x410 B). A level that outgrows its
+	// stride reaches below the lowered cursor and the next delivery lands
+	// inside it anyway — the RSPOVF floor tripwire and the IRETQ guard turn
+	// that into a diagnosable halt instead of silent corruption.
+	//
+	// ‼ THE COUPLING TRAP (the one place this cursor differs from IST1):
+	// rotating ONLY the TSS field does NOT fix ring-3 SYSCALLs — SYSCALL
+	// switches no stacks in hardware; those entries take syscallEntry's
+	// software switch. That switch MUST read this live cursor
+	// (·tssBuffer+4), never a fixed top — see the matching banner at
+	// syscall_do_switch before touching either site. excStackTopForSyscall
+	// is BOOT-WINDOW-ONLY (threads.go).
+	//
+	// ‼ PER-THREAD RSP0 STATE IS FORBIDDEN — the IST banner's rev-A lesson,
+	// same shared-region argument: the RSP0 half is ONE region holding every
+	// thread's parked syscall chains; any per-thread reset reuses it over
+	// another thread's live chain.
+	//
+	// INVARIANT: TSS.RSP0 = rsp0Ceil − rsp0RotateStride × (live exception
+	// chains, ALL threads). GATE: rsp0Floor (published LAST by
+	// copyGDTToOwnedBuffer, after the IST pair; the IST banner's GATE
+	// paragraph covers why entry and exit can never disagree). REGISTERS:
+	// R12/R13 scratch again — the IST block above is done with them; flags
+	// dead (interrupted RFLAGS lives in the CPU frame).
+	MOVQ	·rsp0Floor(SB), R13
+	TESTQ	R13, R13
+	JZ	rsp0_rotate_done	// split not published yet (early boot): no rotation
+	MOVQ	·tssBuffer+4(SB), R12	// live RSP0 (TSS bytes 4-11; unaligned qword is fine on WB memory)
+	SUBQ	$const_rsp0RotateStride, R12
+	CMPQ	R12, R13		// would rotate below rsp0Floor → nesting deeper
+	JB	rsp0_rotate_ovf_tramp	//   than the 14 reserved levels → halt loudly
+	MOVQ	R12, ·tssBuffer+4(SB)	// commit: the next ring3→ring0 delivery lands lower
+	INCQ	·rsp0SubCount(SB)	// accounting (see RSPCT in syscall_amd64.go)
+	JMP	rsp0_rotate_done
+rsp0_rotate_ovf_tramp:
+	JMP	rsp0_overflow_dump(SB)	// terminal: prints state, then cli;hlt
+rsp0_rotate_done:
+	// ══════════════════════ end RSP0 ROTATION entry ═════════════════════════
+
 	// SP now points to the exception frame
 	// Frame pointer = SP
 	MOVQ	SP, DI		// DI = frame pointer (first arg for Go calls)
@@ -336,6 +505,32 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	// 0(SP), and the next user of AX (RDMSR below) reloads it.
 	MOVQ	128(SP), AX	// interrupted RIP from the exception frame
 	MOVQ	AX, ·interruptedRIP(SB)
+
+	// MAZ-135/MAZ-136: capture the interrupted thread's live kernel TLS-g BEFORE
+	// any handler overwrites [kmazarinFSBase-8] with the handler g0 (syscall
+	// :403, timer :930, device :1023). For a kernel-mode exception this is the
+	// interrupted kernel goroutine's curg — even in the systemstack exit window
+	// where frame R14 is the stale g0. The kernel-mode branch of
+	// SaveContextFromFrame reads this instead of frame R14, so a preempted
+	// kernel thread resumes with a faithful dual-home g. (User-mode exceptions
+	// also write this slot with an irrelevant value — unused; the user branch
+	// reads [savedExcFSBase-8]. Ring-0 read of mapped kernel memory. Global,
+	// single-CPU — same caveat as interruptedRIP/xmmSaveArea.)
+	// Guard the zero-base window: during early Go runtime init (before
+	// kmazarin's init() sets kmazarinFSBase) the base is 0, so [base-8] would
+	// dereference 0xFFFFFFFFFFFFFFF8 and fault INSIDE the entry path — a nested
+	// fault before any later guard runs. Store 0 instead; gLooksValid(0) is
+	// false, so SaveContextFromFrame falls back to frame R14. Mirrors the same
+	// kmazarinFSBase==0 guard at handle_page_fault (pf_skip_fsbase_setup).
+	MOVQ	·kmazarinFSBase(SB), AX
+	TESTQ	AX, AX
+	JZ	skip_tlsg_capture
+	MOVQ	-8(AX), AX
+	MOVQ	AX, ·savedExcKernelTLSG(SB)
+	JMP	tlsg_capture_done
+skip_tlsg_capture:
+	MOVQ	$0, ·savedExcKernelTLSG(SB)
+tlsg_capture_done:
 
 	// Save FS_BASE — but ONLY when exception came from userspace (CS=0x1B).
 	// Nested kernel exceptions (CS=0x08) must NOT overwrite savedExcFSBase,
@@ -402,6 +597,50 @@ handle_syscall:
 	MOVQ	·kmazarinG0Addr(SB), DX
 	MOVQ	DX, -8(AX)		// Write kernel g to kernel TLS slot
 	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
+
+	// MAZ-136 MPNIL tripwire. The borrowed g0 identity we just installed is
+	// only safe to ALLOCATE against while mallocgc can find a live mcache.
+	// mallocgc reads it via getMCache(g0.m): p.mcache if g0.m.p != 0, else
+	// the global runtime.mcache0. The MAZ-136 crash was the exact pair
+	// p==0 AND mcache0==0 — procresize clears mcache0 once real Ps exist,
+	// so a P-less m0 post-bootstrap nil-derefs deep inside mallocgc with a
+	// cryptic `!F:0 @mallocgcSmallNoscan` signature (KVM GMP dump: P=0
+	// MC0=0). The deterministic boot-time cause is fixed (kernel main never
+	// goparks, d94cc06b); this catches the RESIDUAL — any future regression
+	// that strips m0's P (a new gopark of kernel main, a P handoff) — at the
+	// borrow site instead of as a far-away allocator crash.
+	//
+	// The mcache0 fall-through is LOAD-BEARING, not belt-and-suspenders:
+	// during EARLY boot (before procresize) m0 legitimately has p==0 while
+	// mcache0 is still the valid bootstrap cache, so allocations succeed —
+	// halting on p==0 alone false-fires there (it did, on ARM64, right
+	// after the kernel jump). Only p==0 AND mcache0==0 is the real fault.
+	//
+	// Offsets g.m=48 / m.p=208 are disasm-pinned to Go 1.26.2 (same as the
+	// GMP diagnostic dump). DX = g0; AX/DX are dead (the dispatch reloads
+	// its args from the frame below). NOTE: does NOT cover the GC-STW
+	// mcache-mid-flush window where p!=0 — that is MAZ-140. amd64 reaches
+	// here only for vector 129 (userspace SYSCALL — the only path that
+	// borrows g0; kernel INT-0x80 keeps its own g), so this guard scopes to
+	// the user-syscall borrow exactly.
+	MOVQ	48(DX), AX		// m = g0.m
+	MOVQ	208(AX), AX		// p = m.p
+	TESTQ	AX, AX
+	JNZ	syscall_mpok		// p != 0 → mallocgc uses p.mcache (MAZ-140 covers p!=0/flush)
+	MOVQ	runtime·mcache0(SB), AX	// p == 0 → mallocgc falls back to mcache0
+	TESTQ	AX, AX
+	JNZ	syscall_mpok		// mcache0 valid (early boot, pre-procresize) → alloc OK
+	MOVW	$0x3F8, DX
+	MOVB	$'M', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'N', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'\n', AX; OUTB
+mpnil_halt:
+	HLT
+	JMP	mpnil_halt
+syscall_mpok:
 
 syscall_skip_g_setup:
 	// Save ELR (RIP) and SPSR (RFLAGS) for clone
@@ -875,6 +1114,183 @@ pf_cs2:	OUTB
 	MOVB	$' ', AX; OUTB
 	MOVQ	40(R12), R15
 	CALL	pf_print_hex16(SB)
+
+	// IST-rotation accounting at the moment of death (see ISTCT comment in
+	// syscall_amd64.go): subs, eret ADDs, load_context ADDs, live cursor.
+	// subs−adds must equal the number of LIVE chains; a deficit names the
+	// over-retiring site that an exactly-at-ceiling cursor cannot.
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·istSubCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'E', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·istEretAddCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·istLcAddCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+36(SB), R15
+	CALL	pf_print_hex16(SB)
+
+	// RSP0-rotation accounting — the second cursor's twin line (see the
+	// RSPCT comment in syscall_amd64.go): subs, eret ADDs, load_context
+	// ADDs, live RSP0 cursor. Same deficit arithmetic as ISTCT above.
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·rsp0SubCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'E', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·rsp0EretAddCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·rsp0LcAddCount(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+4(SB), R15
+	CALL	pf_print_hex16(SB)
+
+	// ---- MAZ-136 KVM-race diagnostics (eager-netpoll × shepherd-launch) ----
+	// Three extra lines naming the dying chain, added for the 5/5 KVM-only
+	// `!F:0 @mallocgcSmallNoscan` family (continuation-netpoll-kvm-race.md).
+	//
+	// VEC/SVD: currentVector is global save-state — by dump time it reads
+	// this #PF's own vector (0E); printed anyway to expose unexpected entry
+	// paths. svcDepth is NOT touched by exception entry, so it still shows
+	// whether the dying chain sat inside syscall dispatch.
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'E', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15	// 32-bit load zero-extends into R15
+	CALL	pf_print_hex16(SB)
+
+	// GMP: discriminate the two possible nil sources behind the allocator
+	// fault (`test %al,(%rsi)` with RSI=0 in mallocgcSmallNoscan): m.p == 0
+	// with runtime.mcache0 already cleared by procresize, vs m.p != 0 with
+	// a nil p.mcache. Field offsets g.m=48, m.p=208, p.mcache=56 are
+	// disasm-verified against THIS pinned toolchain's (Go 1.26.2)
+	// mallocgcSmallNoscan — diagnostics-only, do not build logic on them.
+	// Walked only when the frame's g is the kernel g0, so every load stays
+	// inside known-mapped kernel data. Values are read at dump time, i.e.
+	// microseconds after the fault — indicative, not a snapshot.
+	MOVQ	104(SP), R12		// g (R14) from exception frame
+	CMPQ	R12, ·kmazarinG0Addr(SB)
+	JNE	pf_gmp_done
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'G', AX; OUTB
+	MOVB	$'M', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'M', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	48(R12), R12		// m = g.m
+	MOVQ	R12, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	208(R12), R12		// p = m.p
+	MOVQ	R12, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'M', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	XORQ	R15, R15		// p == 0 → MC prints 0 (field is moot)
+	TESTQ	R12, R12
+	JZ	pf_gmp_mc
+	MOVQ	56(R12), R15		// mcache = p.mcache
+pf_gmp_mc:
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'M', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'0', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	runtime·mcache0(SB), R15
+	CALL	pf_print_hex16(SB)
+pf_gmp_done:
+
+	// BPW: frame-pointer chain walk, up to 8 return addresses. The walker
+	// dereferences BP only while it lies inside the exception stack
+	// [excStackBottom, excStackTop) — always mapped, so the walk itself
+	// cannot fault; the first frame outside (g0/goroutine stack) or a
+	// broken chain ends it early.
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'W', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	48(SP), R12		// walker = RBP from exception frame
+	MOVQ	$8, R11			// frame budget
+pf_bpw_loop:
+	MOVQ	·excStackBottom(SB), AX
+	TESTQ	AX, AX
+	JZ	pf_bpw_done		// bounds not yet published — cannot walk safely
+	CMPQ	R12, AX
+	JB	pf_bpw_done		// walker left the exception stack (below)
+	MOVQ	·excStackTop(SB), AX
+	SUBQ	$16, AX
+	CMPQ	R12, AX
+	JA	pf_bpw_done		// walker left the exception stack (above)
+	MOVQ	8(R12), R15		// this frame's return address
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVQ	0(R12), R12		// next frame pointer
+	DECQ	R11
+	JNZ	pf_bpw_loop
+pf_bpw_done:
 
 	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
@@ -1391,6 +1807,50 @@ irq_exception_return:
 // Exception return - restore GPRs and IRETQ
 // ============================================================================
 exception_return:
+	// IST ROTATION (MAZ-136) — the balancing ADD for the SUB at the top of
+	// common_exception_entry. ‼ Read the banner there BEFORE changing this.
+	// Same gate as the entry side: skip while ist1Floor==0 (the floor cannot
+	// change between this exception's entry and now — see the banner's GATE
+	// paragraph). AX is scratch: the interrupted AX is restored by the POPs
+	// below. ADDQ imm,mem keeps it a single instruction (no torn window).
+	MOVQ	·ist1Floor(SB), AX
+	TESTQ	AX, AX
+	JZ	eret_ist_done
+	MOVQ	·tssBuffer+36(SB), AX
+	ADDQ	$const_istRotateStride, AX	// retire this level's reservation
+	CMPQ	AX, ·ist1Ceil(SB)
+	JA	eret_ist_overshoot	// cursor above the half top = OVER-RETIRE: some
+					//   exit released a still-live reservation — halt
+					//   BEFORE the resulting trample, with context
+	MOVQ	AX, ·tssBuffer+36(SB)
+	INCQ	·istEretAddCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	JMP	eret_ist_done
+eret_ist_overshoot:
+	MOVQ	$1, R14			// site code 1 = exception_return (halting; R14 free)
+	JMP	ist_overshoot_dump(SB)
+eret_ist_done:
+
+	// RSP0 ROTATION (MAZ-136) — the second cursor's balancing ADD, twin of
+	// the IST ADD above with the identical gate/tripwire shape. ‼ Read the
+	// RSP0 ROTATION banner in common_exception_entry BEFORE changing this.
+	// An over-retire here would park the cursor above a still-live parked
+	// syscall chain — the next ring-3 delivery lands on it (the run-45
+	// trample). AX scratch, single-instruction memory ADD: same as above.
+	MOVQ	·rsp0Floor(SB), AX
+	TESTQ	AX, AX
+	JZ	eret_rsp0_done
+	MOVQ	·tssBuffer+4(SB), AX
+	ADDQ	$const_rsp0RotateStride, AX	// retire this level's reservation
+	CMPQ	AX, ·rsp0Ceil(SB)
+	JA	eret_rsp0_overshoot	// over-retire — halt BEFORE the trample, with context
+	MOVQ	AX, ·tssBuffer+4(SB)
+	INCQ	·rsp0EretAddCount(SB)	// accounting (see RSPCT in syscall_amd64.go)
+	JMP	eret_rsp0_done
+eret_rsp0_overshoot:
+	MOVQ	$1, R14			// site code 1 = exception_return (halting; R14 free)
+	JMP	rsp0_overshoot_dump(SB)
+eret_rsp0_done:
+
 	// FS_BASE handling depends on whether we're returning to user or kernel mode.
 	//
 	// User return (CS=0x1B): WRMSR to restore savedExcFSBase (user TLS base).
@@ -1535,6 +1995,31 @@ eret_rip_ok:
 	MOVOU	·xmmSaveArea+208(SB), X13
 	MOVOU	·xmmSaveArea+224(SB), X14
 	MOVOU	·xmmSaveArea+240(SB), X15
+
+	// MAZ-136 IRETQ guard: a kernel-CS return must land inside kernel .text.
+	// The frame-path corruption (resume into dead exception-stack memory)
+	// never touches a ThreadContext, so the Go-level badResumeRIP guard
+	// cannot see it — this is the last instant the bad RIP is data.
+	// All GPRs hold interrupted values: AX is pushed (frame reads offset
+	// +8) and restored on the OK path. Flags are free — IRETQ reloads
+	// RFLAGS from the frame. kernelTextHi==0 → bounds not yet published
+	// (early boot) → skip.
+	PUSHQ	AX
+	CMPQ	16(SP), $0x08		// CS (8(SP) before the push)
+	JNE	eret_guard_ok		// user return: any RIP is plausible
+	MOVQ	·kernelTextHi(SB), AX
+	TESTQ	AX, AX
+	JZ	eret_guard_ok		// bounds not initialized yet
+	CMPQ	8(SP), AX		// RIP >= etext?
+	JAE	eret_guard_bad
+	MOVQ	·kernelTextLo(SB), AX
+	CMPQ	8(SP), AX		// RIP >= text?
+	JAE	eret_guard_ok
+eret_guard_bad:
+	LEAQ	8(SP), R12		// R12 = &iretq 5-tuple (skip pushed AX)
+	JMP	bad_iretq_dump(SB)	// prints frame + context, halts
+eret_guard_ok:
+	POPQ	AX
 	IRETQ
 
 // ============================================================================
@@ -1591,6 +2076,58 @@ cs_valid:
 	// Flush TLB
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
+
+	// IST ROTATION (MAZ-136 rev B): retire the ABANDONING handler's own
+	// reservation. Every path into load_context_and_iretq is a context
+	// switch made FROM INSIDE an exception handler (syscall-exit switch,
+	// sigreturn, #PF block/switch) — that handler's chain dies right here,
+	// and its exception_return (which would have done this ADD) never runs.
+	// Any SHALLOWER suspended chains — this thread's or another's — keep
+	// their reservations: the cursor is GLOBAL (top − stride × live chains)
+	// and a suspended chain's stride is released only when it resumes and
+	// returns. ‼ Do NOT "restore", reset, or install any per-context value
+	// into TSS.IST1 here — the IST half is ONE shared region, and a
+	// per-thread reset reuses it over another thread's suspended live chain
+	// (the KVM-run-4 trample). See the IST ROTATION banner at
+	// common_exception_entry. Same gate as entry/return. AX is scratch
+	// (reloaded from ctx before IRETQ).
+	MOVQ	·ist1Floor(SB), AX
+	TESTQ	AX, AX
+	JZ	lc_ist_done		// rotation not armed (early boot)
+	MOVQ	·tssBuffer+36(SB), AX
+	ADDQ	$const_istRotateStride, AX	// retire the dying level
+	CMPQ	AX, ·ist1Ceil(SB)
+	JA	lc_ist_overshoot	// over-retire — see exception_return's twin check
+	MOVQ	AX, ·tssBuffer+36(SB)
+	INCQ	·istLcAddCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	JMP	lc_ist_done
+lc_ist_overshoot:
+	MOVQ	$2, R14			// site code 2 = load_context_and_iretq (halting)
+	JMP	ist_overshoot_dump(SB)
+lc_ist_done:
+
+	// RSP0 ROTATION (MAZ-136): retire the ABANDONING handler's RSP0
+	// reservation — the second cursor's twin of the IST ADD above; the same
+	// "shallower suspended chains keep their reservations" argument is what
+	// protects the parked SyscallWaitSoftIRQ chain this rotation exists for.
+	// ‼ Do NOT "restore", reset, or install any per-context value into
+	// TSS.RSP0 here — the RSP0 half is ONE shared region (see the RSP0
+	// ROTATION banner at common_exception_entry). Same gate as entry/return.
+	// AX is scratch (reloaded from ctx before IRETQ).
+	MOVQ	·rsp0Floor(SB), AX
+	TESTQ	AX, AX
+	JZ	lc_rsp0_done		// rotation not armed (early boot)
+	MOVQ	·tssBuffer+4(SB), AX
+	ADDQ	$const_rsp0RotateStride, AX	// retire the dying level
+	CMPQ	AX, ·rsp0Ceil(SB)
+	JA	lc_rsp0_overshoot	// over-retire — see exception_return's twin check
+	MOVQ	AX, ·tssBuffer+4(SB)
+	INCQ	·rsp0LcAddCount(SB)	// accounting (see RSPCT in syscall_amd64.go)
+	JMP	lc_rsp0_done
+lc_rsp0_overshoot:
+	MOVQ	$2, R14			// site code 2 = load_context_and_iretq (halting)
+	JMP	rsp0_overshoot_dump(SB)
+lc_rsp0_done:
 
 	// Restore FS_BASE from context (per-thread TLS base).
 	// Without this, userspace threads that called arch_prctl(ARCH_SET_FS)
@@ -1711,6 +2248,24 @@ ctx_diag_ok:
 	POPQ	CX
 	// Continue with IRETQ anyway (will page fault, but handler will print more info)
 rip_ok:
+	// MAZ-136 IRETQ guard: a kernel-CS context must resume inside kernel
+	// .text. Covers the asm paths that JMP here without passing the Go-level
+	// badResumeRIP guard (sigreturn, syscall-exit DoContextSwitch). CX = new
+	// RIP; R13 is scratch (reloaded below). kernelTextHi==0 → bounds not yet
+	// published (early boot) → skip.
+	MOVQ	·kernelTextHi(SB), R13
+	TESTQ	R13, R13
+	JZ	ctx_guard_ok		// bounds not initialized yet
+	CMPQ	ThreadContext_CS(R12), $0x08
+	JNE	ctx_guard_ok		// user context: any RIP is plausible
+	CMPQ	CX, R13			// RIP >= etext?
+	JAE	ctx_guard_bad
+	MOVQ	·kernelTextLo(SB), R13
+	CMPQ	CX, R13			// RIP >= text?
+	JAE	ctx_guard_ok
+ctx_guard_bad:
+	JMP	bad_ctx_dump(SB)	// R12 = ctx; prints context, halts
+ctx_guard_ok:
 
 	// Find a safe SP location (below current frame)
 	LEAQ	-48(SP), SP		// Make room
@@ -1810,6 +2365,431 @@ pf_ph_ok:
 	RET
 
 // ============================================================================
+// MAZ-136 IRETQ-level resume-guard dumps (raw COM1, then halt forever)
+// ============================================================================
+// The frame-path corruption resumes the kernel into dead exception-stack
+// memory without the bad RIP ever appearing in a ThreadContext, so only a
+// check at the IRETQ itself can catch the corrupt frame intact. klog is
+// FORBIDDEN here (IRQ-off, arbitrary nesting depth); pf_print_hex16 only.
+
+// bad_iretq_dump — a kernel-CS iretq frame's RIP is outside kernel .text.
+// In: R12 = &frame 5-tuple [RIP CS RFLAGS RSP SS]. Never returns.
+// Prints the 5-tuple, vector/svcDepth/TLS-g, the frame address, then
+// LO= the 16 qwords below the frame (the just-popped GPR save area, in
+// pop order: AX BX CX DX SI DI BP R8..R15 errcode — R14 slot = the g)
+// and HI= the 8 qwords above it (the interrupted stack = nesting context).
+TEXT bad_iretq_dump(SB), NOSPLIT|NOFRAME, $0
+	LEAQ	-0x200(R12), SP		// scratch stack clear of the dump window
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'A', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'E', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'Q', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	0(R12), R15		// RIP
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	8(R12), R15		// CS
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	16(R12), R15		// RFLAGS
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	24(R12), R15		// RSP
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	32(R12), R15		// SS
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'G', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·savedExcKernelTLSG(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	R12, R15		// frame address (pre-IRETQ SP)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	LEAQ	-128(R12), R14		// base of the popped GPR save area
+	XORQ	BX, BX
+bad_iq_lo:
+	MOVQ	(R14)(BX*1), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	ADDQ	$8, BX
+	CMPQ	BX, $128
+	JL	bad_iq_lo
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'H', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	LEAQ	40(R12), R14		// first qword past the 5-tuple
+	XORQ	BX, BX
+bad_iq_hi:
+	MOVQ	(R14)(BX*1), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	ADDQ	$8, BX
+	CMPQ	BX, $64
+	JL	bad_iq_hi
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+bad_iq_halt:
+	HLT
+	JMP	bad_iq_halt
+
+// bad_ctx_dump — a kernel-CS ThreadContext's RIP is outside kernel .text.
+// In: R12 = &ThreadContext. Never returns. Shared by load_context_and_iretq
+// and the context restores in abi_stubs_amd64.s (RunFirstThread,
+// YieldToReadyThread). Uses the caller's SP (valid in all three).
+TEXT bad_ctx_dump(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'A', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_RIP, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_CS, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_RSP, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_RBP, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'G', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_R14, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'G', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	FLD(R12, ThreadContext_TLSG, R15)
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	R12, R15		// the context pointer itself
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·CurrentThread(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+bad_ctx_halt:
+	HLT
+	JMP	bad_ctx_halt
+
+// ist_overflow_dump — the IST rotation would lower TSS.IST1 below ist1Floor:
+// exception nesting exceeded the 8 reserved stride levels. Either something
+// is recursively faulting, or a new exit path was added without its balancing
+// ADD / absolute restore (see the IST ROTATION banner in
+// common_exception_entry) and the leak finally hit the floor. Halting here is
+// the POINT — the alternative is the silent stack trample this scheme exists
+// to prevent. Prints vector, svcDepth, the live IST1, the floor, and SP,
+// then halts. Never returns; registers are free.
+TEXT ist_overflow_dump(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+36(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·ist1Floor(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	SP, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+ist_ovf_halt:
+	HLT
+	JMP	ist_ovf_halt
+
+// ist_overshoot_dump — an IST-rotation ADD would raise the cursor ABOVE the
+// IST1-half top (ist1Ceil): an OVER-RETIRE. Some exit path released a
+// reservation belonging to a still-live chain; the next IST delivery would
+// land on top of that chain (the MAZ-136 trample). Halting here catches the
+// guilty exit in the act, with its site code and vector, BEFORE the trample.
+// In: R14 = site code (1 = exception_return, 2 = load_context_and_iretq).
+// Prints site, vector, svcDepth, the live cursor, the ceiling, and SP, then
+// halts. Never returns; registers are free.
+TEXT ist_overshoot_dump(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	R14, R15		// site code
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+36(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·ist1Ceil(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	SP, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+ist_ovr_halt:
+	HLT
+	JMP	ist_ovr_halt
+
+// rsp0_overflow_dump — the RSP0 rotation would lower TSS.RSP0 below
+// rsp0Floor: twin of ist_overflow_dump for the second cursor. Either
+// exception nesting exceeded the 14 reserved levels, a single level broke
+// the one-level-use bound (grew past rsp0RotateStride — see the RSP0
+// ROTATION banner in common_exception_entry), or an exit path leaked strides
+// until the drift hit the floor. Halting here is the POINT — the alternative
+// is the silent parked-chain trample this scheme exists to prevent. Prints
+// vector, svcDepth, the live RSP0, the floor, and SP, then halts. Never
+// returns; registers are free.
+TEXT rsp0_overflow_dump(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+4(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·rsp0Floor(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	SP, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+rsp0_ovf_halt:
+	HLT
+	JMP	rsp0_ovf_halt
+
+// rsp0_overshoot_dump — an RSP0-rotation ADD would raise the cursor ABOVE
+// the RSP0-half top (rsp0Ceil): an OVER-RETIRE; twin of ist_overshoot_dump
+// for the second cursor. Some exit path released a reservation belonging to
+// a still-live chain — most dangerously a PARKED SyscallWaitSoftIRQ chain;
+// the next ring3→ring0 delivery would land on top of it (the MAZ-136 run-45
+// trample). Halting here catches the guilty exit in the act, BEFORE the
+// trample. In: R14 = site code (1 = exception_return,
+// 2 = load_context_and_iretq). Prints site, vector, svcDepth, the live
+// cursor, the ceiling, and SP, then halts. Never returns; registers are free.
+TEXT rsp0_overshoot_dump(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	R14, R15		// site code
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'V', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·currentVector(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVL	·svcDepth(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·tssBuffer+4(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·rsp0Ceil(SB), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	SP, R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	CLI
+rsp0_ovr_halt:
+	HLT
+	JMP	rsp0_ovr_halt
+
+// ============================================================================
 // SYSCALL Entry - entered via x86_64 SYSCALL instruction
 // ============================================================================
 // SYSCALL sets: RCX=return RIP, R11=RFLAGS, clears IF via FMASK.
@@ -1830,9 +2810,48 @@ TEXT ·syscallEntry(SB), NOSPLIT|NOFRAME, $0
 	MOVQ	CX, ·syscallScratchRCX(SB)
 	MOVQ	R11, ·syscallScratchR11(SB)
 
-	// Switch to kernel exception stack
+	// Switch to the kernel exception stack — UNLESS the caller is already
+	// on it. A ring-0 SYSCALL (Go runtime nanotime / rawSyscallNoError
+	// fallbacks) issued from a handler chain resident on the exception
+	// stack must NEST at the current SP: resetting to the fixed top
+	// tramples the suspended chain, which then RETs through an overwritten
+	// return-address slot into dead stack — the MAZ-136 deterministic
+	// RIP=0xFFFFFFFF44125BF0 corruption. Callers on other stacks (user,
+	// g0, goroutine) still switch for guaranteed dispatch headroom.
+	// Mirrors ARM64: EL1t→EL1h switches to SP_EL1, EL1h→EL1h nests.
+	// CX is free: the caller's CX is already in syscallScratchRCX and CX
+	// is reloaded from the scratch globals below. Bounds zero until
+	// InitThreads publishes them → both compares fail low → switch (the
+	// pre-fix behavior; SYSCALLs cannot occur that early).
 	MOVQ	SP, ·syscallScratchRSP(SB)
-	MOVQ	·excStackTopForSyscall(SB), SP
+	MOVQ	·excStackBottom(SB), CX
+	CMPQ	SP, CX
+	JB	syscall_do_switch	// below the exception stack → switch
+	MOVQ	·excStackTop(SB), CX
+	CMPQ	SP, CX
+	JB	syscall_keep_stack	// inside [excStackBottom, excStackTop) → nest in place
+syscall_do_switch:
+	// ‼ RSP0 ROTATION COUPLING (MAZ-136) — this switch MUST track the LIVE
+	// cursor. SYSCALL switches no stacks in hardware, so ring-3 SYSCALLs
+	// bypass the rotating TSS.RSP0 load entirely — this software switch is
+	// their ONLY stack reset. Pointing it at a fixed top resurrects the
+	// parked-chain trample the RSP0 rotation exists to fix (run 45:
+	// execute-the-stack at RSP0top−0x410 over SyscallWaitSoftIRQ's parked
+	// chain). Read TSS.RSP0 (·tssBuffer+4 — the cursor the rotation
+	// maintains; see the RSP0 ROTATION banner in common_exception_entry),
+	// NEVER excStackTopForSyscall, which is boot-window-only (threads.go).
+	// Gate: before copyGDTToOwnedBuffer publishes rsp0Floor the cursor
+	// bytes are 0 — fall back to the boot-window top (pre-rotation
+	// behavior; common_exception_entry's SUB skips on the same gate, so
+	// entry and exit stay balanced). CX is free here (see above).
+	MOVQ	·rsp0Floor(SB), CX
+	TESTQ	CX, CX
+	JZ	syscall_switch_boot
+	MOVQ	·tssBuffer+4(SB), SP	// live RSP0 cursor: land BELOW parked chains
+	JMP	syscall_keep_stack
+syscall_switch_boot:
+	MOVQ	·excStackTopForSyscall(SB), SP	// boot window only (rsp0Floor==0)
+syscall_keep_stack:
 
 	// Detect Ring 0 vs Ring 3 SYSCALL by checking the caller's RSP.
 	// Kernel stacks use high canonical addresses (bit 63 = 1).

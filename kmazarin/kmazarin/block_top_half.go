@@ -178,3 +178,23 @@ func blockTopHalf() {
 		}
 	}
 }
+
+// ArmBlockCompletionEvent (MAZ-136) sets the block VirtQ used_event so the device
+// raises a single completion interrupt when `minComplete` more requests finish,
+// instead of one IRQ per request. Called from SyscallIOUringEnter's submit phase
+// just before the doorbell, so the threshold is in place before the device runs.
+// Relies on VIRTIO_F_RING_EVENT_IDX being negotiated (virtioBlockInit); without it
+// the device ignores used_event and this is a harmless no-op write.
+//
+//go:nosplit
+func ArmBlockCompletionEvent(minComplete uint32) {
+	if blockEnginePtr == 0 || minComplete == 0 {
+		return
+	}
+	eng := (*virtio.Engine)(unsafe.Pointer(blockEnginePtr))
+	// Interrupt when used.idx reaches LastUsedIdx+minComplete-1 — the index of the
+	// batch's final completion. fs serializes block I/O (one batch in flight), so
+	// LastUsedIdx equals the device's current used.idx at arm time.
+	target := eng.VQ.LastUsedIdx + uint16(minComplete) - 1
+	virtio.VirtqueueSetUsedEvent(&eng.VQ, target)
+}

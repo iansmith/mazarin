@@ -191,11 +191,24 @@ var scanLastTick uint64
 // syscallDiagCount counts total syscalls from user threads.
 var syscallDiagCount uint64
 
-// excStackTopForSyscall is the kernel exception stack top address.
-// Used by the SYSCALL entry handler to switch from the user stack to a
-// valid kernel stack. SYSCALL (unlike INT) does NOT switch stacks via TSS,
-// so we must do it manually.
+// excStackTopForSyscall is the kernel exception stack top address — BOOT
+// WINDOW ONLY. It is NOT the live syscall-entry stack top: after
+// copyGDTToOwnedBuffer splits the stack and arms the rotations, the live top
+// is the rotating TSS.RSP0 cursor (tssBuffer bytes 4-11 — see the RSP0
+// ROTATION banner in exceptions_amd64.s). syscallEntry reads this var only
+// while rsp0Floor == 0 (SYSCALL lands before the split is published);
+// afterwards its sole role is having fed copyGDTToOwnedBuffer's split
+// arithmetic. Do not read it as "the" syscall stack top — a fixed top is
+// exactly the parked-chain trample MAZ-136's RSP0 rotation exists to fix.
 var excStackTopForSyscall uint64
+
+// excStackBottom / excStackTop bound the whole exception stack (both halves
+// of the RSP0/IST1 split). Read by syscallEntry (exceptions_amd64.s): a
+// ring-0 SYSCALL issued from a handler chain already resident on the
+// exception stack must nest at the current SP — resetting to
+// excStackTopForSyscall tramples the suspended chain (MAZ-136, variant 1).
+var excStackBottom uint64
+var excStackTop uint64
 
 // ThreadState represents the state of a thread
 type ThreadState int8
@@ -940,6 +953,10 @@ func InitThreads() {
 	InitPerCPU()
 	initPerCPUOffsets()
 
+	// Publish kernel .text bounds for the asm-level IRETQ resume guards
+	// (must happen before IRQs are enabled; no-op on ARM64)
+	initResumeGuardBounds()
+
 	// Initialize spinlock timing based on detected timer frequency
 	// This must happen before any spinlocks are used (including in ID allocators)
 	ds.InitSpinlockTiming(timerFrequencyHz)
@@ -971,9 +988,13 @@ func InitThreads() {
 	// Must happen while FS_BASE still points to kernel TLS, before any userspace runs.
 	platformSaveKernelTLS()
 
-	// Save the exception stack top for SYSCALL entry stack switch.
-	_, _, excTop, _ := platformCPU0Stacks()
+	// Save the exception stack bounds for the SYSCALL entry stack switch.
+	// copyGDTToOwnedBuffer later moves excStackTopForSyscall down to the
+	// RSP0 half; excStackBottom/Top keep covering the whole stack.
+	_, _, excTop, excBottom := platformCPU0Stacks()
 	excStackTopForSyscall = excTop
+	excStackBottom = excBottom
+	excStackTop = excTop
 
 	// Initialize all thread DATA to free state (direct access OK during init)
 	for i := 0; i < MaxThreads; i++ {
@@ -1853,11 +1874,8 @@ func SaveThread0AndYield() uint64 {
 	}
 	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
-	if next.Context.GetPC() == 0 {
-		klog.Criticalf("[BUG] ", "Yield RIP=0 TID=%d\n", next.TID)
-		for {
-			WaitForInterrupt()
-		}
+	if badResumeRIP(next) {
+		badResumeHalt(next, "yield")
 	}
 
 	// Deliver pending signals before ERET to this thread.
@@ -3885,11 +3903,8 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
-	if next.Context.GetPC() == 0 {
-		klog.Criticalf("[BUG] ", "Pickup RIP=0 TID=%d\n", next.TID)
-		for {
-			WaitForInterrupt()
-		}
+	if badResumeRIP(next) {
+		badResumeHalt(next, "pickup")
 	}
 
 	// NOTE: Signal delivery moved to caller (checkThreadPreemptionImpl)
@@ -4122,11 +4137,8 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
 
-	if next.Context.GetPC() == 0 {
-		klog.Criticalf("[BUG] ", "Preempt RIP=0 TID=%d\n", next.TID)
-		for {
-			WaitForInterrupt()
-		}
+	if badResumeRIP(next) {
+		badResumeHalt(next, "preempt")
 	}
 
 	// Deliver pending signals before ERET to this thread.
@@ -4305,6 +4317,10 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// exception frame into the NEW thread's context, corrupting it.
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
+
+	if badResumeRIP(newThread) {
+		badResumeHalt(newThread, "ctxswitch")
+	}
 
 	return &newThread.Context
 }

@@ -720,6 +720,15 @@ func GetSlotInterruptKind(slotNum int32) hid.InterruptType {
 
 // QueryInputDevicesKernel fills device info from discovered input devices.
 // Called from ksyscall via linkname.
+//
+// ALLOCATION-FREE (MAZ-136): this runs as part of the SyscallQueryInputDevices
+// user-syscall handler, under the kernel's borrowed g0/m0 identity, so it must
+// never heap-allocate — see the ALLOCATION-FREE CONTRACT on that handler
+// (kmazarin/ksyscall/softirq.go). input.AllDevices() returns a package-level
+// slice (no allocation) and this function only writes the caller-provided
+// `infos` slice in place. Keep it that way: no append/make/new, no escaping
+// locals, no interface boxing. VERIFY after any change: no call to
+// runtime.newobject / runtime.mallocgc in the final ELF.
 func QueryInputDevicesKernel(infos []hid.InputDeviceInfo, max int) int {
 	devices := input.AllDevices()
 	n := 0

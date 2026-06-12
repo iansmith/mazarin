@@ -16,7 +16,6 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/sysid"
 	"sync/atomic"
@@ -32,9 +31,13 @@ import (
 //
 //go:nosplit
 func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
-	// Handle eventfd writes — Go's netpollBreak mechanism.
-	p := proc.CurrentShepherd()
-	if p != nil && p.EventFd != 0 && fd == uint64(p.EventFd) {
+	// Handle eventfd writes — Go's netpollBreak mechanism. callerShepherd
+	// (not CurrentShepherd): the KERNEL runtime's netpollBreak writes to the
+	// kernel's own eventfd (proc.KernelShepherd); with a nil shepherd this
+	// fell through to the stdout/stderr path and returned EBADF/EFAULT
+	// (MAZ-136 netpoll family).
+	p, _ := callerShepherd()
+	if p.EventFd != 0 && fd == uint64(p.EventFd) {
 		waiterTID := p.NetpollWaiterTID
 		if waiterTID != 0 {
 			WakeNetpollThread(waiterTID)

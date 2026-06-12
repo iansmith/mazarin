@@ -329,6 +329,11 @@ sync_entry_sp_ok:
 	MOVD	·kmazarinG0Addr(SB), R10
 	CBZ	R10, skip_g_switch_el1  // Skip if not initialized
 	WORD	$0xaa0a03fc  // mov x28, x10
+	// NOTE (MAZ-136): the MPNIL borrowed-g0 tripwire lives in el0_sync_handler,
+	// NOT here. This is the CURRENT-EL (kernel) sync vector — user syscalls take
+	// the lower-EL vector → el0_sync_handler (see the vector table above). Kernel
+	// SVCs legitimately run p==0/mcache0==0 in early boot without allocating, so
+	// guarding here would false-halt the boot; the user borrow is what needs it.
 skip_g_switch_el1:
 
 	// SVC: First save ELR and SPSR so clone can get child's return address and state
@@ -1915,6 +1920,36 @@ el0_sync_handler:
 	// R10 now contains kmazarin's g address (stored at init time)
 	// Set x28 to this value (x28 is Go's g register)
 	WORD	$0xaa0a03fc  // mov x28, x10
+
+	// MAZ-136 MPNIL tripwire — the USER-syscall borrowed-g0 guard (amd64 twin:
+	// the vector-129 block in exceptions_amd64.s). This is the EL0/userspace SVC
+	// path (lower-EL sync vector), so it is inherently EL0-scoped — NO EL0 gate
+	// needed, exactly matching amd64's vector-129 scope. mallocgc finds its mcache
+	// via getMCache(g0.m): p.mcache if g0.m.p != 0, else global runtime.mcache0.
+	// The MAZ-136 crash was the exact pair p==0 AND mcache0==0 (procresize clears
+	// mcache0 once real Ps exist) — halt loudly at the borrow site instead of as
+	// a far-away allocator crash. The mcache0 fall-through is LOAD-BEARING: early
+	// boot runs p==0 with a VALID bootstrap mcache0, so allocations succeed; user
+	// syscalls only occur post-shepherd-launch (m0 has a P), so this never
+	// false-fires. Offsets g.m=48 / m.p=208 pinned to Go 1.26.2. R10 = g0;
+	// R11-R13 scratch (args are reloaded from the frame at the LDP
+	// EXC_FRAME_ELR_SPSR below). Does NOT cover the GC-STW mcache-mid-flush
+	// window where p!=0 (MAZ-140).
+	MOVD	48(R10), R11	// m = g0.m
+	MOVD	208(R11), R11	// p = m.p
+	CBNZ	R11, skip_g_switch_el0  // p != 0 → mallocgc uses p.mcache (MAZ-140 covers flush)
+	MOVD	runtime·mcache0(SB), R11	// p == 0 → mallocgc falls back to mcache0
+	CBNZ	R11, skip_g_switch_el0  // mcache0 valid (early boot) → alloc OK
+	MOVD	$UART_BASE, R12
+	MOVD	$'M', R13; MOVB	R13, (R12)
+	MOVD	$'P', R13; MOVB	R13, (R12)
+	MOVD	$'N', R13; MOVB	R13, (R12)
+	MOVD	$'I', R13; MOVB	R13, (R12)
+	MOVD	$'L', R13; MOVB	R13, (R12)
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+el0_mpnil_halt:
+	B	el0_mpnil_halt
 skip_g_switch_el0:
 	// SVC from userspace - first save ELR and SPSR for clone
 	// Without this, clone would use stale values from a previous EL1 syscall!

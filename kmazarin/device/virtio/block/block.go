@@ -187,8 +187,11 @@ func findVirtIOBlock() bool {
 func virtioBlockInit() bool {
 	dev := &virtioBlockDevice
 
-	// Feature negotiation: accept VIRTIO_F_VERSION_1 only
-	if !dev.Handshake(0, virtio.FeatureVersion1) {
+	// Feature negotiation: VIRTIO_F_VERSION_1 + RING_EVENT_IDX (MAZ-136).
+	// EVENT_IDX lets us coalesce block completion interrupts to one per batch via
+	// used_event (VirtqueueSetUsedEvent) instead of ~1 IRQ per 4 KB block — decisive
+	// on x86 nested-KVM where each interrupt injection costs ~ms.
+	if !dev.Handshake(virtio.VIRTIO_F_RING_EVENT_IDX, virtio.FeatureVersion1) {
 		klog.Errf("[VirtIO Block] ERROR: Device rejected features\n")
 		return false
 	}

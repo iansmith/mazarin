@@ -221,6 +221,30 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 run_skip_tls:
 
+	// MAZ-136 IRETQ guard: a kernel-CS context must resume inside kernel
+	// .text (bounds zero = not yet published, skip; bad_ctx_dump in
+	// exceptions_amd64.s prints from R12 and halts).
+	MOVQ	·kernelTextHi(SB), AX
+	TESTQ	AX, AX
+	JZ	run_guard_ok		// bounds not initialized yet
+	CMPQ	ThreadContext_CS(R12), $0x08
+	JNE	run_guard_ok		// user context: any RIP is plausible
+	FLD(R12, ThreadContext_RIP, R13)
+	CMPQ	R13, AX			// RIP >= etext?
+	JAE	run_guard_bad
+	MOVQ	·kernelTextLo(SB), AX
+	CMPQ	R13, AX			// RIP >= text?
+	JAE	run_guard_ok
+run_guard_bad:
+	JMP	bad_ctx_dump(SB)
+run_guard_ok:
+
+	// MAZ-136 rotations: deliberately NO TSS.IST1 or TSS.RSP0 action —
+	// boot-time first switch, no exception chains exist, and both cursors
+	// (global, set to their half tops by copyGDTToOwnedBuffer) are already
+	// correct. See the IST ROTATION and RSP0 ROTATION banners in
+	// exceptions_amd64.s before "fixing" this absence.
+
 	// Build IRETQ frame: SS, RSP, RFLAGS, CS, RIP (push in reverse order)
 	PUSHQ	ThreadContext_SS(R12)		// SS from context
 	PUSHQ	ThreadContext_RSP(R12)		// RSP from context
@@ -302,6 +326,11 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	// ctx.TLSG, so a stale TLSG here would resurface "morestack on g0" at the
 	// next stack growth. R14 is the authoritative g at a voluntary yield.
 	FST(R12, ThreadContext_TLSG, R14)
+	// MAZ-136 rotations: deliberately NO TSS.IST1 or TSS.RSP0 save here.
+	// Both cursors are GLOBAL (never per-thread); Yield is a voluntary
+	// CALL, not an exception, so no chain dies and there is nothing to
+	// retire on either. See the IST ROTATION and RSP0 ROTATION banners in
+	// exceptions_amd64.s before "fixing" this absence.
 
 	// Save RIP = return address (pushed by CALL to us)
 	MOVQ	0(SP), AX
@@ -422,6 +451,30 @@ yr_halt:
 	HLT
 	JMP	yr_halt
 yr_rip_ok:
+	// MAZ-136 IRETQ guard: a kernel-CS context must resume inside kernel
+	// .text (bounds zero = not yet published, skip; bad_ctx_dump in
+	// exceptions_amd64.s prints from R12 and halts).
+	MOVQ	·kernelTextHi(SB), AX
+	TESTQ	AX, AX
+	JZ	yr_guard_ok		// bounds not initialized yet
+	CMPQ	ThreadContext_CS(R12), $0x08
+	JNE	yr_guard_ok		// user context: any RIP is plausible
+	FLD(R12, ThreadContext_RIP, R13)
+	CMPQ	R13, AX			// RIP >= etext?
+	JAE	yr_guard_bad
+	MOVQ	·kernelTextLo(SB), AX
+	CMPQ	R13, AX			// RIP >= text?
+	JAE	yr_guard_ok
+yr_guard_bad:
+	JMP	bad_ctx_dump(SB)
+yr_guard_ok:
+	// MAZ-136 rotations: deliberately NO TSS.IST1 or TSS.RSP0 action on this
+	// switch. Yield is not an exception (no chain dies → nothing to retire),
+	// and both cursors are GLOBAL — they already protect the suspended chains
+	// of every context, including a preempted kernel target's and parked
+	// SyscallWaitSoftIRQ chains. Writing any per-context value here
+	// re-creates the KVM-run-4 shared-stack trample. See the IST ROTATION
+	// and RSP0 ROTATION banners in exceptions_amd64.s.
 	// Restore XMM registers from target thread's ctx.XMM
 	MOVOU	ThreadContext_XMM+0(R12), X0
 	MOVOU	ThreadContext_XMM+16(R12), X1

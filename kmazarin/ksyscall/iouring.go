@@ -263,10 +263,29 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 				dataKernelVA, uint32(totalBytes), uintptr(unsafe.Pointer(clump)),
 				sqe.UserData)
 
-			// Notify device after each submit.
+			submitted++
+		}
+
+		// Single doorbell for the whole batch. Each Submit() above already
+		// placed its chain in the avail ring (with its own DSB + avail.idx
+		// bump), so one Notify here kicks the device for all of them. This
+		// collapses N per-block doorbell writes into one: on x86 nested-KVM
+		// each doorbell is a guest→host VM exit (~ms-scale) that dominated
+		// .maz read throughput (MAZ-136). Shared path — both arches benefit,
+		// no new x86/ARM divergence.
+		if submitted > 0 {
+			// EVENT_IDX (MAZ-136): arm the completion-IRQ threshold BEFORE the
+			// kick so the device raises one interrupt when this batch finishes,
+			// not one per block. Must precede Notify so the threshold is in place
+			// before the device starts completing requests.
+			// This arms `used_event` for the submit+wait (full-batch) pattern.
+			// A submit-less wait on a block ring (toSubmit=0, minComplete>0)
+			// skips this block (submitted==0) and instead rearms in Phase B
+			// before blocking — see the rearm there — so wait-only block
+			// callers don't sleep until timeout on a stale threshold.
+			armBlockCompletionEvent(minComplete)
 			asm.Dsb()
 			dev.Eng.Notify()
-			submitted++
 		}
 
 		// Advance SQ head.
@@ -283,6 +302,27 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 		if completions >= minComplete {
 			return int64(completions)
+		}
+
+		// EVENT_IDX rearm for the submit-less wait (MAZ-136, CodeRabbit PR #74).
+		// The Phase A arm is gated on submitted>0, so a wait-only IOUringEnter
+		// (toSubmit=0, minComplete>0) never armed the block VirtQ used_event and
+		// would sleep until the I/O timeout. Arm the current threshold here,
+		// before blocking, so the device raises the completion IRQ for THIS
+		// wait. Scoped to submitted==0 to leave the throughput-critical
+		// full-batch path (already armed at submit) untouched.
+		//
+		// MUST also gate on the ring being a block ring: armBlockCompletionEvent
+		// keys off the single global blockEnginePtr, NOT the calling ring, so its
+		// only no-op case is "no block device present at all". rachel's input
+		// reader (deviceType==1) and the net RX worker (deviceType==2) both block
+		// here on IOUringEnter(ring, 0, 1, 0) — without the device-type gate they
+		// would rewrite the BLOCK VirtQ's used_event on every idle input/packet
+		// wait, racing the fs shepherd's legitimate arm and the block IRQ
+		// top-half, and potentially stalling block I/O.
+		if submitted == 0 && ioUringSlotDeviceType(ringID) == 0 {
+			armBlockCompletionEvent(minComplete)
+			asm.Dsb()
 		}
 
 		// Block: find next thread, context-switch.
@@ -323,6 +363,9 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 //go:linkname blockForIOUring main.BlockForIOUring
 func blockForIOUring(ringID int, minComplete uint32, syscallNum uint64, pReleased bool) uintptr
+
+//go:linkname armBlockCompletionEvent main.ArmBlockCompletionEvent
+func armBlockCompletionEvent(minComplete uint32)
 
 //go:linkname initIOUringTimeout main.InitIOUringTimeout
 func initIOUringTimeout()
