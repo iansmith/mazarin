@@ -71,6 +71,12 @@ TEXT ·SetSyscallCloneRegs(SB), NOSPLIT, $0-24
 TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
 	JMP	·checkThreadPreemptionInternal(SB)
 
+// PriorityWakeSwitch tail-call stub (MAZ-141 priority-wake diagnostic).
+// Drop-in for CheckThreadPreemption at device_pwake_allowed: records the
+// interrupted context around the identical scheduler switch.
+TEXT ·PriorityWakeSwitch(SB), NOSPLIT, $0-16
+	JMP	·priorityWakeSwitchInternal(SB)
+
 // CheckKernelGoroutinePreempt checks kernel goroutine async preemption.
 // NOT NOSPLIT: calls isAsyncSafePoint (exception stack > g0.stackguard0).
 TEXT ·CheckKernelGoroutinePreempt(SB), $0-16

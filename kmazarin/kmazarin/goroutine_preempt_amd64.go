@@ -6,8 +6,9 @@ import "unsafe"
 // Frame is pushed by CPU (RIP, CS, RFLAGS, RSP, SS) + our register saves.
 const (
 	excFrameRIP    = 128 // Interrupted RIP (PC)
-	excFrameRSP    = 152 // Interrupted RSP
+	excFrameCS     = 136 // Interrupted CS
 	excFrameRFLAGS = 144 // RFLAGS
+	excFrameRSP    = 152 // Interrupted RSP
 )
 
 // checkKernelGoroutinePreemptInternal checks if the Go runtime wants to

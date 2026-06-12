@@ -1493,7 +1493,7 @@ device_pwake_ksafe:
 
 device_pwake_allowed:
 	MOVQ	SP, R13
-	GO_CALL_1_1(·CheckThreadPreemption, R13)
+	GO_CALL_1_1(·PriorityWakeSwitch, R13)	// MAZ-141: == CheckThreadPreemption + pwake-ring record
 	MOVQ	AX, R12					// new ThreadContext (or 0)
 	TESTQ	R12, R12
 	JZ	device_pwake_noctx
