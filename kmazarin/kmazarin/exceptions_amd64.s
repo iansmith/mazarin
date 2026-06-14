@@ -2300,7 +2300,8 @@ ctx_guard_ok:
 	MOVQ	CX, 0(SP)		// RIP
 
 	// Restore XMM registers from per-thread ctx.XMM. SaveContextFromFrame copied
-	// xmmSaveArea → ctx.XMM when the thread was last saved, so this restores the
+	// the per-exception-frame XMM slot (framePtr-256) → ctx.XMM when the thread
+	// was last saved (MAZ-139: no global xmmSaveArea), so this restores the
 	// correct per-thread XMM state.
 	MOVOU	ThreadContext_XMM+0(R12), X0
 	MOVOU	ThreadContext_XMM+16(R12), X1

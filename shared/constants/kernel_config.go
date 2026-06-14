@@ -47,12 +47,13 @@ type KernelConfig struct {
 	CloneExecRaceTest bool `toml:"clone_exec_race_test"`
 
 	// CtxMarshalTest runs the MAZ-135 context-marshal self-test at boot (amd64
-	// only; no-op on arm64). It drives the REAL SaveContextFromFrame /
-	// SaveCurrentThreadContext with synthetic sentinel inputs on a scratch thread
-	// and asserts every ThreadContext field was populated (the value-flow
-	// complement to the build-time cmd/frameaudit presence gate). Swaps
-	// CurrentThread/savedExcFSBase/xmmSaveArea IRQ-masked and restores them, so it
-	// is kept OFF the default boot path; enable in test/CI configs.
+	// only; no-op on arm64). It drives the REAL SaveContextFromFrame with
+	// synthetic sentinel inputs on a scratch thread and asserts every
+	// ThreadContext field was populated (the value-flow complement to the
+	// build-time cmd/frameaudit presence gate). Swaps CurrentThread/savedExcFSBase
+	// IRQ-masked and restores them, so it is kept OFF the default boot path;
+	// enable in test/CI configs. (MAZ-139 removed the dead SaveCurrentThreadContext
+	// + the global xmmSaveArea; the test now drives the per-frame saver only.)
 	CtxMarshalTest bool `toml:"ctx_marshal_test"`
 
 	// XMMNestTest (MAZ-139 DoD#1) drives the production exception XMM save/restore

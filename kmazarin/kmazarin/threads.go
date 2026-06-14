@@ -4359,7 +4359,8 @@ func GetThread(idx uintptr) *Thread {
 	return threadList.Get(int(idx))
 }
 
-// SaveCurrentThreadContext is defined in save_context_<arch>.go (per-architecture).
+// SaveCurrentThreadContext is defined in save_context_arm64.go (ARM64 only; the
+// amd64 saver was removed in MAZ-139 when the global xmmSaveArea was eliminated).
 
 // printTickDistributionNoSplit is a no-op retained for call-site compatibility.
 //
