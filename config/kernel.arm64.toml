@@ -61,3 +61,7 @@ clone_exec_race_test = false
 # Verified non-regressive via an HVF boot (boots to GUI, selftest OK). Flip to
 # true to re-validate the arm64 savers after a context change.
 ctx_marshal_test = false
+
+# xmm_nest_test (MAZ-139 DoD#1): amd64-only XMM nested-exception self-test. No-op
+# on arm64, whose exception path keeps per-context FP/SIMD state in its trap frame.
+xmm_nest_test = false

@@ -41,3 +41,11 @@ clone_exec_race_test = false
 # the always-on guard. Verified non-regressive over 10 GCP KVM boots (10/10 OK,
 # 0 deadlock/morestack); enable to re-validate the savers after a context change.
 ctx_marshal_test = false
+
+# xmm_nest_test (MAZ-139 DoD#1): drive the production exception XMM save/restore
+# through a REAL nested exception (outer INT $48 + a one-shot nested INT $48 from
+# the timer-handler hook) and assert the OUTER level keeps its own XMM. RED while
+# ·xmmSaveArea is a single global (nested save clobbers the outer snapshot); GREEN
+# once XMM is stored per exception frame. Deterministic, allocation-free, amd64
+# only. ON during MAZ-139 bring-up; the hook is temporary (removed after GREEN).
+xmm_nest_test = true

@@ -30,6 +30,7 @@
 #include "textflag.h"
 #include "go_abi_macros_amd64.h"
 #include "frame_dsl_amd64.h"
+#include "xmm_frame_amd64.h"
 
 // ============================================================================
 // ISR Stubs - each pushes a dummy error code (if needed) and vector number
@@ -408,6 +409,27 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	JB	ist_rotate_ovf_tramp	//   than the 8 reserved levels → halt loudly
 	MOVQ	R12, ·tssBuffer+36(SB)	// commit: the next delivery lands one stride lower
 	INCQ	·istSubCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	// ───────── MAZ-139 D1: exception-nesting depth detector ─────────
+	// Mirrors the IST cursor's live-level accounting (same gate; +1 here, -1 at
+	// the two cursor ADDs in exception_return / load_context_and_iretq), so
+	// excNestDepth == number of LIVE exception chains. An entry that finds
+	// depth>=1 BEFORE its own +1 is nesting inside a live chain — the
+	// clobber-prone case for the single-global save-state (xmmSaveArea et al.).
+	// Counters read at shepherd-exit (dumpNestStats) / via gdbstub. R12 is
+	// scratch here (reloaded by the POPs on exit). Pure counters, off the IST
+	// stride budget. (Phase D1; item 2 upgrades to a per-frame canary = D2.)
+	MOVQ	·excNestDepth(SB), R12
+	TESTQ	R12, R12
+	JZ	maz139_nest_outer
+	INCQ	·excNestCount(SB)	// this entry nests inside >=1 live chain
+maz139_nest_outer:
+	INCQ	R12
+	MOVQ	R12, ·excNestDepth(SB)
+	CMPQ	R12, ·excNestMaxDepth(SB)
+	JBE	maz139_nest_dmax
+	MOVQ	R12, ·excNestMaxDepth(SB)
+maz139_nest_dmax:
+	// ────────────────────────────────────────────────────────────────
 	JMP	ist_rotate_done
 ist_rotate_ovf_tramp:
 	JMP	ist_overflow_dump(SB)	// terminal: prints state, then cli;hlt
@@ -1334,6 +1356,25 @@ pf_unhandled_halt:
 	JMP	pf_unhandled_halt
 
 handle_timer_irq:
+	// ─── MAZ-139 RED self-test one-shot hook (TEMPORARY — remove after GREEN, sign-off (a)) ───
+	// Armed ONLY by runXMMNestSelfTest (IRQ-masked, thread-0, pre-launch; hardware
+	// timer disabled there). Fires exactly one NESTED real INT $48 inside this live
+	// outer timer entry, exercising the production common_exception_entry /
+	// exception_return XMM save/restore at depth 2 — the genuine clobber path. We
+	// disarm BEFORE the nested INT so the inner entry skips this hook. Loading
+	// sentinel B means the inner entry's save overwrites the single global
+	// ·xmmSaveArea (RED); the per-frame fix (item 2) gives each level its own slot
+	// so the outer survives (GREEN). ist1Floor is published (SetupSyscallMSRs,
+	// main.go) before the test, so the nested entry rotates onto its own IST stack
+	// (no MAZ-136 trample) — it clobbers ONLY the global XMM, which is the point.
+	// One CMP on the normal timer path; zero cost once disarmed.
+	CMPQ	·xmmNestArmed(SB), $0
+	JE	maz139_red_skip
+	MOVQ	$0, ·xmmNestArmed(SB)		// one-shot: disarm before the nested INT
+	LEAQ	·xmmNestSentB(SB), AX
+	RESTORE_XMM_AT(AX)			// X0..X15 = sentinel B
+	INT	$48				// REAL nested entry — overwrites the global XMM
+maz139_red_skip:
 	// Switch FS_BASE to kernel value (saved by common_exception_entry).
 	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	AX, DX
@@ -1824,6 +1865,7 @@ exception_return:
 					//   BEFORE the resulting trample, with context
 	MOVQ	AX, ·tssBuffer+36(SB)
 	INCQ	·istEretAddCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	DECQ	·excNestDepth(SB)	// MAZ-139 D1: this level retires (mirror the IST -1)
 	JMP	eret_ist_done
 eret_ist_overshoot:
 	MOVQ	$1, R14			// site code 1 = exception_return (halting; R14 free)
@@ -2100,6 +2142,7 @@ cs_valid:
 	JA	lc_ist_overshoot	// over-retire — see exception_return's twin check
 	MOVQ	AX, ·tssBuffer+36(SB)
 	INCQ	·istLcAddCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	DECQ	·excNestDepth(SB)	// MAZ-139 D1: this dying level retires (mirror the IST -1)
 	JMP	lc_ist_done
 lc_ist_overshoot:
 	MOVQ	$2, R14			// site code 2 = load_context_and_iretq (halting)

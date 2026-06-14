@@ -697,6 +697,16 @@ func simpleMain() {
 		runContextMarshalSelfTest()
 	}
 
+	// MAZ-139 DoD#1 XMM nested-exception RED self-test (amd64; no-op arm64). Gated;
+	// drives the production exception XMM save/restore through a REAL nested INT $48
+	// and asserts the outer level keeps its own XMM. Mask IRQs (only thread 0 here)
+	// so no hardware IRQ interleaves with the deterministic software nesting.
+	if kernelCfg.XMMNestTest {
+		savedDAIF := SaveAndDisableIRQs()
+		runXMMNestSelfTest()
+		RestoreIRQs(savedDAIF)
+	}
+
 	// MAZ-108 kmem teardown leak-soak self-test. Gated by config; OFF by
 	// default. Runs before launchEmbeddedFS, so no shepherd threads exist yet
 	// — but CPU IRQs were already enabled earlier in simpleMain (only the
