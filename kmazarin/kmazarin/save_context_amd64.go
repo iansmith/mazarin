@@ -6,16 +6,12 @@ import (
 	"unsafe"
 )
 
-// xmmSaveArea is defined in exceptions_amd64.s — global buffer where
-// common_exception_entry saves XMM0-XMM15 on exception entry.
-var xmmSaveArea [256]byte
-
 // interruptedRIP is the x86 software equivalent of ARM64's ELR_EL1 register.
 // common_exception_entry stashes the interrupted RIP (exception frame offset
 // 128) here on EVERY exception entry, so readELR_EL1() can return it from any
 // handler. Like ELR_EL1 it holds the most-recent exception's PC and is valid
-// only until the next exception clobbers it. Global (single-CPU, matching
-// xmmSaveArea above); per-CPU-ize alongside xmmSaveArea when x86 goes SMP.
+// only until the next exception clobbers it. Global (single-CPU);
+// per-CPU-ize when x86 goes SMP.
 var interruptedRIP uint64
 
 // savedExcKernelTLSG holds the interrupted kernel thread's live TLS-g
@@ -24,7 +20,7 @@ var interruptedRIP uint64
 // handler g0. The kernel-mode branch of SaveContextFromFrame uses it for a
 // faithful dual-home g restore (in the systemstack exit window frame R14 is
 // the stale g0 while the real curg lives only in this TLS slot). Global
-// (single-CPU, like savedExcFSBase / interruptedRIP / xmmSaveArea);
+// (single-CPU, like savedExcFSBase / interruptedRIP);
 // per-CPU-ize for SMP. MAZ-135/MAZ-136.
 var savedExcKernelTLSG uint64
 
@@ -123,11 +119,14 @@ func SaveContextFromFrame(framePtr uintptr) {
 			t.Context.TLSG = frame[13]
 		}
 	}
-	// Copy XMM state from global save area to per-thread context.
-	// common_exception_entry saved XMM0-15 to xmmSaveArea before any Go code
-	// could clobber them. We must copy to ThreadContext so that when this thread
-	// is rescheduled, load_context_and_iretq restores the correct XMM state.
-	copy(t.Context.XMM[:], xmmSaveArea[:])
+	// Copy XMM state from THIS exception level's per-frame slot to per-thread
+	// context. MAZ-139 item 2: common_exception_entry no longer saves XMM to the
+	// single global xmmSaveArea (which an inner nested exception would clobber);
+	// it now saves the interrupted XMM into a 256-byte slot reserved just below
+	// the GPR frame, at framePtr-256. Read it from there so a thread suspended
+	// mid-handler is rescheduled (via load_context_and_iretq) with its OWN XMM,
+	// not whatever the innermost exception happened to leave behind.
+	copy(t.Context.XMM[:], (*[256]byte)(unsafe.Pointer(framePtr-256))[:])
 	// MAZ-136: no IST or RSP0 state is saved per context — TSS.IST1 AND
 	// TSS.RSP0 are global nesting cursors; the abandoning handler's level
 	// on each is retired by load_context_and_iretq itself (IST ROTATION and
@@ -157,51 +156,4 @@ func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
 
 	ctx := doContextSwitchImpl(&NormalSchedulerFunc, uintptr(framePtr), targetIdx)
 	return uint64(uintptr(unsafe.Pointer(ctx)))
-}
-
-// SaveCurrentThreadContext saves the current thread's context from individual x86_64 registers.
-// Called from assembly with all 15 GPRs plus RIP, RFLAGS, and RSP.
-//
-// frameaudit:save — must populate every ThreadContext field.
-//
-//go:nosplit
-func SaveCurrentThreadContext(
-	rax, rbx, rcx, rdx, rsi, rdi, rbp uint64,
-	r8, r9, r10, r11, r12, r13, r14, r15 uint64,
-	rip, rflags, rsp uint64,
-) {
-	t := GetCurrentThread()
-	if t == nil {
-		return
-	}
-	t.Context.RAX = rax
-	t.Context.RBX = rbx
-	t.Context.RCX = rcx
-	t.Context.RDX = rdx
-	t.Context.RSI = rsi
-	t.Context.RDI = rdi
-	t.Context.RBP = rbp
-	t.Context.R8 = r8
-	t.Context.R9 = r9
-	t.Context.R10 = r10
-	t.Context.R11 = r11
-	t.Context.R12 = r12
-	t.Context.R13 = r13
-	t.Context.R14 = r14
-	t.Context.R15 = r15
-	t.Context.RIP = rip
-	t.Context.RFLAGS = rflags
-	t.Context.RSP = rsp
-	t.Context.FSBase = savedExcFSBase // Use saved value (common_exception_entry saves before WRMSR to kernel)
-	// SaveCurrentThreadContext is only called from kernel context (INT $0x80 path),
-	// so hardcode kernel segment selectors.
-	t.Context.CS = kernelCS
-	t.Context.SS = kernelSS
-	// MAZ-135: TLSG is the second g home ([FS_BASE-8]). This is a kernel-context
-	// save, so mirror SaveContextFromFrame's kernel-CS branch: the kernel TLS-g
-	// may have been clobbered by common_exception_entry, and kernel threads are
-	// not the morestack victims, so use R14 as the dual-home g.
-	t.Context.TLSG = r14
-	// Copy XMM state from global save area (same as SaveContextFromFrame).
-	copy(t.Context.XMM[:], xmmSaveArea[:])
 }

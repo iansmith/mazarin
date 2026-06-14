@@ -293,26 +293,6 @@ run_first_hang:
 // YieldToReadyThread - Save thread 0 context and switch to next thread
 // ============================================================================
 TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
-	// Save XMM registers BEFORE calling Go code (which clobbers them).
-	// Matches common_exception_entry's XMM save — ensures the interrupted
-	// thread's XMM state is preserved across the Go scheduler call.
-	MOVOU	X0, ·xmmSaveArea+0(SB)
-	MOVOU	X1, ·xmmSaveArea+16(SB)
-	MOVOU	X2, ·xmmSaveArea+32(SB)
-	MOVOU	X3, ·xmmSaveArea+48(SB)
-	MOVOU	X4, ·xmmSaveArea+64(SB)
-	MOVOU	X5, ·xmmSaveArea+80(SB)
-	MOVOU	X6, ·xmmSaveArea+96(SB)
-	MOVOU	X7, ·xmmSaveArea+112(SB)
-	MOVOU	X8, ·xmmSaveArea+128(SB)
-	MOVOU	X9, ·xmmSaveArea+144(SB)
-	MOVOU	X10, ·xmmSaveArea+160(SB)
-	MOVOU	X11, ·xmmSaveArea+176(SB)
-	MOVOU	X12, ·xmmSaveArea+192(SB)
-	MOVOU	X13, ·xmmSaveArea+208(SB)
-	MOVOU	X14, ·xmmSaveArea+224(SB)
-	MOVOU	X15, ·xmmSaveArea+240(SB)
-
 	// R12 = pointer to current thread's ThreadContext
 	MOVQ	·CurrentThread(SB), R12
 	TESTQ	R12, R12
@@ -365,42 +345,27 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	$0x08, ThreadContext_CS(R12)	// CS = kernelCS
 	MOVQ	$0x10, ThreadContext_SS(R12)	// SS = kernelSS
 
-	// Copy XMM state from global save area to ctx.XMM. XMM registers were saved
-	// to xmmSaveArea at entry before any Go code ran. We persist them in the
-	// per-thread context so load_context_and_iretq restores the correct XMM
-	// state on reschedule. Using X0 as temp is safe — it is already in xmmSaveArea.
-	MOVOU	·xmmSaveArea+0(SB), X0
+	// Save XMM directly into THIS thread's ctx.XMM (MAZ-139: no global staging).
+	// The interrupted XMM is still live here — only integer GPR stores and the
+	// FS_BASE RDMSR ran since entry, none of which touch XMM — so we store the
+	// live registers straight into the per-thread context. load_context_and_iretq
+	// restores them on reschedule.
 	MOVOU	X0, ThreadContext_XMM+0(R12)
-	MOVOU	·xmmSaveArea+16(SB), X0
-	MOVOU	X0, ThreadContext_XMM+16(R12)
-	MOVOU	·xmmSaveArea+32(SB), X0
-	MOVOU	X0, ThreadContext_XMM+32(R12)
-	MOVOU	·xmmSaveArea+48(SB), X0
-	MOVOU	X0, ThreadContext_XMM+48(R12)
-	MOVOU	·xmmSaveArea+64(SB), X0
-	MOVOU	X0, ThreadContext_XMM+64(R12)
-	MOVOU	·xmmSaveArea+80(SB), X0
-	MOVOU	X0, ThreadContext_XMM+80(R12)
-	MOVOU	·xmmSaveArea+96(SB), X0
-	MOVOU	X0, ThreadContext_XMM+96(R12)
-	MOVOU	·xmmSaveArea+112(SB), X0
-	MOVOU	X0, ThreadContext_XMM+112(R12)
-	MOVOU	·xmmSaveArea+128(SB), X0
-	MOVOU	X0, ThreadContext_XMM+128(R12)
-	MOVOU	·xmmSaveArea+144(SB), X0
-	MOVOU	X0, ThreadContext_XMM+144(R12)
-	MOVOU	·xmmSaveArea+160(SB), X0
-	MOVOU	X0, ThreadContext_XMM+160(R12)
-	MOVOU	·xmmSaveArea+176(SB), X0
-	MOVOU	X0, ThreadContext_XMM+176(R12)
-	MOVOU	·xmmSaveArea+192(SB), X0
-	MOVOU	X0, ThreadContext_XMM+192(R12)
-	MOVOU	·xmmSaveArea+208(SB), X0
-	MOVOU	X0, ThreadContext_XMM+208(R12)
-	MOVOU	·xmmSaveArea+224(SB), X0
-	MOVOU	X0, ThreadContext_XMM+224(R12)
-	MOVOU	·xmmSaveArea+240(SB), X0
-	MOVOU	X0, ThreadContext_XMM+240(R12)
+	MOVOU	X1, ThreadContext_XMM+16(R12)
+	MOVOU	X2, ThreadContext_XMM+32(R12)
+	MOVOU	X3, ThreadContext_XMM+48(R12)
+	MOVOU	X4, ThreadContext_XMM+64(R12)
+	MOVOU	X5, ThreadContext_XMM+80(R12)
+	MOVOU	X6, ThreadContext_XMM+96(R12)
+	MOVOU	X7, ThreadContext_XMM+112(R12)
+	MOVOU	X8, ThreadContext_XMM+128(R12)
+	MOVOU	X9, ThreadContext_XMM+144(R12)
+	MOVOU	X10, ThreadContext_XMM+160(R12)
+	MOVOU	X11, ThreadContext_XMM+176(R12)
+	MOVOU	X12, ThreadContext_XMM+192(R12)
+	MOVOU	X13, ThreadContext_XMM+208(R12)
+	MOVOU	X14, ThreadContext_XMM+224(R12)
+	MOVOU	X15, ThreadContext_XMM+240(R12)
 	// FRAME-SAVE-END
 
 	// Call SaveThread0AndYield() to get next thread's context
@@ -521,23 +486,29 @@ yr_guard_ok:
 	IRETQ
 
 yield_restore_return:
-	// No thread to switch to — restore XMM and return normally
-	MOVOU	·xmmSaveArea+0(SB), X0
-	MOVOU	·xmmSaveArea+16(SB), X1
-	MOVOU	·xmmSaveArea+32(SB), X2
-	MOVOU	·xmmSaveArea+48(SB), X3
-	MOVOU	·xmmSaveArea+64(SB), X4
-	MOVOU	·xmmSaveArea+80(SB), X5
-	MOVOU	·xmmSaveArea+96(SB), X6
-	MOVOU	·xmmSaveArea+112(SB), X7
-	MOVOU	·xmmSaveArea+128(SB), X8
-	MOVOU	·xmmSaveArea+144(SB), X9
-	MOVOU	·xmmSaveArea+160(SB), X10
-	MOVOU	·xmmSaveArea+176(SB), X11
-	MOVOU	·xmmSaveArea+192(SB), X12
-	MOVOU	·xmmSaveArea+208(SB), X13
-	MOVOU	·xmmSaveArea+224(SB), X14
-	MOVOU	·xmmSaveArea+240(SB), X15
+	// No thread to switch to — restore XMM from this thread's ctx and return
+	// normally. R12 was overwritten by the SaveThread0AndYield return value
+	// (0 here), so reload it. CurrentThread is unchanged on the no-switch path,
+	// so it still points at the thread whose live XMM we saved into ctx above.
+	MOVQ	·CurrentThread(SB), R12
+	MOVQ	·ThreadContextOffset(SB), AX
+	ADDQ	AX, R12			// R12 = &Thread.Context
+	MOVOU	ThreadContext_XMM+0(R12), X0
+	MOVOU	ThreadContext_XMM+16(R12), X1
+	MOVOU	ThreadContext_XMM+32(R12), X2
+	MOVOU	ThreadContext_XMM+48(R12), X3
+	MOVOU	ThreadContext_XMM+64(R12), X4
+	MOVOU	ThreadContext_XMM+80(R12), X5
+	MOVOU	ThreadContext_XMM+96(R12), X6
+	MOVOU	ThreadContext_XMM+112(R12), X7
+	MOVOU	ThreadContext_XMM+128(R12), X8
+	MOVOU	ThreadContext_XMM+144(R12), X9
+	MOVOU	ThreadContext_XMM+160(R12), X10
+	MOVOU	ThreadContext_XMM+176(R12), X11
+	MOVOU	ThreadContext_XMM+192(R12), X12
+	MOVOU	ThreadContext_XMM+208(R12), X13
+	MOVOU	ThreadContext_XMM+224(R12), X14
+	MOVOU	ThreadContext_XMM+240(R12), X15
 	RET
 
 yield_no_thread:
