@@ -6,23 +6,77 @@ import (
 	"unsafe"
 )
 
+// Per-exception-frame save-state extension (MAZ-139 DoD #1/#2). On every
+// exception entry, common_exception_entry anchors the GPR frame base in BP and
+// reserves excFrameExtSize bytes just below it before dispatching. The region
+// holds THIS nesting level's PRIVATE save-state, so a nested exception writes
+// its own copy at its own stack address and can never clobber an outer level's
+// — the defect this ticket fixes for state that used to live in single globals.
+//
+// Layout, as offsets from the lowered SP (= BP - excFrameExtSize), low to high:
+//
+//	[excFrameTLSGOff]   savedExcKernelTLSG — interrupted kernel TLS-g  (DoD #2)
+//	[excFrameVecOff]    currentVector       — interrupt/exception vector (DoD #2)
+//	[excFrameCanaryOff] D2 nested-clobber canary
+//	(8 bytes spare for 16-alignment)
+//	[excFrameXMMOff]    XMM snapshot (256 B) — X0..X15 (DoD #1); lands at framePtr-256
+//
+// excFrameExtSize is 16-byte aligned (288 = 18×16). The 256→288 growth is one
+// slice of the per-level IST (2 KiB) / RSP0 (8 KiB) stride budget; the
+// ISTOVF/RSPOVF tripwires bound nesting depth. Exported to assembly via
+// go_asm.h as $const_excFrame* — these Go consts are the ONLY definition.
+const (
+	excFrameExtSize   = 288 // bytes reserved below the GPR frame base (BP)
+	excFrameTLSGOff   = 0   // savedExcKernelTLSG slot (from the lowered SP)
+	excFrameVecOff    = 8   // currentVector slot (DoD #2 SLICE 2)
+	excFrameCanaryOff = 16  // D2 canary slot
+	excFrameXMMOff    = 32  // XMM snapshot base; = framePtr-256
+)
+
+// excFrameCanaryMagic tags the D2 canary. common_exception_entry stamps the
+// canary slot with (lowered SP) XOR this magic — per-level distinct (each level's
+// SP differs) AND recognizable (an unwritten/garbage slot won't match). At
+// exception_return the verify recomputes SP^magic and compares; a mismatch means
+// the per-frame slot was reached by another nesting level (the fix is NOT live /
+// a regression) and fires the ALARM. Exported to asm via go_asm.h.
+const excFrameCanaryMagic = 0xD2CA11A7 // "D2 canary"; fits a 32-bit XORQ immediate
+
 // interruptedRIP is the x86 software equivalent of ARM64's ELR_EL1 register.
 // common_exception_entry stashes the interrupted RIP (exception frame offset
 // 128) here on EVERY exception entry, so readELR_EL1() can return it from any
 // handler. Like ELR_EL1 it holds the most-recent exception's PC and is valid
 // only until the next exception clobbers it. Global (single-CPU);
 // per-CPU-ize when x86 goes SMP.
+//
+// MAZ-139 DoD#2: intentionally NOT moved into the per-exception-frame extension
+// (unlike the kernel TLS-g and the vector). This IS the software model of
+// ELR_EL1, which on real hardware is a single register a nested exception
+// overwrites — so "most-recent, clobbered by nesting" is the faithful semantics,
+// not a bug to fix. Its sole reader, readELR_EL1, is a NOSPLIT|NOFRAME asm stub
+// with no framePtr, called from scheduler context (threads.go's [SCHEDLK-VIOLATION]
+// diagnostic), so a per-frame slot is unreachable from it anyway. The read is
+// documented "valid only when called early"; under nesting it reports the
+// innermost level's PC, acceptable for that best-effort debug print. Frame-storing
+// it would diverge amd64 from the ARM64 ELR_EL1 behavior it mirrors.
 var interruptedRIP uint64
 
-// savedExcKernelTLSG holds the interrupted kernel thread's live TLS-g
-// ([kmazarinFSBase-8]) captured at the first instructions of
-// common_exception_entry, before the handler overwrites that slot with the
-// handler g0. The kernel-mode branch of SaveContextFromFrame uses it for a
-// faithful dual-home g restore (in the systemstack exit window frame R14 is
-// the stale g0 while the real curg lives only in this TLS slot). Global
-// (single-CPU, like savedExcFSBase / interruptedRIP);
-// per-CPU-ize for SMP. MAZ-135/MAZ-136.
-var savedExcKernelTLSG uint64
+// currentVector holds the interrupt/exception vector number for the in-flight
+// entry. The ISR stubs write it (·currentVector(SB)) before jumping to
+// common_exception_entry, which reads it once at dispatch and (MAZ-139 DoD#2)
+// stashes it into THIS level's per-frame slot. Go-owned (the svcDepth pattern,
+// no asm GLOBL) so vectorFromFrame is unit-testable; per-CPU-ize for SMP.
+var currentVector uint64
+
+// vectorFromFrame returns the interrupt/exception vector for the exception level
+// whose GPR frame base is framePtr. The unhandled-fault path sources its vector
+// here (via HandleUnhandledExceptionAsm) instead of the global currentVector: a
+// nested exception clobbers the global between an outer entry and the outer's
+// functional read, but each level's per-frame slot is private. MAZ-139 DoD#2.
+//
+//go:nosplit
+func vectorFromFrame(framePtr uintptr) uint64 {
+	return *(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameVecOff))
+}
 
 // gLooksValid reports whether v is a plausible kernel goroutine pointer: nonzero
 // and low-canonical (bits 63:47 clear). Every kernel g — g0 and heap-allocated
@@ -85,13 +139,17 @@ func SaveContextFromFrame(framePtr uintptr) {
 	// value. But when preempting a kernel thread, we need the kernel FSBase.
 	if frame[17] == kernelCS {
 		t.Context.FSBase = kmazarinFSBase
-		// MAZ-135/MAZ-136: the live kernel TLS-g was captured into
-		// savedExcKernelTLSG at the first instructions of common_exception_entry,
-		// before the handler overwrote [kmazarinFSBase-8] with its own g0. Prefer
-		// it over frame R14: in the systemstack exit window R14 is the stale g0
-		// while the real curg lives only in that TLS slot, and restoring the stale
-		// value scrambles the runtime's g state (GC checkmark failures, netpoll
-		// throws, corrupted resume RIPs — the MAZ-136 crash family).
+		// MAZ-135/MAZ-136/MAZ-139 DoD#2: the live kernel TLS-g was captured into
+		// THIS exception level's per-frame slot (framePtr-excFrameExtSize+excFrameTLSGOff)
+		// at the first instructions of common_exception_entry, before the handler
+		// overwrote [kmazarinFSBase-8] with its own g0. It used to live in a single
+		// global that a nested exception's entry would clobber between this capture
+		// and this read; the per-frame slot is private to each nesting level, so a
+		// nested entry writes its OWN copy and cannot scramble ours. Prefer it over
+		// frame R14: in the systemstack exit window R14 is the stale g0 while the real
+		// curg lives only in that TLS slot, and restoring the stale value scrambles
+		// the runtime's g state (GC checkmark failures, netpoll throws, corrupted
+		// resume RIPs — the MAZ-136 crash family).
 		//
 		// BUT the TLS slot is only meaningful once the interrupted kernel code has
 		// established its TLS-g. During early boot and clone-child bringup it holds
@@ -99,8 +157,9 @@ func SaveContextFromFrame(framePtr uintptr) {
 		// thread a garbage g -> #GP the moment the runtime syncs TLS-g into R14.
 		// Fall back to the always-valid frame R14 when the captured slot is not a
 		// plausible kernel g pointer.
-		if gLooksValid(savedExcKernelTLSG) {
-			t.Context.TLSG = savedExcKernelTLSG
+		kernelTLSG := *(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameTLSGOff))
+		if gLooksValid(kernelTLSG) {
+			t.Context.TLSG = kernelTLSG
 		} else {
 			t.Context.TLSG = frame[13]
 		}
@@ -120,12 +179,14 @@ func SaveContextFromFrame(framePtr uintptr) {
 		}
 	}
 	// Copy XMM state from THIS exception level's per-frame slot to per-thread
-	// context. MAZ-139 item 2: common_exception_entry no longer saves XMM to the
+	// context. MAZ-139 DoD#1: common_exception_entry no longer saves XMM to the
 	// single global xmmSaveArea (which an inner nested exception would clobber);
-	// it now saves the interrupted XMM into a 256-byte slot reserved just below
-	// the GPR frame, at framePtr-256. Read it from there so a thread suspended
-	// mid-handler is rescheduled (via load_context_and_iretq) with its OWN XMM,
-	// not whatever the innermost exception happened to leave behind.
+	// it now saves the interrupted XMM into the per-exception-frame extension —
+	// the 256-byte region at framePtr-256 (= excFrameExtSize-excFrameXMMOff below
+	// the GPR frame; the scalar save-state for DoD#2 sits below it). Read it from
+	// there so a thread suspended mid-handler is rescheduled (via
+	// load_context_and_iretq) with its OWN XMM, not whatever the innermost
+	// exception happened to leave behind.
 	copy(t.Context.XMM[:], (*[256]byte)(unsafe.Pointer(framePtr-256))[:])
 	// MAZ-136: no IST or RSP0 state is saved per context — TSS.IST1 AND
 	// TSS.RSP0 are global nesting cursors; the abandoning handler's level

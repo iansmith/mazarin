@@ -504,18 +504,30 @@ rsp0_rotate_ovf_tramp:
 rsp0_rotate_done:
 	// ══════════════════════ end RSP0 ROTATION entry ═════════════════════════
 
-	// SP now points to the GPR exception frame base. MAZ-139 item 2: anchor it
-	// in BP (callee-saved — Go calls and the GO_CALL macros preserve it, so it
-	// stays valid for the whole dispatch), reserve THIS level's own 256-byte XMM
-	// slot just below the frame, and save the interrupted XMM into it. The slot
-	// lives at BP-256 = the lowered SP. framePtr handed to Go is always BP (the
-	// GPR frame base), never the lowered SP. The 256-byte reservation is one
-	// extra slice of the IST/RSP0 stride budget per nesting level (≪ the stride;
+	// SP now points to the GPR exception frame base. MAZ-139: anchor it in BP
+	// (callee-saved — Go calls and the GO_CALL macros preserve it, so it stays
+	// valid for the whole dispatch), then reserve THIS nesting level's PRIVATE
+	// save-state extension (excFrameExtSize bytes) just below the frame. The
+	// extension holds the interrupted XMM (256 B at BP-256 = SP+excFrameXMMOff;
+	// DoD#1) plus per-level scalar state below it (the kernel TLS-g etc.; DoD#2).
+	// Being per-frame, a nested exception writes its OWN copy and cannot clobber
+	// an outer level's — the defect this ticket fixes. framePtr handed to Go is
+	// always BP (the GPR frame base), never the lowered SP. The reservation is
+	// one slice of the IST/RSP0 stride budget per nesting level (≪ the stride;
 	// the ISTOVF/RSPOVF tripwires catch any overflow).
-	MOVQ	SP, BP			// BP = GPR frame base (anchor; valid for the whole dispatch)
-	SUBQ	$256, SP		// reserve this level's own XMM slot below the GPR frame
-	SAVE_XMM_AT(SP)			// save the interrupted XMM into THIS level's slot
-	MOVQ	BP, DI			// DI = framePtr for Go calls = GPR frame base (NOT the lowered SP)
+	MOVQ	SP, BP				// BP = GPR frame base (anchor; valid for the whole dispatch)
+	SUBQ	$const_excFrameExtSize, SP	// reserve this level's private save-state extension below the GPR frame
+	LEAQ	const_excFrameXMMOff(SP), AX	// AX = XMM snapshot base = SP+32 = BP-256 (AX free here — see below)
+	SAVE_XMM_AT(AX)				// save the interrupted XMM into THIS level's slot
+	MOVQ	BP, DI				// DI = framePtr for Go calls = GPR frame base (NOT the lowered SP)
+
+	// MAZ-139 D2 canary: stamp THIS level's private slot with (lowered SP)^magic —
+	// per-level distinct (each level's SP differs) + recognizable. exception_return
+	// re-derives and verifies it; a mismatch means a nested level reached this slot
+	// (fix not live / regressed) → ALARM. AX is free (reloaded by the RIP stash next).
+	MOVQ	SP, AX
+	XORQ	$const_excFrameCanaryMagic, AX
+	MOVQ	AX, const_excFrameCanaryOff(SP)
 
 	// Stash the interrupted RIP for readELR_EL1 — the x86 software equivalent of
 	// ARM64's ELR_EL1. Frame offset 128 holds the interrupted PC (CS is at 136,
@@ -524,16 +536,19 @@ rsp0_rotate_done:
 	MOVQ	128(BP), AX	// interrupted RIP from the exception frame
 	MOVQ	AX, ·interruptedRIP(SB)
 
-	// MAZ-135/MAZ-136: capture the interrupted thread's live kernel TLS-g BEFORE
-	// any handler overwrites [kmazarinFSBase-8] with the handler g0 (syscall
-	// :403, timer :930, device :1023). For a kernel-mode exception this is the
-	// interrupted kernel goroutine's curg — even in the systemstack exit window
-	// where frame R14 is the stale g0. The kernel-mode branch of
-	// SaveContextFromFrame reads this instead of frame R14, so a preempted
-	// kernel thread resumes with a faithful dual-home g. (User-mode exceptions
-	// also write this slot with an irrelevant value — unused; the user branch
-	// reads [savedExcFSBase-8]. Ring-0 read of mapped kernel memory. Global,
-	// single-CPU — same caveat as interruptedRIP/xmmSaveArea.)
+	// MAZ-135/MAZ-136/MAZ-139 DoD#2: capture the interrupted thread's live kernel
+	// TLS-g BEFORE any handler overwrites [kmazarinFSBase-8] with the handler g0
+	// (syscall :403, timer :930, device :1023). For a kernel-mode exception this
+	// is the interrupted kernel goroutine's curg — even in the systemstack exit
+	// window where frame R14 is the stale g0. The kernel-mode branch of
+	// SaveContextFromFrame reads this instead of frame R14, so a preempted kernel
+	// thread resumes with a faithful dual-home g. We stash it into THIS level's
+	// per-frame extension slot (const_excFrameTLSGOff(SP); SP is still the lowered
+	// extension here) — it used to be a single global that a nested exception's
+	// entry would clobber between this capture and the read, so per-frame storage
+	// is the fix: each nesting level keeps its own. (User-mode exceptions also
+	// write this slot with an irrelevant value — unused; the user branch reads
+	// [savedExcFSBase-8]. Ring-0 read of mapped kernel memory.)
 	// Guard the zero-base window: during early Go runtime init (before
 	// kmazarin's init() sets kmazarinFSBase) the base is 0, so [base-8] would
 	// dereference 0xFFFFFFFFFFFFFFF8 and fault INSIDE the entry path — a nested
@@ -544,10 +559,10 @@ rsp0_rotate_done:
 	TESTQ	AX, AX
 	JZ	skip_tlsg_capture
 	MOVQ	-8(AX), AX
-	MOVQ	AX, ·savedExcKernelTLSG(SB)
+	MOVQ	AX, const_excFrameTLSGOff(SP)	// THIS level's per-frame kernel TLS-g slot (was a global)
 	JMP	tlsg_capture_done
 skip_tlsg_capture:
-	MOVQ	$0, ·savedExcKernelTLSG(SB)
+	MOVQ	$0, const_excFrameTLSGOff(SP)
 tlsg_capture_done:
 
 	// Save FS_BASE — but ONLY when exception came from userspace (CS=0x1B).
@@ -566,8 +581,14 @@ tlsg_capture_done:
 	MOVQ	AX, ·savedExcFSBase(SB)
 exc_entry_skip_fsbase:
 
-	// Read the vector number from the global set by the ISR stub
+	// Read the vector number from the global set by the ISR stub, and (MAZ-139
+	// DoD#2) stash it into THIS level's per-frame slot. This dispatch read is the
+	// stub→entry handoff, consumed before any nestable point — safe on the global.
+	// The LATER functional read on the unhandled-fault path sources the vector from
+	// the per-frame slot (via vectorFromFrame) so a nested exception's clobber of
+	// the global cannot reach it. SP is still the lowered extension here.
 	MOVQ	·currentVector(SB), SI	// SI = vector number
+	MOVQ	SI, const_excFrameVecOff(SP)	// stash THIS level's vector in its private slot
 
 	// Determine exception type and dispatch
 	CMPQ	SI, $128		// INT 0x80 = syscall?
@@ -1353,25 +1374,6 @@ pf_unhandled_halt:
 	JMP	pf_unhandled_halt
 
 handle_timer_irq:
-	// ─── MAZ-139 RED self-test one-shot hook (TEMPORARY — remove after GREEN, sign-off (a)) ───
-	// Armed ONLY by runXMMNestSelfTest (IRQ-masked, thread-0, pre-launch; hardware
-	// timer disabled there). Fires exactly one NESTED real INT $48 inside this live
-	// outer timer entry, exercising the production common_exception_entry /
-	// exception_return XMM save/restore at depth 2 — the genuine clobber path. We
-	// disarm BEFORE the nested INT so the inner entry skips this hook. Loading
-	// sentinel B means the inner entry's save overwrites the single global
-	// ·xmmSaveArea (RED); the per-frame fix (item 2) gives each level its own slot
-	// so the outer survives (GREEN). ist1Floor is published (SetupSyscallMSRs,
-	// main.go) before the test, so the nested entry rotates onto its own IST stack
-	// (no MAZ-136 trample) — it clobbers ONLY the global XMM, which is the point.
-	// One CMP on the normal timer path; zero cost once disarmed.
-	CMPQ	·xmmNestArmed(SB), $0
-	JE	maz139_red_skip
-	MOVQ	$0, ·xmmNestArmed(SB)		// one-shot: disarm before the nested INT
-	LEAQ	·xmmNestSentB(SB), AX
-	RESTORE_XMM_AT(AX)			// X0..X15 = sentinel B
-	INT	$48				// REAL nested entry — overwrites the global XMM
-maz139_red_skip:
 	// Switch FS_BASE to kernel value (saved by common_exception_entry).
 	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	AX, DX
@@ -1800,7 +1802,13 @@ fripF:	OUTB
 	// Save exception frame pointer and extract fault info into callee-saved regs.
 	// BP is ALREADY the anchored GPR frame base (set at rsp0_rotate_done); SP is
 	// the lowered XMM slot, so re-anchoring BP=SP here would be wrong (MAZ-139).
-	MOVQ	·currentVector(SB), R13	// excInfo = vector number
+	// MAZ-139 DoD#2: source the vector from THIS level's per-frame slot (not the
+	// global currentVector, which a nested exception in the handler clobbers before
+	// this read). vectorFromFrame reads the slot stashed at dispatch; g0 is set up
+	// above, so the GO_CALL is safe. R13/R12/RBX are callee-saved across the
+	// SaveContextFromFrame call below.
+	GO_CALL_1_1(·vectorFromFrame, BP)	// AX = this level's vector (per-frame)
+	MOVQ	AX, R13			// excInfo = vector number
 	MOVQ	$0, R12			// faultAddr = 0 (no CR2 relevant for non-PF)
 	MOVQ	128(BP), BX		// faultPC = RIP from exception frame
 
@@ -1922,15 +1930,41 @@ eret_kernel_tls:
 	MOVQ	DX, -8(AX)		// Write g to kernel TLS slot (safe)
 eret_skip_tls_write:
 
-	// Restore XMM registers from THIS exception level's own per-frame slot.
-	// MAZ-139 item 2: at this point SP is still the lowered slot (BP-256) where
-	// SAVE_XMM_AT stashed the interrupted XMM at rsp0_rotate_done — so RESTORE
-	// reads the right level even when an exception nested over us. Without this,
-	// timer/device IRQ handlers clobber XMM via Go's memmove, corrupting the
-	// interrupted code's MOVDQU operations.
-	RESTORE_XMM_AT(SP)
+	// MAZ-139 D2 canary verify: confirm THIS level's slot still holds SP^magic
+	// (stamped at entry). A mismatch ⇒ a nested level reached our per-frame slot
+	// (the fix is not live / has regressed) ⇒ count + a loud serial marker, then
+	// continue (a guard, not a halt; re-surfaced at shepherd-exit via dumpNestStats).
+	// AX/DX are scratch here — the POPs below reload them. SP is still the lowered
+	// extension, so const_excFrameCanaryOff(SP) is this level's canary slot.
+	MOVQ	SP, AX
+	XORQ	$const_excFrameCanaryMagic, AX
+	CMPQ	AX, const_excFrameCanaryOff(SP)
+	JE	eret_canary_ok
+	INCQ	·excCanaryAlarmCount(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'2', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'A', AX; OUTB
+	MOVB	$'N', AX; OUTB
+	MOVB	$'!', AX; OUTB
+	MOVB	$'\n', AX; OUTB
+	JMP	eret_canary_done
+eret_canary_ok:
+	INCQ	·excCanaryCheckCount(SB)
+eret_canary_done:
 
-	// Drop this level's XMM slot: return SP to the GPR frame base before the
+	// Restore XMM registers from THIS exception level's own per-frame slot.
+	// MAZ-139 DoD#1: at this point SP is still the lowered extension
+	// (BP-excFrameExtSize) where SAVE_XMM_AT stashed the interrupted XMM (at
+	// SP+excFrameXMMOff = BP-256) — so RESTORE reads the right level even when an
+	// exception nested over us. Without this, timer/device IRQ handlers clobber
+	// XMM via Go's memmove, corrupting the interrupted code's MOVDQU operations.
+	LEAQ	const_excFrameXMMOff(SP), AX	// XMM snapshot base = SP+32 = BP-256 (AX scratch — POPed below)
+	RESTORE_XMM_AT(AX)
+
+	// Drop this level's extension: return SP to the GPR frame base before the
 	// POPs (which consume the frame from SP upward).
 	MOVQ	BP, SP
 
@@ -2353,12 +2387,15 @@ TEXT ·ReadCS(SB), NOSPLIT, $0-2
 	RET
 
 // ============================================================================
-// Global state for vector number passing
+// State for vector number passing
 // ============================================================================
-// currentVector stores the current interrupt/exception vector number.
-// Set by ISR stubs before jumping to common handler.
-// This is per-CPU safe because interrupts are disabled during handling.
-GLOBL	·currentVector(SB), NOPTR, $8
+// currentVector (declared in save_context_amd64.go as var currentVector uint64)
+// stores the current interrupt/exception vector number. Set by the ISR stubs
+// before jumping to common_exception_entry, read once by the dispatch at entry,
+// and stashed into THIS level's per-frame slot (excFrameVecOff) so the functional
+// fault-path read survives a nested clobber (MAZ-139 DoD#2). Go-owned (svcDepth
+// pattern) so the per-frame read seam (vectorFromFrame) is unit-testable. Per-CPU
+// safe because interrupts are disabled during the entry handoff.
 
 // svcDepth (declared in percpu.go as var svcDepth uint32) tracks whether
 // the CPU is inside a syscall handler. Set to 1 at handle_syscall entry,
@@ -2453,13 +2490,9 @@ TEXT bad_iretq_dump(SB), NOSPLIT|NOFRAME, $0
 	MOVB	$'=', AX; OUTB
 	MOVL	·svcDepth(SB), R15
 	CALL	pf_print_hex16(SB)
-	MOVW	$0x3F8, DX
-	MOVB	$' ', AX; OUTB
-	MOVB	$'T', AX; OUTB
-	MOVB	$'G', AX; OUTB
-	MOVB	$'=', AX; OUTB
-	MOVQ	·savedExcKernelTLSG(SB), R15
-	CALL	pf_print_hex16(SB)
+	// MAZ-139 DoD#2: the kernel TLS-g is now per-exception-frame (no global to
+	// read here); the FR= frame address below lets you find this level's slot
+	// (frame base − excFrameExtSize + excFrameTLSGOff) by hand if needed.
 	MOVW	$0x3F8, DX
 	MOVB	$' ', AX; OUTB
 	MOVB	$'F', AX; OUTB
@@ -2909,7 +2942,19 @@ syscall_build_frame:
 	MOVQ	$129, ·currentVector(SB)	// 129 = SYSCALL (vs 128 = INT $0x80)
 	JMP	common_exception_entry(SB)
 
-// Scratch space for SYSCALL entry (per-CPU safe: interrupts disabled by FMASK)
+// Scratch space for SYSCALL entry.
+//
+// MAZ-139 DoD#3 — audited NOT clobber-prone, so these stay single globals (no
+// per-frame slot needed). Every one is written AND read entirely within the
+// straight-line syscallEntry window above (·syscallEntry .. JMP common_exception_entry):
+// RCX w:2893/r:2965, R11 w:2894/r:2962,2970, RSP w:2909/r:2948,2961, CS/SS
+// w:2951-2956/r:2960,2964. That window runs with interrupts masked by the SYSCALL
+// FMASK MSR (IF=0) and contains NO GO_CALL and no faulting memory access (only
+// register/global MOVs, compares, and stack PUSHes to the mapped exception stack)
+// — so no exception can NEST between a write and its read. The scratch values are
+// fully consumed (pushed into the fake exception frame) before the JMP, before any
+// nestable point. Unlike the kernel TLS-g / vector (which a nested exception in a
+// LATER handler could clobber), these have no live window a nest can reach.
 GLOBL	·syscallScratchRCX(SB), NOPTR, $8
 GLOBL	·syscallScratchR11(SB), NOPTR, $8
 GLOBL	·syscallScratchRSP(SB), NOPTR, $8

@@ -55,14 +55,6 @@ type KernelConfig struct {
 	// enable in test/CI configs. (MAZ-139 removed the dead SaveCurrentThreadContext
 	// + the global xmmSaveArea; the test now drives the per-frame saver only.)
 	CtxMarshalTest bool `toml:"ctx_marshal_test"`
-
-	// XMMNestTest (MAZ-139 DoD#1) drives the production exception XMM save/restore
-	// through a REAL nested exception (an outer INT $48 plus a one-shot nested
-	// INT $48 from the timer-handler hook) and asserts the OUTER level resumes
-	// with its own XMM. RED while ·xmmSaveArea is a single global; GREEN once XMM
-	// is stored per exception frame. amd64 only (no-op on arm64). Deterministic;
-	// runs IRQ-masked on thread 0 before launchEmbeddedFS.
-	XMMNestTest bool `toml:"xmm_nest_test"`
 }
 
 // DefaultFramebufferMaxMB is the framebuffer cap (megabytes) used when the kernel

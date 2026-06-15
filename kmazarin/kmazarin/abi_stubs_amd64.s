@@ -181,6 +181,9 @@ TEXT ·GetPC(SB), NOSPLIT, $0-8
 // exception entry. Same semantics as ELR_EL1: holds the most-recent exception's
 // PC, valid until the next exception clobbers it. Used by the [SCHEDLK-VIOLATION]
 // diagnostic to report the PC of whoever held schedulerLock with IRQs enabled.
+// MAZ-139 DoD#2: ·interruptedRIP stays a single global (not per-exception-frame,
+// unlike the TLS-g/vector) — this stub is NOFRAME with no framePtr, and a single
+// most-recent PC is the faithful ELR_EL1 model. See the var doc in save_context_amd64.go.
 TEXT ·readELR_EL1(SB), NOSPLIT|NOFRAME, $0-8
 	MOVQ	·interruptedRIP(SB), AX
 	MOVQ	AX, ret+0(FP)

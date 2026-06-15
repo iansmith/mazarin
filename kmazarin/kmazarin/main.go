@@ -697,15 +697,11 @@ func simpleMain() {
 		runContextMarshalSelfTest()
 	}
 
-	// MAZ-139 DoD#1 XMM nested-exception RED self-test (amd64; no-op arm64). Gated;
-	// drives the production exception XMM save/restore through a REAL nested INT $48
-	// and asserts the outer level keeps its own XMM. Mask IRQs (only thread 0 here)
-	// so no hardware IRQ interleaves with the deterministic software nesting.
-	if kernelCfg.XMMNestTest {
-		savedDAIF := SaveAndDisableIRQs()
-		runXMMNestSelfTest()
-		RestoreIRQs(savedDAIF)
-	}
+	// MAZ-139: the temporary XMM-nest RED self-test + D2-canary negative test (which
+	// drove the per-exception-frame fix RED→GREEN via timer-handler hooks) are
+	// removed post-GREEN (sign-off (a)). The kept guards are the always-on D2 canary
+	// (exceptions_amd64.s, surfaced by dumpNestStats) and the gated context-marshal
+	// value-flow self-test above (TLSG + per-frame vector sourcing).
 
 	// MAZ-108 kmem teardown leak-soak self-test. Gated by config; OFF by
 	// default. Runs before launchEmbeddedFS, so no shepherd threads exist yet

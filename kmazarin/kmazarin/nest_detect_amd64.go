@@ -30,11 +30,25 @@ var (
 	excNestCount    uint64 // entries that nested inside >=1 live chain
 )
 
+// D2 canary accounting (MAZ-139 DoD#2). common_exception_entry stamps each
+// level's per-frame slot with SP^excFrameCanaryMagic; exception_return verifies
+// it. excCanaryCheckCount counts intact verifications; excCanaryAlarmCount counts
+// mismatches. The inference contract: nests>0 AND checks>0 AND alarms==0 ⇒ the
+// per-frame fix is LIVE and PROTECTING (every nested entry left outer slots
+// intact). alarms>0 ⇒ a nested level reached an outer slot — the fix is not live
+// or has regressed (guards the [[feedback_runtime_overlay_verify]] "stock runtime
+// shipped" failure mode). Silence proves nothing. Referenced from
+// exceptions_amd64.s as ·excCanary*(SB).
+var (
+	excCanaryCheckCount uint64 // exception_return canary verifications found intact
+	excCanaryAlarmCount uint64 // canary mismatches (per-frame slot reached by another level) — should be 0
+)
+
 // dumpNestStats reports the nested-exception detector counters. Called from the
 // shepherd-exit diagnostic dump (klog-safe, non-nosplit context). At exit
 // excNestDepth should be ~0 (every entry returned); the durable signals are the
 // cumulative nest count and the high-water depth.
 func dumpNestStats() {
-	klog.Criticalf("xmm-nest", "[xmm-nest] nested-entry detector: nests=%d maxdepth=%d depth=%d\n",
-		excNestCount, excNestMaxDepth, excNestDepth)
+	klog.Criticalf("xmm-nest", "[xmm-nest] nested-entry detector: nests=%d maxdepth=%d depth=%d | D2 canary: checks=%d alarms=%d\n",
+		excNestCount, excNestMaxDepth, excNestDepth, excCanaryCheckCount, excCanaryAlarmCount)
 }
