@@ -2,7 +2,11 @@
 
 package main
 
-import "mazzy/kmazarin/klog"
+import (
+	"sync/atomic"
+
+	"mazzy/kmazarin/klog"
+)
 
 // MAZ-139 — hot-path nested-exception detector (amd64).
 //
@@ -24,6 +28,15 @@ import "mazzy/kmazarin/klog"
 // Storage is owned here (Go vars), referenced from exceptions_amd64.s as
 // ·excNestDepth(SB) etc. — the same Go-var / no-asm-GLOBL pattern as
 // istSubCount (syscall_amd64.go).
+//
+// SMP-safe / lock-free: the asm mutates these with LOCK-prefixed atomics — LOCK
+// XADD to bump the depth (and read its old value), LOCK DEC on the two retires,
+// LOCK INC on the cumulative counters, and a LOCK CMPXCHG CAS loop for the
+// high-water max — and dumpNestStats reads them with atomic loads. No lost updates
+// or torn reads across CPUs. The cumulative counters (excNestCount, excCanary*)
+// aggregate correctly across all CPUs; excNestDepth / excNestMaxDepth become an
+// aggregate (the live sum across CPUs / its high-water) rather than per-CPU values —
+// faithful per-CPU nesting state is part of x86 SMP (MAZ-142).
 var (
 	excNestDepth    uint64 // live exception-nesting depth (== live IST chains)
 	excNestMaxDepth uint64 // high-water mark of excNestDepth
@@ -50,5 +63,6 @@ var (
 // cumulative nest count and the high-water depth.
 func dumpNestStats() {
 	klog.Criticalf("xmm-nest", "[xmm-nest] nested-entry detector: nests=%d maxdepth=%d depth=%d | D2 canary: checks=%d alarms=%d\n",
-		excNestCount, excNestMaxDepth, excNestDepth, excCanaryCheckCount, excCanaryAlarmCount)
+		atomic.LoadUint64(&excNestCount), atomic.LoadUint64(&excNestMaxDepth), atomic.LoadUint64(&excNestDepth),
+		atomic.LoadUint64(&excCanaryCheckCount), atomic.LoadUint64(&excCanaryAlarmCount))
 }

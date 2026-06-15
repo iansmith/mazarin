@@ -405,16 +405,28 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	// Counters read at shepherd-exit (dumpNestStats) / via gdbstub. R12 is
 	// scratch here (reloaded by the POPs on exit). Pure counters, off the IST
 	// stride budget. (Phase D1; item 2 upgrades to a per-frame canary = D2.)
-	MOVQ	·excNestDepth(SB), R12
-	TESTQ	R12, R12
+	// SMP-safe (lock-free): one LOCK XADD atomically bumps the live depth AND reads
+	// its OLD value into R12 (R12 = old depth; ·excNestDepth = old+1). R12 and AX are
+	// scratch here (R12 reloaded by the POPs; AX's interrupted value is in the frame,
+	// reused at the RIP stash below). On SMP the global aggregates depth across all
+	// CPUs (race-free); truly per-CPU nesting depth is MAZ-142 (per-CPU state).
+	MOVQ	$1, R12
+	LOCK
+	XADDQ	R12, ·excNestDepth(SB)	// R12 <- old depth (atomic); ·excNestDepth = old+1
+	TESTQ	R12, R12		// old depth >= 1 ⇒ this entry nested inside a live chain
 	JZ	maz139_nest_outer
-	INCQ	·excNestCount(SB)	// this entry nests inside >=1 live chain
+	LOCK
+	INCQ	·excNestCount(SB)	// atomic: cumulative nested-entry count (all CPUs)
 maz139_nest_outer:
-	INCQ	R12
-	MOVQ	R12, ·excNestDepth(SB)
-	CMPQ	R12, ·excNestMaxDepth(SB)
-	JBE	maz139_nest_dmax
-	MOVQ	R12, ·excNestMaxDepth(SB)
+	INCQ	R12			// R12 = new depth (old+1)
+	// Atomic high-water max via CAS loop: raise ·excNestMaxDepth to R12 iff smaller.
+maz139_nest_dmax_cas:
+	MOVQ	·excNestMaxDepth(SB), AX	// AX = current max (CMPXCHGQ comparand)
+	CMPQ	R12, AX
+	JBE	maz139_nest_dmax	// new depth <= current max ⇒ nothing to raise
+	LOCK
+	CMPXCHGQ R12, ·excNestMaxDepth(SB)	// if [max]==AX { [max]=R12 } else { AX=[max] }
+	JNE	maz139_nest_dmax_cas	// lost the race ⇒ retry against the fresher max
 maz139_nest_dmax:
 	// ────────────────────────────────────────────────────────────────
 	JMP	ist_rotate_done
@@ -1871,7 +1883,8 @@ exception_return:
 					//   BEFORE the resulting trample, with context
 	MOVQ	AX, ·tssBuffer+36(SB)
 	INCQ	·istEretAddCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
-	DECQ	·excNestDepth(SB)	// MAZ-139 D1: this level retires (mirror the IST -1)
+	LOCK
+	DECQ	·excNestDepth(SB)	// MAZ-139 D1: this level retires (atomic; mirror the IST -1)
 	JMP	eret_ist_done
 eret_ist_overshoot:
 	MOVQ	$1, R14			// site code 1 = exception_return (halting; R14 free)
@@ -1940,7 +1953,8 @@ eret_skip_tls_write:
 	XORQ	$const_excFrameCanaryMagic, AX
 	CMPQ	AX, const_excFrameCanaryOff(SP)
 	JE	eret_canary_ok
-	INCQ	·excCanaryAlarmCount(SB)
+	LOCK
+	INCQ	·excCanaryAlarmCount(SB)	// atomic: a lost alarm on SMP would be a silent guard failure
 	MOVW	$0x3F8, DX
 	MOVB	$'!', AX; OUTB
 	MOVB	$'D', AX; OUTB
@@ -1952,7 +1966,8 @@ eret_skip_tls_write:
 	MOVB	$'\n', AX; OUTB
 	JMP	eret_canary_done
 eret_canary_ok:
-	INCQ	·excCanaryCheckCount(SB)
+	LOCK
+	INCQ	·excCanaryCheckCount(SB)	// atomic (SMP)
 eret_canary_done:
 
 	// Restore XMM registers from THIS exception level's own per-frame slot.
@@ -2153,7 +2168,8 @@ cs_valid:
 	JA	lc_ist_overshoot	// over-retire — see exception_return's twin check
 	MOVQ	AX, ·tssBuffer+36(SB)
 	INCQ	·istLcAddCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
-	DECQ	·excNestDepth(SB)	// MAZ-139 D1: this dying level retires (mirror the IST -1)
+	LOCK
+	DECQ	·excNestDepth(SB)	// MAZ-139 D1: this dying level retires (atomic; mirror the IST -1)
 	JMP	lc_ist_done
 lc_ist_overshoot:
 	MOVQ	$2, R14			// site code 2 = load_context_and_iretq (halting)
