@@ -11,9 +11,19 @@ import (
 
 // Scratch state used ONLY by runContextMarshalSelfTest. ctxTestTLS[0] is the
 // synthetic user TLS-g (savedExcFSBase-8 points at it during the test).
+//
+// ctxTestBacking holds the synthetic exception frame. It MUST be a package global
+// (stable address), NOT a stack-local array: the tests hold framePtr as a uintptr
+// across splittable calls (fillXMMSlotSentinel, SaveAndDisableIRQs,
+// SetCurrentThreadGlobal), and a stack-local buffer could be relocated by morestack
+// mid-test — staling framePtr so the writes and SaveContextFromFrame's reads target
+// different memory (a latent boot-halting flake). A global never moves. The tests
+// run sequentially at boot, so sharing one buffer is safe; each fully populates the
+// slots it reads. Sized for the largest layout (per-frame extension + 21-qword frame).
 var (
-	ctxTestThread Thread
-	ctxTestTLS    [4]uint64
+	ctxTestThread  Thread
+	ctxTestTLS     [4]uint64
+	ctxTestBacking [excFrameExtSize/8 + 21]uint64
 )
 
 // runContextMarshalSelfTest is a NON-INVASIVE boot selftest (MAZ-135 guard). It
@@ -76,8 +86,8 @@ func fillXMMSlotSentinel(framePtr uintptr) {
 func saveFromSyntheticFrame() ThreadContext {
 	// backing layout: [256-byte XMM slot][21 × uint64 GPR/CPU frame].
 	// 256 bytes = 32 uint64, so the frame base is at index 32.
-	var backing [32 + 21]uint64
-	frame := backing[32:] // frame[0] == &backing[0] + 256
+	backing := ctxTestBacking[:32+21] // stable global buffer — see ctxTestBacking
+	frame := backing[32:]             // frame[0] == &backing[0] + 256
 	for i := range frame {
 		frame[i] = ctxFrameSentinel + uint64(i)
 	}
@@ -138,8 +148,8 @@ func saveFromSyntheticKernelFrame() ThreadContext {
 	// Within the extension: the TLSG slot is at framePtr-excFrameExtSize+excFrameTLSGOff
 	// (= backing[0]); the XMM snapshot is at framePtr-256 (excFrameXMMOff within the ext).
 	const extWords = excFrameExtSize / 8
-	var backing [extWords + 21]uint64
-	frame := backing[extWords:] // frame[0] == &backing[0] + excFrameExtSize
+	backing := ctxTestBacking[:extWords+21] // stable global buffer — see ctxTestBacking
+	frame := backing[extWords:]             // frame[0] == &backing[0] + excFrameExtSize
 	for i := range frame {
 		frame[i] = ctxFrameSentinel + uint64(i)
 	}
@@ -190,7 +200,7 @@ func saveFromSyntheticKernelFrame() ThreadContext {
 //   - GREEN (post-fix): reads the per-frame slot → the sentinel.
 func checkVectorFromFrame() {
 	const extWords = excFrameExtSize / 8
-	var backing [extWords + 21]uint64
+	backing := ctxTestBacking[:extWords+21] // stable global buffer — see ctxTestBacking
 	frame := backing[extWords:]
 	framePtr := uintptr(unsafe.Pointer(&frame[0]))
 	*(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameVecOff)) = ctxVectorSentinel
