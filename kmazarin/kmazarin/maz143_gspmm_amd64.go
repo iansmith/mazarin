@@ -93,23 +93,29 @@ func recordGSPMismatchKernel(g, sp, rip uint64) {
 //
 //go:nosplit
 func gspEmit(g, sp, rip, lo, hi uint64) {
-	gspBytes([]byte("\nGSPMM g="))
+	gspStr("\nGSPMM g=")
 	gspHex(g)
-	gspBytes([]byte(" sp="))
+	gspStr(" sp=")
 	gspHex(sp)
-	gspBytes([]byte(" rip="))
+	gspStr(" rip=")
 	gspHex(rip)
-	gspBytes([]byte(" stk=["))
+	gspStr(" stk=[")
 	gspHex(lo)
-	gspBytes([]byte(","))
+	gspStr(",")
 	gspHex(hi)
-	gspBytes([]byte(")\n"))
+	gspStr(")\n")
 }
 
+// gspStr writes a string's bytes to COM1 via the nosplit raw UART. Indexing a
+// string (s[i]) is allocation-free — unlike []byte(s), which can compile to a
+// non-nosplit stringtoslicebyte call if escape analysis ever decides the slice
+// escapes (a latent nosplit-stack-overflow at link time). Matches the
+// single-PollWrite pattern of kmazarin's other nosplit serial emitters.
+//
 //go:nosplit
-func gspBytes(b []byte) {
-	for i := 0; i < len(b); i++ {
-		serial.PollWrite(b[i])
+func gspStr(s string) {
+	for i := 0; i < len(s); i++ {
+		serial.PollWrite(s[i])
 	}
 }
 
