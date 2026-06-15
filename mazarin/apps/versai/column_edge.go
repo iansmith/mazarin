@@ -72,6 +72,20 @@ func (c *ColumnEdgeToEdge) ScrollerWidthURI() string {
 	return c.SV.ScrollerWidthURI()
 }
 
+// resetToZeroI64 sets a to the plain value 0, demoting it from a constraint
+// first if needed. Set panics on a live constraint (and the solver would
+// clobber a bare value anyway), so a constraint must be swapped out — but the
+// already-a-value case keeps the cheap Set, which skips the write when the
+// value is unchanged. Calling SwapToValue unconditionally would instead
+// re-dirty every dependent on each re-layout.
+func resetToZeroI64(a *attr.Attribute[int64]) {
+	if a.IsConstraint() {
+		attr.SwapToValue(a, int64(0))
+	} else {
+		a.Set(0)
+	}
+}
+
 // LayoutChildren wires each Scroller child's Y as a live constraint so
 // that height changes propagate automatically through the stack:
 //
@@ -97,12 +111,8 @@ func (c *ColumnEdgeToEdge) LayoutChildren() {
 	// back to a value; otherwise the cheap Set skips the write when unchanged.
 	if first, ok := children[0].(mancini.Layouter); ok {
 		if flh := first.GetLayout(); flh != nil {
-			flh.X.Set(0)
-			if flh.Y.IsConstraint() {
-				attr.SwapToValue(flh.Y, int64(0))
-			} else {
-				flh.Y.Set(0)
-			}
+			resetToZeroI64(flh.X)
+			resetToZeroI64(flh.Y)
 		}
 	}
 
@@ -121,7 +131,7 @@ func (c *ColumnEdgeToEdge) LayoutChildren() {
 		if prevLH == nil || curLH == nil {
 			continue
 		}
-		curLH.X.Set(0)
+		resetToZeroI64(curLH.X)
 		attr.SwapToConstraint(curLH.Y,
 			mancini.ChildAfterI64(prevLH.Y.URI(), prevLH.Height.URI()))
 	}
