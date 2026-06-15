@@ -160,6 +160,11 @@ func SaveContextFromFrame(framePtr uintptr) {
 		kernelTLSG := *(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameTLSGOff))
 		if gLooksValid(kernelTLSG) {
 			t.Context.TLSG = kernelTLSG
+			// MAZ-143 RED detector: flag an inconsistent (g,SP) capture — the
+			// interrupted SP outside the captured kernel g's stack bounds is the
+			// runtime.morestack g→g0/SP-switch window that resumes into
+			// `morestack on g0`. Detection only; frame[19]=RSP, frame[16]=RIP.
+			recordGSPMismatchKernel(kernelTLSG, frame[19], frame[16])
 		} else {
 			t.Context.TLSG = frame[13]
 		}

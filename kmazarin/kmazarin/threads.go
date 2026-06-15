@@ -3997,6 +3997,15 @@ func boostThread0ForPendingWork(sf *SchedulerFunc, oldThread *Thread, framePtr u
 //go:nosplit
 //go:noinline
 func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
+	// MAZ-143 fix C: never checkpoint thread 0 caught inside runtime.morestack's
+	// g→g0 / SP-switch transient (kernel-mode, TLS-g==g0, SP on a non-g0 stack).
+	// Faithfully saving and later restoring that (g,SP) resumes into
+	// `morestack on g0`. Skip the switch (return 0 = no preemption); the timer /
+	// device IRQ retries next tick, by which time the thread has cleared the
+	// 1-instruction window. amd64-only check; arm64 is immune (stub returns false).
+	if gspUnsafeKernelResume(uintptr(framePtr)) {
+		return 0
+	}
 	oldThread := GetCurrentThread()
 	if oldThread == nil {
 		// Idle CPU (no current thread) - check if there's work to pick up

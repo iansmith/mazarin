@@ -51,6 +51,10 @@ func runContextMarshalSelfTest() {
 
 	klog.Criticalf("[CTX]", "[ctx-selftest] OK — amd64 SaveContextFromFrame populates all %d ThreadContext fields; dual-home TLSG + per-frame vector verified\n",
 		reflect.TypeFor[ThreadContext]().NumField())
+
+	// MAZ-143: deterministic RED/GREEN for the (g,SP)-mismatch detector — shares
+	// this gated, quiescent, thread-0-only boot point and the scratch globals.
+	runGSPMismatchSelfTest()
 }
 
 const (

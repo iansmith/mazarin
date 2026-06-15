@@ -106,6 +106,18 @@ func dumpPwakeRing() {
 		klog.Criticalf("pwake", "  #%d cs=%#x rip=%#x old=%d/%d next=%d/%d\n",
 			e.seq, e.cs, e.rip, e.oldTID, e.oldPID, e.nextTID, e.nextPID)
 	}
+	gspMismatch := atomic.LoadUint64(&dbgGSPMismatch)
+	klog.Criticalf("gsp", "[gsp] mismatch=%d skipped=%d (MAZ-143: detector tripwire / fix-C guarded switches)\n",
+		gspMismatch, atomic.LoadUint64(&dbgGSPSkipped))
+	if gspMismatch != 0 {
+		// The tripwire fired (should never happen post-fix C — the guard skips the
+		// switch before SaveContextFromFrame). Surface the most-recent captured
+		// unsafe context so a slipped-through case is diagnosable, not just counted.
+		klog.Criticalf("gsp", "  last unsafe save: g=%#x sp=%#x rip=%#x g0.stack=[%#x,%#x)\n",
+			atomic.LoadUint64(&dbgGSPLastG), atomic.LoadUint64(&dbgGSPLastSP),
+			atomic.LoadUint64(&dbgGSPLastRIP), atomic.LoadUint64(&dbgGSPLastLo),
+			atomic.LoadUint64(&dbgGSPLastHi))
+	}
 	dumpNestStats() // MAZ-139: nested-exception detector counters, same exit channel
 }
 
