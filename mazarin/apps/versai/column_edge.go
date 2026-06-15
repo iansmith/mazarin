@@ -72,20 +72,6 @@ func (c *ColumnEdgeToEdge) ScrollerWidthURI() string {
 	return c.SV.ScrollerWidthURI()
 }
 
-// resetToZeroI64 sets a to the plain value 0, demoting it from a constraint
-// first if needed. Set panics on a live constraint (and the solver would
-// clobber a bare value anyway), so a constraint must be swapped out — but the
-// already-a-value case keeps the cheap Set, which skips the write when the
-// value is unchanged. Calling SwapToValue unconditionally would instead
-// re-dirty every dependent on each re-layout.
-func resetToZeroI64(a *attr.Attribute[int64]) {
-	if a.IsConstraint() {
-		attr.SwapToValue(a, int64(0))
-	} else {
-		a.Set(0)
-	}
-}
-
 // LayoutChildren wires each Scroller child's Y as a live constraint so
 // that height changes propagate automatically through the stack:
 //
@@ -97,22 +83,28 @@ func resetToZeroI64(a *attr.Attribute[int64]) {
 // adding children and again after removing one (DeleteUnitEntry).
 // MaxScrollY and the scrollbar track VirtualHeight through existing
 // constraint wiring in ScrollerVertical — no further updates needed.
+//
+// This method OWNS the Scroller's VirtualHeight (a live constraint while there
+// are children, a plain 0 value when empty). Callers must not also drive it
+// imperatively via Scroller.SetVirtualSize — Set panics on a constraint.
 func (c *ColumnEdgeToEdge) LayoutChildren() {
 	children := c.SV.Scroller.GetChildren()
 	if len(children) == 0 {
 		// No children: snap VirtualHeight back to a plain 0 value so the
 		// scroller's fast path doesn't draw phantoms.
-		attr.SwapToValue(c.SV.Scroller.VirtualHeight, int64(0))
+		attr.ResetToValue(c.SV.Scroller.VirtualHeight, int64(0))
 		return
 	}
 
-	// child[0].Y is always the plain value 0. If it was previously a
-	// constraint (re-layout of a child that used to be at index ≥1), swap it
-	// back to a value; otherwise the cheap Set skips the write when unchanged.
+	// child[0].X is always a plain value 0 — this layout never makes X a
+	// constraint, so a bare Set is correct. child[0].Y is value 0 too, but may
+	// currently be a constraint from a prior layout (a child that used to be at
+	// index ≥1), so demote it; ResetToValue keeps the cheap Set when it is
+	// already a value.
 	if first, ok := children[0].(mancini.Layouter); ok {
 		if flh := first.GetLayout(); flh != nil {
-			resetToZeroI64(flh.X)
-			resetToZeroI64(flh.Y)
+			flh.X.Set(0)
+			attr.ResetToValue(flh.Y, int64(0))
 		}
 	}
 
@@ -131,7 +123,7 @@ func (c *ColumnEdgeToEdge) LayoutChildren() {
 		if prevLH == nil || curLH == nil {
 			continue
 		}
-		resetToZeroI64(curLH.X)
+		curLH.X.Set(0)
 		attr.SwapToConstraint(curLH.Y,
 			mancini.ChildAfterI64(prevLH.Y.URI(), prevLH.Height.URI()))
 	}

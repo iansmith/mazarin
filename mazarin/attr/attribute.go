@@ -183,6 +183,20 @@ func SwapToValue[T any](target *Attribute[T], initial T) {
 	delete(constraintEvaluators, target.slot)
 }
 
+// ResetToValue sets target to the plain value v, demoting it from a constraint
+// first if needed. Set panics on a live constraint (and the solver would
+// clobber a bare value anyway), so a constraint must be swapped out — but the
+// already-a-value case keeps the cheap Set, which skips the write when the
+// value is unchanged. Calling SwapToValue unconditionally would instead
+// re-dirty every dependent on each reset.
+func ResetToValue[T any](target *Attribute[T], v T) {
+	if target.IsConstraint() {
+		SwapToValue(target, v)
+	} else {
+		target.Set(v)
+	}
+}
+
 // Delete removes an attribute from the namespace. Returns an error if the
 // attribute still has dependents (EBUSY) — the caller must unwire them first.
 func Delete[T any](a *Attribute[T]) error {
