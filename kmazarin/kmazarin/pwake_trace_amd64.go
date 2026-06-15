@@ -106,6 +106,7 @@ func dumpPwakeRing() {
 		klog.Criticalf("pwake", "  #%d cs=%#x rip=%#x old=%d/%d next=%d/%d\n",
 			e.seq, e.cs, e.rip, e.oldTID, e.oldPID, e.nextTID, e.nextPID)
 	}
+	dumpNestStats() // MAZ-139: nested-exception detector counters, same exit channel
 }
 
 func init() {

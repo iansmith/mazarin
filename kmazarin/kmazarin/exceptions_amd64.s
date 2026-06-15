@@ -30,6 +30,7 @@
 #include "textflag.h"
 #include "go_abi_macros_amd64.h"
 #include "frame_dsl_amd64.h"
+#include "xmm_frame_amd64.h"
 
 // ============================================================================
 // ISR Stubs - each pushes a dummy error code (if needed) and vector number
@@ -288,26 +289,13 @@ TEXT ·getISR255Addr(SB), NOSPLIT, $0-8
 // ISR stubs, we use a global to pass the vector number.
 //
 TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
-	// Save XMM registers FIRST — Go code in ALL handlers (PF, timer, syscall)
-	// uses XMM registers. For page faults, the CPU retries the faulting instruction
-	// which may depend on XMM state loaded before the fault. For timer/device IRQs,
-	// the interrupted code may use XMM. Single-CPU so global buffer is safe.
-	MOVOU	X0, ·xmmSaveArea+0(SB)
-	MOVOU	X1, ·xmmSaveArea+16(SB)
-	MOVOU	X2, ·xmmSaveArea+32(SB)
-	MOVOU	X3, ·xmmSaveArea+48(SB)
-	MOVOU	X4, ·xmmSaveArea+64(SB)
-	MOVOU	X5, ·xmmSaveArea+80(SB)
-	MOVOU	X6, ·xmmSaveArea+96(SB)
-	MOVOU	X7, ·xmmSaveArea+112(SB)
-	MOVOU	X8, ·xmmSaveArea+128(SB)
-	MOVOU	X9, ·xmmSaveArea+144(SB)
-	MOVOU	X10, ·xmmSaveArea+160(SB)
-	MOVOU	X11, ·xmmSaveArea+176(SB)
-	MOVOU	X12, ·xmmSaveArea+192(SB)
-	MOVOU	X13, ·xmmSaveArea+208(SB)
-	MOVOU	X14, ·xmmSaveArea+224(SB)
-	MOVOU	X15, ·xmmSaveArea+240(SB)
+	// MAZ-139 item 2: XMM is NOT saved here anymore. The GPR pushes below and
+	// the IST/RSP0 cursor rotation do not touch any XMM register, so the
+	// interrupted XMM state survives unchanged until rsp0_rotate_done, where it
+	// is saved into THIS exception level's own per-frame slot (framePtr-256)
+	// instead of the single global ·xmmSaveArea. A single global lost the outer
+	// level's XMM whenever an exception nested (the MAZ-139 RED self-test);
+	// a per-frame slot gives each nesting level its own save area.
 
 	// Save all general purpose registers
 	PUSHQ	R15
@@ -408,6 +396,39 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	JB	ist_rotate_ovf_tramp	//   than the 8 reserved levels → halt loudly
 	MOVQ	R12, ·tssBuffer+36(SB)	// commit: the next delivery lands one stride lower
 	INCQ	·istSubCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	// ───────── MAZ-139 D1: exception-nesting depth detector ─────────
+	// Mirrors the IST cursor's live-level accounting (same gate; +1 here, -1 at
+	// the two cursor ADDs in exception_return / load_context_and_iretq), so
+	// excNestDepth == number of LIVE exception chains. An entry that finds
+	// depth>=1 BEFORE its own +1 is nesting inside a live chain — the
+	// clobber-prone case for the single-global save-state (xmmSaveArea et al.).
+	// Counters read at shepherd-exit (dumpNestStats) / via gdbstub. R12 is
+	// scratch here (reloaded by the POPs on exit). Pure counters, off the IST
+	// stride budget. (Phase D1; item 2 upgrades to a per-frame canary = D2.)
+	// SMP-safe (lock-free): one LOCK XADD atomically bumps the live depth AND reads
+	// its OLD value into R12 (R12 = old depth; ·excNestDepth = old+1). R12 and AX are
+	// scratch here (R12 reloaded by the POPs; AX's interrupted value is in the frame,
+	// reused at the RIP stash below). On SMP the global aggregates depth across all
+	// CPUs (race-free); truly per-CPU nesting depth is MAZ-142 (per-CPU state).
+	MOVQ	$1, R12
+	LOCK
+	XADDQ	R12, ·excNestDepth(SB)	// R12 <- old depth (atomic); ·excNestDepth = old+1
+	TESTQ	R12, R12		// old depth >= 1 ⇒ this entry nested inside a live chain
+	JZ	maz139_nest_outer
+	LOCK
+	INCQ	·excNestCount(SB)	// atomic: cumulative nested-entry count (all CPUs)
+maz139_nest_outer:
+	INCQ	R12			// R12 = new depth (old+1)
+	// Atomic high-water max via CAS loop: raise ·excNestMaxDepth to R12 iff smaller.
+maz139_nest_dmax_cas:
+	MOVQ	·excNestMaxDepth(SB), AX	// AX = current max (CMPXCHGQ comparand)
+	CMPQ	R12, AX
+	JBE	maz139_nest_dmax	// new depth <= current max ⇒ nothing to raise
+	LOCK
+	CMPXCHGQ R12, ·excNestMaxDepth(SB)	// if [max]==AX { [max]=R12 } else { AX=[max] }
+	JNE	maz139_nest_dmax_cas	// lost the race ⇒ retry against the fresher max
+maz139_nest_dmax:
+	// ────────────────────────────────────────────────────────────────
 	JMP	ist_rotate_done
 ist_rotate_ovf_tramp:
 	JMP	ist_overflow_dump(SB)	// terminal: prints state, then cli;hlt
@@ -495,27 +516,51 @@ rsp0_rotate_ovf_tramp:
 rsp0_rotate_done:
 	// ══════════════════════ end RSP0 ROTATION entry ═════════════════════════
 
-	// SP now points to the exception frame
-	// Frame pointer = SP
-	MOVQ	SP, DI		// DI = frame pointer (first arg for Go calls)
+	// SP now points to the GPR exception frame base. MAZ-139: anchor it in BP
+	// (callee-saved — Go calls and the GO_CALL macros preserve it, so it stays
+	// valid for the whole dispatch), then reserve THIS nesting level's PRIVATE
+	// save-state extension (excFrameExtSize bytes) just below the frame. The
+	// extension holds the interrupted XMM (256 B at BP-256 = SP+excFrameXMMOff;
+	// DoD#1) plus per-level scalar state below it (the kernel TLS-g etc.; DoD#2).
+	// Being per-frame, a nested exception writes its OWN copy and cannot clobber
+	// an outer level's — the defect this ticket fixes. framePtr handed to Go is
+	// always BP (the GPR frame base), never the lowered SP. The reservation is
+	// one slice of the IST/RSP0 stride budget per nesting level (≪ the stride;
+	// the ISTOVF/RSPOVF tripwires catch any overflow).
+	MOVQ	SP, BP				// BP = GPR frame base (anchor; valid for the whole dispatch)
+	SUBQ	$const_excFrameExtSize, SP	// reserve this level's private save-state extension below the GPR frame
+	LEAQ	const_excFrameXMMOff(SP), AX	// AX = XMM snapshot base = SP+32 = BP-256 (AX free here — see below)
+	SAVE_XMM_AT(AX)				// save the interrupted XMM into THIS level's slot
+	MOVQ	BP, DI				// DI = framePtr for Go calls = GPR frame base (NOT the lowered SP)
+
+	// MAZ-139 D2 canary: stamp THIS level's private slot with (lowered SP)^magic —
+	// per-level distinct (each level's SP differs) + recognizable. exception_return
+	// re-derives and verifies it; a mismatch means a nested level reached this slot
+	// (fix not live / regressed) → ALARM. AX is free (reloaded by the RIP stash next).
+	MOVQ	SP, AX
+	XORQ	$const_excFrameCanaryMagic, AX
+	MOVQ	AX, const_excFrameCanaryOff(SP)
 
 	// Stash the interrupted RIP for readELR_EL1 — the x86 software equivalent of
 	// ARM64's ELR_EL1. Frame offset 128 holds the interrupted PC (CS is at 136,
 	// checked below). AX is free here: its interrupted value is already saved at
-	// 0(SP), and the next user of AX (RDMSR below) reloads it.
-	MOVQ	128(SP), AX	// interrupted RIP from the exception frame
+	// 0(BP), and the next user of AX (RDMSR below) reloads it.
+	MOVQ	128(BP), AX	// interrupted RIP from the exception frame
 	MOVQ	AX, ·interruptedRIP(SB)
 
-	// MAZ-135/MAZ-136: capture the interrupted thread's live kernel TLS-g BEFORE
-	// any handler overwrites [kmazarinFSBase-8] with the handler g0 (syscall
-	// :403, timer :930, device :1023). For a kernel-mode exception this is the
-	// interrupted kernel goroutine's curg — even in the systemstack exit window
-	// where frame R14 is the stale g0. The kernel-mode branch of
-	// SaveContextFromFrame reads this instead of frame R14, so a preempted
-	// kernel thread resumes with a faithful dual-home g. (User-mode exceptions
-	// also write this slot with an irrelevant value — unused; the user branch
-	// reads [savedExcFSBase-8]. Ring-0 read of mapped kernel memory. Global,
-	// single-CPU — same caveat as interruptedRIP/xmmSaveArea.)
+	// MAZ-135/MAZ-136/MAZ-139 DoD#2: capture the interrupted thread's live kernel
+	// TLS-g BEFORE any handler overwrites [kmazarinFSBase-8] with the handler g0
+	// (syscall :403, timer :930, device :1023). For a kernel-mode exception this
+	// is the interrupted kernel goroutine's curg — even in the systemstack exit
+	// window where frame R14 is the stale g0. The kernel-mode branch of
+	// SaveContextFromFrame reads this instead of frame R14, so a preempted kernel
+	// thread resumes with a faithful dual-home g. We stash it into THIS level's
+	// per-frame extension slot (const_excFrameTLSGOff(SP); SP is still the lowered
+	// extension here) — it used to be a single global that a nested exception's
+	// entry would clobber between this capture and the read, so per-frame storage
+	// is the fix: each nesting level keeps its own. (User-mode exceptions also
+	// write this slot with an irrelevant value — unused; the user branch reads
+	// [savedExcFSBase-8]. Ring-0 read of mapped kernel memory.)
 	// Guard the zero-base window: during early Go runtime init (before
 	// kmazarin's init() sets kmazarinFSBase) the base is 0, so [base-8] would
 	// dereference 0xFFFFFFFFFFFFFFF8 and fault INSIDE the entry path — a nested
@@ -526,10 +571,10 @@ rsp0_rotate_done:
 	TESTQ	AX, AX
 	JZ	skip_tlsg_capture
 	MOVQ	-8(AX), AX
-	MOVQ	AX, ·savedExcKernelTLSG(SB)
+	MOVQ	AX, const_excFrameTLSGOff(SP)	// THIS level's per-frame kernel TLS-g slot (was a global)
 	JMP	tlsg_capture_done
 skip_tlsg_capture:
-	MOVQ	$0, ·savedExcKernelTLSG(SB)
+	MOVQ	$0, const_excFrameTLSGOff(SP)
 tlsg_capture_done:
 
 	// Save FS_BASE — but ONLY when exception came from userspace (CS=0x1B).
@@ -539,7 +584,7 @@ tlsg_capture_done:
 	// savedExcFSBase with the kernel FS_BASE, and the outer exception_return
 	// restores the kernel value to userspace — causing load_g to read from
 	// kmazarin memory (the REPEAT fault at 0x439D1500).
-	CMPQ	136(SP), $0x08		// CS from exception frame
+	CMPQ	136(BP), $0x08		// CS from exception frame
 	JE	exc_entry_skip_fsbase	// Kernel mode: leave savedExcFSBase alone
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	RDMSR				// EAX=low32, EDX=high32
@@ -548,8 +593,14 @@ tlsg_capture_done:
 	MOVQ	AX, ·savedExcFSBase(SB)
 exc_entry_skip_fsbase:
 
-	// Read the vector number from the global set by the ISR stub
+	// Read the vector number from the global set by the ISR stub, and (MAZ-139
+	// DoD#2) stash it into THIS level's per-frame slot. This dispatch read is the
+	// stub→entry handoff, consumed before any nestable point — safe on the global.
+	// The LATER functional read on the unhandled-fault path sources the vector from
+	// the per-frame slot (via vectorFromFrame) so a nested exception's clobber of
+	// the global cannot reach it. SP is still the lowered extension here.
 	MOVQ	·currentVector(SB), SI	// SI = vector number
+	MOVQ	SI, const_excFrameVecOff(SP)	// stash THIS level's vector in its private slot
 
 	// Determine exception type and dispatch
 	CMPQ	SI, $128		// INT 0x80 = syscall?
@@ -644,33 +695,33 @@ syscall_mpok:
 
 syscall_skip_g_setup:
 	// Save ELR (RIP) and SPSR (RFLAGS) for clone
-	MOVQ	128(SP), R13		// RIP from frame (callee-saved scratch)
+	MOVQ	128(BP), R13		// RIP from frame (callee-saved scratch)
 	GO_CALL_1_0(·SetSyscallELR, R13)
 
-	MOVQ	144(SP), R13		// RFLAGS from frame
+	MOVQ	144(BP), R13		// RFLAGS from frame
 	GO_CALL_1_0(·SetSyscallSPSR, R13)
 
 	// Save callee-saved registers for clone on AMD64.
 	// Standard Go runtime's clone keeps mp(R13), gp(R9), fn(R12) in registers
 	// instead of storing on child stack (like ARM64 does).
-	MOVQ	88(SP), R13		// R12 (fn) from frame
-	MOVQ	96(SP), BX		// R13 (mp) from frame
-	MOVQ	64(SP), CX		// R9 (gp) from frame
+	MOVQ	88(BP), R13		// R12 (fn) from frame
+	MOVQ	96(BP), BX		// R13 (mp) from frame
+	MOVQ	64(BP), CX		// R9 (gp) from frame
 	GO_CALL_3_0(·SetSyscallCloneRegs, R13, BX, CX)
 
 	// Dispatch syscall: SyscallDispatch(num, a0, a1, a2, a3, a4, a5) int64
 	// Load all 7 args from exception frame into registers before macro
-	MOVQ	0(SP), R8		// syscall num (saved RAX)
-	MOVQ	40(SP), R9		// arg0 (saved RDI)
-	MOVQ	32(SP), R10		// arg1 (saved RSI)
-	MOVQ	24(SP), R11		// arg2 (saved RDX)
-	MOVQ	72(SP), BX		// arg3 (saved R10)
-	MOVQ	56(SP), CX		// arg4 (saved R8)
-	MOVQ	64(SP), DI		// arg5 (saved R9)
+	MOVQ	0(BP), R8		// syscall num (saved RAX)
+	MOVQ	40(BP), R9		// arg0 (saved RDI)
+	MOVQ	32(BP), R10		// arg1 (saved RSI)
+	MOVQ	24(BP), R11		// arg2 (saved RDX)
+	MOVQ	72(BP), BX		// arg3 (saved R10)
+	MOVQ	56(BP), CX		// arg4 (saved R8)
+	MOVQ	64(BP), DI		// arg5 (saved R9)
 
 	GO_CALL_7_1(·SyscallDispatch, R8, R9, R10, R11, BX, CX, DI)
 	// AX = return value
-	MOVQ	AX, 0(SP)		// Store return value in saved RAX slot
+	MOVQ	AX, 0(BP)		// Store return value in saved RAX slot
 
 	// Check if rt_sigreturn was called (SigreturnPending flag).
 	// If set, the thread's Context has been restored from the signal frame
@@ -713,7 +764,7 @@ syscall_fsbase_unchanged:
 	MOVQ	AX, R12			// save target in callee-saved R12
 
 	// Context switch: DoContextSwitch(framePtr, targetPtr) uintptr
-	MOVQ	SP, DI			// frame pointer
+	MOVQ	BP, DI			// frame pointer = GPR frame base (anchored)
 	GO_CALL_2_1(·DoContextSwitch, DI, R12)
 	MOVQ	AX, R12			// new context pointer
 
@@ -770,10 +821,10 @@ pf_skip_fsbase_setup:
 	// user-space address. Print "KX=<RIP> CR2=<fault>" and halt.
 	// This catches bogus interface dispatch or corrupted function pointers
 	// before the demand pager maps garbage code pages.
-	MOVQ	136(SP), AX		// CS from exception frame
+	MOVQ	136(BP), AX		// CS from exception frame
 	CMPQ	AX, $0x08
 	JNE	try_user_pf_handler
-	MOVQ	120(SP), AX		// error code
+	MOVQ	120(BP), AX		// error code
 	TESTQ	$0x10, AX		// bit 4 = I/D (instruction fetch)
 	JZ	try_user_pf_handler	// data access: still allow user handler
 
@@ -782,7 +833,7 @@ pf_skip_fsbase_setup:
 	MOVB	$'K', AX; OUTB		// 'KX=' prefix = Kernel eXecute fault
 	MOVB	$'X', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	128(SP), R15		// RIP from exception frame
+	MOVQ	128(BP), R15		// RIP from exception frame
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
 	MOVB	$' ', AX; OUTB
@@ -797,7 +848,7 @@ pf_skip_fsbase_setup:
 	MOVB	$' ', AX; OUTB
 	MOVB	$'G', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	104(SP), R15		// R14 (g) from exception frame
+	MOVQ	104(BP), R15		// R14 (g) from exception frame
 	CALL	pf_print_hex16(SB)
 	// Print faulting RSP value
 	MOVW	$0x3F8, DX
@@ -806,7 +857,7 @@ pf_skip_fsbase_setup:
 	MOVB	$'S', AX; OUTB
 	MOVB	$'P', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	152(SP), R15		// faulting RSP
+	MOVQ	152(BP), R15		// faulting RSP
 	CALL	pf_print_hex16(SB)
 	// Print RBP from exception frame
 	MOVW	$0x3F8, DX
@@ -814,7 +865,7 @@ pf_skip_fsbase_setup:
 	MOVB	$'B', AX; OUTB
 	MOVB	$'P', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	48(SP), R15		// RBP from exception frame
+	MOVQ	48(BP), R15		// RBP from exception frame
 	CALL	pf_print_hex16(SB)
 	// Print 6 stack words from faulting RSP
 	MOVW	$0x3F8, DX
@@ -823,7 +874,7 @@ pf_skip_fsbase_setup:
 	MOVB	$'T', AX; OUTB
 	MOVB	$'K', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	152(SP), R12		// faulting RSP (callee-saved)
+	MOVQ	152(BP), R12		// faulting RSP (callee-saved)
 	MOVQ	0(R12), R15; CALL pf_print_hex16(SB)
 	MOVW	$0x3F8, DX; MOVB $' ', AX; OUTB
 	MOVQ	8(R12), R15; CALL pf_print_hex16(SB)
@@ -873,7 +924,7 @@ try_user_pf_handler:
 	// R13 still has fault address (callee-saved, preserved across GO_CALL)
 	// Compute isPermFault from page fault error code: bit 0 (P) set → protection fault
 	// (page present but wrong permissions), not a missing-page translation fault.
-	MOVQ	120(SP), R12   // error code from exception frame
+	MOVQ	120(BP), R12   // error code from exception frame
 	ANDQ	$1, R12        // R12 = P bit (1 = protection/permission fault, 0 = not-present fault)
 	GO_CALL_2_1(·HandleUserPageFaultAsm, R13, R12)
 
@@ -888,7 +939,7 @@ try_user_pf_handler:
 	MOVQ	AX, R12			// save target in callee-saved R12
 
 	// Context switch: DoContextSwitch(framePtr, targetPtr) uintptr
-	MOVQ	SP, DI			// frame pointer
+	MOVQ	BP, DI			// frame pointer = GPR frame base (anchored)
 	GO_CALL_2_1(·DoContextSwitch, DI, R12)
 	MOVQ	AX, R12			// new context pointer
 
@@ -929,7 +980,7 @@ pf_hex_ok:
 	OUTB
 
 	// Print RIP from exception frame (offset 128 = 16*8)
-	MOVQ	128(SP), R15
+	MOVQ	128(BP), R15
 	MOVQ	$60, CX
 pf_rip_loop:
 	MOVQ	R15, AX
@@ -950,7 +1001,7 @@ pf_rip_ok:
 	MOVB	$'C', AX; OUTB
 	MOVB	$'S', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	136(SP), R11		// CS from frame
+	MOVQ	136(BP), R11		// CS from frame
 	MOVQ	R11, AX
 	SHRQ	$4, AX
 	ANDQ	$0xF, AX
@@ -972,7 +1023,7 @@ pf_cs2:	OUTB
 	MOVB	$'B', AX; OUTB
 	MOVB	$'X', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	8(SP), R15		// BX from frame
+	MOVQ	8(BP), R15		// BX from frame
 	CALL	pf_print_hex16(SB)
 
 	// Print " SI=" + RSI from exception frame
@@ -981,7 +1032,7 @@ pf_cs2:	OUTB
 	MOVB	$'S', AX; OUTB
 	MOVB	$'I', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	32(SP), R15		// SI from frame
+	MOVQ	32(BP), R15		// SI from frame
 	CALL	pf_print_hex16(SB)
 
 	// Print " uSP=" + RSP from exception frame
@@ -991,7 +1042,7 @@ pf_cs2:	OUTB
 	MOVB	$'S', AX; OUTB
 	MOVB	$'P', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	152(SP), R15		// RSP from frame (user SP)
+	MOVQ	152(BP), R15		// RSP from frame (user SP)
 	CALL	pf_print_hex16(SB)
 
 	// Print " FS=" + FS_BASE from savedExcFSBase
@@ -1007,7 +1058,7 @@ pf_cs2:	OUTB
 	MOVB	$'\n', AX; OUTB
 
 	// Check if fault came from user mode (CS in exception frame)
-	MOVQ	136(SP), AX		// CS from exception frame
+	MOVQ	136(BP), AX		// CS from exception frame
 	CMPQ	AX, $0x08		// kernelCS?
 	JNE	pf_user_fault		// User fault — try kill+switch
 
@@ -1016,7 +1067,7 @@ pf_cs2:	OUTB
 	MOVW	$0x3F8, DX
 	MOVB	$'G', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	104(SP), R15		// R14 from frame
+	MOVQ	104(BP), R15		// R14 from frame
 	CALL	pf_print_hex16(SB)
 
 	// Print " BP=" then saved RBP
@@ -1025,7 +1076,7 @@ pf_cs2:	OUTB
 	MOVB	$'B', AX; OUTB
 	MOVB	$'P', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	48(SP), R15		// BP from frame
+	MOVQ	48(BP), R15		// BP from frame
 	CALL	pf_print_hex16(SB)
 
 	// Print " SP=" then faulting RSP
@@ -1034,7 +1085,7 @@ pf_cs2:	OUTB
 	MOVB	$'S', AX; OUTB
 	MOVB	$'P', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	152(SP), R15		// RSP from frame
+	MOVQ	152(BP), R15		// RSP from frame
 	CALL	pf_print_hex16(SB)
 
 	// Print " EC=" then error code from exception frame
@@ -1043,7 +1094,7 @@ pf_cs2:	OUTB
 	MOVB	$'E', AX; OUTB
 	MOVB	$'C', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	120(SP), R15		// error code
+	MOVQ	120(BP), R15		// error code
 	CALL	pf_print_hex16(SB)
 
 	// Print saved GPRs from exception frame that are useful for diagnosis:
@@ -1053,35 +1104,35 @@ pf_cs2:	OUTB
 	MOVB	$'A', AX; OUTB
 	MOVB	$'X', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	0(SP), R15		// RAX from frame
+	MOVQ	0(BP), R15		// RAX from frame
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
 	MOVB	$' ', AX; OUTB
 	MOVB	$'C', AX; OUTB
 	MOVB	$'X', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	16(SP), R15		// RCX from frame
+	MOVQ	16(BP), R15		// RCX from frame
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
 	MOVB	$' ', AX; OUTB
 	MOVB	$'D', AX; OUTB
 	MOVB	$'X', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	24(SP), R15		// RDX from frame
+	MOVQ	24(BP), R15		// RDX from frame
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
 	MOVB	$' ', AX; OUTB
 	MOVB	$'S', AX; OUTB
 	MOVB	$'I', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	32(SP), R15		// RSI from frame
+	MOVQ	32(BP), R15		// RSI from frame
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
 	MOVB	$' ', AX; OUTB
 	MOVB	$'D', AX; OUTB
 	MOVB	$'I', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	40(SP), R15		// RDI from frame
+	MOVQ	40(BP), R15		// RDI from frame
 	CALL	pf_print_hex16(SB)
 
 	// Print "\nSTK=" then 6 words from the faulting stack
@@ -1091,7 +1142,7 @@ pf_cs2:	OUTB
 	MOVB	$'T', AX; OUTB
 	MOVB	$'K', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	152(SP), R12		// R12 = faulting RSP (callee-saved)
+	MOVQ	152(BP), R12		// R12 = faulting RSP (callee-saved)
 	MOVQ	0(R12), R15
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
@@ -1218,7 +1269,7 @@ pf_cs2:	OUTB
 	// Walked only when the frame's g is the kernel g0, so every load stays
 	// inside known-mapped kernel data. Values are read at dump time, i.e.
 	// microseconds after the fault — indicative, not a snapshot.
-	MOVQ	104(SP), R12		// g (R14) from exception frame
+	MOVQ	104(BP), R12		// g (R14) from exception frame
 	CMPQ	R12, ·kmazarinG0Addr(SB)
 	JNE	pf_gmp_done
 	MOVW	$0x3F8, DX
@@ -1271,7 +1322,7 @@ pf_gmp_done:
 	MOVB	$'P', AX; OUTB
 	MOVB	$'W', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	48(SP), R12		// walker = RBP from exception frame
+	MOVQ	48(BP), R12		// walker = RBP from exception frame
 	MOVQ	$8, R11			// frame budget
 pf_bpw_loop:
 	MOVQ	·excStackBottom(SB), AX
@@ -1311,10 +1362,11 @@ pf_user_fault:
 	MOVQ	DX, R14
 
 	// Save exception frame pointer and extract fault info into callee-saved regs.
-	MOVQ	SP, BP			// BP = exception frame base
+	// BP is ALREADY the anchored GPR frame base (set at rsp0_rotate_done); SP is
+	// the lowered XMM slot, so re-anchoring BP=SP here would be wrong (MAZ-139).
 	MOVQ	$14, R13		// excInfo = vector 14 (page fault)
 	MOVQ	CR2, R12		// faultAddr = CR2
-	MOVQ	128(SP), BX		// faultPC = RIP from exception frame
+	MOVQ	128(BP), BX		// faultPC = RIP from exception frame
 
 	// CRITICAL: Save the full exception context to ThreadContext BEFORE calling
 	// HandleUnhandledExceptionAsm. Without this, BuildSignalFrame reads stale
@@ -1354,9 +1406,9 @@ handle_timer_irq:
 	// TimerIRQHandler(irqNum, framePtr, elr, spEl0 uint64) — 4 args
 	// Load all args from exception frame before macro adjusts SP
 	MOVQ	$48, R8			// irqNum
-	MOVQ	SP, R9			// framePtr (exception frame base)
-	MOVQ	128(SP), R10		// elr (RIP from frame)
-	MOVQ	152(SP), R11		// spEl0 (RSP from frame)
+	MOVQ	BP, R9			// framePtr = GPR frame base (anchored, NOT the lowered SP)
+	MOVQ	128(BP), R10		// elr (RIP from frame)
+	MOVQ	152(BP), R11		// spEl0 (RSP from frame)
 	GO_CALL_4_0(·TimerIRQHandler, R8, R9, R10, R11)
 
 	// Process deadline-based wakeups (matching ARM64/RISC-V timer handlers).
@@ -1370,7 +1422,7 @@ handle_timer_irq:
 	//   1. Post-boot (kmazarinSyscallReady != 0) — early boot has no threads
 	//   2. svcDepth == 0 — not inside a syscall handler (preempting mid-syscall
 	//      corrupts the exception frame on the shared stack)
-	CMPQ	136(SP), $0x08		// CS from exception frame
+	CMPQ	136(BP), $0x08		// CS from exception frame
 	JNE	timer_preempt_allowed	// User mode — always allow
 	// Kernel mode: check if safe to preempt
 	MOVL	runtime·kmazarinSyscallReady(SB), AX
@@ -1385,7 +1437,7 @@ handle_timer_irq:
 	// CheckKernelGoroutinePreempt calls isAsyncSafePoint and injects
 	// asyncPreempt into the exception frame if safe.
 	// g (R14) is already set to g0 from handle_timer_irq.
-	MOVQ	SP, R13
+	MOVQ	BP, R13			// framePtr = GPR frame base (anchored)
 	GO_CALL_1_1(·CheckKernelGoroutinePreempt, R13)
 	TESTQ	AX, AX
 	JNZ	irq_exception_return	// frame was modified, skip thread preempt
@@ -1412,7 +1464,7 @@ timer_preempt_check:
 	MOVL	$0, mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB)
 
 	// Thread preemption needed — save and switch
-	MOVQ	SP, R13			// frame pointer (before macro SUB)
+	MOVQ	BP, R13			// frame pointer = GPR frame base (anchored)
 	GO_CALL_1_1(·CheckThreadPreemption, R13)
 	MOVQ	AX, R12			// new context pointer
 
@@ -1474,7 +1526,7 @@ handle_device_irq:
 	// Kernel-mode guard, identical to the timer path: user mode (CS=0x1B) is
 	// always allowed; kernel mode (CS=0x08) only post-boot, outside a syscall,
 	// and only if CheckKernelGoroutinePreempt does not inject asyncPreempt.
-	CMPQ	136(SP), $0x08				// interrupted CS
+	CMPQ	136(BP), $0x08				// interrupted CS
 	JNE	device_pwake_allowed			// user mode — allow
 	MOVL	runtime·kmazarinSyscallReady(SB), AX
 	TESTL	AX, AX
@@ -1486,13 +1538,13 @@ handle_device_irq:
 	INCL	(AX)
 	JMP	irq_exception_return
 device_pwake_ksafe:
-	MOVQ	SP, R13
+	MOVQ	BP, R13				// framePtr = GPR frame base (anchored)
 	GO_CALL_1_1(·CheckKernelGoroutinePreempt, R13)
 	TESTQ	AX, AX
 	JNZ	irq_exception_return			// asyncPreempt injected — done
 
 device_pwake_allowed:
-	MOVQ	SP, R13
+	MOVQ	BP, R13				// framePtr = GPR frame base (anchored)
 	GO_CALL_1_1(·PriorityWakeSwitch, R13)	// MAZ-141: == CheckThreadPreemption + pwake-ring record
 	MOVQ	AX, R12					// new ThreadContext (or 0)
 	TESTQ	R12, R12
@@ -1536,14 +1588,14 @@ gvec2:
 	JMP	irq_exception_return
 
 generic_fault_diag:
-	// Print error code (at 120(SP)) and faulting RIP (at 128(SP))
+	// Print error code (at 120(BP)) and faulting RIP (at 128(BP))
 	MOVW	$0x3F8, DX
 	MOVB	$'E', AX
 	OUTB
 	MOVB	$'=', AX
 	OUTB
 	// Print error code as 8 hex digits
-	MOVQ	120(SP), R11
+	MOVQ	120(BP), R11
 	MOVQ	R11, AX; SHRQ $28, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB fe0; ADDQ $('A'-'0'-10), AX
 fe0:	OUTB
 	MOVQ	R11, AX; SHRQ $24, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB fe1; ADDQ $('A'-'0'-10), AX
@@ -1564,8 +1616,8 @@ fe7:	OUTB
 	MOVB	$'@', AX
 	MOVW	$0x3F8, DX
 	OUTB
-	// Print full 8-byte RIP from 128(SP)
-	MOVQ	128(SP), R11
+	// Print full 8-byte RIP from 128(BP)
+	MOVQ	128(BP), R11
 	// Nibble 15 (bits 60-63)
 	MOVQ	R11, AX
 	SHRQ	$60, AX
@@ -1719,7 +1771,7 @@ fripF:	OUTB
 	MOVB	$'A', AX; OUTB
 	MOVB	$'X', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	0(SP), R15		// saved RAX
+	MOVQ	0(BP), R15		// saved RAX
 	CALL	pf_print_hex16(SB)
 	// Print RSP from exception frame (offset 152)
 	MOVW	$0x3F8, DX
@@ -1728,7 +1780,7 @@ fripF:	OUTB
 	MOVB	$'S', AX; OUTB
 	MOVB	$'P', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	152(SP), R15		// faulting RSP
+	MOVQ	152(BP), R15		// faulting RSP
 	CALL	pf_print_hex16(SB)
 	// Print CS from exception frame (offset 136)
 	MOVW	$0x3F8, DX
@@ -1736,14 +1788,14 @@ fripF:	OUTB
 	MOVB	$'C', AX; OUTB
 	MOVB	$'S', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	136(SP), R15		// CS
+	MOVQ	136(BP), R15		// CS
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
 
 	// Check if fault came from user mode (CS in exception frame)
 	// Frame layout: 15 GPRs (0-112) + error code (120) + RIP (128) + CS (136)
-	MOVQ	136(SP), AX		// CS from exception frame
+	MOVQ	136(BP), AX		// CS from exception frame
 	CMPQ	AX, $0x08		// kernelCS?
 	JE	generic_halt		// Kernel fault → halt
 
@@ -1760,10 +1812,17 @@ fripF:	OUTB
 	MOVQ	DX, R14
 
 	// Save exception frame pointer and extract fault info into callee-saved regs.
-	MOVQ	SP, BP				// BP = exception frame base
-	MOVQ	·currentVector(SB), R13	// excInfo = vector number
+	// BP is ALREADY the anchored GPR frame base (set at rsp0_rotate_done); SP is
+	// the lowered XMM slot, so re-anchoring BP=SP here would be wrong (MAZ-139).
+	// MAZ-139 DoD#2: source the vector from THIS level's per-frame slot (not the
+	// global currentVector, which a nested exception in the handler clobbers before
+	// this read). vectorFromFrame reads the slot stashed at dispatch; g0 is set up
+	// above, so the GO_CALL is safe. R13/R12/RBX are callee-saved across the
+	// SaveContextFromFrame call below.
+	GO_CALL_1_1(·vectorFromFrame, BP)	// AX = this level's vector (per-frame)
+	MOVQ	AX, R13			// excInfo = vector number
 	MOVQ	$0, R12			// faultAddr = 0 (no CR2 relevant for non-PF)
-	MOVQ	128(SP), BX		// faultPC = RIP from exception frame
+	MOVQ	128(BP), BX		// faultPC = RIP from exception frame
 
 	// CRITICAL: Save the full exception context to ThreadContext BEFORE calling
 	// HandleUnhandledExceptionAsm. Without this, BuildSignalFrame reads stale
@@ -1801,7 +1860,7 @@ generic_halt_loop:
 // can legitimately occur during CLI critical sections where IF=0 must be
 // preserved.
 irq_exception_return:
-	ORQ	$0x200, 144(SP)		// Force IF=1 in saved RFLAGS on stack
+	ORQ	$0x200, 144(BP)		// Force IF=1 in saved RFLAGS on stack (BP = anchored GPR frame base)
 
 // ============================================================================
 // Exception return - restore GPRs and IRETQ
@@ -1824,6 +1883,8 @@ exception_return:
 					//   BEFORE the resulting trample, with context
 	MOVQ	AX, ·tssBuffer+36(SB)
 	INCQ	·istEretAddCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	LOCK
+	DECQ	·excNestDepth(SB)	// MAZ-139 D1: this level retires (atomic; mirror the IST -1)
 	JMP	eret_ist_done
 eret_ist_overshoot:
 	MOVQ	$1, R14			// site code 1 = exception_return (halting; R14 free)
@@ -1861,7 +1922,7 @@ eret_rsp0_done:
 	//   (set by the handler's entry code). Sync g to kernel TLS using kmazarinFSBase.
 	//   This is critical for nested exceptions: savedExcFSBase holds the USER value
 	//   from the outermost exception, NOT the kernel value we need for the WRMSR.
-	CMPQ	136(SP), $0x08		// CS from exception frame
+	CMPQ	136(BP), $0x08		// CS from exception frame (BP = anchored GPR frame base)
 	JE	eret_kernel_tls		// Kernel mode — skip WRMSR, just sync g
 
 	// User mode return: restore user FS_BASE
@@ -1878,29 +1939,49 @@ eret_kernel_tls:
 	MOVQ	·kmazarinFSBase(SB), AX
 	TESTQ	AX, AX
 	JZ	eret_skip_tls_write
-	MOVQ	104(SP), DX		// R14 from saved GPR frame
+	MOVQ	104(BP), DX		// R14 from saved GPR frame (BP = anchored GPR frame base)
 	MOVQ	DX, -8(AX)		// Write g to kernel TLS slot (safe)
 eret_skip_tls_write:
 
-	// Restore XMM registers saved at common_exception_entry.
-	// Without this, timer/device IRQ handlers clobber XMM via Go's memmove,
-	// corrupting the interrupted code's MOVDQU operations.
-	MOVOU	·xmmSaveArea+0(SB), X0
-	MOVOU	·xmmSaveArea+16(SB), X1
-	MOVOU	·xmmSaveArea+32(SB), X2
-	MOVOU	·xmmSaveArea+48(SB), X3
-	MOVOU	·xmmSaveArea+64(SB), X4
-	MOVOU	·xmmSaveArea+80(SB), X5
-	MOVOU	·xmmSaveArea+96(SB), X6
-	MOVOU	·xmmSaveArea+112(SB), X7
-	MOVOU	·xmmSaveArea+128(SB), X8
-	MOVOU	·xmmSaveArea+144(SB), X9
-	MOVOU	·xmmSaveArea+160(SB), X10
-	MOVOU	·xmmSaveArea+176(SB), X11
-	MOVOU	·xmmSaveArea+192(SB), X12
-	MOVOU	·xmmSaveArea+208(SB), X13
-	MOVOU	·xmmSaveArea+224(SB), X14
-	MOVOU	·xmmSaveArea+240(SB), X15
+	// MAZ-139 D2 canary verify: confirm THIS level's slot still holds SP^magic
+	// (stamped at entry). A mismatch ⇒ a nested level reached our per-frame slot
+	// (the fix is not live / has regressed) ⇒ count + a loud serial marker, then
+	// continue (a guard, not a halt; re-surfaced at shepherd-exit via dumpNestStats).
+	// AX/DX are scratch here — the POPs below reload them. SP is still the lowered
+	// extension, so const_excFrameCanaryOff(SP) is this level's canary slot.
+	MOVQ	SP, AX
+	XORQ	$const_excFrameCanaryMagic, AX
+	CMPQ	AX, const_excFrameCanaryOff(SP)
+	JE	eret_canary_ok
+	LOCK
+	INCQ	·excCanaryAlarmCount(SB)	// atomic: a lost alarm on SMP would be a silent guard failure
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'2', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'A', AX; OUTB
+	MOVB	$'N', AX; OUTB
+	MOVB	$'!', AX; OUTB
+	MOVB	$'\n', AX; OUTB
+	JMP	eret_canary_done
+eret_canary_ok:
+	LOCK
+	INCQ	·excCanaryCheckCount(SB)	// atomic (SMP)
+eret_canary_done:
+
+	// Restore XMM registers from THIS exception level's own per-frame slot.
+	// MAZ-139 DoD#1: at this point SP is still the lowered extension
+	// (BP-excFrameExtSize) where SAVE_XMM_AT stashed the interrupted XMM (at
+	// SP+excFrameXMMOff = BP-256) — so RESTORE reads the right level even when an
+	// exception nested over us. Without this, timer/device IRQ handlers clobber
+	// XMM via Go's memmove, corrupting the interrupted code's MOVDQU operations.
+	LEAQ	const_excFrameXMMOff(SP), AX	// XMM snapshot base = SP+32 = BP-256 (AX scratch — POPed below)
+	RESTORE_XMM_AT(AX)
+
+	// Drop this level's extension: return SP to the GPR frame base before the
+	// POPs (which consume the frame from SP upward).
+	MOVQ	BP, SP
 
 	POPQ	AX
 	POPQ	BX
@@ -1978,23 +2059,10 @@ ev1:	MOVW $0x3F8, DX; OUTB
 	POPQ	AX
 	// Continue to IRETQ — will page fault and diagnostic there will provide more info
 eret_rip_ok:
-	// Restore XMM registers saved at common_exception_entry
-	MOVOU	·xmmSaveArea+0(SB), X0
-	MOVOU	·xmmSaveArea+16(SB), X1
-	MOVOU	·xmmSaveArea+32(SB), X2
-	MOVOU	·xmmSaveArea+48(SB), X3
-	MOVOU	·xmmSaveArea+64(SB), X4
-	MOVOU	·xmmSaveArea+80(SB), X5
-	MOVOU	·xmmSaveArea+96(SB), X6
-	MOVOU	·xmmSaveArea+112(SB), X7
-	MOVOU	·xmmSaveArea+128(SB), X8
-	MOVOU	·xmmSaveArea+144(SB), X9
-	MOVOU	·xmmSaveArea+160(SB), X10
-	MOVOU	·xmmSaveArea+176(SB), X11
-	MOVOU	·xmmSaveArea+192(SB), X12
-	MOVOU	·xmmSaveArea+208(SB), X13
-	MOVOU	·xmmSaveArea+224(SB), X14
-	MOVOU	·xmmSaveArea+240(SB), X15
+	// MAZ-139 item 2: XMM was already restored above (RESTORE_XMM_AT) before the
+	// POPs, from this level's per-frame slot. The frame + slot are gone now (SP
+	// is the IRETQ 5-tuple after the POPs), and nothing between that restore and
+	// IRETQ touches XMM — so no second restore is needed here.
 
 	// MAZ-136 IRETQ guard: a kernel-CS return must land inside kernel .text.
 	// The frame-path corruption (resume into dead exception-stack memory)
@@ -2100,6 +2168,8 @@ cs_valid:
 	JA	lc_ist_overshoot	// over-retire — see exception_return's twin check
 	MOVQ	AX, ·tssBuffer+36(SB)
 	INCQ	·istLcAddCount(SB)	// accounting (see ISTCT in syscall_amd64.go)
+	LOCK
+	DECQ	·excNestDepth(SB)	// MAZ-139 D1: this dying level retires (atomic; mirror the IST -1)
 	JMP	lc_ist_done
 lc_ist_overshoot:
 	MOVQ	$2, R14			// site code 2 = load_context_and_iretq (halting)
@@ -2280,7 +2350,8 @@ ctx_guard_ok:
 	MOVQ	CX, 0(SP)		// RIP
 
 	// Restore XMM registers from per-thread ctx.XMM. SaveContextFromFrame copied
-	// xmmSaveArea → ctx.XMM when the thread was last saved, so this restores the
+	// the per-exception-frame XMM slot (framePtr-256) → ctx.XMM when the thread
+	// was last saved (MAZ-139: no global xmmSaveArea), so this restores the
 	// correct per-thread XMM state.
 	MOVOU	ThreadContext_XMM+0(R12), X0
 	MOVOU	ThreadContext_XMM+16(R12), X1
@@ -2332,12 +2403,15 @@ TEXT ·ReadCS(SB), NOSPLIT, $0-2
 	RET
 
 // ============================================================================
-// Global state for vector number passing
+// State for vector number passing
 // ============================================================================
-// currentVector stores the current interrupt/exception vector number.
-// Set by ISR stubs before jumping to common handler.
-// This is per-CPU safe because interrupts are disabled during handling.
-GLOBL	·currentVector(SB), NOPTR, $8
+// currentVector (declared in save_context_amd64.go as var currentVector uint64)
+// stores the current interrupt/exception vector number. Set by the ISR stubs
+// before jumping to common_exception_entry, read once by the dispatch at entry,
+// and stashed into THIS level's per-frame slot (excFrameVecOff) so the functional
+// fault-path read survives a nested clobber (MAZ-139 DoD#2). Go-owned (svcDepth
+// pattern) so the per-frame read seam (vectorFromFrame) is unit-testable. Per-CPU
+// safe because interrupts are disabled during the entry handoff.
 
 // svcDepth (declared in percpu.go as var svcDepth uint32) tracks whether
 // the CPU is inside a syscall handler. Set to 1 at handle_syscall entry,
@@ -2432,13 +2506,9 @@ TEXT bad_iretq_dump(SB), NOSPLIT|NOFRAME, $0
 	MOVB	$'=', AX; OUTB
 	MOVL	·svcDepth(SB), R15
 	CALL	pf_print_hex16(SB)
-	MOVW	$0x3F8, DX
-	MOVB	$' ', AX; OUTB
-	MOVB	$'T', AX; OUTB
-	MOVB	$'G', AX; OUTB
-	MOVB	$'=', AX; OUTB
-	MOVQ	·savedExcKernelTLSG(SB), R15
-	CALL	pf_print_hex16(SB)
+	// MAZ-139 DoD#2: the kernel TLS-g is now per-exception-frame (no global to
+	// read here); the FR= frame address below lets you find this level's slot
+	// (frame base − excFrameExtSize + excFrameTLSGOff) by hand if needed.
 	MOVW	$0x3F8, DX
 	MOVB	$' ', AX; OUTB
 	MOVB	$'F', AX; OUTB
@@ -2888,16 +2958,24 @@ syscall_build_frame:
 	MOVQ	$129, ·currentVector(SB)	// 129 = SYSCALL (vs 128 = INT $0x80)
 	JMP	common_exception_entry(SB)
 
-// Scratch space for SYSCALL entry (per-CPU safe: interrupts disabled by FMASK)
+// Scratch space for SYSCALL entry.
+//
+// MAZ-139 DoD#3 — audited NOT clobber-prone, so these stay single globals (no
+// per-frame slot needed). Every one is written AND read entirely within the
+// straight-line syscallEntry window above (·syscallEntry .. JMP common_exception_entry):
+// RCX w:2893/r:2965, R11 w:2894/r:2962,2970, RSP w:2909/r:2948,2961, CS/SS
+// w:2951-2956/r:2960,2964. That window runs with interrupts masked by the SYSCALL
+// FMASK MSR (IF=0) and contains NO GO_CALL and no faulting memory access (only
+// register/global MOVs, compares, and stack PUSHes to the mapped exception stack)
+// — so no exception can NEST between a write and its read. The scratch values are
+// fully consumed (pushed into the fake exception frame) before the JMP, before any
+// nestable point. Unlike the kernel TLS-g / vector (which a nested exception in a
+// LATER handler could clobber), these have no live window a nest can reach.
 GLOBL	·syscallScratchRCX(SB), NOPTR, $8
 GLOBL	·syscallScratchR11(SB), NOPTR, $8
 GLOBL	·syscallScratchRSP(SB), NOPTR, $8
 GLOBL	·syscallScratchCS(SB), NOPTR, $8
 GLOBL	·syscallScratchSS(SB), NOPTR, $8
-
-// XMM save area for page fault handler. 256 bytes = 16 XMM registers × 16 bytes.
-// Single-CPU so a global buffer is safe (no concurrent access).
-GLOBL	·xmmSaveArea(SB), NOPTR, $256
 
 // sigreturnTrampoline — invokes rt_sigreturn via INT $0x80.
 // This is the return address pushed on the signal stack by BuildSignalFrame.
