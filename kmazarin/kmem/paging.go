@@ -920,20 +920,6 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 		serial.RawUARTPuts("\r\n")
 	}
 
-	// DEBUG: Read back through the user VA to detect stale-PTE writes.
-	// A non-zero value here means another shepherd wrote through a stale PTE
-	// to this PA after we zeroed it (hypothesis #2: dual-mapping refcount bug).
-	verifyAtUser := *(*uint64)(unsafe.Pointer(pageAddr))
-	if verifyAtUser != 0 {
-		serial.RawUARTPuts("[ZERO_VERIFY_USER_FAIL] PA=0x")
-		serial.RawUARTHex64(uint64(framePA))
-		serial.RawUARTPuts(" userVA=0x")
-		serial.RawUARTHex64(uint64(pageAddr))
-		serial.RawUARTPuts(" word0=0x")
-		serial.RawUARTHex64(verifyAtUser)
-		serial.RawUARTPuts("\r\n")
-	}
-
 	// Queue deferred record for bottom-half page tracking
 	QueueDeferredRecord(DeferredPageRecord{
 		PA:       framePA,
