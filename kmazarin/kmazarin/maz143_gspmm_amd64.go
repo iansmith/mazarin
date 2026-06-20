@@ -50,6 +50,35 @@ var (
 
 const gspEmitMax = 48 // emit at most this many GSPMM lines, then count-only
 
+// MAZ-143 EGTLS tripwire — the SILENT `morestack on g0` (design §12), now FIXED + guarded.
+// Distinct from the dbgGSP* family above (which catches the PREEMPTING SaveContextFromFrame
+// capture): this is the NO-PREEMPT kernel `exception_return` path (eret_kernel_tls,
+// exceptions_amd64.s). It used to restore kernel TLS-g from the STALE frame R14 (g0) in the
+// ~1-instruction window after a g-clobbering call (before the compiler's `MOVQ FS:-8,R14`
+// reload), manufacturing (TLS-g=g0) on a live heap-stack goroutine → the next growth prologue
+// threw. §12.4 FIX: eret_kernel_tls now restores TLS-g from the faithful per-frame captured
+// slot instead. These counters are the PERMANENT tripwire (like MAZ-139's D2 canary): the asm
+// increments egtlsCorruptCount each time it CORRECTS a window (frame R14==g0 AND slot==curg)
+// and one-shot-marks the first to COM1. egtlsCorruptCount>0 with NO `morestack on g0` proves
+// the fix is live and protecting. asm-mutated with LOCK / plain stores; read with atomics.
+var (
+	egtlsCorruptCount uint64 // no-preempt eret windows the §12.4 fix corrected (restored curg, not g0)
+	egtlsLastSlot     uint64 // last corrected window: the curg we faithfully restored (was → g0)
+	egtlsLastRIP      uint64 // last corrected window: interrupted RIP (the `MOVQ FS:-8,R14` reload site)
+	egtlsLastRSP      uint64 // last corrected window: interrupted RSP (a heap goroutine stack)
+	egtlsMarked       uint64 // one-shot guard for the first-hit serial "EGTLS" marker
+)
+
+// dumpEGTLSStats surfaces the MAZ-143 silent-morestack tripwire counters. Called from the
+// shepherd-exit dump (dumpPwakeRing) alongside dumpNestStats. The durable live signal is the
+// one-shot "EGTLS" serial marker emitted by eret_kernel_tls the first time the fix corrects a
+// window — a normal boot need not reach a shepherd-exit dump, and a real crash halts before it.
+func dumpEGTLSStats() {
+	klog.Criticalf("egtls", "[egtls] silent-morestack detector: corrupt=%d lastSlot=%#x lastRIP=%#x lastRSP=%#x\n",
+		atomic.LoadUint64(&egtlsCorruptCount), atomic.LoadUint64(&egtlsLastSlot),
+		atomic.LoadUint64(&egtlsLastRIP), atomic.LoadUint64(&egtlsLastRSP))
+}
+
 // recordGSPMismatchKernel checks whether the interrupted SP lies within the
 // kernel g0's stack bounds, but ONLY when the captured g IS g0 — the exact
 // `morestack on g0` precondition (runtime.morestack sets TLS-g = m.g0 before
@@ -171,14 +200,14 @@ func runGSPMismatchSelfTest() {
 	atomic.StoreUint32(&gspSelftestActive, 1)
 	defer atomic.StoreUint32(&gspSelftestActive, 0)
 
-	// Case 1 (the bug): SP just below g0.stack.lo ⇒ outside ⇒ detector MUST fire.
+	// Case 1 (the bug): TLS-slot=g0, SP just below g0.stack.lo ⇒ outside ⇒ detector MUST fire.
 	before := atomic.LoadUint64(&dbgGSPMismatch)
-	gspRunSyntheticKernelSave(g0, lo-0x1000)
+	gspRunSyntheticKernelSave(g0, lo-0x1000, g0)
 	caught := atomic.LoadUint64(&dbgGSPMismatch) - before
 
-	// Case 2 (control): SP inside g0's stack ⇒ detector MUST stay silent.
+	// Case 2 (control): TLS-slot=g0, SP inside g0's stack ⇒ detector MUST stay silent.
 	before2 := atomic.LoadUint64(&dbgGSPMismatch)
-	gspRunSyntheticKernelSave(g0, lo+0x80)
+	gspRunSyntheticKernelSave(g0, lo+0x80, g0)
 	falseFire := atomic.LoadUint64(&dbgGSPMismatch) - before2
 
 	if caught != 1 || falseFire != 0 {
@@ -191,19 +220,118 @@ func runGSPMismatchSelfTest() {
 	// frame and PASS the good (g0, in-stack) frame. This is the GREEN: a thread in
 	// the morestack transient is never checkpointed → never resumes into
 	// `morestack on g0`. (gspSelftestActive suppresses the live dbgGSPSkipped bump.)
-	badSkip := gspUnsafeKernelResume(gspBuildSyntheticKernelFrame(g0, lo-0x1000))
-	goodSkip := gspUnsafeKernelResume(gspBuildSyntheticKernelFrame(g0, lo+0x80))
+	badSkip := gspUnsafeKernelResume(gspBuildSyntheticKernelFrame(g0, lo-0x1000, g0))
+	goodSkip := gspUnsafeKernelResume(gspBuildSyntheticKernelFrame(g0, lo+0x80, g0))
 	if !badSkip || goodSkip {
 		klog.Errf("[gsp-selftest] FAIL: guard badSkip=%v (want true), goodSkip=%v (want false)\n", badSkip, goodSkip)
 		panic("runGSPMismatchSelfTest: fix-C (g,SP) guard predicate wrong")
 	}
-	klog.Criticalf("[GSP]", "[gsp-selftest] OK — (g,SP) detector + fix-C guard flag g0 out-of-stack SP, ignore in-stack SP\n")
+
+	// Case B — the surviving NATURAL morestack-on-g0 (MAZ-143 reopened; first live
+	// repro 2026-06-16, 1/12 TCG on the merged fix-C build, with NO GSPMM). A KERNEL
+	// goroutine's g is a HIGH kernel VA (0xffff8001…) that gLooksValid REJECTS, so
+	// SaveContextFromFrame's kernel branch ALWAYS falls back to Context.TLSG = R14 and
+	// never runs the detector. In runtime.morestack R14 becomes g0 a few instructions
+	// before TLS-g does; an IRQ captured there has R14=g0 but the per-frame TLS slot
+	// still = the goroutine g (high, !gLooksValid). The save reconstructs
+	// Context.TLSG = R14 = g0 → load_context_and_iretq writes TLS-g = g0 → morestack
+	// reads TLS-g == m.g0 → throw. The original fix-C guard checked the RAW slot
+	// (high VA ≠ g0) and so NEVER skipped this window — the gap this fix closes.
+	const caseBHighVAg = 0xffff800148008000 // mimics a real kernel goroutine g (high VA, !gLooksValid, ≠ g0)
+	beforeB := atomic.LoadUint64(&dbgGSPMismatch)
+	gspRunSyntheticKernelSave(g0, lo-0x1000, caseBHighVAg)
+	caseBDetector := atomic.LoadUint64(&dbgGSPMismatch) - beforeB
+	caseBTLSG := ctxTestThread.Context.TLSG
+	// Invariants of the EXISTING save (true before AND after the fix): the R14 fallback
+	// reconstructs the crash precondition (Context.TLSG = g0), and the detector stays
+	// silent (gLooksValid(slot) is false) — exactly why the live crash showed no GSPMM.
+	if caseBTLSG != g0 || caseBDetector != 0 {
+		klog.Errf("[gsp-selftest] FAIL: Case-B save TLSG=%#x (want g0=%#x), detector fired=%d (want 0) — mechanism assumption broken\n", caseBTLSG, g0, caseBDetector)
+		panic("runGSPMismatchSelfTest: Case-B save/detector assumption wrong")
+	}
+	// RED→GREEN: the guard MUST skip this window. Unfixed (raw-slot check) → false (RED);
+	// fixed (effective g = gLooksValid(slot)?slot:R14) → true (GREEN).
+	caseBSkip := gspUnsafeKernelResume(gspBuildSyntheticKernelFrame(g0, lo-0x1000, caseBHighVAg))
+	if !caseBSkip {
+		klog.Errf("[gsp-selftest] FAIL (RED): Case-B (R14=g0, !gLooksValid TLS slot, SP off-g0) NOT skipped — guard must use the effective g (gLooksValid(slot)?slot:R14) the save restores, not the raw slot (MAZ-143 fix-C gap)\n")
+		panic("runGSPMismatchSelfTest: Case-B guard gap — guard must mirror the save's effective g")
+	}
+
+	klog.Criticalf("[GSP]", "[gsp-selftest] OK — (g,SP) detector + fix-C guard flag g0 out-of-stack SP (valid-slot AND R14-fallback/Case-B windows), ignore in-stack SP\n")
+}
+
+// runCloneTLSGSelfTest PROVES MAZ-143 confirmation (a): a clone child's Context.TLSG
+// carries the PARENT's g — a HIGH-canonical value — NOT the child's. The clone path
+// (doContextSwitchImpl:4210 `child.Context = parent.Context`, then SetGRegister(childG)
+// which sets R14 ONLY at :4229) never overrides ctx.TLSG, and SetCloneTLS sets FSBase
+// only. Consequences this test pins down deterministically (no perturbation; uses the
+// REAL SetupForCloneChild + SetGRegister + struct-copy):
+//   - A naive "accept high-canonical" gLooksValid WIDENING would make SaveContextFromFrame
+//     trust ctx.TLSG = parentG → the child resumes with the PARENT's g → GC/#GP corruption
+//     (the failure save_context_amd64.go:4233-4237 warns about). So the leading fix as
+//     first stated is UNSAFE.
+//   - The refined rule "trust the TLS slot only when R14 == g0 (the systemstack-exit
+//     signature)" trusts R14 = childG here (a clone child's R14 != g0) → SAFE.
+//
+// This is the linchpin for the dual-home fix design (design/maz143-dual-home-g-raw-context-save.md).
+func runCloneTLSGSelfTest() {
+	g0 := kmazarinG0Addr
+	if g0 == 0 {
+		klog.Errf("[clone-tlsg-selftest] FAIL: kmazarinG0Addr not set\n")
+		panic("runCloneTLSGSelfTest: kmazarinG0Addr not set")
+	}
+	// Two distinct, plausible HIGH-canonical kernel g pointers (≠ g0, ≠ each other),
+	// mimicking real kernel goroutine g's at 0xffff8001…
+	const parentG uint64 = 0xffff800148008000
+	const childG uint64 = 0xffff800148009000
+
+	// Parent: a consistent running goroutine — both homes = parentG.
+	var parent ThreadContext
+	parent.R14 = parentG
+	parent.TLSG = parentG
+
+	// Build the clone child exactly as doContextSwitchImpl does for CloneNeedsParentRegs:
+	var child ThreadContext
+	child.SetupForCloneChild(0x7000, 0x45800000, childG, 0x202) // sets R14=childG, NOT TLSG (:235)
+	savedChildG := child.GetGRegister()                         // childG (:4207)
+	child = parent                                              // :4210 full copy ⇒ TLSG := parentG
+	child.SetGRegister(savedChildG)                             // :4229 R14 := childG (TLSG untouched)
+
+	// (a) The clone child's TLSG is the PARENT's g; R14 is the child's.
+	if child.TLSG != parentG || child.GetGRegister() != childG {
+		klog.Errf("[clone-tlsg-selftest] FAIL: child TLSG=%#x (want parentG=%#x), R14=%#x (want childG=%#x)\n",
+			child.TLSG, parentG, child.GetGRegister(), childG)
+		panic("runCloneTLSGSelfTest: clone g-home assumption broken")
+	}
+
+	// canonical = the NAIVE widened gLooksValid (accepts low OR high canonical).
+	canon := func(v uint64) bool { return v != 0 && (v < 0x0000800000000000 || v >= 0xFFFF800000000000) }
+	// Naive widened rule: trust TLS whenever canonical → picks parentG (WRONG, regresses clone).
+	naiveEffG := child.R14
+	if canon(child.TLSG) {
+		naiveEffG = child.TLSG
+	}
+	// Refined rule: trust TLS only when R14 is the stale g0 (systemstack-exit) → picks childG (SAFE).
+	refinedEffG := child.R14
+	if child.R14 == g0 && canon(child.TLSG) && child.TLSG != g0 {
+		refinedEffG = child.TLSG
+	}
+	if naiveEffG != parentG {
+		klog.Errf("[clone-tlsg-selftest] FAIL: naive widened rule effG=%#x, expected to (wrongly) pick parentG=%#x\n", naiveEffG, parentG)
+		panic("runCloneTLSGSelfTest: naive-rule demonstration wrong")
+	}
+	if refinedEffG != childG {
+		klog.Errf("[clone-tlsg-selftest] FAIL: refined (R14==g0) rule effG=%#x, want childG=%#x — would regress clone\n", refinedEffG, childG)
+		panic("runCloneTLSGSelfTest: refined rule does not protect clone bringup")
+	}
+	klog.Criticalf("[GSP]", "[clone-tlsg-selftest] OK — clone child TLSG=parentG (high-canonical); naive widening picks parentG (REGRESSES clone), R14==g0 rule picks childG (SAFE)\n")
 }
 
 // gspUnsafeKernelResume is FIX C — the (g,SP)-consistency guard on the raw kernel
 // context switch. It reports whether the exception frame at framePtr captured
 // thread 0 inside runtime.morestack's g→g0 / SP-switch transient (asm_amd64.s:678):
-// a KERNEL-mode interrupt (CS==kernelCS) whose per-exception-frame TLS-g is the
+// a KERNEL-mode interrupt (CS==kernelCS) whose EFFECTIVE restored g — the same
+// gLooksValid(slot)?slot:R14 SaveContextFromFrame will write into Context.TLSG — is the
 // kernel g0 (kmazarinG0Addr) but whose saved RSP (frame[19]) is OUTSIDE g0's stack.
 // Faithfully checkpointing and later restoring that (g,SP) resumes a prologue with
 // SP < g0.stackguard0 → `morestack on g0`. checkThreadPreemptionImpl calls this
@@ -238,9 +366,23 @@ func gspUnsafeKernelResume(framePtr uintptr) bool {
 	if g0 == 0 {
 		return false // pre-init: no kernel g0 yet
 	}
-	tlsg := *(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameTLSGOff))
-	if tlsg != g0 {
-		return false // not the g==g0 transient
+	// Predict the SAME effective g that SaveContextFromFrame will RESTORE, not the raw
+	// slot. Its kernel branch sets Context.TLSG = gLooksValid(slot) ? slot : R14
+	// (save_context_amd64.go), and load_context_and_iretq writes that into TLS-g, which
+	// is the home runtime.morestack's badmorestackg0 reads. Kernel goroutine g's are HIGH
+	// kernel VAs (0xffff8001…) that gLooksValid REJECTS, so for a real kernel goroutine the
+	// save ALWAYS falls back to R14. Checking only the raw slot (the original fix C) misses
+	// the morestack sub-window where R14 has already become g0 but the slot still holds the
+	// (high-VA, gLooksValid-false) goroutine g — the surviving natural `morestack on g0`
+	// (MAZ-143 reopened: first live repro 2026-06-16, 1/12 TCG on the merged build, no GSPMM
+	// because the detector likewise lives only in the gLooksValid-true branch).
+	slot := *(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameTLSGOff))
+	effG := slot
+	if !gLooksValid(slot) {
+		effG = frame[13] // R14 — mirror SaveContextFromFrame's fallback
+	}
+	if effG != g0 {
+		return false // the restored TLS-g will not be g0 — nothing unsafe to skip
 	}
 	lo := *(*uint64)(unsafe.Pointer(uintptr(g0)))     // g0.stack.lo
 	hi := *(*uint64)(unsafe.Pointer(uintptr(g0) + 8)) // g0.stack.hi
@@ -255,31 +397,33 @@ func gspUnsafeKernelResume(framePtr uintptr) bool {
 }
 
 // gspBuildSyntheticKernelFrame populates the shared ctxTestBacking with a synthetic
-// KERNEL exception frame whose per-exception-frame TLS-g slot is g0 and whose saved
-// RSP (frame[19]) is sp, and returns its framePtr. Mirrors saveFromSyntheticKernelFrame's
-// layout. Used by both the detector check (via SaveContextFromFrame) and the fix-C
-// guard check (via gspUnsafeKernelResume).
-func gspBuildSyntheticKernelFrame(g0, sp uint64) uintptr {
+// KERNEL exception frame whose per-exception-frame TLS-g slot is tlsSlot, whose R14
+// (frame[13]) is g0 (the save's gLooksValid-false fallback home), and whose saved RSP
+// (frame[19]) is sp; it returns the framePtr. Mirrors saveFromSyntheticKernelFrame's
+// layout. Used by the detector check (via SaveContextFromFrame) and the fix-C guard
+// check (via gspUnsafeKernelResume). Callers pass tlsSlot=g0 for the original
+// valid-TLSG window, or a high-VA !gLooksValid value for the Case-B R14-fallback window.
+func gspBuildSyntheticKernelFrame(g0, sp, tlsSlot uint64) uintptr {
 	const extWords = excFrameExtSize / 8
 	backing := ctxTestBacking[:extWords+21] // stable global buffer — see ctxTestBacking
 	frame := backing[extWords:]
 	for i := range frame {
 		frame[i] = ctxFrameSentinel + uint64(i)
 	}
-	frame[13] = g0       // R14 fallback (unused on the valid-TLSG path)
+	frame[13] = g0       // R14 — the save's fallback home when the slot is !gLooksValid
 	frame[17] = kernelCS // kernel branch
 	frame[19] = sp       // RSP — the (g,SP) the detector/guard checks against g0.stack
 
 	framePtr := uintptr(unsafe.Pointer(&frame[0]))
-	*(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameTLSGOff)) = g0 // per-frame TLS-g = g0
+	*(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameTLSGOff)) = tlsSlot // per-frame TLS-g slot
 	fillXMMSlotSentinel(framePtr)
 	return framePtr
 }
 
 // gspRunSyntheticKernelSave runs the REAL SaveContextFromFrame against the synthetic
 // kernel frame (detector path). Reuses ctxTestThread; caller holds gspSelftestActive.
-func gspRunSyntheticKernelSave(g0, sp uint64) {
-	framePtr := gspBuildSyntheticKernelFrame(g0, sp)
+func gspRunSyntheticKernelSave(g0, sp, tlsSlot uint64) {
+	framePtr := gspBuildSyntheticKernelFrame(g0, sp, tlsSlot)
 	daif := SaveAndDisableIRQs()
 	oldThread := GetCurrentThread()
 	ctxTestThread.Context = ThreadContext{}
