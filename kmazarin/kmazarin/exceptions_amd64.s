@@ -1935,12 +1935,64 @@ eret_rsp0_done:
 
 eret_kernel_tls:
 	// Kernel mode return: FS_BASE is already kernel value, sync g to kernel TLS.
-	// Guard: if kmazarinFSBase is 0 (early init), skip TLS write.
+	// Guard: if kmazarinFSBase is 0 (early init), skip TLS write. This guard ALSO covers the
+	// kmazarinG0Addr==0 early window below: InitKernel sets kmazarinG0Addr BEFORE kmazarinFSBase
+	// (threads.go), so g0Addr==0 implies FSBase==0 and we skip here — the effG rule below never
+	// runs with g0==0 (which would otherwise silently degrade to a raw frame-R14 write).
 	MOVQ	·kmazarinFSBase(SB), AX
 	TESTQ	AX, AX
 	JZ	eret_skip_tls_write
-	MOVQ	104(BP), DX		// R14 from saved GPR frame (BP = anchored GPR frame base)
-	MOVQ	DX, -8(AX)		// Write g to kernel TLS slot (safe)
+	// MAZ-143 §12.4 FIX (refined §9b rule): restore kernel TLS-g from the EFFECTIVE g — the
+	// NON-g0 home — NOT blindly the per-frame slot. amd64 keeps g in two homes (R14 + TLS
+	// slot); at an exception they can disagree, with exactly one == g0 in a transition window:
+	//   • morestack/systemstack ENTRY (asm_amd64.s:678 sets TLS-g=g0 BEFORE R14): slot==g0,
+	//     R14==curg → real g is R14. (Writing the slot=g0 here was the deterministic early-boot
+	//     `morestack on g0` regression of the naive "always slot" version.)
+	//   • systemstack EXIT (restores TLS-g=curg, leaves R14 stale g0) — AND the mcall/
+	//     systemstack-entry sub-window that sets R14=g0 FIRST (asm_amd64.s:489): both give
+	//     R14==g0, slot==curg → real g is the slot. (Exit is the silent late bug; the entry
+	//     sub-window is benign — the runtime re-sets TLS-g=g0 itself on resume — but lands here too.)
+	// Rule: effG := frame R14 by default (correct for ENTRY / normal / clone); switch to the
+	// slot ONLY when R14 is the stale g0 AND the slot is a plausible non-g0 g (the EXIT window).
+	// R14-FIRST: this no-preempt path has no SaveContextFromFrame-written Context.TLSG to lean on,
+	// so it derives effG live. NOTE this is deliberately NOT SaveContextFromFrame's slot-first
+	// gLooksValid?slot:R14 — that rule would pick R14=g0 in the EXIT window (gLooksValid rejects
+	// the high-VA curg), i.e. the original bug. DX=effG, CX=g0, BX=slot (all POPed below). SP is
+	// still the lowered extension here (D2 canary below reads excFrameCanaryOff(SP)).
+	MOVQ	104(BP), DX			// effG := frame R14 (correct for ENTRY / normal / clone)
+	MOVQ	·kmazarinG0Addr(SB), CX		// CX = kernel g0
+	CMPQ	DX, CX
+	JNE	eret_tls_write			// R14 != g0 → R14 is the live g, use it
+	MOVQ	const_excFrameTLSGOff(SP), BX	// R14 == g0: consider the captured TLS slot
+	TESTQ	BX, BX
+	JZ	eret_tls_write			// slot == 0 → keep effG = R14 (=g0)
+	CMPQ	BX, CX
+	JE	eret_tls_write			// slot == g0 → genuine g0 execution, keep R14 (=g0)
+	// R14==g0, slot=live curg: the systemstack-EXIT window (the §12.4 fix) OR the benign
+	// mcall/entry R14-first sub-window — both restore the slot (curg) correctly. EGTLS tripwire
+	// (PERMANENT, MAZ-139-D2 style): counts BOTH window types + one-shot mark.
+	MOVQ	BX, DX				// effG := slot (the curg to restore, not the stale g0)
+	LOCK
+	INCQ	·egtlsCorruptCount(SB)		// window correction (exit or mcall-entry); atomic, SMP
+	MOVQ	BX, ·egtlsLastSlot(SB)		// the curg we restored instead of the stale g0
+	MOVQ	128(BP), SI
+	MOVQ	SI, ·egtlsLastRIP(SB)		// interrupted RIP — the post-systemstack reload site
+	MOVQ	152(BP), SI
+	MOVQ	SI, ·egtlsLastRSP(SB)		// interrupted RSP
+	CMPQ	·egtlsMarked(SB), $0
+	JNE	eret_tls_write			// already marked → AX=FSBase, DX=effG intact, write
+	MOVQ	$1, ·egtlsMarked(SB)
+	MOVW	$0x3F8, DX			// COM1 (clobbers DX/AX — reloaded below)
+	MOVB	$'E', AX; OUTB
+	MOVB	$'G', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'\n', AX; OUTB
+	MOVQ	·kmazarinFSBase(SB), AX		// reload (marker clobbered AX/DX)
+	MOVQ	const_excFrameTLSGOff(SP), DX	// reload effG = slot (exit-window value)
+eret_tls_write:
+	MOVQ	DX, -8(AX)		// Write kernel TLS-g = faithful captured slot (the §12.4 FIX)
 eret_skip_tls_write:
 
 	// MAZ-139 D2 canary verify: confirm THIS level's slot still holds SP^magic

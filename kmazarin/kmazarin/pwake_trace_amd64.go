@@ -118,7 +118,8 @@ func dumpPwakeRing() {
 			atomic.LoadUint64(&dbgGSPLastRIP), atomic.LoadUint64(&dbgGSPLastLo),
 			atomic.LoadUint64(&dbgGSPLastHi))
 	}
-	dumpNestStats() // MAZ-139: nested-exception detector counters, same exit channel
+	dumpNestStats()  // MAZ-139: nested-exception detector counters, same exit channel
+	dumpEGTLSStats() // MAZ-143 §12: silent-morestack (eret stale-R14 TLS-g) detector
 }
 
 func init() {

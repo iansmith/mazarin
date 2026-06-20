@@ -55,6 +55,9 @@ func runContextMarshalSelfTest() {
 	// MAZ-143: deterministic RED/GREEN for the (g,SP)-mismatch detector — shares
 	// this gated, quiescent, thread-0-only boot point and the scratch globals.
 	runGSPMismatchSelfTest()
+	// MAZ-143 confirmation (a): proves a clone child's TLSG carries the parent's
+	// high-canonical g, so a naive gLooksValid widening regresses clone (R14==g0 rule safe).
+	runCloneTLSGSelfTest()
 }
 
 const (
