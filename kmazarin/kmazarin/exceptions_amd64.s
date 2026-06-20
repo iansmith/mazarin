@@ -1935,7 +1935,10 @@ eret_rsp0_done:
 
 eret_kernel_tls:
 	// Kernel mode return: FS_BASE is already kernel value, sync g to kernel TLS.
-	// Guard: if kmazarinFSBase is 0 (early init), skip TLS write.
+	// Guard: if kmazarinFSBase is 0 (early init), skip TLS write. This guard ALSO covers the
+	// kmazarinG0Addr==0 early window below: InitKernel sets kmazarinG0Addr BEFORE kmazarinFSBase
+	// (threads.go), so g0Addr==0 implies FSBase==0 and we skip here — the effG rule below never
+	// runs with g0==0 (which would otherwise silently degrade to a raw frame-R14 write).
 	MOVQ	·kmazarinFSBase(SB), AX
 	TESTQ	AX, AX
 	JZ	eret_skip_tls_write
@@ -1945,8 +1948,10 @@ eret_kernel_tls:
 	//   • morestack/systemstack ENTRY (asm_amd64.s:678 sets TLS-g=g0 BEFORE R14): slot==g0,
 	//     R14==curg → real g is R14. (Writing the slot=g0 here was the deterministic early-boot
 	//     `morestack on g0` regression of the naive "always slot" version.)
-	//   • systemstack EXIT (restores TLS-g=curg, leaves R14 stale g0): R14==g0, slot==curg →
-	//     real g is the slot (the original silent late bug).
+	//   • systemstack EXIT (restores TLS-g=curg, leaves R14 stale g0) — AND the mcall/
+	//     systemstack-entry sub-window that sets R14=g0 FIRST (asm_amd64.s:489): both give
+	//     R14==g0, slot==curg → real g is the slot. (Exit is the silent late bug; the entry
+	//     sub-window is benign — the runtime re-sets TLS-g=g0 itself on resume — but lands here too.)
 	// Rule: effG := frame R14 by default (correct for ENTRY / normal / clone); switch to the
 	// slot ONLY when R14 is the stale g0 AND the slot is a plausible non-g0 g (the EXIT window).
 	// R14-FIRST: this no-preempt path has no SaveContextFromFrame-written Context.TLSG to lean on,
@@ -1963,11 +1968,12 @@ eret_kernel_tls:
 	JZ	eret_tls_write			// slot == 0 → keep effG = R14 (=g0)
 	CMPQ	BX, CX
 	JE	eret_tls_write			// slot == g0 → genuine g0 execution, keep R14 (=g0)
-	// systemstack-EXIT window: R14 stale g0, slot = live curg → use the slot (the §12.4 fix).
-	// EGTLS tripwire (PERMANENT, MAZ-139-D2 style): count exit-window corrections + one-shot mark.
+	// R14==g0, slot=live curg: the systemstack-EXIT window (the §12.4 fix) OR the benign
+	// mcall/entry R14-first sub-window — both restore the slot (curg) correctly. EGTLS tripwire
+	// (PERMANENT, MAZ-139-D2 style): counts BOTH window types + one-shot mark.
 	MOVQ	BX, DX				// effG := slot (the curg to restore, not the stale g0)
 	LOCK
-	INCQ	·egtlsCorruptCount(SB)		// exit-window correction (atomic; SMP)
+	INCQ	·egtlsCorruptCount(SB)		// window correction (exit or mcall-entry); atomic, SMP
 	MOVQ	BX, ·egtlsLastSlot(SB)		// the curg we restored instead of the stale g0
 	MOVQ	128(BP), SI
 	MOVQ	SI, ·egtlsLastRIP(SB)		// interrupted RIP — the post-systemstack reload site
