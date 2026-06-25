@@ -4027,6 +4027,26 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		return 0
 	}
 
+	// MAZ-147 (SKIP): never INVOLUNTARILY preempt g0 while it holds m.locks. The
+	// timer-preempt funnel has no m.locks checkpoint, so switching g0 out here leaks
+	// the count onto the borrowed m0 — the CONFIRMED dominant leak (PREEMPT-G0-LEAK
+	// ×6/9 boots, varied rips; design §8c) behind `schedule: holding locks`. Mirror
+	// stock Go's "m.locks ⇒ non-preemptible": leave g0 running; it finishes its short
+	// critical section (then preemptible) or reaches lock2 backoff → usleep (the
+	// VOLUNTARY yield, checkpointed by R1's save/restore). lock2 active-spin is
+	// bounded → no livelock. Placed before the lock AND before boostThread0ForPendingWork
+	// so this single early-return skips the WHOLE preemption attempt (the normal scheduler
+	// below and the boost) when g0 holds m.locks. (boostThread0ForPendingWork only fires
+	// when thread0 is Ready — i.e. NOT the running thread — so it cannot itself switch a
+	// running g0 out; the early return covers the preempt path here.) amd64-only; arm64
+	// stub returns false. Reads the LIVE interrupted g from the frame (oldThread.Context
+	// isn't refreshed until SaveContextFromFrame below). Mirrors the gspUnsafeKernelResume
+	// skip above. (Option A is rejected ONLY for the mandatory-yield usleep path — C1;
+	// it is correct here, where preemption is involuntary.)
+	if g0PreemptHoldsMLocks(uintptr(framePtr)) {
+		return 0
+	}
+
 	// Boost thread 0 when kernel work is pending. The userspace-preferring
 	// scheduler never picks thread 0 while any userspace thread is ready,
 	// so pending LoadMaz/RunMaz/RunShepherd requests can stall indefinitely.
@@ -4293,6 +4313,17 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 		sf.EnableAndRestoreDAIF(savedDAIF)
 		return nil
 	}
+
+	// MAZ-147 Option B (save half): g0 is now DEFINITELY being switched away to a
+	// real newThread (past the nil-guard — placing this earlier could zero
+	// g0.m.locks while g0 keeps running on a no-switch return, losing the count),
+	// still under schedulerLock + IRQs-off. If the outgoing context is g0 holding
+	// m.locks, stash+zero it so the borrowed m0 presents 0 to foreign code. The
+	// matching re-arm is at the load_context_and_iretq resume chokepoint — g0 is
+	// woken by the PREEMPTION funnel, not this one (see design doc §8 / OPEN #1).
+	// No-op for any non-g0 outgoing context, and on arm64 (no-op stub for now).
+	mlockCheckpointSave(oldThread)
+
 	// (SVC switch breadcrumbs removed for performance)
 	newThread.State = ThreadRunning
 	// Restore StartTick from saved elapsed time so preemption tracking

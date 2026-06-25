@@ -89,6 +89,37 @@ func gLooksValid(v uint64) bool {
 	return v != 0 && v < 0x0000800000000000
 }
 
+// kernelModeEffG extracts the EFFECTIVE restored g from a KERNEL-mode exception
+// frame — the same gLooksValid(slot)?slot:R14 value SaveContextFromFrame's kernel
+// branch writes into Context.TLSG (and that load_context_and_iretq later restores
+// into TLS-g). Returns (effG, true) only for a kernel-mode frame (CS==kernelCS)
+// once kmazarinG0Addr is established; (0, false) for framePtr==0, a user-mode
+// frame, or pre-init. This is the single authoritative home for the fragile frame
+// layout knowledge (the CS index, the per-frame TLS-g slot offset, the R14
+// fallback), shared by gspUnsafeKernelResume (MAZ-143) and g0PreemptHoldsMLocks
+// (MAZ-147). SAFETY: dereferences only the exception frame (always mapped) — never
+// the captured g.
+//
+//go:nosplit
+func kernelModeEffG(framePtr uintptr) (effG uint64, ok bool) {
+	if framePtr == 0 {
+		return 0, false
+	}
+	frame := (*[21]uint64)(unsafe.Pointer(framePtr))
+	if frame[17] != kernelCS {
+		return 0, false // user-mode frame
+	}
+	if kmazarinG0Addr == 0 {
+		return 0, false // pre-init: no kernel g0 yet
+	}
+	slot := *(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameTLSGOff))
+	effG = slot
+	if !gLooksValid(slot) {
+		effG = frame[13] // R14 — mirror SaveContextFromFrame's fallback
+	}
+	return effG, true
+}
+
 // SaveContextFromFrame saves the current thread's context from an x86_64 exception frame.
 //
 // Frame layout (pushed by exception handler):

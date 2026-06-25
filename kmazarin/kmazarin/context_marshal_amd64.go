@@ -58,6 +58,11 @@ func runContextMarshalSelfTest() {
 	// MAZ-143 confirmation (a): proves a clone child's TLSG carries the parent's
 	// high-canonical g, so a naive gLooksValid widening regresses clone (R14==g0 rule safe).
 	runCloneTLSGSelfTest()
+	// MAZ-147 Option B: deterministic RED→GREEN for the m.locks checkpoint — the
+	// save hides g0's m.locks from a foreign m0 reader (RED without the fix) and
+	// stashes the count+addr for the asm resume re-arm. Same gated, quiescent,
+	// thread-0-only boot point; borrows the real g0.m.locks IRQ-masked.
+	runMLockCheckpointSelfTest()
 }
 
 const (

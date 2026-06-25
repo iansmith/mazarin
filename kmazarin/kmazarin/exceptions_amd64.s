@@ -2251,6 +2251,39 @@ lc_rsp0_overshoot:
 	JMP	rsp0_overshoot_dump(SB)
 lc_rsp0_done:
 
+	// MAZ-147 Option B (restore half): re-arm g0's checkpointed m.locks at the
+	// ONE resume chokepoint every switch funnel converges into — DoContextSwitch,
+	// CheckThreadPreemption, PriorityWakeSwitch, idle pickup all JMP here. g0's
+	// usleep→nanosleep is descheduled (and m.locks zeroed) at the doContextSwitchImpl
+	// raw switch, but g0 is woken→ready→resumed by the PREEMPTION funnel, which
+	// never returns through doContextSwitchImpl — so the restore MUST live here, not
+	// at a single Go funnel (see design/maz147-mlocks-leak-root-cause.md §8 / OPEN #1).
+	// savedG0MLocks!=0 means g0 is switched-out with a stashed count; re-arm ONLY
+	// when THIS context is actually g0's — otherwise we'd restore g0.m.locks while
+	// foreign code is about to run on m0 (the very leak we close). The gate uses
+	// ctx.R14 (the amd64 g-register) to MATCH the save key exactly: the save fired
+	// on outgoing.Context.GetGRegister()==kmazarinG0Addr (== ctx.R14), and the
+	// loaded ctx is that same saved struct, so ctx.R14 here is guaranteed identical
+	// to the save-time value (more robust than ctx.TLSG, a separate field that can
+	// transiently disagree per MAZ-135). savedG0MLocksPtr is &g0.m.locks, precomputed
+	// in Go at save time so this nosplit/no-frame path needs no cross-package offset
+	// math. AX/BX/R13 are scratch here (IST/RSP0 rotations retired; the FS_BASE block
+	// below reloads them); R12 (&ctx) is preserved. Pure asm, mirroring the MAZ-135
+	// TLS-g restore below.
+	MOVL	·savedG0MLocks(SB), R13
+	TESTL	R13, R13
+	JZ	mlock_restore_done		// nothing checkpointed (common case)
+	FLD(R12, ThreadContext_R14, AX)		// AX = ctx's saved g-register (R14)
+	MOVQ	·kmazarinG0Addr(SB), BX
+	CMPQ	AX, BX
+	JNE	mlock_restore_done		// not g0 — leave the checkpoint stashed
+	MOVQ	·savedG0MLocksPtr(SB), AX	// &g0.m.locks (precomputed at save)
+	TESTQ	AX, AX
+	JZ	mlock_restore_done		// ptr unset (defensive)
+	MOVL	R13, (AX)			// g0.m.locks = stashed count
+	MOVL	$0, ·savedG0MLocks(SB)		// checkpoint consumed
+mlock_restore_done:
+
 	// Restore FS_BASE from context (per-thread TLS base).
 	// Without this, userspace threads that called arch_prctl(ARCH_SET_FS)
 	// would resume with the wrong FS_BASE, causing TLS reads to return
