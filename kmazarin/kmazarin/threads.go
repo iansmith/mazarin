@@ -4035,7 +4035,10 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// critical section (then preemptible) or reaches lock2 backoff → usleep (the
 	// VOLUNTARY yield, checkpointed by R1's save/restore). lock2 active-spin is
 	// bounded → no livelock. Placed before the lock AND before boostThread0ForPendingWork
-	// (the third g0 switch-out path) so a single guard covers both. amd64-only; arm64
+	// so this single early-return skips the WHOLE preemption attempt (the normal scheduler
+	// below and the boost) when g0 holds m.locks. (boostThread0ForPendingWork only fires
+	// when thread0 is Ready — i.e. NOT the running thread — so it cannot itself switch a
+	// running g0 out; the early return covers the preempt path here.) amd64-only; arm64
 	// stub returns false. Reads the LIVE interrupted g from the frame (oldThread.Context
 	// isn't refreshed until SaveContextFromFrame below). Mirrors the gspUnsafeKernelResume
 	// skip above. (Option A is rejected ONLY for the mandatory-yield usleep path — C1;

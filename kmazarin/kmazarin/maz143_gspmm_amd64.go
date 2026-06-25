@@ -355,38 +355,22 @@ func runCloneTLSGSelfTest() {
 //
 //go:nosplit
 func gspUnsafeKernelResume(framePtr uintptr) bool {
-	if framePtr == 0 {
-		return false
-	}
-	frame := (*[21]uint64)(unsafe.Pointer(framePtr))
-	if frame[17] != kernelCS {
-		return false // user-mode resume — handled by the dual-home TLSG restore, not this
+	// effG is the SAME g SaveContextFromFrame will RESTORE (gLooksValid(slot)?slot:R14),
+	// not the raw slot — load_context_and_iretq writes it into TLS-g, the home
+	// runtime.morestack's badmorestackg0 reads. Kernel goroutine g's are HIGH kernel VAs
+	// that gLooksValid REJECTS, so a real kernel goroutine's save ALWAYS falls back to R14;
+	// checking only the raw slot (the original fix C) missed the morestack sub-window where
+	// R14 has already become g0 but the slot still holds the (high-VA, gLooksValid-false)
+	// goroutine g — the surviving natural `morestack on g0` (MAZ-143 reopened: first live
+	// repro 2026-06-16, 1/12 TCG on the merged build). kernelModeEffG centralises that rule.
+	effG, ok := kernelModeEffG(framePtr)
+	if !ok || effG != kmazarinG0Addr {
+		return false // user-mode / pre-init, or the restored TLS-g will not be g0 — nothing unsafe to skip
 	}
 	g0 := kmazarinG0Addr
-	if g0 == 0 {
-		return false // pre-init: no kernel g0 yet
-	}
-	// Predict the SAME effective g that SaveContextFromFrame will RESTORE, not the raw
-	// slot. Its kernel branch sets Context.TLSG = gLooksValid(slot) ? slot : R14
-	// (save_context_amd64.go), and load_context_and_iretq writes that into TLS-g, which
-	// is the home runtime.morestack's badmorestackg0 reads. Kernel goroutine g's are HIGH
-	// kernel VAs (0xffff8001…) that gLooksValid REJECTS, so for a real kernel goroutine the
-	// save ALWAYS falls back to R14. Checking only the raw slot (the original fix C) misses
-	// the morestack sub-window where R14 has already become g0 but the slot still holds the
-	// (high-VA, gLooksValid-false) goroutine g — the surviving natural `morestack on g0`
-	// (MAZ-143 reopened: first live repro 2026-06-16, 1/12 TCG on the merged build, no GSPMM
-	// because the detector likewise lives only in the gLooksValid-true branch).
-	slot := *(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameTLSGOff))
-	effG := slot
-	if !gLooksValid(slot) {
-		effG = frame[13] // R14 — mirror SaveContextFromFrame's fallback
-	}
-	if effG != g0 {
-		return false // the restored TLS-g will not be g0 — nothing unsafe to skip
-	}
 	lo := *(*uint64)(unsafe.Pointer(uintptr(g0)))     // g0.stack.lo
 	hi := *(*uint64)(unsafe.Pointer(uintptr(g0) + 8)) // g0.stack.hi
-	sp := frame[19]                                   // interrupted RSP
+	sp := (*[21]uint64)(unsafe.Pointer(framePtr))[19] // interrupted RSP
 	if sp >= lo && sp < hi {
 		return false // SP legitimately on the g0 stack — safe to checkpoint
 	}

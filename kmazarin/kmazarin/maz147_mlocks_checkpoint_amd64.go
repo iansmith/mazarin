@@ -90,8 +90,8 @@ func g0MLocksPtr() *int32 {
 	}
 	gmOff := kirq.PreemptGMOffset
 	mlOff := kirq.PreemptMLocksOffset
-	if gmOff == 0 && mlOff == 0 {
-		return nil // offsets not initialised yet
+	if gmOff == 0 || mlOff == 0 {
+		return nil // offsets not initialised yet (both are set as a unit; bail if either is unset)
 	}
 	m := *(*uintptr)(unsafe.Pointer(uintptr(g0) + gmOff))
 	if m == 0 {
@@ -115,31 +115,17 @@ func g0MLocksPtr() *int32 {
 // boostThread0ForPendingWork (it runs later in checkThreadPreemptionImpl).
 //
 // Reads the LIVE interrupted g from the exception frame (not the stale
-// oldThread.Context, which isn't refreshed until SaveContextFromFrame) using the
-// SAME effective-g rule as gspUnsafeKernelResume / SaveContextFromFrame's kernel
-// branch (gLooksValid(slot)?slot:R14). Only g0 (the shared/borrowed system M) is
-// protected — regular goroutines resume on their own M with m.locks intact (§4).
+// oldThread.Context, which isn't refreshed until SaveContextFromFrame) via the
+// shared kernelModeEffG helper — the SAME effective-g rule SaveContextFromFrame's
+// kernel branch and gspUnsafeKernelResume use (gLooksValid(slot)?slot:R14). Only g0
+// (the shared/borrowed system M) is protected — regular goroutines resume on their
+// own M with m.locks intact (§4).
 //
 //go:nosplit
 func g0PreemptHoldsMLocks(framePtr uintptr) bool {
-	if framePtr == 0 {
-		return false
-	}
-	frame := (*[21]uint64)(unsafe.Pointer(framePtr))
-	if frame[17] != kernelCS {
-		return false // user-mode: not g0
-	}
-	g0 := kmazarinG0Addr
-	if g0 == 0 {
-		return false
-	}
-	slot := *(*uint64)(unsafe.Pointer(framePtr - excFrameExtSize + excFrameTLSGOff))
-	effG := slot
-	if !gLooksValid(slot) {
-		effG = frame[13] // R14 — mirror SaveContextFromFrame's fallback
-	}
-	if effG != g0 {
-		return false // not running g0 — its own M, not the borrowed m0
+	effG, ok := kernelModeEffG(framePtr)
+	if !ok || effG != kmazarinG0Addr {
+		return false // user-mode / pre-init, or not running g0 — its own M, not the borrowed m0
 	}
 	lp := g0MLocksPtr()
 	if lp == nil {
