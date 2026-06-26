@@ -412,6 +412,12 @@ copy_context_to_frame:
 	CTX_RESTORE_TO_FRAME(R21)
 	// FRAME-RESTORE-END
 
+	// MAZ-147: re-arm g0's checkpointed m.locks if this load resumes g0 (one shared
+	// code path; reads the just-restored g from frame[X28]). LR/R1-R3/R27 are dead
+	// here (R27 = the subroutine's ADRP scratch) — the return path reloads all GPRs
+	// from the frame before ERET.
+	BL	mlockRearmFromFrame<>(SB)
+
 	B	svc_return
 
 syscall_no_switch:
@@ -1532,6 +1538,9 @@ timer_switch_ok:
 	CTX_RESTORE_TO_FRAME(R21)
 	// FRAME-RESTORE-END
 
+	// MAZ-147: re-arm g0's checkpointed m.locks if this load resumes g0 (shared path).
+	BL	mlockRearmFromFrame<>(SB)
+
 	// Skip async preemption - we already switched threads
 	B	timer_no_preempt
 
@@ -2031,6 +2040,10 @@ el0_copy_context_to_frame:
 	// FRAME-RESTORE-BEGIN ctx-to-frame-el0
 	CTX_RESTORE_TO_FRAME(R21)
 	// FRAME-RESTORE-END
+
+	// MAZ-147: re-arm g0's checkpointed m.locks if this EL0-SVC switch resumes g0
+	// (shared path; harmless no-op when the switched-to thread isn't g0).
+	BL	mlockRearmFromFrame<>(SB)
 
 	B	el0_return
 
@@ -2598,4 +2611,31 @@ TEXT ·RestoreIRQs(SB), NOSPLIT, $0-8
 	// Encoded as: 0xD51B4200
 	WORD	$0xD51B4200
 	ISB	$15
+	RET
+
+// mlockRearmFromFrame — MAZ-147 ARM64 m.locks RESTORE (the asm half). ONE physical
+// code path, BL'd from each CTX_RESTORE_TO_FRAME site (copy_context_to_frame /
+// timer_switch_ok / el0_copy_context_to_frame). The amd64 analogue is the
+// load_context_and_iretq re-arm block; ARM64 has no single such chokepoint, so we
+// unify via this leaf instead of inlining the logic 3×.
+//
+// Reads the about-to-be-restored g from the frame slot the macro just wrote
+// (EXC_FRAME_X28(RSP)) — parameterless and identical at every site. Re-arms
+// g0.m.locks from the precomputed savedG0MLocksPtr ONLY when this load resumes g0
+// and a checkpoint is pending; otherwise leaves the stash for the real g0 load (or
+// no-ops). file-local (<>) ⇒ no Go decl / asmdecl-exempt. NOSPLIT|NOFRAME: SP is the
+// caller's frame base, R1-R3 + LR are dead at the call sites (the return path
+// reloads all GPRs from the frame before ERET).
+TEXT mlockRearmFromFrame<>(SB), NOSPLIT|NOFRAME, $0-0
+	MOVW	·savedG0MLocks(SB), R1		// pending count (int32); 0 = nothing stashed
+	CBZ	R1, mrf_done			// common case: no checkpoint outstanding
+	MOVD	EXC_FRAME_X28(RSP), R2		// the g being restored (written by the macro)
+	MOVD	·kmazarinG0Addr(SB), R3
+	CMP	R3, R2
+	BNE	mrf_done			// not g0 — leave the stash for the real g0 load
+	MOVD	·savedG0MLocksPtr(SB), R2	// &g0.m.locks (precomputed at save)
+	CBZ	R2, mrf_done			// defensive: ptr unset
+	MOVW	R1, (R2)			// g0.m.locks = stashed count
+	MOVW	ZR, ·savedG0MLocks(SB)		// checkpoint consumed
+mrf_done:
 	RET

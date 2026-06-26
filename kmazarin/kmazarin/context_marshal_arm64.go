@@ -75,4 +75,9 @@ func runContextMarshalSelfTest() {
 	}
 
 	klog.Criticalf("[CTX]", "[ctx-selftest] OK — arm64 SaveContextFromFrame populates all %d ThreadContext fields\n", ct.NumField())
+
+	// MAZ-147: deterministic RED→GREEN for the m.locks checkpoint (arch-neutral
+	// save/re-arm contract + non-g0 gate). The arm64 asm restore (mlockRearmFromFrame)
+	// is covered by objdump + the icount TCG sweep.
+	runMLockCheckpointSelfTest()
 }

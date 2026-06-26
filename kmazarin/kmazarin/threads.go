@@ -4038,8 +4038,8 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// so this single early-return skips the WHOLE preemption attempt (the normal scheduler
 	// below and the boost) when g0 holds m.locks. (boostThread0ForPendingWork only fires
 	// when thread0 is Ready — i.e. NOT the running thread — so it cannot itself switch a
-	// running g0 out; the early return covers the preempt path here.) amd64-only; arm64
-	// stub returns false. Reads the LIVE interrupted g from the frame (oldThread.Context
+	// running g0 out; the early return covers the preempt path here.) Both arches
+	// (arm64 ported, design §10). Reads the LIVE interrupted g from the frame (oldThread.Context
 	// isn't refreshed until SaveContextFromFrame below). Mirrors the gspUnsafeKernelResume
 	// skip above. (Option A is rejected ONLY for the mandatory-yield usleep path — C1;
 	// it is correct here, where preemption is involuntary.)
@@ -4319,9 +4319,10 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// g0.m.locks while g0 keeps running on a no-switch return, losing the count),
 	// still under schedulerLock + IRQs-off. If the outgoing context is g0 holding
 	// m.locks, stash+zero it so the borrowed m0 presents 0 to foreign code. The
-	// matching re-arm is at the load_context_and_iretq resume chokepoint — g0 is
-	// woken by the PREEMPTION funnel, not this one (see design doc §8 / OPEN #1).
-	// No-op for any non-g0 outgoing context, and on arm64 (no-op stub for now).
+	// matching re-arm is at the resume chokepoint (amd64 load_context_and_iretq;
+	// arm64 the CTX_RESTORE_TO_FRAME sites via mlockRearmFromFrame) — g0 is woken
+	// by the PREEMPTION funnel, not this one (see design doc §8 / §10, OPEN #1).
+	// No-op for any non-g0 outgoing context.
 	mlockCheckpointSave(oldThread)
 
 	// (SVC switch breadcrumbs removed for performance)
