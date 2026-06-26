@@ -482,7 +482,8 @@ targeted `kill $QPID` not broad `pkill`, `ICOUNT=N`). Baseline harness (broad-pk
 **Port scope (the three stubs → real):** (1) the asm `m.locks` restore at the ARM64 resume chokepoint
 (the `load_context_and_iretq` analogue in `exceptions_arm64.s`), keyed on the restored g==g0 — note
 ARM64's single g-home (X28) simplifies the effective-g read vs amd64's dual-home; (2) `mlockCheckpointSave`
-(shared-shaped, but the arm64 file's stub becomes real); (3) the `g0PreemptHoldsMLocks` skip-guard
+(shared-shaped → as landed, hoisted to an untagged file rather than an arm64 stub becoming real; see §10);
+(3) the `g0PreemptHoldsMLocks` skip-guard
 (arm64 frame layout: read the interrupted g from the EL1 exception frame). High-risk unknown = the asm
 restore chokepoint convergence (redo the §8 funnel analysis for ARM64). amd64 guard is CPU-0-scoped →
 full SMP is MAZ-142.

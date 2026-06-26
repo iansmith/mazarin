@@ -413,8 +413,9 @@ copy_context_to_frame:
 	// FRAME-RESTORE-END
 
 	// MAZ-147: re-arm g0's checkpointed m.locks if this load resumes g0 (one shared
-	// code path; reads the just-restored g from frame[X28]). LR/R1-R3 are dead here —
-	// the return path reloads all GPRs from the frame before ERET.
+	// code path; reads the just-restored g from frame[X28]). LR/R1-R3/R27 are dead
+	// here (R27 = the subroutine's ADRP scratch) — the return path reloads all GPRs
+	// from the frame before ERET.
 	BL	mlockRearmFromFrame<>(SB)
 
 	B	svc_return
