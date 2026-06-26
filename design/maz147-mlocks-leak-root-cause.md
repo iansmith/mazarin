@@ -423,3 +423,111 @@ tracked runs): **SUCCESS=100, CRASH=0, STALL=0, TIMEOUT=0, GSPMM-total=0.**
 hook + registration, and the SEPARATE MAZ-15 instrumentation in `maz/{fs,rachel,shepherd}` +
 `mazarin/fsclient`) → fix-only tree = the `g0PreemptHoldsMLocks` guard + R1 save/asm-restore +
 `runMLockCheckpointSelfTest` + this design doc → `/ticket-pr`. ARM64 save/restore/skip port deferred.
+
+---
+
+## 9. ARM64 CONFIRMED-VULNERABLE (2026-06-25): timing-masked, NOT immune — reproduced under `-icount`
+
+The amd64 fix merged (PR #82, `5daf3753`). Before porting to ARM64 we tested whether ARM64 even
+has the bug, since HVF never showed it and the §3 "both-arch" claim was a code-reading, not a repro.
+Answer: **ARM64 has the identical bug; it was only ever timing-masked.** Three lines of evidence:
+
+### 9a. Code symmetry confirmed (the H2/H3 refutation)
+- **Leak source is shared** — `lock2→usleep→nanosleep→doContextSwitchImpl` is Go-runtime + `threads.go`,
+  non-arch-gated. ARM64's `mlockCheckpointSave` / `g0PreemptHoldsMLocks` are **no-op stubs**, so ARM64
+  is *unprotected*, not safe: if g0 is switched out holding `m.locks`, the count rides m0 with zero
+  checkpointing.
+- **Fatal sink is symmetric** — the borrowed-g0/m0 syscall dispatch is NOT amd64-specific. ARM64's
+  `el0_sync_handler` (`exceptions_arm64.s` ~L1918) loads `kmazarinG0Addr` into X28 and runs the syscall
+  handler on the borrowed g0/m0 with the same MAZ-136 MPNIL tripwire — the in-code comment names it the
+  "amd64 twin: the vector-129 block in exceptions_amd64.s". So a foreign syscall can reach `schedule()`
+  on the borrowed m0 on BOTH arches.
+- ARM64's `gspUnsafeKernelResume` is *also* a no-op (MAZ-143 is benign on ARM64), so **more** timer
+  preempts proceed on ARM64 → if anything a *wider* leak window, not narrower. H3 ("leak can't occur on
+  ARM64") is refuted by construction.
+
+### 9b. Empirical repro — `-icount` rate curve (THE proof)
+Stock ARM64 TCG is *same-arch* (aarch64-on-aarch64) and boots in ~33 s — ~30–100× faster than amd64's
+*cross-arch* (x86-on-aarch64) TCG that originally exposed this at ~1/40–55. So the leak→`schedule()`
+race window is too narrow to catch at stock speed. QEMU `-icount shift=N` makes guest time advance per
+instruction (2^N ns/instr), so the fixed-period timer fires after *fewer* instructions → g0's
+`m.locks` window spans more preemptions → reproduces amd64-TCG tick density deterministically (and
+**host-load-independent**, which is why it's a reliable harness).
+
+| condition | `schedule: holding locks` rate |
+|---|---|
+| stock ARM64 TCG (≈shift 0), N=60 (2× baselines) | **0/60** |
+| `-icount shift=4`, N=20 | **9/20 (45%)** (+6 MAZ-140-family crashes, +5 MAZ-15 rachel stalls) |
+| `-icount shift=5`, N=20 | **16/20 (80%)** |
+| `-icount shift=6`, N=20 | **20/20 (100%)** — every crash is `holding locks`, none other |
+| `-icount shift=8/10` | UNUSABLE — UEFI watchdog resets during early ELF load (slowdown artifact) |
+
+The rate climbs **monotonically with slowdown** (0% → 45% → 80% → 100%), which *is* the timing
+relationship made quantitative. A representative shift=6 throw: two interleaved fatals
+`gcmarknewobject called while doing checkmark` (MAZ-140) + `schedule: holding locks` (MAZ-147,
+`runtime.schedule()` at threads.go:1607, m=nil) — the borrowed-m0 family co-occurring, exactly as on
+amd64 §8b.
+
+### 9c. Conclusion + the ARM64 RED harness
+**The ARM64 port is MANDATORY for correctness, not defensive.** ARM64 is architecturally identical and
+equally vulnerable; the only reason it looked clean is same-arch TCG speed.
+
+**`-icount shift=6` is a 100% deterministic RED harness** (20/20, crash in ~18–40 s/boot) — the ARM64
+analogue of amd64's N=100 batch gate. The port is validated when shift=6 goes **20/20 → 0/20** (plus a
+shift=4/5 sweep to confirm the whole curve collapses). Harness:
+`~/.claude/ticket-active/MAZ-147/arm64-tcg-batch-parallel.sh` (parallel-safe: per-sweep `TAG`,
+targeted `kill $QPID` not broad `pkill`, `ICOUNT=N`). Baseline harness (broad-pkill, single sweep):
+`arm64-tcg-batch.sh`.
+
+**Port scope (the three stubs → real):** (1) the asm `m.locks` restore at the ARM64 resume chokepoint
+(the `load_context_and_iretq` analogue in `exceptions_arm64.s`), keyed on the restored g==g0 — note
+ARM64's single g-home (X28) simplifies the effective-g read vs amd64's dual-home; (2) `mlockCheckpointSave`
+(shared-shaped, but the arm64 file's stub becomes real); (3) the `g0PreemptHoldsMLocks` skip-guard
+(arm64 frame layout: read the interrupted g from the EL1 exception frame). High-risk unknown = the asm
+restore chokepoint convergence (redo the §8 funnel analysis for ARM64). amd64 guard is CPU-0-scoped →
+full SMP is MAZ-142.
+
+## 10. ARM64 GREEN (2026-06-25/26): port landed, RED harness collapses 100% → 0%
+
+The three stubs are now real. Shape of the port:
+- **Hoist** — the arch-neutral save path, package globals, and `runMLockCheckpointSelfTest` moved to an
+  untagged `maz147_mlocks_checkpoint.go`; the amd64 file keeps only its skip-guard, the arm64 file gains
+  the real frame-reading `g0PreemptHoldsMLocks` (interrupted g via X28 at the EL1 frame, kernel-mode via
+  `SPSR.M` — no `gLooksValid` deref needed).
+- **Unified asm restore** — one `mlockRearmFromFrame<>` subroutine in `exceptions_arm64.s`, `BL`'d from
+  the 3 `CTX_RESTORE_TO_FRAME` sites (LR-dead verified for all three return paths).
+- Selftest wired into the arm64 ctx-marshal runner. Builds green both arches; `frameaudit` 23/23 (amd64,
+  hoist didn't regress) + 4/4 (arm64).
+
+**objdump-verified in the fixed ELF** (esp `57d86e7445b0`): exactly 1 subroutine + 3 `bl` callsites; body
+reads the frame's saved X28 at `[sp,#224]`, g-matches `savedG`, writes `savedMLocks`→`*savedMPtr`, then
+one-shot-clears `savedMLocks`. Faithful port of the amd64 save/restore arm (§8 hybrid).
+
+### 10a. RED → GREEN sweep (same `-icount` harness, N=20 each)
+| icount | RED (esp `9016e9b67b49`, stubs) | GREEN (esp `57d86e7445b0`, fixed) |
+|---|---|---|
+| shift 4 | CRASH 15, **holding-locks 9/20 (45%)** | CRASH 0, **holding-locks 0/20** |
+| shift 5 | CRASH 20, **holding-locks 16/20 (80%)** | CRASH 1¹, **holding-locks 0/20** |
+| shift 6 | CRASH 20, **holding-locks 20/20 (100%)** | CRASH 1¹, **holding-locks 0/20** |
+
+¹ Both GREEN crashes are `fatal error:` at the `linux` shepherd — a known unrelated family, `holdLocks=0`,
+not a `schedule: holding locks` throw. The §9c gate (**shift=6 20/20 → 0/20**) passed, and the whole curve
+collapsed with it.
+
+### 10b. No boot regression — the "STALL not SUCCESS" artifact
+The GREEN sweeps show `SUCCESS=0 / STALL≈all`, which is **not** a regression: under `-icount shift 4/5/6`
+neither RED nor GREEN reaches the harness's `boot sequence complete` gate within the deadline (even RED's
+5 non-crashing ic4 runs stalled identically). RED runs ended early by *crashing* on the leak; the fixed
+build doesn't crash, so it runs to the deadline → `STALL-RACHEL`, having progressed through 5–11 shepherds
+(late test-fixture stage) and `uptime` into the tens-of-thousands. Confirmed by a **clean HVF boot of the
+fixed esp**: `[rachel] ready in 186ms`, all 15 shepherds, **`boot sequence complete`**, steady-state
+`uptime=70→100`, zero crash signatures.
+
+### 10c. Harness caveats (for the next reader)
+- The sweep's `START` banner prints a **hardcoded** `UNFIXED/stubs` string — it is *not* esp-derived. Trust
+  the `esp=<sha>` field + objdump, not the label.
+- `arm64-tcg-batch-parallel.sh` uses `set -u`; with `ICOUNT` empty (stock), `"${ICOUNT_ARGS[@]}"` expands
+  an empty array → "unbound variable" on bash 3.2 and QEMU never launches (`shep=0 reached=[]`). The
+  "stock GREEN" sweep was invalid for this reason — use a non-empty `ICOUNT` or guard the array expansion.
+
+amd64 guard is still CPU-0-scoped → full SMP is MAZ-142.
