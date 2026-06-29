@@ -1,6 +1,6 @@
 package proc
 
-import "sync/atomic"
+import "mazzy/kmazarin/ksync"
 
 // ============================================================================
 // Span - represents a single VA reservation
@@ -41,20 +41,21 @@ type spanGroupImpl [SpansPerProcess]spanImpl
 // Zero value is ready to use (all spans free, lock unlocked).
 type LockedSpanGroup struct {
 	spans spanGroupImpl
-	lock  uint32 // spinlock: 0 = unlocked, 1 = locked
+	// IRQ-atomic (MAZ-146): the span lock is taken from BOTH preemptible context
+	// (mmap / share-pages → Add/Remove) AND the IRQ-masked page-fault handler
+	// (inAllocatedUserRegion → Contains). A bare CAS spinlock let a holder be
+	// preempted mid-section; a fault-time acquirer then spun on it with IRQs
+	// masked, so the holder was never rescheduled → permanent boot hang. The
+	// shared IRQ-atomic ksync.Spinlock keeps every hold atomic w.r.t. preemption
+	// (same class + fix as MAZ-127's buddy kmem.Spinlock).
+	lk ksync.Spinlock
 }
 
 //go:nosplit
-func (g *LockedSpanGroup) acquireLock() {
-	for !atomic.CompareAndSwapUint32(&g.lock, 0, 1) {
-		// spin
-	}
-}
+func (g *LockedSpanGroup) acquireLock() { g.lk.Lock() }
 
 //go:nosplit
-func (g *LockedSpanGroup) releaseLock() {
-	atomic.StoreUint32(&g.lock, 0)
-}
+func (g *LockedSpanGroup) releaseLock() { g.lk.Unlock() }
 
 // TryReserve attempts to reserve at the given address if it doesn't overlap.
 // Returns the address on success, 0 if overlap or no free slots.
