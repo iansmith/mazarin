@@ -17,7 +17,10 @@ set architecture aarch64
 target remote localhost:1234
 
 # --- bp1: deterministic fatal-fault catch (the kernel's " EL=" dump printer) ---
-break exceptions_arm64.s:497
+# Line tracks `MRS CurrentEL, R11` inside the "Unknown exception" rich-dump
+# block. Re-verify after any edit to that file (the line shifts):
+#   grep -n 'MRS	CurrentEL, R11' kmazarin/kmazarin/exceptions_arm64.s
+break exceptions_arm64.s:496
 commands
   printf "\n================  MAZ-15 KERNEL FATAL FAULT  ================\n"
   # Robust dumps first (GPRs + stack always readable, even on HVF gdbstub).
@@ -48,6 +51,6 @@ commands
 end
 
 printf "\nmaz15-catch.gdb loaded:\n"
-printf "  bp1  exceptions_arm64.s:497   kernel fatal-exception dump path\n"
+printf "  bp1  exceptions_arm64.s:496   kernel fatal-exception dump path\n"
 printf "  bp2  runtime.throw            kernel Go panics\n"
 printf "Run 'continue'.\n"

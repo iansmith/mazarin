@@ -30,7 +30,7 @@ path = "/maildb.maz"
 [[shepherd]]
 name = "mail"
 path = "/mail.maz"
-gc_percent = 5
+gc_percent = 75
 
 [[shepherd]]
 name = "net"
