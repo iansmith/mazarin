@@ -28,8 +28,13 @@ import (
 )
 
 const (
-	// scratchPages is the number of DMA pages for ext2 metadata reads (own buffer).
-	scratchPages = 8
+	// scratchPages is the number of DMA pages for ext2 metadata reads (own buffer)
+	// and the bulk-read batch size (doReadBatch chunk). MAZ-136: raised 8→32 so
+	// EVENT_IDX coalesces one completion IRQ per 32-block batch instead of per 8.
+	// Bounded by the io_uring SQ capacity (32) and the block virtqueue (128 entries
+	// / 3 desc = 42 chains); 32 chains = 96 descriptors, fits. Scratch buffer grows
+	// to 32*4KB = 128KB contiguous (order-5).
+	scratchPages = 32
 	// ramdiskSectors is the number of 512-byte sectors for the /tmp ramdisk (128MB).
 	ramdiskSectors = 262144
 )
@@ -71,6 +76,7 @@ func (mt *mountTable) getFS(kind mountKind) *ext2.FileSystem {
 
 
 func main() {
+	sys.MarkShepherdStart("fs")
 	fmt.Println("[fs] starting filesystem shepherd")
 
 	// Timing hooks disabled — enable for block I/O debugging.
@@ -306,20 +312,22 @@ func launchShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB, 
 	} else {
 		args = append(args, pluginPath)
 	}
-	fmt.Printf("[fs] reading %s (for %s → %s)...\n", binaryPath, name, pluginPath)
+	// MAZ-136: per-shepherd boot chatter silenced — on x86 each serial byte is a
+	// trapped/IRQ-driven UART write (a VM-exit under nested KVM); this ~5-line-
+	// per-shepherd sequence ×~25 shepherds was a measurable chunk of the exit
+	// storm. Failures still log. (Restore by un-silencing if boot debugging needs it.)
 	va, numPages, bytesRead, err := readFileIntoPages(fsys, binaryPath)
 	if err != nil {
 		fmt.Printf("[fs] failed to read %s\n", binaryPath)
 		return
 	}
-	fmt.Printf("[fs] read done %s bytes=%d numPages=%d (for %s)\n", binaryPath, bytesRead, numPages, name)
 	if memlimitMB > 0 {
 		args = append(args, "__MAZZY_GOMEMLIMIT="+strconv.Itoa(memlimitMB))
 	}
 	if gcPercent > 0 {
 		args = append(args, "__MAZZY_GCPERCENT="+strconv.Itoa(gcPercent))
 	}
-	fmt.Printf("[fs] calling RunShepherd %s pages=%d bytes=%d\n", name, numPages, bytesRead)
+	// MAZ-136: silenced (see above).
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead, args...)
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
 	if rpErr != nil {
@@ -337,28 +345,36 @@ func launchShepherd(fsys *ext2.FileSystem, name, pluginPath string, memlimitMB, 
 // fs for IPC and rachel for fonts/WM). TOML shepherds launch last since
 // they may need linux's syscall delegation active.
 func bootSequence(fsys *ext2.FileSystem) {
+	// Readiness waits below are PATIENT and NON-FATAL. A slow shepherd (e.g.
+	// linux blocked in an fs read loading the 11 MB linux-ui.maz off a slow
+	// cloud disk) must NOT abort the whole boot — that strands every app
+	// shepherd (maildb, mail, net, ...). The budget is generous, and on
+	// timeout we log and CONTINUE: every app self-gates via WaitForCoreServices,
+	// so launching them is strictly better than abandoning the desktop.
+	const readyBudgetSecs = 180
+
 	// 1. Launch rachel and wait — provides window manager + font service.
 	// Rachel only depends on fs (already ready) for loading fontsvc.maz.
 	launchShepherd(fsys, "rachel", "/rachel.maz", 0, 0)
-	if err := sys.WaitForShepherdReady("rachel", 30); err != nil {
-		sys.UartWriteString("[fs] FATAL: rachel not ready\n")
-		return
+	if err := sys.WaitForShepherdReady("rachel", readyBudgetSecs); err != nil {
+		sys.UartWriteString("[fs] WARN: rachel not ready after wait (" + err.Error() + "); continuing\n")
 	}
 	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
 	// Linux depends on both fs (IPC) and rachel (fonts/WM).
 	launchShepherd(fsys, "linux", "/linux.maz", 0, 0)
 	fmt.Printf("[fs] waiting for linux ready...\n")
-	if err := sys.WaitForShepherdReady("linux", 30); err != nil {
-		sys.UartWriteString("[fs] FATAL: linux not ready: " + err.Error() + "\n")
-		return
+	if err := sys.WaitForShepherdReady("linux", readyBudgetSecs); err != nil {
+		sys.UartWriteString("[fs] WARN: linux not ready after wait (" + err.Error() + "); continuing\n")
+	} else {
+		fmt.Printf("[fs] linux is ready!\n")
 	}
-	fmt.Printf("[fs] linux is ready!\n")
 	// 3. Read startup config and launch remaining application shepherds.
 	fmt.Printf("[fs] reading startup.toml...\n")
 	cfg := readStartupConfig(fsys)
 	if cfg != nil {
 		for _, s := range cfg.Shepherds {
-			fmt.Printf("[fs] launching %s from %s\n", s.Name, s.Path)
+			// MAZ-136: per-shepherd launch line silenced (serial-cost). [X] ready
+			// markers below still trace boot progress.
 			launchShepherd(fsys, s.Name, s.Path, s.MemLimitMB, s.GCPercent)
 		}
 	} else {

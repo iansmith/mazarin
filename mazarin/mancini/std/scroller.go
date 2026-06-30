@@ -147,6 +147,12 @@ func (s *Scroller) ScrollBy(dx, dy int64) {
 
 // SetVirtualSize changes the virtual surface dimensions.
 // Forces buffer reallocation on the next Draw.
+//
+// WARNING: this drives VirtualWidth/VirtualHeight imperatively via Set, which
+// panics on a constraint attribute. Do NOT call it on a Scroller whose
+// VirtualHeight has been promoted to a live constraint by its layout owner
+// (e.g. versai's ColumnEdgeToEdge.LayoutChildren). Imperative SetVirtualSize
+// and constraint-driven VirtualHeight are mutually exclusive per Scroller.
 func (s *Scroller) SetVirtualSize(vw, vh int64) {
 	if vw != s.VirtualWidth.Get() || vh != s.VirtualHeight.Get() {
 		s.VirtualWidth.Set(vw)

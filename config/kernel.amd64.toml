@@ -7,6 +7,11 @@ kernel_budget_mb = 32
 go_mem_limit = 24
 kernel_mem_limit = 24
 
+# Framebuffer: single source of truth for the GPU framebuffer size cap (MB). The
+# actual framebuffer is sized to the detected display resolution; the kernel
+# panics at boot if that would exceed this cap.
+framebuffer_max_mb = 64
+
 # GC tuning — Go's stdlib default (100). See kernel.arm64.toml for the
 # full rationale; the short version: 10000 disables routine GC and lets
 # the heap drift large until GOMEMLIMIT kicks in, but by then the
@@ -28,3 +33,14 @@ suppress_kernel_serial = false
 # blocked on a separate nosplit-overflow bug, so this flag is plumbed for parity
 # but not currently exercisable on amd64.)
 clone_exec_race_test = false
+
+# MAZ-135/MAZ-139: run the context-marshal value-flow self-test at boot. Drives the
+# REAL SaveContextFromFrame with synthetic sentinel inputs on a scratch thread and
+# asserts (a) every ThreadContext field is populated, (b) the dual-home TLS-g is
+# sourced correctly — from the user TLS slot (user CS) and from the per-exception-
+# frame slot (kernel CS) — and (c) the unhandled-fault vector is read from the
+# per-frame slot (vectorFromFrame). Non-invasive (scratch thread, synthetic frames);
+# the kept always-on guards are the build-time cmd/frameaudit gate + the D2 canary.
+# Left ON as the DoD#2 value-flow regression guard (catches a wrong-source rewiring
+# that presence/clobber checks can't see).
+ctx_marshal_test = true

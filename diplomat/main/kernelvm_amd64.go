@@ -214,8 +214,13 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 	// Step 7: Map kmazarin code at its virtual addresses (4KB pages)
 	mapKernelCode(pml4Phys, kernel)
 
-	// Step 7b: Create linear map of physical RAM using 2MB pages
-	createLinearMap(pml4Phys, hw.RAMBase, hw.RAMBase+hw.RAMSize)
+	// Step 7b: Linear-map all addressable physical space [RAMBase, linearMapMaxPA)
+	// with 2MB pages. This is intentionally driven by the 4GB cap, not RAMSize:
+	// RAMSize now reports only usable low RAM (the 2-4GB PCI hole and high RAM
+	// above 4GB are excluded), but the kernel reaches PCI BARs (virtio at
+	// 0xc0xxxxxx, etc.) through this linear map — MapDeviceMMIO is a no-op on x86
+	// and mapMMIO below covers only LAPIC/IOAPIC.
+	createLinearMap(pml4Phys, hw.RAMBase, linearMapMaxPA)
 
 	// Step 8: Map MMIO regions (LAPIC, IOAPIC)
 	mapMMIO(pml4Phys)

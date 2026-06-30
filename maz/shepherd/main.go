@@ -36,7 +36,7 @@ func main() {
 	}
 	pluginPath := os.Args[2]
 	pluginSID, _ := strconv.Atoi(os.Args[1])
-	fmt.Printf("[shepherd] loading %s (sid=%d)\n", pluginPath, pluginSID)
+	_ = pluginSID // MAZ-136: per-shepherd "[shepherd] loading" line silenced (serial-cost)
 
 	// Ring 1: fs responses. Ring 0 is kernel-allocated and already mapped.
 	const fsRing = 1
@@ -55,7 +55,7 @@ func main() {
 	if err := fc.Connect(); err != nil {
 		panic(fmt.Sprintf("[shepherd] fsclient.Connect: %v", err))
 	}
-	fmt.Printf("[shepherd] fsclient connected on ring %d\n", fsRing)
+	// MAZ-136: "[shepherd] fsclient connected" line silenced (serial-cost).
 
 	mazhost.HostFSClient = fc
 

@@ -8,6 +8,7 @@
 package kmem
 
 import (
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
 )
@@ -185,13 +186,67 @@ func InitUnifiedPool() {
 	// Count how many pages the bump allocator used (PageDescriptor array)
 	bootstrapPages := GetBumpAllocatedPages()
 
-	// Initialize buddy allocator with remaining pool
+	// MAZ-139: the g0/exc stacks are mapped at KernelStacksVirtBase
+	// (= KernelVAOffset + 0x44100000), which is the linear-map IMAGE of
+	// PA [stackCarveStartPA, stackCarveEndPA). A user frame in that PA window
+	// would get a kernel-scratch VA (pa + KernelVAOffset) aliasing the live
+	// exception stack, so zeroPageSlow(scratchVA) would trample it. Such PAs are
+	// unusable via MapPAToKernelScratch and must never be allocated — carve them
+	// out. (x86_64: the window is inside the pool and is excluded. ARM64: the
+	// pool sits above it, so the carve-out is a no-op. Same code, both arches.)
+	//
+	// InitUnifiedPool is reachable from the nosplit #PF path (lazy InitPaging),
+	// so its frame is nosplit-budgeted: keep the bounds as compile-time consts
+	// (no locals) and push the klog reporting into reportStackCarveout (split).
 	InitBuddyAllocator(
 		globalPool.initialNext,
 		globalPool.end,
 		constants.KernelVAOffset,
 		bootstrapPages,
+		uintptr(stackCarveStartPA),
+		uintptr(stackCarveEndPA),
 	)
+	reportStackCarveout()
+}
+
+// stackCarveStartPA / stackCarveEndPA are the linear-map-image PA window of the
+// g0+exc stack VAs (KernelStacksVirtBase..KernelExcStackTop). Compile-time
+// constants (= 0x44100000..0x44128000) — see InitUnifiedPool / MAZ-139.
+const (
+	stackCarveStartPA = constants.KernelG0StackBottom - constants.KernelVAOffset
+	stackCarveEndPA   = constants.KernelExcStackTop - constants.KernelVAOffset
+)
+
+// reportStackCarveout logs the MAZ-139 linear-map carve-out and fails loudly if
+// it overlaps the pool yet was not excluded (a sign the memory layout shifted
+// and the collision is live again — exactly what slipped through before).
+//
+// RAW SERIAL ONLY, no fmt/klog: InitUnifiedPool runs inside the runtime's first
+// allocation (it backs the heap), so any allocation here — which fmt.Sprintf
+// (and thus klog.Logf/Criticalf) performs — re-enters the allocator mid-init and
+// deadlocks. RawUARTPuts/RawUARTHex64 are nosplit and allocation-free.
+//
+//go:nosplit
+func reportStackCarveout() {
+	cs, ce := uintptr(stackCarveStartPA), uintptr(stackCarveEndPA)
+	// Overlap test against the BUDDY-MANAGED range [freeStart, end). globalPool.next
+	// is the post-bootstrap free-start (= freeStart in InitBuddyAllocator); using
+	// initialNext (pre-bootstrap poolStart) would false-positive when bootstrap
+	// pages push freeStart past the carve window (correctly excluded==0 there).
+	inPool := ce > cs && cs < globalPool.end && ce > globalPool.next
+	excluded := BuddyCarveoutPages()
+	if inPool && excluded == 0 {
+		serial.RawUARTPuts("[kmem] FATAL: MAZ-139 stack carve-out overlaps pool but was not excluded\r\n")
+		for {
+		}
+	}
+	serial.RawUARTPuts("[kmem] MAZ-139 stack carve-out PA [0x")
+	serial.RawUARTHex64(uint64(cs))
+	serial.RawUARTPuts(",0x")
+	serial.RawUARTHex64(uint64(ce))
+	serial.RawUARTPuts(") excluded 0x")
+	serial.RawUARTHex64(excluded)
+	serial.RawUARTPuts(" frames\r\n")
 }
 
 // AllocPage allocates a single page via the buddy allocator.

@@ -12,7 +12,7 @@ type ThreadContext struct {
 	// Special registers
 	SP   uint64 // SP_EL0
 	ELR  uint64 // Return address (ELR_EL1)
-	SPSR uint64 // Processor state (SPSR_EL1)
+	SPSR uint64 // SPSR_EL1. frameaudit:exempt-asm — rides the ELR LDP pair (ELR+8) in CTX_RESTORE_TO_FRAME; checked on the Go save side + boot selftest.
 }
 
 // GetGRegister returns the g register (x28 on ARM64).

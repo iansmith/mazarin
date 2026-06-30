@@ -58,6 +58,7 @@ type BuddyAllocator struct {
 	allocatedPages uint64 // Pages allocated via buddy (excludes bootstrap)
 	bootstrapPages uint64 // Pages allocated by bump allocator before buddy init
 	peakAllocated  uint64 // High water mark (total = bootstrap + allocated)
+	carveoutPages  uint64 // Pages permanently excluded as linear-map carve-outs (MAZ-139)
 
 	// Per-type allocation tracking (pages)
 	kernelHeapPages uint64
@@ -82,8 +83,13 @@ var buddyPagesByType [PageTypeCount]uint64
 // bootstrapPages is the number of pages already allocated by the bump allocator
 // (these are marked as used by not adding them to free lists).
 //
+// [carveStart, carveEnd) is a linear-map carve-out: a PA window whose linear-map
+// VA (pa+KernelVAOffset) is STOLEN by a fixed kernel mapping, so those PAs are
+// unusable via MapPAToKernelScratch and must never be allocated (MAZ-139 — see
+// the g0/exc-stack carve-out computed in InitUnifiedPool). Pass 0,0 for none.
+//
 //go:nosplit
-func InitBuddyAllocator(poolStart, poolEnd, kernelVAOffset uintptr, bootstrapPages uint64) {
+func InitBuddyAllocator(poolStart, poolEnd, kernelVAOffset uintptr, bootstrapPages uint64, carveStart, carveEnd uintptr) {
 	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
 		return
 	}
@@ -117,11 +123,42 @@ func InitBuddyAllocator(poolStart, poolEnd, kernelVAOffset uintptr, bootstrapPag
 		freeStart = end
 	}
 
-	// Add remaining memory to free lists, using largest possible orders
-	buddyAddRange(freeStart, end)
+	// Add remaining memory to free lists, using largest possible orders, but
+	// EXCLUDE the linear-map carve-out window [carveStart, carveEnd) if it
+	// overlaps the free range. Those PAs have their linear VA stolen by a fixed
+	// kernel mapping (the g0/exc stacks), so a frame there would alias the live
+	// exception stack under MapPAToKernelScratch (MAZ-139). Page-aligned bounds
+	// are assumed (stack VAs are page-aligned).
+	if carveEnd > carveStart && carveStart < end && carveEnd > freeStart {
+		if carveStart > freeStart {
+			buddyAddRange(freeStart, carveStart) // gap below the carve-out
+		}
+		if carveEnd < end {
+			buddyAddRange(carveEnd, end) // gap above the carve-out
+		}
+		lo, hi := carveStart, carveEnd
+		if lo < freeStart {
+			lo = freeStart
+		}
+		if hi > end {
+			hi = end
+		}
+		buddyAlloc.carveoutPages = uint64(hi-lo) / PageSize
+	} else {
+		buddyAddRange(freeStart, end)
+	}
 
 	atomic.StoreUint32(&buddyAlloc.initialized, 1)
 
+}
+
+// BuddyCarveoutPages returns the number of pages permanently excluded from the
+// free lists as linear-map carve-outs (MAZ-139). Used by InitUnifiedPool to
+// assert the carve-out actually took effect.
+//
+//go:nosplit
+func BuddyCarveoutPages() uint64 {
+	return buddyAlloc.carveoutPages
 }
 
 // buddyAddRange adds a contiguous physical range [start, end) to the free lists.
@@ -572,7 +609,7 @@ func GetBuddyStats() BuddyStats {
 	buddyAlloc.lock.Lock()
 	var stats BuddyStats
 	stats.TotalPages = buddyAlloc.totalPages
-	stats.AllocatedPages = buddyAlloc.bootstrapPages + buddyAlloc.allocatedPages
+	stats.AllocatedPages = buddyAlloc.bootstrapPages + buddyAlloc.allocatedPages + buddyAlloc.carveoutPages
 	stats.PeakAllocated = buddyAlloc.peakAllocated
 	stats.PoolStart = buddyAlloc.poolStart
 	stats.PoolEnd = buddyAlloc.poolEnd

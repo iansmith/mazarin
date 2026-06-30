@@ -50,11 +50,19 @@ TEXT runtime·closefd(SB),NOSPLIT|NOFRAME,$0-12
 // write1 - write bytes to UART via linear map
 // On ARM64 QEMU virt, UART PL011 is at PA 0x09000000.
 // With KernelVAOffset 0xFFFFFFFF00000000, UART VA = 0xFFFFFFFF09000000.
-// When suppressSerial is set (SoftIRQ console active), skip UART output.
+// When suppressSerial is set (SoftIRQ console active), skip UART output —
+// UNLESS the runtime is dying (panicking != 0): a throw's println/traceback
+// must reach the serial port even while the SoftIRQ console owns the UART.
+// Without this bypass, kernel throws die silently as a bare
+// "KERNEL EXIT GROUP" with the reason lost (MAZ-136 netpoll hunt).
 TEXT runtime·write1(SB),NOSPLIT|NOFRAME,$0-28
 	MOVD	$runtime·suppressSerial(SB), R4
 	MOVW	(R4), R5
-	CBNZ	R5, write1_suppressed
+	CBZ	R5, write1_go
+	MOVD	$runtime·panicking(SB), R4	// fatal throw/panic in progress?
+	MOVW	(R4), R5
+	CBZ	R5, write1_suppressed
+write1_go:
 	MOVD	$0xFFFFFFFF09000000, R2	// UART VA via linear map
 	MOVD	p+8(FP), R0		// buffer pointer
 	MOVW	n+16(FP), R1		// byte count

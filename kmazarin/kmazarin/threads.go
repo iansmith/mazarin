@@ -191,11 +191,24 @@ var scanLastTick uint64
 // syscallDiagCount counts total syscalls from user threads.
 var syscallDiagCount uint64
 
-// excStackTopForSyscall is the kernel exception stack top address.
-// Used by the SYSCALL entry handler to switch from the user stack to a
-// valid kernel stack. SYSCALL (unlike INT) does NOT switch stacks via TSS,
-// so we must do it manually.
+// excStackTopForSyscall is the kernel exception stack top address — BOOT
+// WINDOW ONLY. It is NOT the live syscall-entry stack top: after
+// copyGDTToOwnedBuffer splits the stack and arms the rotations, the live top
+// is the rotating TSS.RSP0 cursor (tssBuffer bytes 4-11 — see the RSP0
+// ROTATION banner in exceptions_amd64.s). syscallEntry reads this var only
+// while rsp0Floor == 0 (SYSCALL lands before the split is published);
+// afterwards its sole role is having fed copyGDTToOwnedBuffer's split
+// arithmetic. Do not read it as "the" syscall stack top — a fixed top is
+// exactly the parked-chain trample MAZ-136's RSP0 rotation exists to fix.
 var excStackTopForSyscall uint64
+
+// excStackBottom / excStackTop bound the whole exception stack (both halves
+// of the RSP0/IST1 split). Read by syscallEntry (exceptions_amd64.s): a
+// ring-0 SYSCALL issued from a handler chain already resident on the
+// exception stack must nest at the current SP — resetting to
+// excStackTopForSyscall tramples the suspended chain (MAZ-136, variant 1).
+var excStackBottom uint64
+var excStackTop uint64
 
 // ThreadState represents the state of a thread
 type ThreadState int8
@@ -453,6 +466,13 @@ type Thread struct {
 	// fast path to reacquire the P immediately (no 100ms futex safety-net delay).
 	// Cleared by the scheduler when the thread is picked.
 	PriorityWoken bool
+
+	// PReleasedWaiter: set at block time when this thread released its Go P
+	// before blocking (entersyscallblock — IOUringEnterBlocking / RecvWithRing).
+	// On amd64 the wake paths suppress the immediate IRQ-return priority-wake
+	// switch for such waiters: fast-resuming a P-released thread races the Go
+	// runtime's P-handoff and corrupts g/SP (morestack-on-g0). MAZ-135.
+	PReleasedWaiter bool
 }
 
 // Thread struct field offsets for assembly access.
@@ -933,6 +953,10 @@ func InitThreads() {
 	InitPerCPU()
 	initPerCPUOffsets()
 
+	// Publish kernel .text bounds for the asm-level IRETQ resume guards
+	// (must happen before IRQs are enabled; no-op on ARM64)
+	initResumeGuardBounds()
+
 	// Initialize spinlock timing based on detected timer frequency
 	// This must happen before any spinlocks are used (including in ID allocators)
 	ds.InitSpinlockTiming(timerFrequencyHz)
@@ -964,9 +988,13 @@ func InitThreads() {
 	// Must happen while FS_BASE still points to kernel TLS, before any userspace runs.
 	platformSaveKernelTLS()
 
-	// Save the exception stack top for SYSCALL entry stack switch.
-	_, _, excTop, _ := platformCPU0Stacks()
+	// Save the exception stack bounds for the SYSCALL entry stack switch.
+	// copyGDTToOwnedBuffer later moves excStackTopForSyscall down to the
+	// RSP0 half; excStackBottom/Top keep covering the whole stack.
+	_, _, excTop, excBottom := platformCPU0Stacks()
 	excStackTopForSyscall = excTop
+	excStackBottom = excBottom
+	excStackTop = excTop
 
 	// Initialize all thread DATA to free state (direct access OK during init)
 	for i := 0; i < MaxThreads; i++ {
@@ -1440,6 +1468,33 @@ func printEpochStatus() {
 
 	uartDropped := atomic.LoadUint64(&softIRQDroppedBytes)
 
+	// Optional diagnostic lines — emitted only when they carry information, so a
+	// healthy/idle system doesn't repeat empty "svc/delegated:" / "gc cycles:" /
+	// "delegate stuck:" / "uart-ring: dropped=0" lines on every status print.
+	extra := ""
+	if sysIDDelegDelta != "" {
+		extra += fmt.Sprintf("  svc/delegated:%s\n", sysIDDelegDelta)
+	}
+	if gcInfo != "" {
+		extra += fmt.Sprintf("  gc cycles:%s\n", gcInfo)
+	}
+	if delegateInfo != "" {
+		extra += fmt.Sprintf("  delegate stuck:%s\n", delegateInfo)
+	}
+	if uartDropped > 0 {
+		extra += fmt.Sprintf("  uart-ring: dropped=%d\n", uartDropped)
+	}
+	// MAZ-141: priority-wake counters (written from the IRQ-return path).
+	// Surfaced here so pwake activity is observable; a fresh ring dump on
+	// abnormal shepherd exit lives in pwake_trace_amd64.go. el1h/nog0 are the
+	// ARM64-only block reasons (always 0 on amd64, which gates on svc instead).
+	if pwChecked := atomic.LoadUint32(&dbgPWakeChecked); pwChecked > 0 {
+		extra += fmt.Sprintf("  pwake: checked=%d switched=%d svc=%d noctx=%d el1h=%d nog0=%d\n",
+			pwChecked, atomic.LoadUint32(&dbgPWakeSwitched),
+			atomic.LoadUint32(&dbgPWakeSVC), atomic.LoadUint32(&dbgPWakeNoCtx),
+			atomic.LoadUint32(&dbgPWakeEL1h), atomic.LoadUint32(&dbgPWakeNoG0))
+	}
+
 	klog.Criticalf("[status] ",
 		"uptime=%ds syscalls=%d timer=%dHz ctx_switches=%d\n"+
 			"  threads: running=%d ready=%d futex=%d sleep=%d softirq=%d uring=%d blk_io=%d delegate=%d\n"+
@@ -1448,10 +1503,7 @@ func printEpochStatus() {
 			"  blk: irqs=%d drained=%d emptyIRQ=%d cqe=%d missed=%d wakeOK=%d wakeLow=%d wakeNW=%d tmoBlkNE=%d emptySnap=%d/raw=%d/last=%d\n"+
 			"  svc/shepherd:%s\n"+
 			"  svc/sysid:%s\n"+
-			"  svc/delegated:%s\n"+
-			"  gc cycles:%s\n"+
-			"  delegate stuck:%s\n"+
-			"  uart-ring: dropped=%d\n",
+			"%s",
 		uptimeSec, totalSVC, actualHz, tcs,
 		nRunning, nReady, nFutex, nSleep, nSoftIRQ, nMailbox, nIOUring, nDelegate,
 		yieldCalls, yieldSwitch, futexWait, futexWake, futexPIDMismatch,
@@ -1459,10 +1511,7 @@ func printEpochStatus() {
 		blkIRQs, blkDrained, blkEmpty, blkCQEW, blkCQEM, wakeOK, wakeLow, wakeNW, tmoBlkNE, blkEmptySnapped, blkEmptyRawIdx, blkEmptyLastIdx,
 		svcDelta,
 		sysIDDelta,
-		sysIDDelegDelta,
-		gcInfo,
-		delegateInfo,
-		uartDropped,
+		extra,
 	)
 }
 
@@ -1835,11 +1884,8 @@ func SaveThread0AndYield() uint64 {
 	}
 	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
-	if next.Context.GetPC() == 0 {
-		klog.Criticalf("[BUG] ", "Yield RIP=0 TID=%d\n", next.TID)
-		for {
-			WaitForInterrupt()
-		}
+	if badResumeRIP(next) {
+		badResumeHalt(next, "yield")
 	}
 
 	// Deliver pending signals before ERET to this thread.
@@ -3901,11 +3947,8 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
-	if next.Context.GetPC() == 0 {
-		klog.Criticalf("[BUG] ", "Pickup RIP=0 TID=%d\n", next.TID)
-		for {
-			WaitForInterrupt()
-		}
+	if badResumeRIP(next) {
+		badResumeHalt(next, "pickup")
 	}
 
 	// NOTE: Signal delivery moved to caller (checkThreadPreemptionImpl)
@@ -4003,6 +4046,39 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 			}
 		}
 		return ctxPtr
+	}
+
+	// MAZ-143 fix C: never checkpoint thread 0 caught inside runtime.morestack's
+	// g→g0 / SP-switch transient (kernel-mode, TLS-g==g0, SP on a non-g0 stack).
+	// Faithfully saving and later restoring that (g,SP) resumes into
+	// `morestack on g0`. Skip the switch (return 0 = no preemption); the timer /
+	// device IRQ retries next tick, by which time the thread has cleared the
+	// 1-instruction window. Placed AFTER the idle-CPU (oldThread==nil) check: that
+	// path picks up a NEW thread and never checkpoints the current one, so the
+	// guard is irrelevant there and must not suppress its work pickup. amd64-only
+	// check; arm64 is immune (stub returns false).
+	if gspUnsafeKernelResume(uintptr(framePtr)) {
+		return 0
+	}
+
+	// MAZ-147 (SKIP): never INVOLUNTARILY preempt g0 while it holds m.locks. The
+	// timer-preempt funnel has no m.locks checkpoint, so switching g0 out here leaks
+	// the count onto the borrowed m0 — the CONFIRMED dominant leak (PREEMPT-G0-LEAK
+	// ×6/9 boots, varied rips; design §8c) behind `schedule: holding locks`. Mirror
+	// stock Go's "m.locks ⇒ non-preemptible": leave g0 running; it finishes its short
+	// critical section (then preemptible) or reaches lock2 backoff → usleep (the
+	// VOLUNTARY yield, checkpointed by R1's save/restore). lock2 active-spin is
+	// bounded → no livelock. Placed before the lock AND before boostThread0ForPendingWork
+	// so this single early-return skips the WHOLE preemption attempt (the normal scheduler
+	// below and the boost) when g0 holds m.locks. (boostThread0ForPendingWork only fires
+	// when thread0 is Ready — i.e. NOT the running thread — so it cannot itself switch a
+	// running g0 out; the early return covers the preempt path here.) Both arches
+	// (arm64 ported, design §10). Reads the LIVE interrupted g from the frame (oldThread.Context
+	// isn't refreshed until SaveContextFromFrame below). Mirrors the gspUnsafeKernelResume
+	// skip above. (Option A is rejected ONLY for the mandatory-yield usleep path — C1;
+	// it is correct here, where preemption is involuntary.)
+	if g0PreemptHoldsMLocks(uintptr(framePtr)) {
+		return 0
 	}
 
 	// Boost thread 0 when kernel work is pending. The userspace-preferring
@@ -4138,11 +4214,8 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
 
-	if next.Context.GetPC() == 0 {
-		klog.Criticalf("[BUG] ", "Preempt RIP=0 TID=%d\n", next.TID)
-		for {
-			WaitForInterrupt()
-		}
+	if badResumeRIP(next) {
+		badResumeHalt(next, "preempt")
 	}
 
 	// Deliver pending signals before ERET to this thread.
@@ -4274,6 +4347,18 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 		sf.EnableAndRestoreDAIF(savedDAIF)
 		return nil
 	}
+
+	// MAZ-147 Option B (save half): g0 is now DEFINITELY being switched away to a
+	// real newThread (past the nil-guard — placing this earlier could zero
+	// g0.m.locks while g0 keeps running on a no-switch return, losing the count),
+	// still under schedulerLock + IRQs-off. If the outgoing context is g0 holding
+	// m.locks, stash+zero it so the borrowed m0 presents 0 to foreign code. The
+	// matching re-arm is at the resume chokepoint (amd64 load_context_and_iretq;
+	// arm64 the CTX_RESTORE_TO_FRAME sites via mlockRearmFromFrame) — g0 is woken
+	// by the PREEMPTION funnel, not this one (see design doc §8 / §10, OPEN #1).
+	// No-op for any non-g0 outgoing context.
+	mlockCheckpointSave(oldThread)
+
 	// (SVC switch breadcrumbs removed for performance)
 	newThread.State = ThreadRunning
 	// Restore StartTick from saved elapsed time so preemption tracking
@@ -4322,6 +4407,10 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
 
+	if badResumeRIP(newThread) {
+		badResumeHalt(newThread, "ctxswitch")
+	}
+
 	return &newThread.Context
 }
 
@@ -4349,7 +4438,8 @@ func GetThread(idx uintptr) *Thread {
 	return threadList.Get(int(idx))
 }
 
-// SaveCurrentThreadContext is defined in save_context_<arch>.go (per-architecture).
+// SaveCurrentThreadContext is defined in save_context_arm64.go (ARM64 only; the
+// amd64 saver was removed in MAZ-139 when the global xmmSaveArea was eliminated).
 
 // printTickDistributionNoSplit is a no-op retained for call-site compatibility.
 //

@@ -84,7 +84,7 @@ func InitIOUringTimeout() {
 // run, or 0 if no other thread is available (caller does WFI).
 //
 //go:noinline
-func BlockForIOUring(ringID int, minComplete uint32, syscallNum uint64) uintptr {
+func BlockForIOUring(ringID int, minComplete uint32, syscallNum uint64, pReleased bool) uintptr {
 	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
 
 	// Re-check completions with IRQs disabled to close the TOCTOU race:
@@ -121,6 +121,7 @@ func BlockForIOUring(ringID int, minComplete uint32, syscallNum uint64) uintptr 
 
 	// Block the current thread.
 	t.State = ThreadBlockedIOUring
+	t.PReleasedWaiter = pReleased // MAZ-135: gate the fast-wake (amd64)
 	t.SoftIRQSlotArg = uint64(ringID)
 	t.SoftIRQSyscallNum = syscallNum
 
@@ -201,7 +202,12 @@ func WakeIOUringFromIRQ() {
 			slot.BlockDeadline = 0
 
 			enqueueReadyPrioritySchedLockHeld(t)
-			atomic.StoreUint32(&priorityWakePending, 1)
+			// MAZ-135: only request the immediate IRQ-return fast switch for
+			// P-held waiters. On amd64, fast-resuming a P-released waiter
+			// corrupts the runtime; arch helper returns false there.
+			if fastWakeAllowedForWaiter(t.PReleasedWaiter) {
+				atomic.StoreUint32(&priorityWakePending, 1)
+			}
 			asm.Dsb()
 		}
 	}

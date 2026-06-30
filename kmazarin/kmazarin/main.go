@@ -525,6 +525,16 @@ func initVirtIOInputDevices() {
 var kernelBootTick uint64
 
 func simpleMain() {
+	// INVARIANT (MAZ-136): kernel main MUST NEVER GOPARK. The exception-
+	// dispatch design borrows the g0/m0 identity for every vector-129
+	// handler, which is only safe while m0 holds a P — and that holds
+	// precisely because kernel main runs on m0 forever (KernelIdleLoop
+	// never goparks; workers run ON m0 via async preemption so the P
+	// never leaves). One gopark migrates kernel main off m0 and m0 sits
+	// parked WITHOUT a P from then on; the first allocating user-syscall
+	// handler nil-derefs in mallocgc. Full story + the LockOSThread
+	// non-fix: the canary comment in netpoll_init.go.
+
 	kernelBootTick = kirq.ReadCounterValue()
 
 	// Test runtime readiness FIRST (before unmapping Cardinal)
@@ -543,6 +553,20 @@ func simpleMain() {
 	// PA 0xFFE00000 is within the buddy allocator's range and gets overwritten
 	// when the framebuffer is allocated at PA 0xFF000000 (~16MB).
 	copyFDTToSafeLocation()
+
+	// Parse the embedded kernel config early so the framebuffer size cap
+	// (framebuffer_max_mb, the single source of truth) is applied before the GPU
+	// allocates its framebuffer below. The config is reused for the rest of boot.
+	kernelCfg := parseKernelConfig()
+	// framebuffer_max_mb is operator-supplied; reject a value that is negative or
+	// large enough that *1MiB would wrap the uint32 cap, rather than silently
+	// installing a bogus (tiny) cap.
+	if mb := kernelCfg.FramebufferMaxMB; mb < 0 || mb > constants.MaxFramebufferMB {
+		klog.Fatalf("BAD FB CAP\n",
+			"[boot] framebuffer_max_mb out of range: %d (0 = default, max %d)\n",
+			mb, constants.MaxFramebufferMB)
+	}
+	gpu.SetFramebufferMaxBytes(uint32(kernelCfg.FramebufferMaxMB) * 1024 * 1024)
 
 	// Initialize VirtIO GPU BEFORE switching exception vectors.
 	// On x86_64, kmazarin's HandlePageFault uses ARM64 PTE format and can't
@@ -643,8 +667,8 @@ func simpleMain() {
 
 	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
 
-	// Parse embedded kernel config (no disk I/O — compiled into the binary).
-	kernelCfg := parseKernelConfig()
+	// kernelCfg was parsed earlier (before initVirtIOGPU) so the framebuffer cap
+	// is known before the GPU allocates; reuse it here.
 
 	// Initialize constraint system and publish kernel attributes before
 	// launching shepherds, so they can discover kernel attrs at startup.
@@ -664,6 +688,20 @@ func simpleMain() {
 	if kernelCfg.GoMemLimitMB > 0 {
 		ksyscall.SetShepherdMemLimitMB(kernelCfg.GoMemLimitMB)
 	}
+
+	// MAZ-135 context-marshal value-flow self-test (amd64; no-op arm64). Gated by
+	// config; OFF by default. Drives the real savers with synthetic inputs on a
+	// scratch thread and asserts every ThreadContext field is populated. Self-masks
+	// IRQs around the global swaps; only thread 0 runs here.
+	if kernelCfg.CtxMarshalTest {
+		runContextMarshalSelfTest()
+	}
+
+	// MAZ-139: the temporary XMM-nest RED self-test + D2-canary negative test (which
+	// drove the per-exception-frame fix RED→GREEN via timer-handler hooks) are
+	// removed post-GREEN (sign-off (a)). The kept guards are the always-on D2 canary
+	// (exceptions_amd64.s, surfaced by dumpNestStats) and the gated context-marshal
+	// value-flow self-test above (TLSG + per-frame vector sourcing).
 
 	// MAZ-108 kmem teardown leak-soak self-test. Gated by config; OFF by
 	// default. Runs before launchEmbeddedFS, so no shepherd threads exist yet
@@ -690,9 +728,10 @@ func simpleMain() {
 		RestoreIRQs(savedDAIF)
 	}
 
-	// Launch the embedded fs shepherd from memory — no disk I/O needed.
-	// fs reads /startup.toml from disk and launches all [[shepherd]] entries.
-	launchEmbeddedFS()
+	// NOTE: launchEmbeddedFS() used to run HERE — it was moved below
+	// kernelNetpollEagerInit() (MAZ-136). Do not move it back above the
+	// canary: shepherd syscall traffic must not exist while kernel main
+	// parks in the canary's time.Sleep (see the ORDERING comment there).
 
 	// Reconfigure timer policy from kernel config.
 	// Must happen before EnableTimerIRQ so the first tick uses correct values.
@@ -745,6 +784,41 @@ func simpleMain() {
 	// Time updates are driven by kirq.TimerIRQCount + kirq.PreemptAfterTicks.
 	ksyscall.StartKernelAttrUpdaters()
 	SetupTopHalfTimeUpdate()
+
+	// Eagerly initialize the KERNEL runtime's netpoll (mirrors the userspace
+	// overlay's netpoll_maz_init.go, which does the same for shepherds).
+	// Without this, netpollGenericInit runs at the first kernel timer-heap
+	// insertion — typically bgscavenge's timed sleep under the app-launch
+	// demand-paging burst — so a failure in the kernel's epoll syscall path
+	// kills the boot at an arbitrary later moment (the MAZ-136 "netpoll
+	// family" KERNEL EXIT GROUP, intermittent because the trigger is
+	// memory-pressure timing). Eager init turns kernel netpoll into a
+	// deterministic boot-time canary: if the kernel's magic-fd epoll path
+	// regresses, the boot dies HERE, loudly, every time.
+	//
+	// ORDERING (MAZ-136, the eager-netpoll × shepherd-launch race): the
+	// canary MUST complete before the first shepherd launches. Its
+	// time.Sleep is the one deliberate boot-time park of kernel main —
+	// m0 releases its P for the whole sleep. User-syscall dispatch
+	// (vector 129) borrows the g0/m0 identity for every handler, so an
+	// allocating handler (e.g. SyscallQueryInputDevices' escaping array)
+	// arriving in that window does mallocgc with m0.p == 0 and mcache0
+	// already cleared by procresize → nil-deref inside the allocator ON
+	// the exception stack (!F:0 @mallocgcSmallNoscan, 5/5 KVM, TCG-proven
+	// by stretching this sleep — run 60). TCG never saw it because the
+	// 1 ms sleep finished before fs's first syscalls; KVM (~100×)
+	// interleaved them. Launching shepherds only AFTER the canary returns
+	// closes the window by construction. The general invariant question —
+	// Go malloc in a g0-borrowed dispatch chain whenever m0 is without a
+	// P (GC STW, assist parks) — is tracked separately; do NOT "fix" it
+	// here by reordering back.
+	kernelNetpollEagerInit()
+
+	// Launch the embedded fs shepherd from memory — no disk I/O needed.
+	// fs reads /startup.toml from disk and launches all [[shepherd]]
+	// entries. Must stay AFTER kernelNetpollEagerInit() — see the
+	// ORDERING comment above.
+	launchEmbeddedFS()
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Shepherd threads are already running. The timer IRQ

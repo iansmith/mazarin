@@ -53,6 +53,21 @@ type ThreadContext struct {
 	CS     uint64 // Code segment selector for IRETQ (Ring 0: 0x08, Ring 3: 0x1B)
 	SS     uint64 // Stack segment selector for IRETQ (Ring 0: 0x10, Ring 3: 0x23)
 	XMM    [256]byte // XMM0-XMM15 saved state, 16 bytes each (offset 168)
+	// TLSG is the SECOND home of the Go g on amd64: the value at
+	// the thread's [FS_BASE-8] TLS slot. amd64 keeps g in BOTH R14 and TLS;
+	// `systemstack`'s g0→curg exit transiently restores only TLS (leaving R14
+	// stale), so the two homes can disagree at preempt time. Saving TLSG and
+	// restoring it independently (instead of forcing TLS-g = R14) keeps the
+	// restore faithful and avoids `morestack on g0`. MAZ-135.
+	// (All asm access is via the go_asm.h symbolic offset ThreadContext_TLSG.)
+	TLSG uint64
+	// ‼ MAZ-136 NOTE — there is deliberately NO per-thread IST field here.
+	// TSS.IST1 is a GLOBAL nesting cursor (mirroring ARM64's SP_EL1), managed
+	// entirely by the rotation arithmetic in exceptions_amd64.s. An earlier
+	// revision carried a per-thread ISTBase restored at context switch; that
+	// was WRONG — the IST half is one shared region, and a per-thread reset
+	// reused it over another thread's suspended live chain (KVM-run-4
+	// trample). Do not reintroduce per-thread IST state.
 }
 
 // GetGRegister returns the g register (R14 on x86_64).

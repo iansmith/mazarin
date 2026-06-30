@@ -1541,6 +1541,7 @@ func MazarinShepherd(injected any) error {
 }
 
 func MazarinMain() {
+	sys.MarkShepherdStart("rachel")
 	fmt.Printf("[rachel] Starting window manager\n")
 
 	// Initialize palette and desktop background early — everything that

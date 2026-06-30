@@ -292,6 +292,32 @@ func LogPageAudit() {
 		}
 	}
 
+	counts := PagesByOwner()
+
+	// Fingerprint the audit so a quiescent system (e.g. wedged after a crash)
+	// doesn't re-dump an identical breakdown every ~30s — collapse a repeat of
+	// the previous audit to a single "unchanged" heartbeat line.
+	const fnvOffset = 14695981039346656037
+	const fnvPrime = 1099511628211
+	fp := uint64(fnvOffset)
+	mix := func(v uint64) { fp = (fp ^ v) * fnvPrime }
+	mix(totalInUse)
+	mix(dirtyCount)
+	mix(sharedCount)
+	for i := PageType(0); i < PageTypeCount; i++ {
+		mix(countByType[i])
+		mix(pinnedByType[i])
+	}
+	for i := 0; i < MaxOwners; i++ {
+		mix(counts[i])
+	}
+	if lastAuditValid && fp == lastAuditFingerprint {
+		klog.Logf("[kmem] page audit unchanged: in-use=%d\n", totalInUse)
+		return
+	}
+	lastAuditFingerprint = fp
+	lastAuditValid = true
+
 	klog.Logf("[kmem] === page audit === in-use: %d\n", totalInUse)
 	for i := PageType(0); i < PageTypeCount; i++ {
 		if countByType[i] == 0 {
@@ -312,7 +338,6 @@ func LogPageAudit() {
 		klog.Logf("[kmem]   shared (RefCount>1): %d pages\n", sharedCount)
 	}
 
-	counts := PagesByOwner()
 	for i := 0; i < MaxOwners; i++ {
 		if counts[i] == 0 {
 			continue
@@ -321,4 +346,12 @@ func LogPageAudit() {
 	}
 	klog.Logf("[kmem] === end page audit ===\n")
 }
+
+// Previous page-audit fingerprint, used to suppress identical consecutive
+// dumps. Touched only from the page-audit bottom-half goroutine (serialized
+// via pageAuditChan), so no synchronization is required.
+var (
+	lastAuditFingerprint uint64
+	lastAuditValid       bool
+)
 

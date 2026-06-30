@@ -5,12 +5,13 @@
 //   [7]=R8 [8]=R9 [9]=R10 [10]=R11 [11]=R12 [12]=R13 [13]=R14 [14]=R15
 //   [15]=error_code [16]=RIP [17]=CS [18]=RFLAGS [19]=RSP [20]=SS
 //
-// ThreadContext layout:
-//   0=RAX 8=RBX 16=RCX 24=RDX 32=RSI 40=RDI 48=RBP
-//   56=R8 64=R9 72=R10 80=R11 88=R12 96=R13 104=R14(g) 112=R15
-//   120=RIP 128=RFLAGS 136=RSP 144=FSBase
+// ThreadContext fields are accessed by symbolic offset (ThreadContext_RAX, ...)
+// emitted into go_asm.h from the Go struct in thread_context_amd64.go. The
+// access vocabulary (FST/FLD/CTX_GPRS) lives in frame_dsl_amd64.h. There are no
+// numeric ctx offsets here — reorder the struct and these accesses follow.
 
 #include "textflag.h"
+#include "frame_dsl_amd64.h"
 
 // SyscallDispatch tail-call stub
 TEXT ·SyscallDispatch(SB), NOSPLIT, $0-64
@@ -69,6 +70,12 @@ TEXT ·SetSyscallCloneRegs(SB), NOSPLIT, $0-24
 // CheckThreadPreemption tail-call stub
 TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
 	JMP	·checkThreadPreemptionInternal(SB)
+
+// PriorityWakeSwitch tail-call stub (MAZ-141 priority-wake diagnostic).
+// Drop-in for CheckThreadPreemption at device_pwake_allowed: records the
+// interrupted context around the identical scheduler switch.
+TEXT ·PriorityWakeSwitch(SB), NOSPLIT, $0-16
+	JMP	·priorityWakeSwitchInternal(SB)
 
 // CheckKernelGoroutinePreempt checks kernel goroutine async preemption.
 // NOT NOSPLIT: calls isAsyncSafePoint (exception stack > g0.stackguard0).
@@ -168,6 +175,20 @@ TEXT ·GetPC(SB), NOSPLIT, $0-8
 	MOVQ	AX, ret+0(FP)
 	RET
 
+// readELR_EL1 returns the interrupted PC. ARM64 reads the ELR_EL1 system
+// register; x86_64 has no equivalent, so common_exception_entry stashes the
+// interrupted RIP (exception frame offset 128) into ·interruptedRIP on every
+// exception entry. Same semantics as ELR_EL1: holds the most-recent exception's
+// PC, valid until the next exception clobbers it. Used by the [SCHEDLK-VIOLATION]
+// diagnostic to report the PC of whoever held schedulerLock with IRQs enabled.
+// MAZ-139 DoD#2: ·interruptedRIP stays a single global (not per-exception-frame,
+// unlike the TLS-g/vector) — this stub is NOFRAME with no framePtr, and a single
+// most-recent PC is the faithful ELR_EL1 model. See the var doc in save_context_amd64.go.
+TEXT ·readELR_EL1(SB), NOSPLIT|NOFRAME, $0-8
+	MOVQ	·interruptedRIP(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
 
 // ============================================================================
 // RunFirstThread - Load context and IRETQ to first thread
@@ -184,10 +205,11 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
 
+	// FRAME-RESTORE-BEGIN run-first
 	// Restore FS_BASE from context (per-thread TLS base).
 	// CRITICAL: If FSBase==0 (e.g., fresh userspace thread), skip BOTH
 	// the WRMSR and the TLS sync write.
-	MOVQ	144(R12), AX		// FSBase
+	FLD(R12, ThreadContext_FSBase, AX)
 	TESTQ	AX, AX
 	JZ	run_skip_tls		// FSBase==0 → skip WRMSR AND TLS sync
 	MOVQ	AX, DX
@@ -199,57 +221,69 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	// Skip if g==0 (thread not yet initialized): the demand page hasn't been
 	// faulted in yet, and writing nil from supervisor mode would cause a
 	// nested kernel page fault. The Go runtime writes TLS itself once g is set.
-	MOVQ	104(R12), DX		// new g (R14)
+	// MAZ-135: source TLS-g from ctx.TLSG (the dual-home g), unified with the
+	// other restore paths. For a fresh thread R14==TLSG, so this is also benign.
+	FLD(R12, ThreadContext_TLSG, DX)	// dual-home g (ctx.TLSG)
 	TESTQ	DX, DX
 	JZ	run_skip_tls		// g==0 → skip TLS sync (page may not be present)
-	MOVQ	144(R12), AX		// FSBase (use saved value — avoids WRMSR→RDMSR pipeline race)
+	FLD(R12, ThreadContext_FSBase, AX)	// FSBase (saved value — avoids WRMSR→RDMSR race)
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 run_skip_tls:
 
+	// MAZ-136 IRETQ guard: a kernel-CS context must resume inside kernel
+	// .text (bounds zero = not yet published, skip; bad_ctx_dump in
+	// exceptions_amd64.s prints from R12 and halts).
+	MOVQ	·kernelTextHi(SB), AX
+	TESTQ	AX, AX
+	JZ	run_guard_ok		// bounds not initialized yet
+	CMPQ	ThreadContext_CS(R12), $0x08
+	JNE	run_guard_ok		// user context: any RIP is plausible
+	FLD(R12, ThreadContext_RIP, R13)
+	CMPQ	R13, AX			// RIP >= etext?
+	JAE	run_guard_bad
+	MOVQ	·kernelTextLo(SB), AX
+	CMPQ	R13, AX			// RIP >= text?
+	JAE	run_guard_ok
+run_guard_bad:
+	JMP	bad_ctx_dump(SB)
+run_guard_ok:
+
+	// MAZ-136 rotations: deliberately NO TSS.IST1 or TSS.RSP0 action —
+	// boot-time first switch, no exception chains exist, and both cursors
+	// (global, set to their half tops by copyGDTToOwnedBuffer) are already
+	// correct. See the IST ROTATION and RSP0 ROTATION banners in
+	// exceptions_amd64.s before "fixing" this absence.
+
 	// Build IRETQ frame: SS, RSP, RFLAGS, CS, RIP (push in reverse order)
-	PUSHQ	160(R12)		// SS from context
-	PUSHQ	136(R12)		// RSP from context
-	PUSHQ	128(R12)		// RFLAGS from context
-	PUSHQ	152(R12)		// CS from context
-	PUSHQ	120(R12)		// RIP from context
+	PUSHQ	ThreadContext_SS(R12)		// SS from context
+	PUSHQ	ThreadContext_RSP(R12)		// RSP from context
+	PUSHQ	ThreadContext_RFLAGS(R12)	// RFLAGS from context
+	PUSHQ	ThreadContext_CS(R12)		// CS from context
+	PUSHQ	ThreadContext_RIP(R12)		// RIP from context
 
-	// Restore XMM registers from ThreadContext.XMM (offset 168)
-	MOVOU	168(R12), X0
-	MOVOU	184(R12), X1
-	MOVOU	200(R12), X2
-	MOVOU	216(R12), X3
-	MOVOU	232(R12), X4
-	MOVOU	248(R12), X5
-	MOVOU	264(R12), X6
-	MOVOU	280(R12), X7
-	MOVOU	296(R12), X8
-	MOVOU	312(R12), X9
-	MOVOU	328(R12), X10
-	MOVOU	344(R12), X11
-	MOVOU	360(R12), X12
-	MOVOU	376(R12), X13
-	MOVOU	392(R12), X14
-	MOVOU	408(R12), X15
+	// Restore XMM registers from ctx.XMM
+	MOVOU	ThreadContext_XMM+0(R12), X0
+	MOVOU	ThreadContext_XMM+16(R12), X1
+	MOVOU	ThreadContext_XMM+32(R12), X2
+	MOVOU	ThreadContext_XMM+48(R12), X3
+	MOVOU	ThreadContext_XMM+64(R12), X4
+	MOVOU	ThreadContext_XMM+80(R12), X5
+	MOVOU	ThreadContext_XMM+96(R12), X6
+	MOVOU	ThreadContext_XMM+112(R12), X7
+	MOVOU	ThreadContext_XMM+128(R12), X8
+	MOVOU	ThreadContext_XMM+144(R12), X9
+	MOVOU	ThreadContext_XMM+160(R12), X10
+	MOVOU	ThreadContext_XMM+176(R12), X11
+	MOVOU	ThreadContext_XMM+192(R12), X12
+	MOVOU	ThreadContext_XMM+208(R12), X13
+	MOVOU	ThreadContext_XMM+224(R12), X14
+	MOVOU	ThreadContext_XMM+240(R12), X15
 
-	// Load all GPRs from ThreadContext
-	MOVQ	0(R12), AX		// RAX
-	MOVQ	8(R12), BX		// RBX
-	MOVQ	16(R12), CX		// RCX
-	MOVQ	24(R12), DX		// RDX
-	MOVQ	32(R12), SI		// RSI
-	MOVQ	40(R12), DI		// RDI
-	MOVQ	48(R12), BP		// RBP
-	MOVQ	56(R12), R8
-	MOVQ	64(R12), R9
-	MOVQ	72(R12), R10
-	MOVQ	80(R12), R11
-	// Skip R12 (our context pointer) - load after R13-R15
-	MOVQ	96(R12), R13
-	MOVQ	104(R12), R14		// g register
-	MOVQ	112(R12), R15
-
-	// Load R12 LAST (was our context pointer)
-	MOVQ	88(R12), R12
+	// Load all GPRs from ctx via the shared CTX_GPRS list; R12 (the base
+	// pointer) is loaded last, outside the list.
+	CTX_GPRS(FLD, R12)
+	FLD(R12, ThreadContext_R12, R12)	// Load R12 last
+	// FRAME-RESTORE-END
 
 	IRETQ
 
@@ -262,26 +296,6 @@ run_first_hang:
 // YieldToReadyThread - Save thread 0 context and switch to next thread
 // ============================================================================
 TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
-	// Save XMM registers BEFORE calling Go code (which clobbers them).
-	// Matches common_exception_entry's XMM save — ensures the interrupted
-	// thread's XMM state is preserved across the Go scheduler call.
-	MOVOU	X0, ·xmmSaveArea+0(SB)
-	MOVOU	X1, ·xmmSaveArea+16(SB)
-	MOVOU	X2, ·xmmSaveArea+32(SB)
-	MOVOU	X3, ·xmmSaveArea+48(SB)
-	MOVOU	X4, ·xmmSaveArea+64(SB)
-	MOVOU	X5, ·xmmSaveArea+80(SB)
-	MOVOU	X6, ·xmmSaveArea+96(SB)
-	MOVOU	X7, ·xmmSaveArea+112(SB)
-	MOVOU	X8, ·xmmSaveArea+128(SB)
-	MOVOU	X9, ·xmmSaveArea+144(SB)
-	MOVOU	X10, ·xmmSaveArea+160(SB)
-	MOVOU	X11, ·xmmSaveArea+176(SB)
-	MOVOU	X12, ·xmmSaveArea+192(SB)
-	MOVOU	X13, ·xmmSaveArea+208(SB)
-	MOVOU	X14, ·xmmSaveArea+224(SB)
-	MOVOU	X15, ·xmmSaveArea+240(SB)
-
 	// R12 = pointer to current thread's ThreadContext
 	MOVQ	·CurrentThread(SB), R12
 	TESTQ	R12, R12
@@ -289,27 +303,27 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	·ThreadContextOffset(SB), AX
 	ADDQ	AX, R12			// R12 = &Thread.Context
 
-	// Save all GPRs to ThreadContext
-	MOVQ	AX, 0(R12)		// RAX (clobbered by offset load, but OK)
-	MOVQ	BX, 8(R12)
-	MOVQ	CX, 16(R12)
-	MOVQ	DX, 24(R12)
-	MOVQ	SI, 32(R12)
-	MOVQ	DI, 40(R12)
-	MOVQ	BP, 48(R12)
-	MOVQ	R8, 56(R12)
-	MOVQ	R9, 64(R12)
-	MOVQ	R10, 72(R12)
-	MOVQ	R11, 80(R12)
-	// R12 is our context pointer — save 0 as placeholder
-	MOVQ	$0, 88(R12)
-	MOVQ	R13, 96(R12)
-	MOVQ	R14, 104(R12)		// g register
-	MOVQ	R15, 112(R12)
+	// FRAME-SAVE-BEGIN yield-to-ready
+	// Save all GPRs to ThreadContext via the shared CTX_GPRS list. AX currently
+	// holds ThreadContextOffset (not the interrupted RAX); storing it to the RAX
+	// slot is the pre-existing behavior — a voluntary yield does not preserve the
+	// caller's scratch RAX.
+	CTX_GPRS(FST, R12)
+	MOVQ	$0, ThreadContext_R12(R12)	// R12 is the base pointer — no live value to save
+	// MAZ-135: also store the dual-home g into ctx.TLSG. amd64 keeps g in both
+	// R14 and TLS ([FS_BASE-8]); load_context_and_iretq restores TLS-g from
+	// ctx.TLSG, so a stale TLSG here would resurface "morestack on g0" at the
+	// next stack growth. R14 is the authoritative g at a voluntary yield.
+	FST(R12, ThreadContext_TLSG, R14)
+	// MAZ-136 rotations: deliberately NO TSS.IST1 or TSS.RSP0 save here.
+	// Both cursors are GLOBAL (never per-thread); Yield is a voluntary
+	// CALL, not an exception, so no chain dies and there is nothing to
+	// retire on either. See the IST ROTATION and RSP0 ROTATION banners in
+	// exceptions_amd64.s before "fixing" this absence.
 
 	// Save RIP = return address (pushed by CALL to us)
 	MOVQ	0(SP), AX
-	MOVQ	AX, 120(R12)		// RIP
+	FST(R12, ThreadContext_RIP, AX)
 
 	// Save RFLAGS as-is (preserve current IF state).
 	// During early boot (before EnableIRQs), IF=0 — forcing IF=1 here would
@@ -317,60 +331,45 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	// crashes. After EnableIRQs, IF=1 naturally, so timer preemption works.
 	PUSHFQ
 	POPQ	AX
-	MOVQ	AX, 128(R12)		// RFLAGS
+	FST(R12, ThreadContext_RFLAGS, AX)
 
 	// Save RSP (caller's RSP = our SP + 8 for the return address)
 	LEAQ	8(SP), AX
-	MOVQ	AX, 136(R12)		// RSP
+	FST(R12, ThreadContext_RSP, AX)
 
 	// Save FS_BASE MSR (per-thread TLS base)
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	RDMSR				// EAX=low32, EDX=high32
 	SHLQ	$32, DX
 	ORQ	DX, AX
-	MOVQ	AX, 144(R12)		// FSBase
+	FST(R12, ThreadContext_FSBase, AX)
 
 	// Save CS/SS — kernel context
-	MOVQ	$0x08, 152(R12)		// CS = kernelCS
-	MOVQ	$0x10, 160(R12)		// SS = kernelSS
+	MOVQ	$0x08, ThreadContext_CS(R12)	// CS = kernelCS
+	MOVQ	$0x10, ThreadContext_SS(R12)	// SS = kernelSS
 
-	// Copy XMM state from global save area to ThreadContext.XMM (offset 168).
-	// XMM registers were saved to xmmSaveArea at entry before any Go code ran.
-	// We must persist them in the per-thread context so that when this thread is
-	// rescheduled, load_context_and_iretq restores the correct XMM state.
-	// Using X0 as temp is safe — it was already saved to the global buffer.
-	MOVOU	·xmmSaveArea+0(SB), X0
-	MOVOU	X0, 168(R12)
-	MOVOU	·xmmSaveArea+16(SB), X0
-	MOVOU	X0, 184(R12)
-	MOVOU	·xmmSaveArea+32(SB), X0
-	MOVOU	X0, 200(R12)
-	MOVOU	·xmmSaveArea+48(SB), X0
-	MOVOU	X0, 216(R12)
-	MOVOU	·xmmSaveArea+64(SB), X0
-	MOVOU	X0, 232(R12)
-	MOVOU	·xmmSaveArea+80(SB), X0
-	MOVOU	X0, 248(R12)
-	MOVOU	·xmmSaveArea+96(SB), X0
-	MOVOU	X0, 264(R12)
-	MOVOU	·xmmSaveArea+112(SB), X0
-	MOVOU	X0, 280(R12)
-	MOVOU	·xmmSaveArea+128(SB), X0
-	MOVOU	X0, 296(R12)
-	MOVOU	·xmmSaveArea+144(SB), X0
-	MOVOU	X0, 312(R12)
-	MOVOU	·xmmSaveArea+160(SB), X0
-	MOVOU	X0, 328(R12)
-	MOVOU	·xmmSaveArea+176(SB), X0
-	MOVOU	X0, 344(R12)
-	MOVOU	·xmmSaveArea+192(SB), X0
-	MOVOU	X0, 360(R12)
-	MOVOU	·xmmSaveArea+208(SB), X0
-	MOVOU	X0, 376(R12)
-	MOVOU	·xmmSaveArea+224(SB), X0
-	MOVOU	X0, 392(R12)
-	MOVOU	·xmmSaveArea+240(SB), X0
-	MOVOU	X0, 408(R12)
+	// Save XMM directly into THIS thread's ctx.XMM (MAZ-139: no global staging).
+	// The interrupted XMM is still live here — only integer GPR stores and the
+	// FS_BASE RDMSR ran since entry, none of which touch XMM — so we store the
+	// live registers straight into the per-thread context. load_context_and_iretq
+	// restores them on reschedule.
+	MOVOU	X0, ThreadContext_XMM+0(R12)
+	MOVOU	X1, ThreadContext_XMM+16(R12)
+	MOVOU	X2, ThreadContext_XMM+32(R12)
+	MOVOU	X3, ThreadContext_XMM+48(R12)
+	MOVOU	X4, ThreadContext_XMM+64(R12)
+	MOVOU	X5, ThreadContext_XMM+80(R12)
+	MOVOU	X6, ThreadContext_XMM+96(R12)
+	MOVOU	X7, ThreadContext_XMM+112(R12)
+	MOVOU	X8, ThreadContext_XMM+128(R12)
+	MOVOU	X9, ThreadContext_XMM+144(R12)
+	MOVOU	X10, ThreadContext_XMM+160(R12)
+	MOVOU	X11, ThreadContext_XMM+176(R12)
+	MOVOU	X12, ThreadContext_XMM+192(R12)
+	MOVOU	X13, ThreadContext_XMM+208(R12)
+	MOVOU	X14, ThreadContext_XMM+224(R12)
+	MOVOU	X15, ThreadContext_XMM+240(R12)
+	// FRAME-SAVE-END
 
 	// Call SaveThread0AndYield() to get next thread's context
 	SUBQ	$16, SP
@@ -385,8 +384,9 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
 
+	// FRAME-RESTORE-BEGIN yield-to-ready
 	// Restore FS_BASE from context (per-thread TLS base).
-	MOVQ	144(R12), AX		// FSBase
+	FLD(R12, ThreadContext_FSBase, AX)
 	TESTQ	AX, AX
 	JZ	yield_skip_tls		// FSBase==0 → skip WRMSR AND TLS sync
 	MOVQ	AX, DX
@@ -398,15 +398,18 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	// Skip if g==0 (thread not yet initialized): the demand page hasn't been
 	// faulted in yet, and writing nil from supervisor mode would cause a
 	// nested kernel page fault.
-	MOVQ	104(R12), DX		// new g (R14)
+	// MAZ-135: source TLS-g from ctx.TLSG (the dual-home g), not ctx.R14, so this
+	// path is faithful to the captured g like load_context_and_iretq and cannot
+	// propagate a stale g0 into the TLS home → "morestack on g0".
+	FLD(R12, ThreadContext_TLSG, DX)	// dual-home g (ctx.TLSG)
 	TESTQ	DX, DX
 	JZ	yield_skip_tls		// g==0 → skip TLS sync (page may not be present)
-	MOVQ	144(R12), AX		// FSBase (use saved value — avoids WRMSR→RDMSR pipeline race)
+	FLD(R12, ThreadContext_FSBase, AX)	// FSBase (saved value — avoids WRMSR→RDMSR race)
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 yield_skip_tls:
 
 	// Check for corrupted RIP
-	MOVQ	120(R12), AX
+	FLD(R12, ThreadContext_RIP, AX)
 	CMPQ	AX, $0x100000
 	JAE	yr_rip_ok
 	MOVW	$0x3F8, DX
@@ -414,7 +417,7 @@ yield_skip_tls:
 	MOVB	$'Y', AX; OUTB
 	MOVB	$'R', AX; OUTB
 	MOVB	$'=', AX; OUTB
-	MOVQ	120(R12), R15
+	FLD(R12, ThreadContext_RIP, R15)
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
@@ -422,74 +425,93 @@ yr_halt:
 	HLT
 	JMP	yr_halt
 yr_rip_ok:
-	// Restore XMM registers from target thread's ThreadContext.XMM (offset 168)
-	MOVOU	168(R12), X0
-	MOVOU	184(R12), X1
-	MOVOU	200(R12), X2
-	MOVOU	216(R12), X3
-	MOVOU	232(R12), X4
-	MOVOU	248(R12), X5
-	MOVOU	264(R12), X6
-	MOVOU	280(R12), X7
-	MOVOU	296(R12), X8
-	MOVOU	312(R12), X9
-	MOVOU	328(R12), X10
-	MOVOU	344(R12), X11
-	MOVOU	360(R12), X12
-	MOVOU	376(R12), X13
-	MOVOU	392(R12), X14
-	MOVOU	408(R12), X15
+	// MAZ-136 IRETQ guard: a kernel-CS context must resume inside kernel
+	// .text (bounds zero = not yet published, skip; bad_ctx_dump in
+	// exceptions_amd64.s prints from R12 and halts).
+	MOVQ	·kernelTextHi(SB), AX
+	TESTQ	AX, AX
+	JZ	yr_guard_ok		// bounds not initialized yet
+	CMPQ	ThreadContext_CS(R12), $0x08
+	JNE	yr_guard_ok		// user context: any RIP is plausible
+	FLD(R12, ThreadContext_RIP, R13)
+	CMPQ	R13, AX			// RIP >= etext?
+	JAE	yr_guard_bad
+	MOVQ	·kernelTextLo(SB), AX
+	CMPQ	R13, AX			// RIP >= text?
+	JAE	yr_guard_ok
+yr_guard_bad:
+	JMP	bad_ctx_dump(SB)
+yr_guard_ok:
+	// MAZ-136 rotations: deliberately NO TSS.IST1 or TSS.RSP0 action on this
+	// switch. Yield is not an exception (no chain dies → nothing to retire),
+	// and both cursors are GLOBAL — they already protect the suspended chains
+	// of every context, including a preempted kernel target's and parked
+	// SyscallWaitSoftIRQ chains. Writing any per-context value here
+	// re-creates the KVM-run-4 shared-stack trample. See the IST ROTATION
+	// and RSP0 ROTATION banners in exceptions_amd64.s.
+	// Restore XMM registers from target thread's ctx.XMM
+	MOVOU	ThreadContext_XMM+0(R12), X0
+	MOVOU	ThreadContext_XMM+16(R12), X1
+	MOVOU	ThreadContext_XMM+32(R12), X2
+	MOVOU	ThreadContext_XMM+48(R12), X3
+	MOVOU	ThreadContext_XMM+64(R12), X4
+	MOVOU	ThreadContext_XMM+80(R12), X5
+	MOVOU	ThreadContext_XMM+96(R12), X6
+	MOVOU	ThreadContext_XMM+112(R12), X7
+	MOVOU	ThreadContext_XMM+128(R12), X8
+	MOVOU	ThreadContext_XMM+144(R12), X9
+	MOVOU	ThreadContext_XMM+160(R12), X10
+	MOVOU	ThreadContext_XMM+176(R12), X11
+	MOVOU	ThreadContext_XMM+192(R12), X12
+	MOVOU	ThreadContext_XMM+208(R12), X13
+	MOVOU	ThreadContext_XMM+224(R12), X14
+	MOVOU	ThreadContext_XMM+240(R12), X15
 
 	// Build IRETQ frame on current stack (same pattern as load_context_and_iretq)
 	LEAQ	-40(SP), SP		// make room for 5 QWORDs
-	MOVQ	160(R12), AX		// SS
+	FLD(R12, ThreadContext_SS, AX)
 	MOVQ	AX, 32(SP)
-	MOVQ	136(R12), AX		// RSP
+	FLD(R12, ThreadContext_RSP, AX)
 	MOVQ	AX, 24(SP)
-	MOVQ	128(R12), AX		// RFLAGS
+	FLD(R12, ThreadContext_RFLAGS, AX)
 	MOVQ	AX, 16(SP)
-	MOVQ	152(R12), AX		// CS
+	FLD(R12, ThreadContext_CS, AX)
 	MOVQ	AX, 8(SP)
-	MOVQ	120(R12), AX		// RIP
+	FLD(R12, ThreadContext_RIP, AX)
 	MOVQ	AX, 0(SP)
 
-	// Load all GPRs from context
-	MOVQ	0(R12), AX
-	MOVQ	8(R12), BX
-	MOVQ	16(R12), CX
-	MOVQ	24(R12), DX
-	MOVQ	32(R12), SI
-	MOVQ	40(R12), DI
-	MOVQ	48(R12), BP
-	MOVQ	56(R12), R8
-	MOVQ	64(R12), R9
-	MOVQ	72(R12), R10
-	MOVQ	80(R12), R11
-	MOVQ	96(R12), R13
-	MOVQ	104(R12), R14
-	MOVQ	112(R12), R15
-	MOVQ	88(R12), R12		// Load R12 last
+	// Load all GPRs from context via the shared CTX_GPRS list; R12 (the base
+	// pointer) is loaded last, outside the list.
+	CTX_GPRS(FLD, R12)
+	FLD(R12, ThreadContext_R12, R12)	// Load R12 last
+	// FRAME-RESTORE-END
 
 	IRETQ
 
 yield_restore_return:
-	// No thread to switch to — restore XMM and return normally
-	MOVOU	·xmmSaveArea+0(SB), X0
-	MOVOU	·xmmSaveArea+16(SB), X1
-	MOVOU	·xmmSaveArea+32(SB), X2
-	MOVOU	·xmmSaveArea+48(SB), X3
-	MOVOU	·xmmSaveArea+64(SB), X4
-	MOVOU	·xmmSaveArea+80(SB), X5
-	MOVOU	·xmmSaveArea+96(SB), X6
-	MOVOU	·xmmSaveArea+112(SB), X7
-	MOVOU	·xmmSaveArea+128(SB), X8
-	MOVOU	·xmmSaveArea+144(SB), X9
-	MOVOU	·xmmSaveArea+160(SB), X10
-	MOVOU	·xmmSaveArea+176(SB), X11
-	MOVOU	·xmmSaveArea+192(SB), X12
-	MOVOU	·xmmSaveArea+208(SB), X13
-	MOVOU	·xmmSaveArea+224(SB), X14
-	MOVOU	·xmmSaveArea+240(SB), X15
+	// No thread to switch to — restore XMM from this thread's ctx and return
+	// normally. R12 was overwritten by the SaveThread0AndYield return value
+	// (0 here), so reload it. CurrentThread is unchanged on the no-switch path,
+	// so it still points at the thread whose live XMM we saved into ctx above.
+	MOVQ	·CurrentThread(SB), R12
+	MOVQ	·ThreadContextOffset(SB), AX
+	ADDQ	AX, R12			// R12 = &Thread.Context
+	MOVOU	ThreadContext_XMM+0(R12), X0
+	MOVOU	ThreadContext_XMM+16(R12), X1
+	MOVOU	ThreadContext_XMM+32(R12), X2
+	MOVOU	ThreadContext_XMM+48(R12), X3
+	MOVOU	ThreadContext_XMM+64(R12), X4
+	MOVOU	ThreadContext_XMM+80(R12), X5
+	MOVOU	ThreadContext_XMM+96(R12), X6
+	MOVOU	ThreadContext_XMM+112(R12), X7
+	MOVOU	ThreadContext_XMM+128(R12), X8
+	MOVOU	ThreadContext_XMM+144(R12), X9
+	MOVOU	ThreadContext_XMM+160(R12), X10
+	MOVOU	ThreadContext_XMM+176(R12), X11
+	MOVOU	ThreadContext_XMM+192(R12), X12
+	MOVOU	ThreadContext_XMM+208(R12), X13
+	MOVOU	ThreadContext_XMM+224(R12), X14
+	MOVOU	ThreadContext_XMM+240(R12), X15
 	RET
 
 yield_no_thread:

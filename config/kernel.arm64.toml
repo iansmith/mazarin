@@ -7,6 +7,11 @@ kernel_budget_mb = 64
 go_mem_limit = 256
 kernel_mem_limit = 24
 
+# Framebuffer: single source of truth for the GPU framebuffer size cap (MB). The
+# actual framebuffer is sized to the detected display resolution; the kernel
+# panics at boot if that would exceed this cap.
+framebuffer_max_mb = 64
+
 # GC tuning — Go's stdlib default (100). With GOGC=100 the collector fires
 # when the heap has doubled since the previous live set. Lower values
 # (5–50) compact more aggressively at the cost of more pauses; higher
@@ -48,3 +53,11 @@ kmem_leak_test = false
 # PASS (window closed) or FAIL (fields observed unset). OFF by default — flip to
 # true to re-run the verification.
 clone_exec_race_test = false
+
+# MAZ-135: context-marshal value-flow self-test at boot. Drives the real arm64
+# SaveContextFromFrame with synthetic sentinel inputs on a scratch thread and
+# asserts every ThreadContext field is populated. OFF by default (like the other
+# boot selftests); the build-time cmd/frameaudit gate is the always-on guard.
+# Verified non-regressive via an HVF boot (boots to GUI, selftest OK). Flip to
+# true to re-validate the arm64 savers after a context change.
+ctx_marshal_test = false

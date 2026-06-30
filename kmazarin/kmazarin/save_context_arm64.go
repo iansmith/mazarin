@@ -16,6 +16,8 @@ var ctxSwitchDiagSPSR uint64
 // SaveContextFromFrame saves the current thread's context from an ARM64 exception frame.
 // Frame layout: x0-x27 at [0:27], x28-x30 at [28:30], ELR at [32], SPSR at [33], SP at [36].
 //
+// frameaudit:save — must populate every ThreadContext field.
+//
 //go:nosplit
 //go:noinline
 func SaveContextFromFrame(framePtr uintptr) {

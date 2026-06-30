@@ -152,10 +152,22 @@ type VirtIOGPUDevice struct {
 
 var virtioGPUDevice VirtIOGPUDevice
 
-// Framebuffer physical address and size.
-// Dynamically allocated from the bump pool during GPU init.
+// Framebuffer physical address. Dynamically allocated during GPU init, sized to
+// the detected display resolution (see virtioGPUSetupFramebuffer).
 var virtioGPUFramebufferAddr uintptr
-const virtioGPUFramebufferSize = constants.FramebufferSize
+
+// framebufferMaxBytes caps the framebuffer allocation. The single source of truth
+// is the kernel TOML (framebuffer_max_mb), applied via SetFramebufferMaxBytes
+// before Init(); this is just the built-in default until then.
+var framebufferMaxBytes uint32 = constants.DefaultFramebufferMaxMB * 1024 * 1024
+
+// SetFramebufferMaxBytes overrides the framebuffer size cap from kernel config.
+// Must be called before Init(). A value of 0 is ignored (keeps the default).
+func SetFramebufferMaxBytes(n uint32) {
+	if n > 0 {
+		framebufferMaxBytes = n
+	}
+}
 
 // Static buffer for attach backing command (small, avoids kmalloc)
 var virtioGPUAttachCmdBuf [unsafe.Sizeof(VirtIOGPUResourceAttachBacking{}) + unsafe.Sizeof(VirtIOGPUMemEntry{})]byte
@@ -399,13 +411,20 @@ func virtioGPUGetDisplayInfo() (uint32, uint32, bool) {
 // Returns true on success, false on failure
 //
 func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint32) bool {
-	// Resource can be taller than display to enable hardware scrolling
-	fbSize := displayWidth * resourceHeight * 4 // 4 bytes per pixel (BGRA8888)
+	// Resource can be taller than display to enable hardware scrolling. Compute in
+	// 64-bit so a buggy hypervisor reporting absurd dimensions cannot wrap uint32
+	// and slip past the cap; framebufferMaxBytes is uint32, so once the value is
+	// within the cap it fits uint32.
+	fbSize64 := uint64(displayWidth) * uint64(resourceHeight) * 4 // 4 bytes per pixel (BGRA8888)
 
-	if fbSize > virtioGPUFramebufferSize {
-		klog.Errf("[VirtIO GPU] ERROR: Framebuffer size too large\n")
-		return false
+	if fbSize64 > uint64(framebufferMaxBytes) {
+		// Single source of truth for the cap is the kernel TOML framebuffer_max_mb
+		// (see SetFramebufferMaxBytes). Panic rather than silently over-allocate.
+		klog.Fatalf("FB too big",
+			"[VirtIO GPU] framebuffer %dx%d = %d bytes (incl. 2x scroll height) exceeds framebuffer_max_mb cap of %d bytes\n",
+			displayWidth, resourceHeight, fbSize64, framebufferMaxBytes)
 	}
+	fbSize := uint32(fbSize64)
 
 	// Allocate framebuffer from the physical page pool.
 	// Must be contiguous for DMA (VirtIO ATTACH_BACKING needs a single PA range).
