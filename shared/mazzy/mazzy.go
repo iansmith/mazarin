@@ -79,6 +79,7 @@ const (
 	SysUnshareFromTarget         = MazzySyscallBase + 70 // 0x1046 - Revoke caller's shared mapping from target shepherd (MAZ-53 Mode 2 Release)
 	SysCloneExec                 = MazzySyscallBase + 71 // 0x1047 - Combined clone+execve: load staged ELF into a fresh child with faithful argv[0]/envp + buffered intent (MAZ-120)
 	SysReapVforkTransient        = MazzySyscallBase + 72 // 0x1048 - Reap transient vfork thread after successful execve (MAZ-63)
+	SysGetVforkReservedPID       = MazzySyscallBase + 73 // 0x1049 - Look up the reserved child PID for a vfork transient TID (MAZ-63)
 )
 
 // IOUringEnterPReleased is an arg3 (flags) bit for SysIOUringEnter signaling

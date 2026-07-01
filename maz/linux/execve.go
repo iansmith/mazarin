@@ -128,14 +128,15 @@ func (h *syscallHandler) sysExecve(req sys.SyscallRequest) {
 	// (synchronously, before any reply) ensures the reaper already knows
 	// about the child when that wait4 arrives.
 	if ret > 0 {
-		childFDT := fdt.Copy()
-		if len(cwd) > 0 {
-			childFDT.Cwd = string(cwd)
-		}
+		// If the vfork transient already did pre-execve FD/cwd setup (dup3,
+		// fcntl(F_SETFD), chdir, close — resolveTargetFDT routed those onto
+		// the child's own table instead of the parent's), that table is
+		// already sitting in pendingChildFDTs. A bare fork+exec with no
+		// in-child intent never touches it, so fall back to a fresh copy of
+		// the parent's current table.
+		childFDT := h.getOrCreatePendingChildFDT(int16(ret), fdt.Copy)
+		childFDT.ApplyStartupIntent(intent, cwd)
 		childFDT.CloseCloexecFDs(func(handle uint32) { h.fs.Close(handle) })
-		h.mu.Lock()
-		h.pendingChildFDTs[int16(ret)] = childFDT
-		h.mu.Unlock()
 		h.reaper.RegisterChild(int32(req.CallerPID), int32(ret))
 	}
 

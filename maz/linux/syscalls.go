@@ -586,7 +586,7 @@ func (h *syscallHandler) abortCloneWindowsForSID(sid int16) {
 // ============================================================
 
 func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
-	fdt := h.getShepherd(req.CallerPID).FDT
+	fdt := h.resolveTargetFDT(req)
 	fd := int(req.Arg0())
 	e := fdt.Get(fd)
 	if e == nil {
@@ -641,13 +641,47 @@ func (h *syscallHandler) releaseFDResources(sid int16, fd int, e *fdtable.Entry)
 	}
 }
 
+// getOrCreatePendingChildFDT returns h.pendingChildFDTs[pid], building it via
+// fallback and storing it first if absent. Shared by resolveTargetFDT (a vfork
+// transient's pre-execve FD/cwd setup) and sysExecve (picking up whichever
+// table — freshly built or already primed by pre-execve setup — a just-forked
+// child should get), so the map is only ever get-or-created in one place.
+func (h *syscallHandler) getOrCreatePendingChildFDT(pid int16, fallback func() *fdtable.Table) *fdtable.Table {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	fdt := h.pendingChildFDTs[pid]
+	if fdt == nil {
+		fdt = fallback()
+		h.pendingChildFDTs[pid] = fdt
+	}
+	return fdt
+}
+
+// resolveTargetFDT returns the FD table a delegated dup3/fcntl(F_SETFD)/chdir/
+// close/fchdir/openat call should mutate. A vfork transient (running between
+// its clone and the matching execve) shares its parent's SID for normal
+// delegate routing (MAZ-127's in-kernel vfork model never gives it an
+// identity of its own), so without this indirection the child's pre-execve
+// FD-redirect/cwd setup would silently mutate the live parent's table instead
+// of the child's. Ordinary (non-vfork) callers are unaffected:
+// GetVforkReservedPID returns 0 and this is exactly
+// h.getShepherd(req.CallerPID).FDT, same as before.
+func (h *syscallHandler) resolveTargetFDT(req sys.SyscallRequest) *fdtable.Table {
+	parentFDT := h.getShepherd(req.CallerPID).FDT
+	reservedPID := sys.GetVforkReservedPID(req.CallerTID)
+	if reservedPID == 0 {
+		return parentFDT
+	}
+	return h.getOrCreatePendingChildFDT(reservedPID, parentFDT.Copy)
+}
+
 // sysDup3 implements dup3(oldfd, newfd, flags): newfd is made to refer to the
 // same open file as oldfd, after closing whatever previously occupied newfd.
 // EINVAL when oldfd == newfd, EBADF on a closed oldfd or out-of-range newfd.
 // The displaced newfd is disposed exactly like sysClose via releaseFDResources.
 func (h *syscallHandler) sysDup3(req sys.SyscallRequest) {
 	sid := req.CallerPID
-	fdt := h.getShepherd(sid).FDT
+	fdt := h.resolveTargetFDT(req)
 	oldfd := int(req.Args[0])
 	newfd := int(req.Args[1])
 	flags := int32(req.Args[2])
@@ -680,7 +714,7 @@ const (
 // stdin/stdout/stderr keep working once fcntl is delegated here. Any other
 // command returns ENOSYS, matching the kernel stub for fd > 2.
 func (h *syscallHandler) sysFcntl(req sys.SyscallRequest) {
-	fdt := h.getShepherd(req.CallerPID).FDT
+	fdt := h.resolveTargetFDT(req)
 	fd := int(req.Args[0])
 	cmd := req.Args[1]
 	arg := req.Args[2]
@@ -788,7 +822,7 @@ func (h *syscallHandler) sysGetcwd(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysChdir(req sys.SyscallRequest) {
-	fdt := h.getShepherd(req.CallerPID).FDT
+	fdt := h.resolveTargetFDT(req)
 	path := req.PathString()
 	if path == "" {
 		req.Reply(EINVAL)
@@ -811,9 +845,9 @@ func (h *syscallHandler) sysChdir(req sys.SyscallRequest) {
 }
 
 func (h *syscallHandler) sysFchdir(req sys.SyscallRequest) {
-	shep := h.getShepherd(req.CallerPID)
+	fdt := h.resolveTargetFDT(req)
 	fd := int(req.Args[0])
-	e := shep.FDT.Get(fd)
+	e := fdt.Get(fd)
 	if e == nil || e.Kind == fdtable.KindNone {
 		req.Reply(EBADF)
 		return
@@ -822,7 +856,7 @@ func (h *syscallHandler) sysFchdir(req sys.SyscallRequest) {
 		req.Reply(ENOTDIR)
 		return
 	}
-	shep.FDT.Cwd = e.Path
+	fdt.Cwd = e.Path
 	req.Reply(EOK)
 }
 
@@ -1027,7 +1061,7 @@ func wakePipeReaders(end *pipe.End) {
 // ============================================================
 
 func (h *syscallHandler) sysOpenat(req sys.SyscallRequest) {
-	fdt := h.getShepherd(req.CallerPID).FDT
+	fdt := h.resolveTargetFDT(req)
 	rawPath := req.PathString()
 	absPath, e := fdt.ResolveAt(int32(req.Args[0]), rawPath)
 	if e != 0 {

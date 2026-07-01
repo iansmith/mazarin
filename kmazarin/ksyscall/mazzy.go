@@ -8,7 +8,7 @@ import (
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
 // Indexed by (syscallNum - mazzy.MazzySyscallBase).
-var mazzySyscallTable = [73]SyscallHandler{
+var mazzySyscallTable = [74]SyscallHandler{
 	0: SyscallGetTime,              // GetTime = 0x1000
 	1: SyscallSubscribeDeaths,      // SubscribeDeaths = 0x1001
 	2: SyscallFreePages,            // FreePages = 0x1002
@@ -80,6 +80,7 @@ var mazzySyscallTable = [73]SyscallHandler{
 	70: SyscallUnshareFromTarget,    // UnshareFromTarget = 0x1046 (MAZ-53 Mode 2 Release: revoke a previously-shared mapping)
 	71: SyscallCloneExec,           // CloneExec = 0x1047 (MAZ-120: combined clone+execve from a staged ELF + buffered intent)
 	72: SyscallReapVforkTransient,  // ReapVforkTransient = 0x1048 (MAZ-63: reap transient after successful vfork execve)
+	73: SyscallGetVforkReservedPID, // GetVforkReservedPID = 0x1049 (MAZ-63: query reserved child PID for a vfork transient TID)
 }
 
 // EpochStatusDumpFn, if non-nil, is invoked when userspace sends a

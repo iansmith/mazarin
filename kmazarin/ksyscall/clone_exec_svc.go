@@ -152,3 +152,18 @@ func SyscallReapVforkTransient(arg0, _, _, _, _, _ uint64) int64 {
 	}
 	return 0
 }
+
+// SyscallGetVforkReservedPID implements the SysGetVforkReservedPID SVC (MAZ-63).
+// Lets the linux shepherd ask "is the caller of this delegated syscall a vfork
+// transient, and if so what child PID was reserved for it?" — used by
+// sysDup3/sysFcntl/sysChdir to route a vfork child's pre-execve FD/cwd setup
+// onto the child's own (eagerly-copied) FD table instead of the live parent's,
+// since the transient shares the parent's SID for normal delegate routing.
+//
+// arg0 = thread TID (int16). Returns the reserved child PID, or 0 if tid is
+// not a known vfork transient (ordinary, non-vfork call).
+//
+//go:noinline
+func SyscallGetVforkReservedPID(arg0, _, _, _, _, _ uint64) int64 {
+	return int64(GetVforkReservedPIDForTID(int16(arg0)))
+}
