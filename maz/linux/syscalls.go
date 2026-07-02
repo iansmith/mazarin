@@ -258,6 +258,15 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 	}
 	delete(h.shepherds, sid)
 	h.mu.Unlock()
+	h.tearDownShepherdFDState(sid, s)
+}
+
+// tearDownShepherdFDState closes s's fs handles, pipe ends, advisory locks,
+// orphan handles, and cache for sid. The caller must have already removed s
+// from h.shepherds under h.mu; this is the shared teardown tail for both death
+// paths (cleanupShepherd on shepherd death, evictStaleChildShepherd on
+// fork/exec PID reuse) so the two can't drift.
+func (h *syscallHandler) tearDownShepherdFDState(sid int16, s *ShepherdFilesystemData) {
 	// Take per-shepherd lock so any in-flight handler for this shepherd
 	// (already holding s.mu) drains before we touch its FDT.
 	s.mu.Lock()
@@ -267,6 +276,17 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 	s.FDT.Each(func(_ int, e *fdtable.Entry) bool {
 		if e.Handle != 0 {
 			handles = append(handles, e.Handle)
+		}
+		// A dying shepherd's still-open pipe ends (e.g. a redirected stdout
+		// the process never explicitly close()'d before exit) must drop their
+		// writer reference here — otherwise a reader blocked on this pipe
+		// (e.g. the parent's os/exec.Output() capture) would wait for EOF
+		// forever, since Dup3/Copy give each fd its own *pipe.End reference.
+		if e.Pipe != nil {
+			e.Pipe.Close()
+			if e.Kind == fdtable.KindPipeWrite {
+				wakePipeReaders(e.Pipe)
+			}
 		}
 		return true
 	})
@@ -284,6 +304,37 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 	// handles independent of the cache.
 	h.closeAllOrphanHandlesForSID(sid)
 	h.cache.RemoveAll(sid)
+}
+
+// evictStaleChildShepherd tears down any leftover per-SID filesystem state for
+// a PID that is about to be handed to a brand-new fork/exec child (MAZ-63).
+//
+// Why this is needed: a fork/exec child's exit is delivered as an
+// EventChildExit process-notification (reaper bookkeeping only); unlike a
+// shepherd death it does NOT drive cleanupShepherd, so the exited child's
+// h.shepherds[pid] entry survives. The kernel PID allocator, however, frees the
+// PID as soon as the child is reaped and can reissue it to the next fork/exec.
+// When that happens, getShepherd(pid) would find the *previous* child's stale
+// table (wrong stdio/cwd) and never consume the pendingChildFDTs[pid] the new
+// child's transient just built — the redirected stdout / chdir silently vanish.
+//
+// sysExecve calls this for the freshly reserved child PID before priming the
+// child's pending table. It is race-free: the reserved PID is not a live PID
+// (the allocator only hands out free ones), so any h.shepherds[pid] present is
+// definitively the dead predecessor's, and this runs strictly before the new
+// child's first syscall reaches getShepherd. It deliberately does NOT touch
+// pendingChildFDTs[pid] (the new child's table, keyed identically) or the
+// parent-keyed clone-window / wait4-waiter state.
+func (h *syscallHandler) evictStaleChildShepherd(sid int16) {
+	h.mu.Lock()
+	s := h.shepherds[sid]
+	if s == nil {
+		h.mu.Unlock()
+		return
+	}
+	delete(h.shepherds, sid)
+	h.mu.Unlock()
+	h.tearDownShepherdFDState(sid, s)
 }
 
 // handle dispatches a delegated syscall request to the appropriate handler.

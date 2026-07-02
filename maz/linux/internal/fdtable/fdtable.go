@@ -256,6 +256,14 @@ func (t *Table) Copy() *Table {
 // inheritance use case.) The copy never inherits oldfd's WriteBuf: a half-built
 // write buffer belongs to one fd, not its dup.
 //
+// A pipe entry's End is Fork()'d rather than aliased, mirroring Copy(): oldfd
+// and newfd become independent references to the same shared buffer, each
+// needing its own Close() to drop the writer count. Without this, closing
+// oldfd (the usual dup3-then-close-the-original dance os/exec does when
+// relocating a pipe fd onto 0/1/2) would mark the SAME End closed, silently
+// starving newfd's writer reference and making the reader see EOF before
+// newfd is ever closed.
+//
 // closeNewFD, if non-nil, is invoked with the entry that previously occupied
 // newfd (still installed at that slot when the callback runs), so the caller
 // can flush/release that entry's fs resources through its own fs client before
@@ -285,6 +293,9 @@ func (t *Table) Dup3(oldfd, newfd int, flags int32, closeNewFD func(e *Entry)) (
 	dup.WriteBuf = nil
 	dup.WriteBufOff = 0
 	dup.Cloexec = CloexecFromFlags(flags)
+	if old.Pipe != nil {
+		dup.Pipe = old.Pipe.Fork()
+	}
 	t.Put(newfd, &dup)
 	return newfd, 0
 }

@@ -15,7 +15,11 @@
 
 package fdtable
 
-import "testing"
+import (
+	"testing"
+
+	"mazzy/maz/linux/internal/pipe"
+)
 
 // TestDup3CopiesEntryToNewFD verifies that dup3 installs an independent copy
 // of the old entry at newfd, carries the same open-file identity (Handle/Inum/
@@ -136,5 +140,53 @@ func TestDup3BadNewFDIsEBADF(t *testing.T) {
 	}
 	if _, errno := tbl.Dup3(3, -1, 0, nil); errno != -9 {
 		t.Errorf("Dup3(3, -1, 0): errno = %d, want -9 (EBADF)", errno)
+	}
+}
+
+// TestDup3PipeWriteEndForksReference is the MAZ-63 stage-2 regression: os/exec
+// relocates a pipe write-end onto fd 1 via dup3(oldfd, 1, 0), then closes
+// oldfd (the now-redundant original number). That close must NOT sever the
+// write-end living at fd 1 — the two fds must hold INDEPENDENT *pipe.End
+// references sharing the same buffer (mirroring Copy's Fork), not the same
+// aliased entry. Before the fix, Dup3 did `dup := *old` and left dup.Pipe
+// pointing at the exact same *pipe.End as old.Pipe; closing oldfd then closed
+// that shared End out from under newfd, undercounting the writer refcount and
+// making the reader see a premature EOF before the child ever wrote anything.
+func TestDup3PipeWriteEndForksReference(t *testing.T) {
+	tbl := New()
+	rEnd, wEnd := pipe.New(0)
+	tbl.Put(3, &Entry{Kind: KindPipeWrite, Pipe: wEnd})
+
+	if _, errno := tbl.Dup3(3, 1, 0, nil); errno != 0 {
+		t.Fatalf("Dup3(3,1,0) errno = %d, want 0", errno)
+	}
+	newEntry := tbl.Get(1)
+	if newEntry == nil || newEntry.Pipe == nil {
+		t.Fatal("fd 1 not installed with a Pipe end after Dup3")
+	}
+	if newEntry.Pipe == wEnd {
+		t.Fatal("fd 1's Pipe end aliases the original *pipe.End; Dup3 must Fork() a new one")
+	}
+
+	// os/exec's usual next step: close the original fd now that it lives at 1.
+	tbl.Get(3).Pipe.Close()
+	tbl.Free(3)
+
+	// The write-end at fd 1 must still be live: a write through it must reach
+	// the reader, and the reader must NOT see EOF yet (one writer remains).
+	if _, err := newEntry.Pipe.Write([]byte("hi")); err != nil {
+		t.Fatalf("write through fd 1 after closing the original fd: %v", err)
+	}
+	buf := make([]byte, 8)
+	n, err := rEnd.Read(buf)
+	if err != nil || string(buf[:n]) != "hi" {
+		t.Fatalf("read got (%d, %v) = %q, want (2, nil) = \"hi\"", n, err, buf[:n])
+	}
+
+	// Only now, once fd 1 is also closed, should the reader observe EOF.
+	newEntry.Pipe.Close()
+	n, err = rEnd.Read(buf)
+	if n != 0 || err != nil {
+		t.Errorf("read after both ends closed = (%d, %v), want (0, nil) [EOF]", n, err)
 	}
 }

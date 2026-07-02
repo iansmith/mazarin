@@ -128,6 +128,14 @@ func (h *syscallHandler) sysExecve(req sys.SyscallRequest) {
 	// (synchronously, before any reply) ensures the reaper already knows
 	// about the child when that wait4 arrives.
 	if ret > 0 {
+		// The kernel PID allocator may have just reissued this PID from a
+		// previously-reaped fork/exec child whose linux-shepherd FD state was
+		// never torn down (child exits arrive as reaper-only process
+		// notifications, not shepherd deaths). Evict that stale state now, before
+		// priming the new child's table, so getShepherd doesn't hand the child
+		// its dead predecessor's stdio/cwd. See evictStaleChildShepherd.
+		h.evictStaleChildShepherd(int16(ret))
+
 		// If the vfork transient already did pre-execve FD/cwd setup (dup3,
 		// fcntl(F_SETFD), chdir, close — resolveTargetFDT routed those onto
 		// the child's own table instead of the parent's), that table is
