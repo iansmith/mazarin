@@ -62,22 +62,48 @@ func RenderGlyph(face *goFont.Face, gid goFont.GID, scale float32) (*GlyphInfo, 
 		}
 	}
 
+	// Grid-fit the vertical extent so the glyph's device-pixel rows are not
+	// split by a fractional top edge. FreeType (and Skia's glyph pipeline
+	// built on it) hint/grid-fit the outline before rasterizing so that a
+	// glyph whose design height is an integral number of pixels — e.g. the
+	// Ahem test font, whose em box is exactly font-size px tall — lands on
+	// whole bitmap rows with fully-opaque interior. Without grid-fitting, a
+	// fractional minY (Ahem ascent at 16px is 12.797px, so minY = -12.797)
+	// would place the outline's top edge partway down mask row 0, spreading
+	// the em box across an extra antialiased row (top ~0.8 coverage, bottom
+	// ~0.2) — a visible seam once the mask composites onto the page. See
+	// LOU-367. No Blink analog at the layout level: this is rasterizer-stage
+	// grid-fitting, the louis14 equivalent of Skia's Freetype hinting.
+	//
+	// The snap is expressed as: rasterize the outline with the y origin at the
+	// EXACT fractional top edge (offY = minY) so the top edge maps to mask row
+	// 0.0, while the mask's on-page placement offset DrMinY is the ROUNDED top
+	// (round(minY)), an integer the DrawText compositor adds to the rounded
+	// baseline. So the fractional part of the top edge is absorbed into the
+	// mask (grid-fitting it) rather than leaking into per-row coverage.
+	//
 	// Pixel bounds with 1px padding for anti-aliasing.
 	pixMinX := int(math.Floor(float64(minX)))
-	pixMinY := int(math.Floor(float64(minY)))
+	pixMinY := int(math.Round(float64(minY)))
 	pixMaxX := int(math.Ceil(float64(maxX))) + 1
-	pixMaxY := int(math.Ceil(float64(maxY))) + 1
+	// Mask height spans from the exact top edge (offY = minY, mapped to row 0)
+	// down to the outline's bottom, plus 1px AA padding — measured from minY,
+	// not the rounded pixMinY, so the mask fully contains the grid-fitted
+	// outline regardless of the rounding direction.
+	pixMaxY := int(math.Ceil(float64(maxY-minY))) + 1
 
 	w := pixMaxX - pixMinX
-	h := pixMaxY - pixMinY
+	h := pixMaxY
 	if w <= 0 || h <= 0 {
 		return &GlyphInfo{Advance: advFixed}, nil
 	}
 
-	// Rasterize outline to alpha bitmap.
+	// Rasterize outline to alpha bitmap. The vertical origin is the exact
+	// fractional top edge (minY), grid-fitting the outline onto whole rows;
+	// the horizontal origin keeps the existing floor-based placement.
 	r := vector.NewRasterizer(w, h)
 	offX := float32(pixMinX)
-	offY := float32(pixMinY)
+	offY := minY
 	for _, seg := range outline.Segments {
 		switch seg.Op {
 		case ot.SegmentOpMoveTo:
@@ -101,12 +127,14 @@ func RenderGlyph(face *goFont.Face, gid goFont.GID, scale float32) (*GlyphInfo, 
 	alpha := image.NewAlpha(image.Rect(0, 0, w, h))
 	r.Draw(alpha, alpha.Bounds(), image.Opaque, image.Point{})
 
+	// DrMinY is the integer (rounded) top edge used by the compositor to
+	// place the grid-fitted mask; DrMaxY stays consistent as DrMinY + Height.
 	return &GlyphInfo{
 		Advance: advFixed,
 		DrMinX:  int16(pixMinX),
 		DrMinY:  int16(pixMinY),
-		DrMaxX:  int16(pixMaxX),
-		DrMaxY:  int16(pixMaxY),
+		DrMaxX:  int16(pixMinX + w),
+		DrMaxY:  int16(pixMinY + h),
 		Width:   uint16(w),
 		Height:  uint16(h),
 	}, alpha.Pix
