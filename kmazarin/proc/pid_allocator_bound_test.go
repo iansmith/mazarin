@@ -31,6 +31,20 @@ func TestMaxPIDWithinSatelliteArrayBound(t *testing.T) {
 	}
 }
 
+// TestMaxPIDEqualsMaxLiveShepherdsMinusOne pins the EXACT Option A cap, not just
+// the inequality: MaxPID must be MaxLiveShepherds-1 (255), the largest PID that
+// still indexes a [MaxLiveShepherds] satellite array. A looser value (e.g. a
+// needlessly small cap, or an off-by-one that wastes a valid PID) would pass the
+// `< MaxLiveShepherds` bound check but violate the locked decision.
+func TestMaxPIDEqualsMaxLiveShepherdsMinusOne(t *testing.T) {
+	if MaxPID != MaxLiveShepherds-1 {
+		t.Errorf("MaxPID = %d, want MaxLiveShepherds-1 = %d: MAZ-150 Option A pins the cap to the "+
+			"largest PID that still indexes a [MaxLiveShepherds] satellite array; a smaller or "+
+			"off-by-one cap would silently pass the looser `< MaxLiveShepherds` check.",
+			MaxPID, MaxLiveShepherds-1)
+	}
+}
+
 // TestAllocatorNeverExceedsSatelliteArrayBound exhausts the allocator and asserts
 // every issued PID is a valid index into a [MaxLiveShepherds]-sized array.
 func TestAllocatorNeverExceedsSatelliteArrayBound(t *testing.T) {
