@@ -61,11 +61,11 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 	}
 
 	// Check if this is a re-entry after WaitingIO wake.
-	// The TX interrupt handler has already pushed all bytes to the TX ring.
-	// We just need to delegate to the linux shepherd with the byte count.
+	// The TX interrupt handler has already pushed all bytes to the TX ring;
+	// just report the byte count.
 	complete, written := checkAndClearWaitingIO()
 	if complete {
-		return syscallWriteDelegate(fd, bufPtr, uint64(written))
+		return syscallWriteDelegate(uint64(written))
 	}
 
 	// Detect gctrace output: "gc N @..." on stderr (first 3 bytes).
@@ -80,6 +80,19 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 			}
 		}
+	}
+
+	// MAZ-149 — thinned stdio: when fd 1/2 writes are delegated to a shepherd
+	// (the caller is NOT the Write handler itself), route this write through the
+	// blocking delegate so the linux shepherd's FD table decides where the bytes
+	// go (console vs a redirected pipe/file). Skip the kernel UART push entirely
+	// — the shepherd emits its own console output (via SysUartWrite) for
+	// KindStdout/KindStderr. The kernel UART fast path below stays ONLY for
+	// non-delegated writers: the linux shepherd's own output (it can't delegate
+	// to itself — IsDelegated returns false when caller==handler), early boot,
+	// or before a Write handler has registered.
+	if IsDelegated(SysIDWrite, getCurrentThreadSID()) {
+		return DelegateSyscall(sysid.Write, fd, bufPtr, count, 0, 0, 0)
 	}
 
 	// Push bytes to PL011 TX ring buffer.
@@ -118,26 +131,25 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 doneRingPush:
 
 	if userBytesConsumed > 0 {
-		// Short write or full write — delegate with what we pushed.
-		return syscallWriteDelegate(fd, bufPtr, userBytesConsumed)
+		// Short write or full write — report what we pushed to the TX ring.
+		return syscallWriteDelegate(userBytesConsumed)
 	}
 
 	// Ring completely full: block on WaitingIO.
 	return syscallWriteBlock(fd, bufPtr, count)
 }
 
-// syscallWriteDelegate delegates the write to the linux shepherd for display
-// routing, with the byte count adjusted to what was actually pushed to the
-// TX ring. If no delegate is registered (e.g., linux shepherd's own writes),
-// returns the count directly.
+// syscallWriteDelegate returns the byte count for a write that already went out
+// the kernel UART fast path. Post-MAZ-149 it is only reached by NON-delegated
+// writers — a delegated fd 1/2 write short-circuits to a blocking DelegateSyscall
+// above, before the UART push — so there is nothing left to delegate here (and
+// re-delegating a WaitingIO-resumed write, whose bytes are already on the TX
+// ring, would double-emit now that the shepherd is the serial emitter). The two
+// call sites (WaitingIO re-entry, post-ring-push) are both non-delegated by
+// construction, so this just reports what was written.
 //
 //go:noinline
-func syscallWriteDelegate(fd, bufPtr, count uint64) int64 {
-	callerSID := getCurrentThreadSID()
-	if IsDelegated(SysIDWrite, callerSID) {
-		return DelegateSyscall(sysid.Write, fd, bufPtr, count, 0, 0, 0)
-	}
-	// Linux shepherd's own writes: no delegation needed.
+func syscallWriteDelegate(count uint64) int64 {
 	return int64(count)
 }
 

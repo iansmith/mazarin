@@ -284,7 +284,10 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 		})
 	}
 
-	klog.Criticalf("[CE]", "[CloneExec] ok child=%d parent=%d entry=0x%x\n",
+	// MAZ-149: fork/exec success trace on the interrupt-driven ring (Logf), not
+	// the slow direct-poll path (Criticalf). Now that fork/exec is working, a
+	// fork/exec-heavy workload must not inflate the slow UART path.
+	klog.Logf("[CloneExec] ok child=%d parent=%d entry=0x%x\n",
 		newPID, req.CallerShepherd.PID, loadedProc.EntryPoint)
 	return int64(newPID)
 }

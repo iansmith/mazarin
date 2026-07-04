@@ -96,6 +96,15 @@ type syscallHandler struct {
 	// empty table for the child, losing the parent's open FDs (including the
 	// errpipe write-end that os/exec.Run() waits on for EOF).
 	pendingChildFDTs map[int16]*fdtable.Table
+
+	// displayFeed forwards KindStdout/KindStderr bytes to the linux-ui line
+	// accumulator (MAZ-149). fd is 1 (stdout) or 2 (stderr) so the display
+	// keeps them distinct. Set once at startup (startUringDelegateHandler);
+	// nil until then (serial output still works via sys.UartWrite). The impl
+	// must NOT block — it drops on a full display channel, matching the old
+	// fire-and-forget stdout lane — and must own its bytes (the caller's data
+	// page is reclaimed on Reply, so displayFeed copies).
+	displayFeed func(fd byte, data []byte)
 }
 
 // waiterKey identifies a single parked wait4 caller thread. A thread blocks on
@@ -602,6 +611,15 @@ func (h *syscallHandler) handleProcessNotification(ev ipc.ProcessNotification) {
 	case ipc.NotifyTypeChildExit:
 		h.reaper.AddZombie(int32(ev.ParentPid), int32(ev.Pid), int(ev.ExitStatus))
 		h.wakeWait4OnChildExit(int32(ev.ParentPid))
+		// Prompt EOF (MAZ-149): the exited child's FD state — including any
+		// redirected-stdout pipe write-end — is torn down now so a parent
+		// blocked on cmd.Output()'s capture pipe sees EOF. Without this the
+		// pipe writer count stays elevated until the PID is reused (or never),
+		// and the parent's read hangs. This runs on the delegate-loop goroutine
+		// (serial with fork/exec) and reuses the same teardown as the PID-reuse
+		// path; it removes only h.shepherds[pid] (not pendingChildFDTs), so a
+		// concurrently-reused PID's freshly-primed table is untouched.
+		h.evictStaleChildShepherd(int16(ev.Pid))
 	}
 }
 
@@ -1704,7 +1722,29 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 
 	e := fdt.Get(fd)
 	if e == nil || e.Kind == fdtable.KindStdout || e.Kind == fdtable.KindStderr {
-		// stdout/stderr handled by the display path in startDelegateHandler.
+		// MAZ-149: fd 1/2 writes are now delegated here (thinned) rather than
+		// pushed to the UART by the kernel fast path. Emit to the serial console
+		// via sys.UartWrite (the fast interrupt-driven TX ring, CR-before-LF for
+		// terminal compatibility) and to the linux-ui display, preserving the fd
+		// (1 vs 2) so stderr stays distinct. The kernel skips its own UART push
+		// for delegated writers, so this is the only console emit — no double.
+		if len(data) > 0 {
+			// suppressSerialCopy (SUPPRESS_SERIAL_STDIO_COPY) suppresses the
+			// serial copy of delegated stdio; the linux-ui display still gets it.
+			// This flag went dormant while the kernel fast path pushed bytes to
+			// the TX ring itself; thinning makes the shepherd the serial emitter,
+			// so it is consulted again here.
+			if !suppressSerialCopy {
+				sys.UartWrite(addCRBeforeLF(data))
+			}
+			if h.displayFeed != nil {
+				// The caller's data page is reclaimed on Reply; the display
+				// channel is drained asynchronously, so hand it an owned copy.
+				cp := make([]byte, len(data))
+				copy(cp, data)
+				h.displayFeed(byte(fd), cp)
+			}
+		}
 		req.Reply(int64(len(data)))
 		return
 	}

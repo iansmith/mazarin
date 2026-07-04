@@ -194,14 +194,18 @@ func handleDeathNotification(deadSID int16) {
 //     spawns per 180s run reliably crashed the runtime in
 //     traceback.go:resolveInternal).
 //
-//   - Stdout lane (stdoutCh): only Write(fd ≤ 2). Runs concurrently with the
-//     file lane so fs.maz's fmt.Printf can complete even while the file lane
-//     is blocked inside fsclient.call waiting for fs to respond. Touches
-//     only sidStates (mutex-guarded) and dataCh — never fsclient.
+//   - Stdout lane (stdoutCh): only Write(fd ≤ 2). A dedicated goroutine on its
+//     own ring so it runs concurrently with the file lane — fs.maz's fmt.Printf
+//     completes even while the file lane is blocked inside fsclient.call. Since
+//     MAZ-149 these are ordinary BLOCKING delegates: the lane routes each
+//     through handler.handle → sysWrite, which sends KindStdout/Stderr to serial
+//     (sys.UartWrite) + the linux-ui display and KindPipeWrite to the pipe, then
+//     Reply()s. It never blocks on fsclient for a console/pipe write, so it
+//     can't stall behind the file lane.
 //
-// suppressSerialCopy is retained for API parity but no longer consulted in
-// this function (the kernel already pushed bytes to the TX ring before
-// delegating; we just reply and forward to the line accumulator).
+// The serial copy of delegated stdio is gated by the package-level
+// suppressSerialCopy var (read in sysWrite), which MAZ-149 reactivated now that
+// the shepherd — not the kernel fast path — is the serial emitter.
 
 // fileLaneWorkers is the number of persistent goroutines that serve
 // delegated SyscallRequests in parallel. Per-shepherd serialization at
@@ -241,48 +245,39 @@ func fileLaneWorker(workCh <-chan fileLaneWorkItem, handler *syscallHandler) {
 		}
 	}
 }
-func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallRequest, handler *syscallHandler, suppressSerialCopy bool) <-chan delegateMsg {
-	_ = suppressSerialCopy
+func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallRequest, handler *syscallHandler) <-chan delegateMsg {
 	dataCh := make(chan delegateMsg, 32)
+	// MAZ-149: sysWrite forwards KindStdout/KindStderr bytes to the line
+	// accumulator through this non-blocking feed (drops on a full display
+	// channel, matching the old fire-and-forget stdout lane). sysWrite hands
+	// an owned copy, so forwarding the slice to dataCh is safe.
+	handler.displayFeed = func(fd byte, data []byte) {
+		select {
+		case dataCh <- delegateMsg{fd: fd, data: data}:
+		default:
+		}
+	}
 	// Forward stdin decRef completions to the delegate (file) channel.
 	go func() {
 		for sid := range stdinDecRefCh {
 			delegateCh <- stdinDecRefNotification{sid: sid}
 		}
 	}()
-	// Stdout lane — handles fd≤2 Writes only; never blocks on fsclient.
+	// Stdout lane — handles fd≤2 Writes (MAZ-149: now BLOCKING delegates routed
+	// by the FD table). Each request goes through handler.handle → sysWrite,
+	// which routes KindStdout/Stderr to serial + the linux-ui display (via
+	// handler.displayFeed) and KindPipeWrite to the pipe, then Reply()s. The
+	// Reply reclaims the data page — no ReleaseDelegatePage here.
 	//
-	// Write delegation is pipe-buffered (kernel returned the byte count to
-	// the caller at delegate time; the caller did not block waiting for us).
-	// We consume the bytes, forward them into the line accumulator, and
-	// release the shared data page via ReleaseDelegatePage. There is no
-	// Reply() call — the caller is not blocked.
+	// Kept a dedicated goroutine on its own ring (ring 3) so a slow file op on
+	// the file lane can't stall a print. It never blocks on fsclient for a
+	// console/pipe write, so the old pipe-buffered deadlock guard is preserved.
 	go func() {
 		for v := range stdoutCh {
 			sid := v.CallerPID
-			fd := byte(v.Arg0())
-			pageVA := v.DataVA()
 			sidIncRef(sid)
-			data := v.Data()
-			if data == nil {
-				sidDecRef(sid)
-				if pageVA != 0 {
-					sys.ReleaseDelegatePage(pageVA, 1)
-				}
-				continue
-			}
-			dataCopy := make([]byte, len(data))
-			copy(dataCopy, data)
-			// Kernel already pushed bytes to PL011 TX ring before
-			// delegating — no need to echo to UART here.
+			handler.handle(v)
 			sidDecRef(sid)
-			if pageVA != 0 {
-				sys.ReleaseDelegatePage(pageVA, 1)
-			}
-			select {
-			case dataCh <- delegateMsg{fd: fd, data: dataCopy}:
-			default:
-			}
 		}
 	}()
 	// File lane — reader hands each SyscallRequest to a fixed-size persistent
@@ -360,20 +355,21 @@ func addCRBeforeLF(data []byte) []byte {
 //     hints). Reader feeds the relevant typed channels. FS responses
 //     are split out onto Ring 3 to avoid head-of-line blocking from
 //     WM/Font traffic.
-//   - Ring 1: blocking delegated syscalls (Read, Openat, Close, Mkdirat,
+//   - Ring 2: blocking delegated syscalls (Read, Openat, Close, Mkdirat,
 //     Fstat, MmapPageFill, Pwrite64, fd>2 Write, …). Reader feeds
 //     delegateCh; the file-lane goroutine drains it via fsclient.
-//   - Ring 2: pipe-buffered Writes only (Write fd<=2). Reader feeds
-//     stdoutCh; the stdout-lane goroutine consumes the data and
-//     releases the shared page via SysReleaseDelegatePage.
+//   - Ring 3: stdio Writes only (Write fd<=2). Reader feeds stdoutCh; the
+//     stdout-lane goroutine routes each through handler.handle → sysWrite
+//     (console/pipe per the FD table) and Reply()s. Since MAZ-149 these are
+//     ordinary blocking delegates like fd>2 Write — NOT fire-and-forget — so
+//     the reply path reclaims the data page (no SysReleaseDelegatePage).
 //   - Ring 1 (from ShepherdInit): fs IPC responses only (ProtoFSIPCResp →
 //     fsClient.RespCh). Isolated so a backed-up WM/Font channel on
 //     Ring 0 cannot deadlock fsclient callers.
 //
-// The kernel routes Write fd<=2 to ring 2 because the linux shepherd
-// calls SysRegisterStdioWriteRing(2). All other syscalls — including
-// Write fd>2 — flow through ring 1 per their normal RegisterSyscall-
-// Handler ringIdx (1).
+// The kernel routes Write fd<=2 to ring 3 because the linux shepherd calls
+// SysRegisterStdioWriteRing(3). All other delegated syscalls — including
+// Write fd>2 — flow through ring 2 per their RegisterSyscallHandler ringIdx.
 func startUringDispatchers(fsClient fsclient.FSClient, delegateCh chan any, stdoutCh chan sys.SyscallRequest, wmCh chan any, fontReplyCh chan any) {
 	// Ring 0: shepherd IPC
 	ipcDispatcher := uring.NewDispatcher() // ring 0 (default)
@@ -423,11 +419,10 @@ func startUringDispatchers(fsClient fsclient.FSClient, delegateCh chan any, stdo
 	delegateDispatcher.Start()
 	fmt.Printf("[linux] uring dispatcher ring=2 started (delegated syscalls)\n")
 
-	// Ring 3: pipe-buffered stdio Writes only (Write fd<=2 via the
-	// SysRegisterStdioWriteRing override). The reader does the minimum
-	// amount of work — hand the request to the stdout-lane goroutine
-	// over stdoutCh and return — so stdio can't be backpressured by a
-	// busy file lane on ring 1.
+	// Ring 3: stdio Writes only (Write fd<=2 via the SysRegisterStdioWriteRing
+	// override). The reader does the minimum amount of work — hand the request
+	// to the stdout-lane goroutine over stdoutCh and return — so stdio can't be
+	// backpressured by a busy file lane on ring 2.
 	stdioDispatcher := uring.NewDispatcherWithRing(3)
 	stdioDispatcher.OnFunc(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, func(v any) {
 		req, ok := v.(sys.SyscallRequest)
@@ -681,16 +676,16 @@ func MazarinMain() {
 		sys.UartWriteString(fmt.Sprintf("[linux] RegisterSyscallHandlers failed: %v\n", delegateErr))
 	}
 
-	// Route pipe-buffered stdio Writes (Write fd<=2) to ring 2 instead
-	// of the default ring (ring 1). The kernel checks this on every
-	// Write delegate; fd>2 Writes still flow through ring 1.
+	// Route stdio Writes (Write fd<=2) to ring 3 (their own dedicated lane)
+	// instead of the file-lane ring (ring 2). The kernel checks this on every
+	// Write delegate; fd>2 Writes still flow through ring 2.
 	if err := sys.RegisterStdioWriteRing(3); err != nil {
 		sys.UartWriteString(fmt.Sprintf("[linux] RegisterStdioWriteRing(3) failed: %v\n", err))
 	}
 
 	var delegateDataCh <-chan delegateMsg
 	if delegateErr == nil {
-		delegateDataCh = startUringDelegateHandler(delegateCh, stdoutCh, handler, suppressSerialCopy)
+		delegateDataCh = startUringDelegateHandler(delegateCh, stdoutCh, handler)
 	}
 
 	// 7. Serial port soft IRQ.

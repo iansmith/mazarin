@@ -74,13 +74,13 @@ type DelegateCallInfo struct {
 }
 
 
-// stdioWriteRingIdx — kernel-side override for pipe-buffered Write
-// delegation. When set, fd<=2 Writes are sent on this ring index of
-// the registered Write handler instead of the handler's default ring
-// (set via RegisterSyscallHandler). The override exists so stdio
-// backpressure can't starve the blocking-delegate ring (or vice versa)
-// when both share the same handler. -1 = unset (no override; pipe
-// Writes use the default ring of the Write handler).
+// stdioWriteRingIdx — kernel-side override for the ring a stdio (fd<=2) Write
+// delegate is sent on. When set, fd<=2 Writes go to this ring index of the
+// registered Write handler instead of the handler's default ring (set via
+// RegisterSyscallHandler). The override exists so stdio backpressure can't
+// starve the file-lane delegate ring (or vice versa) when both share the same
+// handler. -1 = unset (no override; stdio Writes use the Write handler's
+// default ring).
 //
 // Set via SyscallRegisterStdioWriteRing. Read on every Write delegate.
 // int32 (not uint8) for atomic alignment; values ≤ MaxRingsPerShepherd.
@@ -463,30 +463,25 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		prefaultOutputBuffer(callerBufVA, uintptr(callerBufLen))
 	}
 
-	// Pipe-buffered Write delegation: on Linux, write(fd=1/2) to a stdout pipe
-	// returns near-instantly once the bytes land in the pipe buffer — the
-	// reader consumes asynchronously. Mazzy's synchronous delegate-and-block
-	// pattern would turn the same call into a cross-process IPC round-trip
-	// that can close deadlock cycles (handler fmt.Printf inside a delegate
-	// handler → linux Write delegate → linux waiting on the handler that's
-	// waiting for the original delegate). For stdio Write we therefore:
-	//   - Skip delegateCallInfos InUse tracking (no Reply expected; the
-	//     handler will free the data page via SysReleaseDelegatePage).
-	//   - Skip blockForDelegatedSyscall; return the byte count immediately.
-	// All other delegated syscalls (incl. write to fd>2) keep the original
-	// block-until-reply semantics, because the handler must report the
-	// actual number of bytes written by the underlying file system and the
-	// kernel must reclaim the data page on Reply rather than relying on the
-	// handler to do so.
+	// stdio Write lane (MAZ-149): a write(fd<=2) is routed to the linux
+	// shepherd's DEDICATED stdio ring (ring 3), kept separate from the file
+	// lane so a slow openat/read can't stall a print. But it is otherwise an
+	// ordinary BLOCKING delegate — the shepherd routes it via its FD table
+	// (KindStdout/Stderr → console, KindPipeWrite → pipe, KindFile → fs) and
+	// Replies the byte count, exactly like a fd>2 write.
 	//
-	// IMPORTANT: pipe-buffering is gated on fd<=2 so it only applies to the
-	// linux shepherd's stdout/stderr lane (which calls SysReleaseDelegatePage).
-	// If we pipe-buffered fd>2 Writes too, the linux file lane's req.Reply()
-	// would arrive at the kernel as a stale SyscallReply targeting whatever
-	// delegate the caller TID is currently blocked on — unmapping that
-	// (unrelated) syscall's data page and corrupting its return value.
-	pipeBuffered := id == sysid.Write && arg0 <= 2
-	if !pipeBuffered && int(callerTID) < MaxDelegateThreads {
+	// Why blocking is safe here (was fire-and-forget before to dodge a
+	// deadlock): the linux shepherd's OWN stdio writes never reach this path —
+	// IsDelegated (write.go / L116) returns false when caller==handler, so
+	// linux-self output goes straight to the kernel UART, never delegates, and
+	// can't wait on itself. A non-linux shepherd blocking on the stdio lane is
+	// ordinary delegation, and the stdio-lane handler does not block on another
+	// shepherd for a console/pipe write, so no delegate-handler-printf cycle
+	// can form. InUse tracking is now set (like any blocking delegate) so the
+	// reply path reclaims the data page on Reply instead of the handler calling
+	// SysReleaseDelegatePage.
+	stdioLane := id == sysid.Write && arg0 <= 2
+	if int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
 		info.DataPagePA = dataPagePA
 		info.DataPageVA = handlerDataVA
@@ -509,11 +504,11 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		DataLen:   dataLen,
 	}
 	msg := ipc.EncodeFSDelegateReq(&reqPayload)
-	// Pipe-buffered Writes (fd<=2) get routed to the stdio override ring
+	// Stdio Writes (fd<=2) get routed to the dedicated stdio override ring
 	// when one is registered. Same handler shepherd, different ring —
 	// the kernel-half of the "stdio on its own ring" backpressure split.
 	handlerRingIdx := syscallDelegates[id].ringIdx
-	if pipeBuffered {
+	if stdioLane {
 		if r := atomic.LoadInt32(&stdioWriteRingIdx); r >= 0 {
 			handlerRingIdx = uint8(r)
 		}
@@ -521,20 +516,13 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	result, _ := uringSendKernel(-1, handlerSID, handlerRingIdx, uintptr(unsafe.Pointer(&msg)))
 	if result < 0 {
 		// Ring full or target gone — reclaim and fail.
-		if !pipeBuffered && int(callerTID) < MaxDelegateThreads {
+		if int(callerTID) < MaxDelegateThreads {
 			delegateCallInfos[callerTID].InUse = false
 		}
 		reclaimDataPage(dataPagePA, handlerDataVA, handlerSID, handlerShepherd)
 		klog.Errf("[DLG] uring send failed sysid=%d handler=%d ring=%d\n",
 			uint32(id), int32(handlerSID), uint32(handlerRingIdx))
 		return -11 // EAGAIN
-	}
-
-	if pipeBuffered {
-		// Linux-pipe semantics: bytes are in the handler's ring buffer
-		// (uring queue); return bytes-written count to caller without
-		// blocking. Handler consumes asynchronously.
-		return int64(dataLen)
 	}
 
 	// Block the caller until the handler replies via SyscallReply.

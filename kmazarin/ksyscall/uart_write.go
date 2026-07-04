@@ -4,7 +4,16 @@ package ksyscall
 //
 // Allows userspace shepherds (particularly linux) to push bytes directly
 // into the UART output path. This decouples screen rendering (fast, handled
-// by linux via delegated SyscallWrite) from serial output (slow, UART speed).
+// by linux via delegated SyscallWrite) from serial output.
+//
+// Bytes go through the interrupt-driven TX ring (serial.QueueByteTry), the same
+// fast path SyscallWrite's fd 1/2 fast path uses — NOT the byte-at-a-time
+// polling path. A byte that doesn't fit the ring falls back to serial.PollWrite
+// so a status message is never silently dropped (matches the old guaranteed-
+// delivery contract, but only pays the slow-poll cost under ring pressure).
+// This matters because the linux shepherd routes real program stdout/stderr
+// through SysUartWrite once fd 1/2 writes are thinned onto the FD table
+// (MAZ-149): that traffic must not land on the slow direct-poll path.
 
 import (
 	"mazzy/kmazarin/kmem"
@@ -54,7 +63,12 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 			return -14 // EFAULT
 		}
 		for i := uint64(0); i < n; i++ {
-			serial.PollWrite(chunk[i])
+			// Fast path: push onto the interrupt-driven TX ring. Only if the
+			// ring is full (or not yet initialized) fall back to the slow,
+			// guaranteed byte-poll so the byte is never dropped.
+			if !serial.QueueByteTry(chunk[i]) {
+				serial.PollWrite(chunk[i])
+			}
 			written++
 		}
 		offset += n
