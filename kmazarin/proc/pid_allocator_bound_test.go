@@ -2,12 +2,13 @@
 //
 // The kernel allocates every shepherd/child PID from PIDAllocator over
 // [MinPID, MaxPID]. Several kernel-side arrays — notifyQueues
-// (ksyscall/constraint_notify.go), deathSubscribers (ksyscall/death_subscribe.go),
-// uringIPCSlots/uringIDMap (kmazarin/uring_ipc.go), the channel pending-message
-// arrays (kmazarin/channels.go), and deferredCleanups (kmazarin/threads.go) — are
-// sized [MaxLiveShepherds] and indexed DIRECTLY by the raw ShepherdId, rejecting
-// any PID >= MaxLiveShepherds. So the allocator must never hand out a PID that
-// would overflow (or be silently rejected by) those satellite arrays.
+// (ksyscall/constraint_notify.go), the uring IPC slots (kmazarin/uring_ipc.go), and
+// the channel pending-message arrays (kmazarin/channels.go) — are sized
+// [MaxLiveShepherds] and indexed DIRECTLY by the raw ShepherdId, rejecting any
+// PID >= MaxLiveShepherds. So the allocator must never hand out a PID that would
+// overflow (or be silently rejected by) those satellite arrays. (Pools that
+// linear-scan a stored SID field — deathSubscribers, uringIDMap, deferredCleanups —
+// bound the live count, not the PID value, so they don't constrain MaxPID.)
 //
 // Option A (Ian, 2026-07-04): cap MaxPID to MaxLiveShepherds-1 so raw-PID indexing
 // stays valid without widening the arrays. These tests fail on the current code

@@ -252,7 +252,8 @@ const ReservedKernelThreads = 8
 // ReservedKernelShepherds is the number of PIDs reserved for the kernel and
 // not handed out by shepherdIdAllocator. Per MAZ-68: PID 0 is invalid (Linux
 // convention) and PID 1 is the kernel sentinel. Userspace shepherds receive
-// PIDs from [proc.MinPID, proc.MaxPID] = [2, 4095].
+// PIDs from [proc.MinPID, proc.MaxPID] (MAZ-150 Option A caps MaxPID at
+// MaxLiveShepherds-1).
 const ReservedKernelShepherds = int(proc.MinPID) // = 2
 
 // startingTicksProgram is the CNTVCT_EL0 value when all shepherds are launched.

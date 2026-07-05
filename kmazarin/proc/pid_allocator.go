@@ -27,17 +27,24 @@ const (
 
 	// MaxPID is the highest allocatable PID.
 	//
-	// MAZ-150 (Option A): capped to MaxLiveShepherds-1 so an allocated PID is always
-	// a valid direct index into the kernel's raw-PID-indexed satellite arrays
-	// (notifyQueues, deathSubscribers, the uring IPC slots, the channel
-	// pending-message arrays, deferredCleanups) — all sized [MaxLiveShepherds]. A PID
-	// also doubles as a hardware TLB context tag; [MinPID, MaxLiveShepherds-1] fits
-	// both x86 PCID (12-bit) and ARM64 ASID (16-bit).
+	// MAZ-150 (Option A): capped to MaxLiveShepherds-1 so an allocated PID is always a
+	// valid direct index into the kernel arrays that index by raw ShepherdId and are
+	// sized [MaxLiveShepherds] — notifyQueues (ksyscall/constraint_notify.go), the
+	// uring IPC slots (kmazarin/uring_ipc.go), and the channel pending-message arrays
+	// (kmazarin/channels.go). (Other per-shepherd pools — deathSubscribers, uringIDMap,
+	// deferredCleanups — linear-scan a stored SID field, so they bound the live COUNT,
+	// not the PID value, and do not constrain MaxPID.)
+	//
+	// On ARM64 the PID is also the live TLB ASID (kmem.SwitchTTBR0WithASID); the range
+	// fits the 16-bit ASID field. x86_64 does NOT currently tag TLB entries with the
+	// PID (CR3 zeroes the PCID bits, see kmem/asm_barriers_amd64.s), but the range also
+	// fits the 12-bit PCID field for if/when that is wired — arch divergence, flagged
+	// per CLAUDE.md.
 	//
 	// This shortens the monotonic runway to MaxLiveShepherds-MinPID spawns before the
-	// cursor wraps. MAZ-152 slot-maps the satellite arrays and restores the full
-	// 12-bit range (MaxPID = 4095) with no memory blow-up; update this + the Phase 0
-	// bound tests when that lands.
+	// cursor wraps. MAZ-152 slot-maps the raw-indexed arrays to restore the full range
+	// (MaxPID = 4095) with no memory blow-up; update this, the compile-time guard
+	// below, and the Phase 0 bound tests when that lands.
 	MaxPID ShepherdId = MaxLiveShepherds - 1
 )
 
@@ -47,6 +54,14 @@ var ErrPIDExhausted = errors.New("proc: all PIDs in use")
 
 // pidRangeSize is the number of allocatable PIDs in [MinPID, MaxPID].
 const pidRangeSize = MaxPID - MinPID + 1
+
+// Compile-time invariant (MAZ-150 Option A): every allocatable PID must be a valid
+// index into the [MaxLiveShepherds]-sized kernel arrays that index by raw ShepherdId
+// (notifyQueues, the uring IPC slots, the channel pending-message arrays), i.e.
+// MaxPID < MaxLiveShepherds. If MAZ-152 lifts MaxPID past this without first
+// slot-mapping those arrays, converting the resulting negative constant to uint
+// fails to compile.
+const _ = uint(int(MaxLiveShepherds) - 1 - int(MaxPID))
 
 // PIDAllocator allocates ShepherdId values in [MinPID, MaxPID].
 //
