@@ -1,29 +1,24 @@
 version: '3'
 
 tasks:
+  # The overlay tasks are deliberately always-run (no sources/generates):
+  # the generated JSON embeds absolute GOROOT paths, and a toolchain upgrade
+  # changes GOROOT without touching runtime-patches/ — fingerprinting on the
+  # patch files alone reused a stale JSON and silently linked the STOCK
+  # runtime (MAZ-154). gen-overlay is <1s; downstream kernel targets
+  # fingerprint the JSON content, so an unchanged regeneration triggers no
+  # rebuild.
   arm64-overlay:
     run: once
-    method: checksum
     desc: Generate runtime overlay JSON for kmazarin (ARM64)
     deps: [':build-dir']
-    sources:
-      - '{{.RUNTIME_PATCHES_DIR}}/**/*.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/**/*.s'
-    generates:
-      - '{{.KMAZARIN_OVERLAY_JSON}}'
     cmds:
       - '{{.GO}} tool gen-overlay -type kmazarin -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_OVERLAY_JSON}}'
 
   x86_64-overlay:
     run: once
-    method: checksum
     desc: Generate runtime overlay JSON for kmazarin (x86_64)
     deps: [':build-dir']
-    sources:
-      - '{{.RUNTIME_PATCHES_DIR}}/**/*.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/**/*.s'
-    generates:
-      - '{{.KMAZARIN_AMD64_OVERLAY_JSON}}'
     cmds:
       - '{{.GO}} tool gen-overlay -type kmazarin-amd64 -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_AMD64_OVERLAY_JSON}}'
 

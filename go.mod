@@ -1,6 +1,16 @@
 module mazzy
 
+// NOTE (MAZ-154): runtime-patches/ and mazlink-patches/ are rebased onto the
+// go1.26.4 runtime/cmd sources — the toolchain directive below pins that
+// version explicitly. When upgrading Go: diff every file the overlay JSONs
+// map (gen-overlay output) between the old and new GOROOT, re-apply the
+// patch hunks onto any file that drifted, then bump the directive AND the
+// check-env -min gate together. bin/mazgo must be >= the directive version
+// before .maz builds run; the always-run overlay tasks force its rebuild on
+// a GOROOT change, so a stale mazgo self-heals on the next task build.
 go 1.26.2
+
+toolchain go1.26.4
 
 require (
 	github.com/blevesearch/bleve/v2 v2.5.7

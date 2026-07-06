@@ -234,8 +234,10 @@ tasks:
     cmds:
       # Check GOTOOLCHAIN
       - '{{.GO}} tool go-env -check GOTOOLCHAIN=auto -msg "GOTOOLCHAIN must be ''auto''. Run: export GOTOOLCHAIN=auto"'
-      # Check Go version >= 1.24
-      - '{{.GO}} tool check-version -go {{.GO}} -min 1.24'
+      # Check Go version >= 1.26.4 — runtime-patches/ is rebased onto the
+      # 1.26.4 runtime sources (MAZ-154); an older local go recreates the
+      # sysReserveAligned collision in reverse at kernel link time.
+      - '{{.GO}} tool check-version -go {{.GO}} -min 1.26.4'
       # Check QEMU version >= 10.2
       - '{{.GO}} tool check-version -qemu {{.QEMU}} -min 10.2'
       # Verify KMAZARIN_LOAD_ADDR matches the constant
@@ -278,14 +280,14 @@ tasks:
   # Mazlink — patched Go linker for plugin-shape output (no cgo)
   # ===========================================================================
 
+  # Deliberately always-run (no sources/generates): the JSON embeds absolute
+  # GOROOT paths, and a toolchain upgrade changes GOROOT without touching
+  # mazlink-patches/ — fingerprinting on the patch files alone reused a stale
+  # JSON (MAZ-154). Downstream builds fingerprint the JSON itself.
   mazlink-overlay:
     run: once
     desc: Generate overlay JSON from mazlink-patches/ onto stock cmd/link sources
     deps: [build-dir]
-    sources:
-      - '{{.MAZLINK_PATCHES_DIR}}/**/*'
-    generates:
-      - '{{.MAZLINK_OVERLAY_JSON}}'
     cmds:
       - '{{.GO}} tool gen-overlay -type mazlink -patches {{.MAZLINK_PATCHES_DIR}} -o {{.MAZLINK_OVERLAY_JSON}}'
 
