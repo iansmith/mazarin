@@ -32,6 +32,10 @@ tasks:
       - '**/*.h'
       - '{{.FS_ELF}}'
       - 'config/kernel.arm64.toml'
+      # The staged copies the go:embed directives actually consume — catches
+      # a hand-edited staged file that the build-dir originals wouldn't.
+      - 'kmazarin/kmazarin/fs_arm64.elf'
+      - 'kmazarin/kmazarin/kernel_arm64.toml'
       - '../shared/**/*.go'
       - '../mazarin/**/*.go'
       - '{{.KMAZARIN_OVERLAY_JSON}}'
@@ -69,6 +73,10 @@ tasks:
       - '**/*.h'
       - '{{.FS_AMD64_ELF}}'
       - 'config/kernel.amd64.toml'
+      # The staged copies the go:embed directives actually consume — catches
+      # a hand-edited staged file that the build-dir originals wouldn't.
+      - 'kmazarin/kmazarin/fs_amd64.elf'
+      - 'kmazarin/kmazarin/kernel_amd64.toml'
       - '../shared/**/*.go'
       - '../mazarin/**/*.go'
       - '{{.KMAZARIN_AMD64_OVERLAY_JSON}}'

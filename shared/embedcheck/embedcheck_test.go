@@ -261,6 +261,37 @@ func TestConfigMarkerMissingFailsBothDirections(t *testing.T) {
 	}
 }
 
+// TestConfigMarkersMatchRealConfigFiles ties the marker constants to the
+// live config files: each arch's config must carry its own marker line and
+// must never contain the other arch's (the amd64 file legitimately mentions
+// "kernel.arm64.toml" in cross-references, but never the full header line).
+// This runs on a fresh checkout — no build artifacts needed — and turns a
+// cosmetic header-comment edit into a pointed test failure instead of a
+// confusing embedaudit build break.
+func TestConfigMarkersMatchRealConfigFiles(t *testing.T) {
+	cases := []struct {
+		path         string
+		want, reject string
+	}{
+		{filepath.Join("..", "..", "config", "kernel.arm64.toml"), ConfigMarkerARM64, ConfigMarkerAMD64},
+		{filepath.Join("..", "..", "config", "kernel.amd64.toml"), ConfigMarkerAMD64, ConfigMarkerARM64},
+	}
+	for _, c := range cases {
+		t.Run(filepath.Base(c.path), func(t *testing.T) {
+			data, err := os.ReadFile(c.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), c.want) {
+				t.Errorf("%s no longer contains its marker line %q — update the file header or the embedcheck constant together", c.path, c.want)
+			}
+			if strings.Contains(string(data), c.reject) {
+				t.Errorf("%s contains the OTHER arch's marker line %q — this would fail every embedaudit for that arch", c.path, c.reject)
+			}
+		})
+	}
+}
+
 // TestBuiltKernelArtifacts audits the kernels actually produced by the build
 // system, when present. This is the MAZ-153 regression tripwire: a kernel
 // whose embedded fs shepherd or kernel.toml came from the other architecture
