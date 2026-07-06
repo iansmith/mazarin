@@ -27,6 +27,13 @@ path = "/mail.maz"
 name = "net"
 path = "/net.elf"
 
+# MAZ-114 fork+exec+wait4 end-to-end acceptance smoke, bundled on amd64 for
+# MAZ-149 x86 parity (stage 2 = redirected-stdout DoD). forkexecchild.elf is
+# NOT launched at boot — forkexectest fork/exec's it on demand.
+[[shepherd]]
+name = "forkexectest"
+path = "/forkexectest.elf"
+
 # MAZ-43 boot-time smoke for end-to-end HTTPS+JSON connectivity to
 # api.anthropic.com via mazarin's network stack. Asks Claude one
 # question and asserts "Washington" in the response. amd64 entry

@@ -24,10 +24,12 @@ import (
 )
 
 // CloneExecParamsHeaderSize is the fixed-size header that prefixes the params
-// region. All five lengths are uint32 LE; the trailing reserved word keeps the
-// header 8-byte aligned so the IntentOp array (4-byte fields) that may follow
-// the blobs stays naturally aligned if a future reader maps it in place.
-const CloneExecParamsHeaderSize = 24
+// region. All five lengths are uint32 LE ([0:20]), then the vfork caller
+// TID/SID pair (two int16 LE, [20:24]), the child's stdio redirect mask
+// ([24], MAZ-149), and reserved-zero padding ([25:32]) that keeps the header
+// 8-byte aligned so the IntentOp array (4-byte fields) that may follow the
+// blobs stays naturally aligned if a future reader maps it in place.
+const CloneExecParamsHeaderSize = 32
 
 // CloneExecArgMax bounds the marshaled params region (argv + envp + intent +
 // cwd + filename + header). It mirrors a Linux-like ARG_MAX ceiling so a
@@ -35,6 +37,19 @@ const CloneExecParamsHeaderSize = 24
 // user stack. 128 KiB matches the conservative end of Linux's ARG_MAX range
 // and comfortably fits the largest realistic `go build` invocation.
 const CloneExecArgMax = 128 * 1024
+
+// StdioRedirectFd1/Fd2 are the bit assignments of the per-process stdio
+// redirect mask (MAZ-149). The mask travels params header byte [24] →
+// CloneExecRequest → Shepherd.StdioRedirectMask; a set bit means that fd is
+// redirected away from the console (pipe/file), so the kernel's SyscallWrite
+// must route the write through the blocking delegate instead of the console
+// fast path. Defined here — the single wire-format source of truth — so the
+// shepherd-side producer (sysExecve) and the kernel-side consumer
+// (SyscallWrite) cannot drift.
+const (
+	StdioRedirectFd1 uint8 = 1 << 0 // fd 1 (stdout) redirected
+	StdioRedirectFd2 uint8 = 1 << 1 // fd 2 (stderr) redirected
+)
 
 // ErrCloneExecParamsMalformed is returned by UnmarshalCloneExecParams when the
 // blob is too short for its declared header or the declared section lengths run
@@ -73,8 +88,15 @@ const intentOpBytes = 16
 // contiguous params region: a fixed header followed by packed argv, packed
 // envp, the intent ops, the cwd, and the filename. argv/envp are passed
 // already-packed (the marshaler is the terminal consumer of the caller's argv).
+// vforkCallerTID is the kernel TID of the vfork transient thread that issued
+// the execve, and vforkCallerSID is that thread's shepherd SID (the real parent,
+// not the linux delegate). Both are 0 for non-vfork calls.
+// stdioRedirectMask is the child's per-process stdio redirect mask (MAZ-149):
+// bit 0 = fd 1 redirected away from the console, bit 1 = fd 2. The kernel
+// stores it on the child Shepherd at creation so SyscallWrite can split
+// console (fast path) from redirected (blocking delegate) writes.
 // Returns ErrCloneExecArgTooBig if the region would exceed CloneExecArgMax.
-func MarshalCloneExecParams(packedArgv, packedEnvp []byte, intent []IntentOp, cwd, filename []byte) ([]byte, error) {
+func MarshalCloneExecParams(packedArgv, packedEnvp []byte, intent []IntentOp, cwd, filename []byte, vforkCallerTID, vforkCallerSID int16, stdioRedirectMask uint8) ([]byte, error) {
 	total := CloneExecParamsHeaderSize + len(packedArgv) + len(packedEnvp) +
 		len(intent)*intentOpBytes + len(cwd) + len(filename)
 	if total > CloneExecArgMax {
@@ -87,7 +109,11 @@ func MarshalCloneExecParams(packedArgv, packedEnvp []byte, intent []IntentOp, cw
 	binary.LittleEndian.PutUint32(out[8:12], uint32(len(intent)))
 	binary.LittleEndian.PutUint32(out[12:16], uint32(len(cwd)))
 	binary.LittleEndian.PutUint32(out[16:20], uint32(len(filename)))
-	// out[20:24] reserved (zero).
+	// [20:22] = vforkCallerTID (int16 LE), [22:24] = vforkCallerSID (int16 LE).
+	binary.LittleEndian.PutUint16(out[20:22], uint16(vforkCallerTID))
+	binary.LittleEndian.PutUint16(out[22:24], uint16(vforkCallerSID))
+	// [24] = stdioRedirectMask; [25:32] reserved-zero.
+	out[24] = stdioRedirectMask
 
 	off := CloneExecParamsHeaderSize
 	off += copy(out[off:], packedArgv)
@@ -104,11 +130,20 @@ func MarshalCloneExecParams(packedArgv, packedEnvp []byte, intent []IntentOp, cw
 // CloneExecParams is the decoded view of a params region. Its byte slices ALIAS
 // the source blob; the caller keeps the blob alive for their lifetime.
 type CloneExecParams struct {
-	Argv     [][]byte
-	Envp     [][]byte
-	Intent   []IntentOp
-	Cwd      []byte
-	Filename []byte
+	Argv           [][]byte
+	Envp           [][]byte
+	Intent         []IntentOp
+	Cwd            []byte
+	Filename       []byte
+	VforkCallerTID int16 // kernel TID of the transient vfork thread, or 0
+	VforkCallerSID int16 // shepherd SID of the real parent (not linux delegate), or 0
+
+	// StdioRedirectMask is the child's per-process stdio redirect mask
+	// (MAZ-149): bit 0 = fd 1 redirected away from the console, bit 1 = fd 2.
+	// Stored on the child Shepherd at creation (SetStartupState) so the
+	// kernel's SyscallWrite can split console (fast path) from redirected
+	// (blocking delegate) without a shepherd round trip.
+	StdioRedirectMask uint8
 }
 
 // UnmarshalCloneExecParams decodes a params region produced by
@@ -123,6 +158,9 @@ func UnmarshalCloneExecParams(blob []byte) (CloneExecParams, error) {
 	intentCount := int(binary.LittleEndian.Uint32(blob[8:12]))
 	cwdLen := int(binary.LittleEndian.Uint32(blob[12:16]))
 	filenameLen := int(binary.LittleEndian.Uint32(blob[16:20]))
+	vforkCallerTID := int16(binary.LittleEndian.Uint16(blob[20:22]))
+	vforkCallerSID := int16(binary.LittleEndian.Uint16(blob[22:24]))
+	stdioRedirectMask := blob[24]
 
 	off := CloneExecParamsHeaderSize
 	end := off + argvLen + envpLen + intentCount*intentOpBytes + cwdLen + filenameLen
@@ -144,11 +182,14 @@ func UnmarshalCloneExecParams(blob []byte) (CloneExecParams, error) {
 	filename := blob[off : off+filenameLen]
 
 	return CloneExecParams{
-		Argv:     UnpackArgv(argvBlob),
-		Envp:     UnpackArgv(envpBlob),
-		Intent:   intent,
-		Cwd:      cwd,
-		Filename: filename,
+		Argv:              UnpackArgv(argvBlob),
+		Envp:              UnpackArgv(envpBlob),
+		Intent:            intent,
+		Cwd:               cwd,
+		Filename:          filename,
+		VforkCallerTID:    vforkCallerTID,
+		VforkCallerSID:    vforkCallerSID,
+		StdioRedirectMask: stdioRedirectMask,
 	}, nil
 }
 

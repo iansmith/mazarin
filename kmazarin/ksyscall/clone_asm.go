@@ -21,9 +21,16 @@ func ReserveChildPID() int16
 // Returns a reserved PID back to the allocator on failure/abort.
 func ReleaseChildPID(pid int16)
 
-// GetVforkReservedPID is provided by main package via go:linkname.
-// Retrieves the reserved PID for the current (transient) thread. Returns ShepherdId (int16).
-func GetVforkReservedPID() int16
+// GetVforkReservedPIDForTID is provided by main package via go:linkname.
+// Retrieves the reserved PID for the given kernel TID. Used by SyscallCloneExec
+// to look up the vfork table using the CallerTID from the params blob.
+// Returns ShepherdId (int16), or 0 if tid is not a known transient vfork thread.
+func GetVforkReservedPIDForTID(tid int16) int16
+
+// ReapVforkTransient is provided by main package via go:linkname.
+// Terminates a transient vfork thread (by TID) from outside its own SVC context.
+// Returns true if the thread was found and reaped, false otherwise.
+func ReapVforkTransient(tid int16) bool
 
 // IsTransientVforkThread is provided by main package via go:linkname.
 // Reports whether the current thread is a transient vfork thread (VforkTransient=1).

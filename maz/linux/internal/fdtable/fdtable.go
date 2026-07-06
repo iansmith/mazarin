@@ -180,6 +180,12 @@ func (t *Table) Each(fn func(fd int, e *Entry) bool) {
 // or stdio) are freed without a callback. The callback decouples the sweep
 // from the fs IPC client so it is host-testable.
 //
+// For pipe entries, Pipe.Close() is called unconditionally so the shared
+// pipe buffer's writer reference count is decremented. This is the mechanism
+// by which the parent's errpipe read-end receives EOF after exec: the write-end
+// was opened O_CLOEXEC, so its Close() here drops writers to zero, unblocking
+// the parent's os/exec.Run().
+//
 // Unlike sysClose, this does not preserve orphaned handles for surviving
 // mmaps: exec replaces the address space, so there are no surviving mappings
 // to flush.
@@ -191,8 +197,41 @@ func (t *Table) CloseCloexecFDs(closeHandle func(handle uint32)) {
 		if e.Handle != 0 && closeHandle != nil {
 			closeHandle(e.Handle)
 		}
+		if e.Pipe != nil {
+			e.Pipe.Close()
+		}
 		t.Free(fd)
 	}
+}
+
+// Copy returns a deep copy of the Table for fork(2) FD inheritance. Each
+// entry gets an independent Entry struct so the child can freely close or dup
+// FDs without affecting the parent's table. Cwd is copied verbatim.
+//
+// Pipe entries are handled via Fork(): each End shares the same underlying
+// pipe buffer but gets its own closed/isWriter state. For write ends, Fork()
+// increments the shared writer count so that Close on the child's End
+// decrements it to the pre-fork count, and a later Close on the parent's End
+// decrements it to zero — only then does the read end see EOF. This mirrors
+// Linux's get_file() reference-count increment inside copy_files().
+//
+// WriteBuf is zeroed on every copied entry (write buffers are per-fd, like
+// Dup3 — they must not be shared across a fork boundary).
+func (t *Table) Copy() *Table {
+	child := &Table{Cwd: t.Cwd}
+	for fd, e := range t.entries {
+		if e == nil {
+			continue
+		}
+		dup := *e          // independent Entry struct (value copy of all fields)
+		dup.WriteBuf = nil // write buffers are per-fd, never inherited
+		dup.WriteBufOff = 0
+		if e.Pipe != nil {
+			dup.Pipe = e.Pipe.Fork()
+		}
+		child.entries[fd] = &dup
+	}
+	return child
 }
 
 // Dup3 implements dup3(oldfd, newfd, flags): it makes newfd refer to the same
@@ -216,6 +255,14 @@ func (t *Table) CloseCloexecFDs(closeHandle func(handle uint32)) {
 // so a copy is the closest approximation and is sufficient for the fork/exec
 // inheritance use case.) The copy never inherits oldfd's WriteBuf: a half-built
 // write buffer belongs to one fd, not its dup.
+//
+// A pipe entry's End is Fork()'d rather than aliased, mirroring Copy(): oldfd
+// and newfd become independent references to the same shared buffer, each
+// needing its own Close() to drop the writer count. Without this, closing
+// oldfd (the usual dup3-then-close-the-original dance os/exec does when
+// relocating a pipe fd onto 0/1/2) would mark the SAME End closed, silently
+// starving newfd's writer reference and making the reader see EOF before
+// newfd is ever closed.
 //
 // closeNewFD, if non-nil, is invoked with the entry that previously occupied
 // newfd (still installed at that slot when the callback runs), so the caller
@@ -246,6 +293,9 @@ func (t *Table) Dup3(oldfd, newfd int, flags int32, closeNewFD func(e *Entry)) (
 	dup.WriteBuf = nil
 	dup.WriteBufOff = 0
 	dup.Cloexec = CloexecFromFlags(flags)
+	if old.Pipe != nil {
+		dup.Pipe = old.Pipe.Fork()
+	}
 	t.Put(newfd, &dup)
 	return newfd, 0
 }

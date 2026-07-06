@@ -3,11 +3,17 @@ package ksyscall
 
 // write.go — SyscallWrite implementation.
 //
-// For fd 1/2 (stdout/stderr): pushes bytes to the PL011 TX ring buffer
-// (actual UART output), then delegates to the linux shepherd for display
-// routing (line accumulation, linux-ui). If the TX ring is completely full,
-// the thread blocks on WaitingIO; the TX interrupt top-half drains from the
-// thread's kernel buffer and wakes it when done.
+// For CONSOLE fd 1/2 (stdout/stderr, per-process redirect bit clear): pushes
+// bytes to the PL011 TX ring buffer (actual UART output), then fire-and-forget
+// delegates to the linux shepherd for display routing (line accumulation,
+// linux-ui). If the TX ring is completely full, the thread blocks on
+// WaitingIO; the TX interrupt top-half drains from the thread's kernel buffer
+// and wakes it when done.
+//
+// For REDIRECTED fd 1/2 (redirect bit set — a fork/exec child whose stdio was
+// dup3'd to a pipe/file, MAZ-149): the write is a BLOCKING delegate on the
+// file lane; the linux shepherd routes it via its FD table to the capture
+// pipe and replies the byte count. See proc.Shepherd.StdioRedirectMask.
 //
 // For eventfd writes: wakes the netpoll thread (epoll_wait).
 //
@@ -16,7 +22,9 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
+	"mazzy/shared/linuxabi"
 	"mazzy/shared/sysid"
 	"sync/atomic"
 	_ "unsafe" // for go:linkname
@@ -61,8 +69,8 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 	}
 
 	// Check if this is a re-entry after WaitingIO wake.
-	// The TX interrupt handler has already pushed all bytes to the TX ring.
-	// We just need to delegate to the linux shepherd with the byte count.
+	// The TX interrupt handler has already pushed all bytes to the TX ring;
+	// just report the byte count.
 	complete, written := checkAndClearWaitingIO()
 	if complete {
 		return syscallWriteDelegate(fd, bufPtr, uint64(written))
@@ -80,6 +88,33 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 			}
 		}
+	}
+
+	// MAZ-149 — thinned stdio, redirect-flag split: a delegated shepherd's
+	// fd 1/2 write takes one of two routes, decided by the per-process
+	// redirect mask (computed by sysExecve from the child's FD table and
+	// stored at creation — proc.Shepherd.StdioRedirectMask):
+	//
+	//   - bit SET (redirected to a pipe/file, or fd closed): BLOCKING
+	//     delegate on the handler's default (file-lane) ring. The shepherd
+	//     routes it via its FD table (KindPipeWrite → the capture pipe) and
+	//     replies the actual byte count. Blocking is safe: a redirected
+	//     write parks on its parent reader (pipe backpressure), never on fs,
+	//     so no cross-shepherd cycle can form.
+	//
+	//   - bit CLEAR (console — every boot shepherd, and fork/exec children
+	//     without redirected stdio): the kernel UART fast path below plus a
+	//     fire-and-forget display delegate (syscallWriteDelegate). No
+	//     shep.mu, no blocking — this is what avoids the deadlock the first
+	//     MAZ-149 impl had (fs.maz printf inside a delegate handler →
+	//     blocking console delegate → stdout lane wedged on a shepherd mu
+	//     that fs holds while fs waits on its own write).
+	//
+	// Non-delegated writers (the linux shepherd itself — IsDelegated is
+	// false when caller==handler, the deadlock guard — early boot, kernel
+	// klog) always take the fast path.
+	if IsDelegated(SysIDWrite, getCurrentThreadSID()) && stdioRedirected(p, fd) {
+		return DelegateSyscall(sysid.Write, fd, bufPtr, count, 0, 0, 0)
 	}
 
 	// Push bytes to PL011 TX ring buffer.
@@ -118,7 +153,7 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 doneRingPush:
 
 	if userBytesConsumed > 0 {
-		// Short write or full write — delegate with what we pushed.
+		// Short write or full write — forward what we pushed to the TX ring.
 		return syscallWriteDelegate(fd, bufPtr, userBytesConsumed)
 	}
 
@@ -126,9 +161,15 @@ doneRingPush:
 	return syscallWriteBlock(fd, bufPtr, count)
 }
 
-// syscallWriteDelegate delegates the write to the linux shepherd for display
-// routing, with the byte count adjusted to what was actually pushed to the
-// TX ring. If no delegate is registered (e.g., linux shepherd's own writes),
+// syscallWriteDelegate forwards a CONSOLE fd 1/2 write to the linux shepherd
+// for display routing (linux-ui line accumulator), with the byte count
+// adjusted to what was actually pushed to the TX ring. The delegate is
+// fire-and-forget — DelegateSyscall's console-stdio path returns immediately
+// and the shepherd's stdout lane consumes the bytes and releases the data
+// page; the serial emit already happened on the fast path above, so nothing
+// blocks and nothing double-emits. Redirected writes never reach here (they
+// short-circuit to a blocking DelegateSyscall before the UART push). If no
+// delegate is registered (the linux shepherd's own writes, early boot),
 // returns the count directly.
 //
 //go:noinline
@@ -139,6 +180,24 @@ func syscallWriteDelegate(fd, bufPtr, count uint64) int64 {
 	}
 	// Linux shepherd's own writes: no delegation needed.
 	return int64(count)
+}
+
+// stdioRedirected reports whether the caller's per-process stdio redirect bit
+// for fd (1 or 2) is set — i.e. this write must take the blocking delegate
+// route instead of the console fast path. Bit assignments are the wire-format
+// constants linuxabi.StdioRedirectFd1/Fd2 (set at CloneExec child creation;
+// zero for boot shepherds and the kernel).
+//
+//go:nosplit
+func stdioRedirected(p *proc.Shepherd, fd uint64) bool {
+	if p == nil {
+		return false
+	}
+	bit := linuxabi.StdioRedirectFd1
+	if fd == 2 {
+		bit = linuxabi.StdioRedirectFd2
+	}
+	return p.StdioRedirectMask&bit != 0
 }
 
 // syscallWriteBlock handles the case where the TX ring is completely full.
