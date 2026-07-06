@@ -252,7 +252,8 @@ const ReservedKernelThreads = 8
 // ReservedKernelShepherds is the number of PIDs reserved for the kernel and
 // not handed out by shepherdIdAllocator. Per MAZ-68: PID 0 is invalid (Linux
 // convention) and PID 1 is the kernel sentinel. Userspace shepherds receive
-// PIDs from [proc.MinPID, proc.MaxPID] = [2, 4095].
+// PIDs from [proc.MinPID, proc.MaxPID] (MAZ-150 Option A caps MaxPID at
+// MaxLiveShepherds-1).
 const ReservedKernelShepherds = int(proc.MinPID) // = 2
 
 // startingTicksProgram is the CNTVCT_EL0 value when all shepherds are launched.
@@ -655,8 +656,7 @@ var staticDeadlineOrderBy [threadArraySize]uint64
 var staticDeadlineQueue ds.StaticOrderedList
 
 // ID allocator backing arrays - statically allocated
-var threadIdStackData [threadArraySize]ThreadId                // Backing array for thread ID allocator
-var shepherdIdStackData [proc.MaxLiveShepherds]proc.ShepherdId // Backing array for shepherd ID allocator
+var threadIdStackData [threadArraySize]ThreadId // Backing array for thread ID allocator
 
 // nextKernelThreadId is a counter for allocating kernel thread IDs (0 to ReservedKernelThreads-1).
 // Kernel threads are identified by PID == 0 (the kernel shepherd) and get IDs from this counter.
@@ -690,8 +690,8 @@ var thread0PendingDeadline uint64
 var pendingYieldBlockState ThreadState
 
 // ID allocators - initialized in InitIdAllocators()
-var threadIdAllocator ds.StaticAllocator[ThreadId]          // Manages unique thread IDs (0..MaxThreads-1)
-var shepherdIdAllocator ds.StaticAllocator[proc.ShepherdId] // Manages unique shepherd IDs (0..proc.MaxLiveShepherds-1)
+var threadIdAllocator ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
+var shepherdIdAllocator proc.PIDAllocator          // Monotonic shepherd PID allocator (MAZ-150; [MinPID, MaxPID])
 
 // ========== Scheduler Lock ==========
 
@@ -905,10 +905,11 @@ func InitIdAllocators() {
 	// IDs ReservedKernelThreads..MaxThreads-1 are shuffled for userspace
 	threadIdAllocator.InitWithReserved(threadIdStackData[:], ReservedKernelThreads)
 
-	// Initialize shepherd ID allocator. PIDs [0, ReservedKernelShepherds) are
-	// kernel-reserved (PID 0 invalid, PID 1 kernel sentinel); allocator hands
-	// out PIDs in [ReservedKernelShepherds, proc.MaxLiveShepherds), shuffled.
-	shepherdIdAllocator.InitWithReserved(shepherdIdStackData[:], ReservedKernelShepherds)
+	// Initialize the monotonic shepherd PID allocator (MAZ-150). PIDAllocator's
+	// MinPID=2 reserves PID 0 (invalid) and PID 1 (kernel sentinel) — exactly the
+	// ReservedKernelShepherds set — then hands out [MinPID, MaxPID] monotonically
+	// forward; a freed PID is not reissued until the cursor wraps the range.
+	shepherdIdAllocator.Init()
 
 	// Reset kernel thread counter (starts at 0, used by AcquireKernelThreadId)
 	nextKernelThreadId = 0
@@ -2015,15 +2016,20 @@ func clearVforkParent(transientTID ThreadId) {
 //go:linkname ReserveChildPID mazzy/kmazarin/ksyscall.ReserveChildPID
 func ReserveChildPID() proc.ShepherdId {
 	// shepherdIdAllocator is scheduler-lock protected (it's the same allocator
-	// createCloneExecThreadImpl uses under the lock). Acquire is a non-atomic stack
-	// pop, so take schedulerLock + mask IRQs to stay race-free against a concurrent
+	// createCloneExecThreadImpl uses under the lock). Alloc is a non-atomic cursor
+	// scan, so take schedulerLock + mask IRQs to stay race-free against a concurrent
 	// shepherd create/teardown (and SMP). Not called with the lock already held —
 	// this runs from the SyscallClone SVC path before CloneVforkThread locks.
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
-	pid := shepherdIdAllocator.Acquire()
+	pid, err := shepherdIdAllocator.Alloc()
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
+	if err != nil {
+		// PID space exhausted — return 0 (no PID), per this function's
+		// documented "returns 0 if allocation fails" contract.
+		return 0
+	}
 	return pid
 }
 
@@ -2034,7 +2040,7 @@ func ReserveChildPID() proc.ShepherdId {
 func ReleaseChildPID(pid proc.ShepherdId) {
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
-	shepherdIdAllocator.Release(pid)
+	shepherdIdAllocator.Free(pid)
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 }
@@ -2304,10 +2310,10 @@ func CloneVforkThread(stack, returnAddr, spsr uint64, parentTID ThreadId, reserv
 	t.TID = transientTID
 	t.State = ThreadRunning // Will run immediately via SetSyscallSwitchTarget
 	t.FutexAddr = 0
-	t.MPtr = 0          // Transient has no M (g-less, vfork child discipline)
-	t.GPtr = 0          // g-less
-	t.EntryFunc = 0     // No entry func; resume at clone return PC
-	t.InCloneSetup = 1  // Protect the child during setup syscalls
+	t.MPtr = 0           // Transient has no M (g-less, vfork child discipline)
+	t.GPtr = 0           // g-less
+	t.EntryFunc = 0      // No entry func; resume at clone return PC
+	t.InCloneSetup = 1   // Protect the child during setup syscalls
 	t.VforkTransient = 1 // Mark as vfork transient for SyscallExitGroup
 	t.PageTableL0PA = parent.PageTableL0PA
 	t.PID = parent.PID // Same shepherd (CLONE_VM, shared address space)
@@ -2820,10 +2826,11 @@ func releaseShepherdSchedLockHeld(pid ShepherdId, deferPages bool) {
 	// Release the shepherd slot (clears the struct and frees the PID for storage).
 	proc.Shepherds.Release(pid)
 
-	// Release the shepherd ID back to the allocator for immediate reuse.
-	// Because StaticAllocator uses LIFO (stack), this ID will be the next
-	// one allocated, enabling aggressive reuse to find bugs.
-	shepherdIdAllocator.Release(pid)
+	// Return the shepherd PID to the allocator. The monotonic PIDAllocator
+	// (MAZ-150) does NOT reissue it immediately — the cursor only revisits it
+	// after wrapping the range, so a death notification for this PID can't be
+	// mistaken for a freshly-created shepherd that reused the same ID.
+	shepherdIdAllocator.Free(pid)
 }
 
 // CreateUserspaceThread allocates a new thread for a userspace process (like a shepherd).
@@ -2898,8 +2905,12 @@ func createCloneExecThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 		// Adopt the reserved PID (it was pre-allocated at clone time)
 		shepherdId = reservedPID
 	} else {
-		// Allocate a fresh PID (boot or non-vfork execve)
-		shepherdId = shepherdIdAllocator.Acquire()
+		// Allocate a fresh PID (boot or non-vfork execve).
+		var err error
+		shepherdId, err = shepherdIdAllocator.Alloc()
+		if err != nil {
+			panic("createCloneExecThreadImpl: shepherd PID space exhausted")
+		}
 	}
 
 	// Allocate shepherd entry inside the critical section.

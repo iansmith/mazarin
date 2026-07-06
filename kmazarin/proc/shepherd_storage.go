@@ -1,6 +1,6 @@
 // ShepherdStorage — sparse PID-keyed storage for live Shepherd records (MAZ-73).
 //
-// Under the post-MAZ-68/-73 PID model, PIDs run 2..4095 but the number of LIVE
+// Under the post-MAZ-68/-73 PID model, PIDs run over [MinPID, MaxPID] but the number of LIVE
 // shepherds at any time is much smaller (peak ~100 for go-build-style workloads).
 // A dense PID-indexed array of Shepherd structs would be tens of MB — too much.
 // Sparse storage with a PID-to-slot index is the chosen shape.

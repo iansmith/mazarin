@@ -85,28 +85,35 @@ func TestShepherdStorageAllocateOutOfRange(t *testing.T) {
 	}
 }
 
-// TestShepherdStorageAllocateExhausted verifies that filling all
-// MaxLiveShepherds slots causes subsequent Allocates to return
-// ErrShepherdSlotExhausted.
+// TestShepherdStorageAllocateExhausted verifies storage accepts the entire valid
+// PID range and rejects any PID outside it.
+//
+// MAZ-150 (Option A) caps MaxPID at MaxLiveShepherds-1, so there are only
+// MaxPID-MinPID+1 distinct valid PIDs — fewer than the MaxLiveShepherds slot count.
+// Filling every valid PID therefore exhausts the PID *range* before it can exhaust
+// the slot *capacity*, so ErrShepherdSlotExhausted is unreachable via in-range PIDs
+// under Option A (its branch is a defensive no-op; MAZ-152 widens the range and
+// makes it reachable — and testable — again).
 func TestShepherdStorageAllocateExhausted(t *testing.T) {
 	s := NewShepherdStorage()
-	for i := 0; i < MaxLiveShepherds; i++ {
-		pid := ShepherdId(int(MinPID) + i)
-		if pid > MaxPID {
-			t.Fatalf("test setup error: PID %d exceeds MaxPID %d at iteration %d", pid, MaxPID, i)
-		}
+	validPIDs := int(MaxPID-MinPID) + 1
+	for i := 0; i < validPIDs; i++ {
+		pid := MinPID + ShepherdId(i)
 		if _, err := s.Allocate(pid); err != nil {
-			t.Fatalf("Allocate #%d (pid=%d) returned %v before capacity", i, pid, err)
+			t.Fatalf("Allocate #%d (pid=%d) returned %v before the valid range was full", i, pid, err)
 		}
 	}
-	// Storage is full. Next Allocate of a NEW (not in use) PID must fail.
-	overflow := ShepherdId(int(MinPID) + MaxLiveShepherds)
+	if got := int(s.Len()); got != validPIDs {
+		t.Fatalf("Len after filling the valid PID range = %d, want %d", got, validPIDs)
+	}
+	// Every valid PID is now in use; the only PIDs left are out of range.
+	overflow := MaxPID + 1
 	shep, err := s.Allocate(overflow)
-	if !errors.Is(err, ErrShepherdSlotExhausted) {
-		t.Errorf("Allocate at capacity returned %v, want ErrShepherdSlotExhausted", err)
+	if !errors.Is(err, ErrShepherdPIDOutOfRange) {
+		t.Errorf("Allocate(%d) past the valid range returned %v, want ErrShepherdPIDOutOfRange", overflow, err)
 	}
 	if shep != nil {
-		t.Errorf("Allocate at capacity returned non-nil shepherd; want nil")
+		t.Errorf("Allocate(%d) past the valid range returned non-nil shepherd; want nil", overflow)
 	}
 }
 
