@@ -189,6 +189,7 @@ tool (
 	mazzy/cmd/check-version
 	mazzy/cmd/compile-constraints
 	mazzy/cmd/elf-diff
+	mazzy/cmd/embedaudit
 	mazzy/cmd/fix-go-elf
 	mazzy/cmd/frameaudit
 	mazzy/cmd/gen-ast-stubs
