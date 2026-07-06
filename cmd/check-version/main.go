@@ -3,6 +3,7 @@
 // Usage:
 //
 //	go tool check-version -go $GO -min 1.24
+//	go tool check-version -go $GO -min 1.26.4
 //	go tool check-version -qemu $QEMU -min 10.2
 //
 // Exit codes:
@@ -24,7 +25,7 @@ import (
 func main() {
 	goBin := flag.String("go", "", "path to go binary")
 	qemuBin := flag.String("qemu", "", "path to qemu-system-aarch64 binary")
-	minVersion := flag.String("min", "", "minimum version required (e.g., 1.24 or 10.2)")
+	minVersion := flag.String("min", "", "minimum version required (e.g., 1.24, 1.26.4, or 10.2)")
 	quiet := flag.Bool("q", false, "quiet mode - no output on success")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: check-version [-go PATH | -qemu PATH] -min VERSION\n")
@@ -38,7 +39,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	minMajor, minMinor, err := parseVersion(*minVersion)
+	min, err := parseVersion(*minVersion)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check-version: invalid min version: %v\n", err)
 		os.Exit(1)
@@ -46,14 +47,14 @@ func main() {
 
 	var toolName string
 	var actualVersion string
-	var actualMajor, actualMinor int
+	var actual version
 
 	if *goBin != "" {
 		toolName = "Go"
-		actualVersion, actualMajor, actualMinor, err = getGoVersion(*goBin)
+		actualVersion, actual, err = getGoVersion(*goBin)
 	} else if *qemuBin != "" {
 		toolName = "QEMU"
-		actualVersion, actualMajor, actualMinor, err = getQEMUVersion(*qemuBin)
+		actualVersion, actual, err = getQEMUVersion(*qemuBin)
 	} else {
 		fmt.Fprintf(os.Stderr, "check-version: specify -go or -qemu\n")
 		os.Exit(1)
@@ -64,8 +65,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Compare versions
-	if actualMajor < minMajor || (actualMajor == minMajor && actualMinor < minMinor) {
+	if actual.less(min) {
 		fmt.Fprintf(os.Stderr, "ERROR: %s >= %s required, found %s\n", toolName, *minVersion, actualVersion)
 		os.Exit(1)
 	}
@@ -83,58 +83,81 @@ func getBinPath(goBin, qemuBin string) string {
 	return qemuBin
 }
 
-func parseVersion(s string) (major, minor int, err error) {
+type version struct {
+	major, minor, patch int
+}
+
+func (v version) less(w version) bool {
+	if v.major != w.major {
+		return v.major < w.major
+	}
+	if v.minor != w.minor {
+		return v.minor < w.minor
+	}
+	return v.patch < w.patch
+}
+
+// parseVersion accepts MAJOR.MINOR or MAJOR.MINOR.PATCH; a missing patch
+// component is zero.
+func parseVersion(s string) (version, error) {
 	parts := strings.Split(s, ".")
-	if len(parts) < 2 {
-		return 0, 0, fmt.Errorf("expected MAJOR.MINOR format")
+	if len(parts) < 2 || len(parts) > 3 {
+		return version{}, fmt.Errorf("expected MAJOR.MINOR or MAJOR.MINOR.PATCH format")
 	}
-	major, err = strconv.Atoi(parts[0])
+	var v version
+	var err error
+	v.major, err = strconv.Atoi(parts[0])
 	if err != nil {
-		return 0, 0, err
+		return version{}, err
 	}
-	minor, err = strconv.Atoi(parts[1])
+	v.minor, err = strconv.Atoi(parts[1])
 	if err != nil {
-		return 0, 0, err
+		return version{}, err
 	}
-	return major, minor, nil
+	if len(parts) == 3 {
+		v.patch, err = strconv.Atoi(parts[2])
+		if err != nil {
+			return version{}, err
+		}
+	}
+	return v, nil
 }
 
-func getGoVersion(goBin string) (version string, major, minor int, err error) {
-	cmd := exec.Command(goBin, "version")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", 0, 0, fmt.Errorf("failed to run go version: %v", err)
-	}
+var (
+	goVersionRE      = regexp.MustCompile(`go(\d+)\.(\d+)(?:\.(\d+))?`)
+	genericVersionRE = regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?`)
+)
 
-	// Parse "go version go1.26.2 darwin/arm64"
-	re := regexp.MustCompile(`go(\d+)\.(\d+)`)
-	matches := re.FindStringSubmatch(string(output))
-	if len(matches) < 3 {
-		return "", 0, 0, fmt.Errorf("cannot parse go version from: %s", output)
+func extractVersion(output string, re *regexp.Regexp) (string, version, error) {
+	matches := re.FindStringSubmatch(output)
+	if len(matches) < 4 { // full match + 3 groups (patch group may be empty)
+		return "", version{}, fmt.Errorf("cannot parse version from: %s", output)
 	}
-
-	major, _ = strconv.Atoi(matches[1])
-	minor, _ = strconv.Atoi(matches[2])
-	version = fmt.Sprintf("%d.%d", major, minor)
-	return version, major, minor, nil
+	var v version
+	v.major, _ = strconv.Atoi(matches[1])
+	v.minor, _ = strconv.Atoi(matches[2])
+	rendered := fmt.Sprintf("%d.%d", v.major, v.minor)
+	if matches[3] != "" {
+		v.patch, _ = strconv.Atoi(matches[3])
+		rendered = fmt.Sprintf("%s.%d", rendered, v.patch)
+	}
+	return rendered, v, nil
 }
 
-func getQEMUVersion(qemuBin string) (version string, major, minor int, err error) {
-	cmd := exec.Command(qemuBin, "--version")
-	output, err := cmd.Output()
+func getGoVersion(goBin string) (string, version, error) {
+	// Parse "go version go1.26.4 darwin/arm64"
+	output, err := exec.Command(goBin, "version").Output()
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("failed to run qemu --version: %v", err)
+		return "", version{}, fmt.Errorf("failed to run go version: %v", err)
 	}
+	return extractVersion(string(output), goVersionRE)
+}
 
+func getQEMUVersion(qemuBin string) (string, version, error) {
 	// Parse "QEMU emulator version 10.2.0"
-	re := regexp.MustCompile(`(\d+)\.(\d+)`)
-	matches := re.FindStringSubmatch(string(output))
-	if len(matches) < 3 {
-		return "", 0, 0, fmt.Errorf("cannot parse qemu version from: %s", output)
+	output, err := exec.Command(qemuBin, "--version").Output()
+	if err != nil {
+		return "", version{}, fmt.Errorf("failed to run qemu --version: %v", err)
 	}
-
-	major, _ = strconv.Atoi(matches[1])
-	minor, _ = strconv.Atoi(matches[2])
-	version = fmt.Sprintf("%d.%d", major, minor)
-	return version, major, minor, nil
+	return extractVersion(string(output), genericVersionRE)
 }

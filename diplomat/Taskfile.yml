@@ -1,14 +1,15 @@
 version: '3'
 
 tasks:
+  # Deliberately always-run (no sources/generates): the JSON embeds absolute
+  # GOROOT paths, and a toolchain upgrade changes GOROOT without touching the
+  # patch dir — fingerprinting on patches alone reuses a stale JSON and the
+  # build silently proceeds with STOCK sources (MAZ-154). gen-overlay writes
+  # only on content change, so downstream fingerprints stay stable.
   linux-overlay:
-    method: checksum
+    run: once
     desc: Generate overlay JSON for diplomat runtime patches (Linux->UEFI)
     deps: [':gen-overlay:build']
-    sources:
-      - '{{.ROOT_DIR}}/runtime-patches/diplomat-linux/**/*'
-    generates:
-      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
     cmds:
       - '{{.BUILD_DIR}}/gen-overlay -type diplomat-linux -patches runtime-patches/diplomat-linux -o {{.BUILD_DIR}}/diplomat-linux-overlay.json'
 
