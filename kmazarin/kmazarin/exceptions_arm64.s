@@ -190,6 +190,11 @@ el0_aarch32_serror:
 
 // Unhandled exception - print 'X' with ESR info and halt
 unhandled_exception:
+	// [NESTED-FAULT GUARD] Mark fatal dump in progress so a re-fault during this dump
+	// halts cleanly via the guard at sync_entry_sp_ok. Regs free (terminal path).
+	MOVD	$·excInFatalDump(SB), R10
+	MOVD	$1, R11
+	MOVD	R11, (R10)
 	MOVD	$UART_BASE, R10
 	MOVD	$'X', R11
 	MOVB	R11, (R10)
@@ -255,6 +260,14 @@ sync_entry_sp_corrupt:
 	MOVD	$'@', R11; MOVB	R11, (R10)
 	B	sp_entry_corrupt_common      // shared print routine (below data_abort_unhandled)
 sync_entry_sp_ok:
+	// [NESTED-FAULT GUARD] If a fatal dump is already in progress and we re-entered
+	// (the dumper itself faulted on a bad SP/frame), do NOT recurse into another
+	// dump — report the nested fault and halt. Uses ONLY R10 (the TPIDR-saved
+	// scratch) so R11/R12 (live mp/gp/fn during page faults) are preserved. Reads a
+	// kernel-data global, which is always mapped and cannot fault.
+	MOVD	$·excInFatalDump(SB), R10
+	MOVD	(R10), R10
+	CBNZ	R10, exc_double_fault_halt
 	MRS	TPIDR_EL1, R10               // Restore R10
 	MSR	ZR, TPIDR_EL1                // Clear TPIDR_EL1
 
@@ -432,6 +445,12 @@ not_svc:
 	BEQ	data_abort
 
 	// Unknown exception - print 'E' with EC and hang
+	// [NESTED-FAULT GUARD] Mark "fatal dump in progress". The frame is already saved
+	// at this point, so R11/R12 are free. If the dump below faults on a bad
+	// SP/frame, the re-entered handler's guard (sync_entry_sp_ok) halts cleanly.
+	MOVD	$·excInFatalDump(SB), R12
+	MOVD	$1, R11
+	MOVD	R11, (R12)
 	MOVD	$UART_BASE, R12
 	MOVD	$'E', R11
 	MOVB	R11, (R12)
@@ -646,6 +665,56 @@ print_fault_x8_char:
 	SUB	$1, R15
 	CBNZ	R15, print_fault_x8_loop
 
+	// [EXCEPTION] " ESR=0x" + ESR_EL1 (frame off 280) — exception class/ISS of the fault
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'E', R11; MOVB	R11, (R12)
+	MOVD	$'S', R11; MOVB	R11, (R12)
+	MOVD	$'R', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+	MOVD	(EXC_FRAME_FAR_ESR+8)(RSP), R14  // ESR_EL1
+	MOVD	$16, R15
+print_fault_esr_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_esr_digit
+	ADD	$('A'-10), R11
+	B	print_fault_esr_char
+print_fault_esr_digit:
+	ADD	$'0', R11
+print_fault_esr_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_esr_loop
+
+	// [EXCEPTION] " FAR=0x" + FAR_EL1 (frame off 272) — faulting address (UNKNOWN when EC=0)
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'F', R11; MOVB	R11, (R12)
+	MOVD	$'A', R11; MOVB	R11, (R12)
+	MOVD	$'R', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+	MOVD	EXC_FRAME_FAR_ESR(RSP), R14  // FAR_EL1
+	MOVD	$16, R15
+print_fault_far_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_far_digit
+	ADD	$('A'-10), R11
+	B	print_fault_far_char
+print_fault_far_digit:
+	ADD	$'0', R11
+print_fault_far_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_far_loop
+
 	// Print newline, then try to dump stack words from SP_EL0
 	MOVD	$'\r', R11; MOVB	R11, (R12)
 	MOVD	$'\n', R11; MOVB	R11, (R12)
@@ -693,6 +762,52 @@ not_pc_align:
 not_svc_hang:
 	B	not_svc_hang
 
+// ============================================================================
+// exc_double_fault_halt - reached via the nested-fault guard (sync_entry_sp_ok)
+// when an exception re-enters the handler while a fatal dump is already in
+// progress (excInFatalDump != 0), i.e. the dumper itself faulted on a bad
+// SP/frame pointer. The first dump has already printed; here we report the
+// NESTED fault's ELR/ESR from SYSREGS only (no memory access → cannot fault
+// again) and halt. Converts a silent double-fault wedge into a diagnosable
+// "!!DBLFLT ELR=.. ESR=.." line. Registers are clobbered freely (we halt).
+// ============================================================================
+exc_double_fault_halt:
+	MOVD	$UART_BASE, R12
+	MOVD	$'\r', R11; MOVB R11, (R12)
+	MOVD	$'\n', R11; MOVB R11, (R12)
+	MOVD	$'!', R11; MOVB R11, (R12)
+	MOVD	$'!', R11; MOVB R11, (R12)
+	MOVD	$'D', R11; MOVB R11, (R12)
+	MOVD	$'B', R11; MOVB R11, (R12)
+	MOVD	$'L', R11; MOVB R11, (R12)
+	MOVD	$'F', R11; MOVB R11, (R12)
+	MOVD	$'L', R11; MOVB R11, (R12)
+	MOVD	$'T', R11; MOVB R11, (R12)
+	MOVD	$' ', R11; MOVB R11, (R12)
+	MOVD	$'E', R11; MOVB R11, (R12)
+	MOVD	$'L', R11; MOVB R11, (R12)
+	MOVD	$'R', R11; MOVB R11, (R12)
+	MOVD	$'=', R11; MOVB R11, (R12)
+	MOVD	$'0', R11; MOVB R11, (R12)
+	MOVD	$'x', R11; MOVB R11, (R12)
+	MRS	ELR_EL1, R14
+	BL	printHex64Dblflt<>(SB)
+
+	MOVD	$' ', R11; MOVB R11, (R12)
+	MOVD	$'E', R11; MOVB R11, (R12)
+	MOVD	$'S', R11; MOVB R11, (R12)
+	MOVD	$'R', R11; MOVB R11, (R12)
+	MOVD	$'=', R11; MOVB R11, (R12)
+	MOVD	$'0', R11; MOVB R11, (R12)
+	MOVD	$'x', R11; MOVB R11, (R12)
+	MRS	ESR_EL1, R14
+	BL	printHex64Dblflt<>(SB)
+
+	MOVD	$'\r', R11; MOVB R11, (R12)
+	MOVD	$'\n', R11; MOVB R11, (R12)
+dblflt_hang:
+	B	dblflt_hang
+
 data_abort:
 	// Save FAR first
 	MRS	FAR_EL1, R19
@@ -711,6 +826,11 @@ data_abort:
 
 data_abort_unhandled:
 	// Fault not handled - print error info and hang
+	// [NESTED-FAULT GUARD] Mark fatal dump in progress (frame saved here, regs free)
+	// so a re-fault during this dump halts cleanly via the guard at sync_entry_sp_ok.
+	MOVD	$·excInFatalDump(SB), R10
+	MOVD	$1, R11
+	MOVD	R11, (R10)
 	MOVD	$UART_BASE, R10
 	MOVD	$'F', R11
 	MOVB	R11, (R10)
@@ -2638,4 +2758,28 @@ TEXT mlockRearmFromFrame<>(SB), NOSPLIT|NOFRAME, $0-0
 	MOVW	R1, (R2)			// g0.m.locks = stashed count
 	MOVW	ZR, ·savedG0MLocks(SB)		// checkpoint consumed
 mrf_done:
+	RET
+
+// printHex64Dblflt — leaf hex-digit printer used only by exc_double_fault_halt
+// (the dumper's own re-fault path), BL'd once per field (ELR, then ESR) instead
+// of inlining the 16-nibble loop twice. Input: R14=value (consumed), R12=UART
+// pointer (preserved, never written here). Clobbers R11/R14/R15. file-local
+// (<>) ⇒ no Go decl. NOSPLIT|NOFRAME: leaf, no further calls, reached only from
+// the halt-and-never-return path so LR has nothing live to protect.
+TEXT printHex64Dblflt<>(SB), NOSPLIT|NOFRAME, $0-0
+	MOVD	$16, R15
+dblflt_hex_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	dblflt_hex_digit
+	ADD	$('A'-10), R11
+	B	dblflt_hex_char
+dblflt_hex_digit:
+	ADD	$'0', R11
+dblflt_hex_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, dblflt_hex_loop
 	RET

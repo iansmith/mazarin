@@ -48,7 +48,12 @@ cardinal/stack/test02_asm_bridge/test02_asm_bridge
 
 # Compiled binaries that might appear in source dirs
 kmazarin/kmazarin/kmazarin
-# Staged embedded files (copied by stage tasks for go:embed)
+# Staged embedded files (copied by stage tasks for go:embed; per-arch — MAZ-153)
+kmazarin/kmazarin/fs_arm64.elf
+kmazarin/kmazarin/fs_amd64.elf
+kmazarin/kmazarin/kernel_arm64.toml
+kmazarin/kmazarin/kernel_amd64.toml
+# Legacy shared-path staged names (pre-MAZ-153); may linger on dev machines
 kmazarin/kmazarin/fs.elf
 kmazarin/kmazarin/kernel.toml
 kmazarin/ds/ds.test

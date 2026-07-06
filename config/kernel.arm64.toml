@@ -1,4 +1,6 @@
 # kernel.arm64.toml — ARM64 kernel configuration (embedded in kmazarin.elf)
+# NOTE: cmd/embedaudit + shared/embedcheck match the header line above to verify
+# the right arch's config got embedded (MAZ-153) — keep its prefix intact.
 
 timezone = "America/New_York"
 

@@ -125,11 +125,12 @@ func TestPIDAllocatorWraparoundSkipsInUse(t *testing.T) {
 		allocated = append(allocated, pid)
 	}
 	// Free three non-adjacent PIDs; expect those three (and only those) to
-	// come back from the next three Allocs.
+	// come back from the next three Allocs. Indices stay within the smallest
+	// supported range (MAZ-150 Option A caps it to MaxLiveShepherds-MinPID = 254).
 	freedSet := map[ShepherdId]bool{
-		allocated[10]:   true,
-		allocated[200]:  true,
-		allocated[1000]: true,
+		allocated[10]:  true,
+		allocated[100]: true,
+		allocated[200]: true,
 	}
 	for p := range freedSet {
 		a.Free(p)

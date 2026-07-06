@@ -206,7 +206,7 @@ func reapSelfTestChild(childTID int16, childPID proc.ShepherdId, childL0PA uintp
 
 	if _, ok := proc.Shepherds.Get(childPID); ok {
 		proc.Shepherds.Release(childPID)
-		shepherdIdAllocator.Release(childPID)
+		shepherdIdAllocator.Free(childPID)
 	}
 
 	schedulerLock.Unlock()
