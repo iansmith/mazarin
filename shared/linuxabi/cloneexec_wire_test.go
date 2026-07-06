@@ -114,6 +114,25 @@ func TestMarshalCloneExecParamsEmpty(t *testing.T) {
 	}
 }
 
+// TestCloneExecParamsHeaderCarriesStdioRedirectMask (MAZ-149 Phase 0 RED) —
+// the params header reserves room for the per-process stdio redirect mask
+// (bit 0 = fd 1 redirected, bit 1 = fd 2 redirected), which sysExecve computes
+// from the child's final FD-table state and the kernel stores on the child
+// Shepherd at creation (SetStartupState) so SyscallWrite can split console
+// (fast path) from redirected (blocking delegate) without consulting the
+// shepherd. Wire layout: header grows 24 → 32 (stays 8-byte aligned), mask
+// byte at [24], [25:32] reserved-zero.
+//
+// This locks only the header sizing; the mask round-trip assertions land with
+// the implementation (they cannot compile until the field exists). The
+// behavioral acceptance gate is the forkexectest stage-2 boot smoke.
+func TestCloneExecParamsHeaderCarriesStdioRedirectMask(t *testing.T) {
+	if CloneExecParamsHeaderSize != 32 {
+		t.Fatalf("CloneExecParamsHeaderSize = %d, want 32 (room for StdioRedirectMask at byte [24])",
+			CloneExecParamsHeaderSize)
+	}
+}
+
 // TestUnmarshalCloneExecParamsRejectsShort — a blob shorter than the header is
 // rejected, not silently decoded from garbage.
 func TestUnmarshalCloneExecParamsRejectsShort(t *testing.T) {
