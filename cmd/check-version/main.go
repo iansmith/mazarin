@@ -123,13 +123,12 @@ func parseVersion(s string) (version, error) {
 	return v, nil
 }
 
-var versionRE = regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?`)
+var (
+	goVersionRE      = regexp.MustCompile(`go(\d+)\.(\d+)(?:\.(\d+))?`)
+	genericVersionRE = regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?`)
+)
 
-func extractVersion(output, prefix string) (string, version, error) {
-	re := versionRE
-	if prefix != "" {
-		re = regexp.MustCompile(prefix + `(\d+)\.(\d+)(?:\.(\d+))?`)
-	}
+func extractVersion(output string, re *regexp.Regexp) (string, version, error) {
 	matches := re.FindStringSubmatch(output)
 	if len(matches) < 3 {
 		return "", version{}, fmt.Errorf("cannot parse version from: %s", output)
@@ -151,7 +150,7 @@ func getGoVersion(goBin string) (string, version, error) {
 	if err != nil {
 		return "", version{}, fmt.Errorf("failed to run go version: %v", err)
 	}
-	return extractVersion(string(output), `go`)
+	return extractVersion(string(output), goVersionRE)
 }
 
 func getQEMUVersion(qemuBin string) (string, version, error) {
@@ -160,5 +159,5 @@ func getQEMUVersion(qemuBin string) (string, version, error) {
 	if err != nil {
 		return "", version{}, fmt.Errorf("failed to run qemu --version: %v", err)
 	}
-	return extractVersion(string(output), "")
+	return extractVersion(string(output), genericVersionRE)
 }

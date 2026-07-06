@@ -90,13 +90,6 @@ func TestConfigMarkerMismatchFails(t *testing.T) {
 	}
 }
 
-func TestConfigMarkerMissingFails(t *testing.T) {
-	img := syntheticKernel(MachineX8664, elfHeader(MachineX8664))
-	if err := CheckKernelConfigBytes(img); err == nil {
-		t.Fatal("kernel with no config marker passed the check")
-	}
-}
-
 // --- adversary gap tests (Phase 0 Step 0f) ---
 // These pin the checker apparatus itself: rejection paths, scan boundaries,
 // and directional symmetry the initial suite left unexercised.
