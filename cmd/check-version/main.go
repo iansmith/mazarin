@@ -130,7 +130,7 @@ var (
 
 func extractVersion(output string, re *regexp.Regexp) (string, version, error) {
 	matches := re.FindStringSubmatch(output)
-	if len(matches) < 3 {
+	if len(matches) < 4 { // full match + 3 groups (patch group may be empty)
 		return "", version{}, fmt.Errorf("cannot parse version from: %s", output)
 	}
 	var v version

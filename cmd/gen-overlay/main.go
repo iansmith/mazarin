@@ -23,6 +23,19 @@ type Overlay struct {
 	Replace map[string]string `json:"Replace"`
 }
 
+// writeFileIfChanged writes data to path only when the current content
+// differs. The overlay tasks run unconditionally on every build (MAZ-154:
+// GOROOT changes must always land in the JSON), so an unchanged regeneration
+// must not dirty the file's mtime — timestamp-fingerprinted consumers
+// (mazgo-build, mazlink-build and their cross-compile variants) would
+// otherwise rebuild cmd/go and cmd/link on every task invocation.
+func writeFileIfChanged(path string, data []byte, perm os.FileMode) error {
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
+		return nil
+	}
+	return os.WriteFile(path, data, perm)
+}
+
 func main() {
 	overlayType := flag.String("type", "", "overlay type: kmazarin, kmazarin-amd64, userspace, maz-exit, merge")
 	patchesDir := flag.String("patches", "", "directory containing patch files")
@@ -124,7 +137,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := os.WriteFile(*output, data, 0644); err != nil {
+	if err := writeFileIfChanged(*output, data, 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "gen-overlay: %v\n", err)
 		os.Exit(1)
 	}
@@ -351,7 +364,7 @@ func mergeOverlays(basePath, extraPath, outputPath string) error {
 		len(base.Replace), len(extra.Replace), len(merged.Replace),
 		len(base.Replace)+len(extra.Replace)-len(merged.Replace))
 
-	return os.WriteFile(outputPath, data, 0644)
+	return writeFileIfChanged(outputPath, data, 0644)
 }
 
 // buildMazlinkOverlay walks the mazlink patches directory tree and maps every
