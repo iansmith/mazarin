@@ -256,6 +256,23 @@ func (u *NS16550) WriteByteTry(c byte) bool {
 	return success
 }
 
+// TxKick drains buffered TX-ring bytes to the THR while it is empty,
+// re-arming the TX interrupt for any leftovers. Callable IRQ-masked (SVC
+// context) — the NS16550 mirror of PL011.TxKick; see that method for the
+// MAZ-149 item 6 rationale.
+//
+//go:nosplit
+func (u *NS16550) TxKick() {
+	u.txLockAcquire()
+	for u.txBuf.Available() > 0 && u.ReadReg(NS_LSR)&NS_LSR_THRE != 0 {
+		u.WriteReg(NS_THR, u.txBuf.ReadByte())
+	}
+	if u.txBuf.Available() > 0 {
+		u.WriteReg(NS_IER, NS_IER_RDI|NS_IER_THRI)
+	}
+	u.txLockRelease()
+}
+
 // WriteString writes a string to the UART.
 //
 //go:nosplit

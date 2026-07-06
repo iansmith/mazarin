@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"mazzy/maz/linux/internal/cloneexec"
@@ -105,6 +106,16 @@ type syscallHandler struct {
 	// fire-and-forget stdout lane — and must own its bytes (the caller's data
 	// page is reclaimed on Reply, so displayFeed copies).
 	displayFeed func(fd byte, data []byte)
+
+	// parkedPipeWriters registers every write request currently parked on a
+	// full pipe (MAZ-149 writer-park backpressure), guarded by pipeParkMu.
+	// It exists for the bounded-park timeout: pipeParkWatchdog sweeps entries
+	// older than pipeWriterParkTimeout, drops their bytes (MarkDrop `@\`
+	// breadcrumb on the buffer tail) and releases the writer. Removal from
+	// this registry is the fulfilled-or-abandoned signal — wakePipeWriters
+	// skips tokens no longer registered (the watchdog already replied).
+	pipeParkMu        sync.Mutex
+	parkedPipeWriters map[*pipeWriteWaiter]struct{}
 }
 
 // waiterKey identifies a single parked wait4 caller thread. A thread blocks on
@@ -135,6 +146,8 @@ func newSyscallHandler(fs fsclient.FSClient) *syscallHandler {
 		reaper:           wait.New(),
 		waiters:          make(map[waiterKey]wait4Waiter),
 		pendingChildFDTs: make(map[int16]*fdtable.Table),
+
+		parkedPipeWriters: make(map[*pipeWriteWaiter]struct{}),
 	}
 }
 
@@ -1079,6 +1092,10 @@ func drainPipeInto(req sys.SyscallRequest, end *pipe.End) (replied bool) {
 // blocking park is exercised end-to-end by MAZ-114.
 func (h *syscallHandler) sysReadPipe(req sys.SyscallRequest, e *fdtable.Entry) {
 	if drainPipeInto(req, e.Pipe) {
+		// The drain freed buffer space — retry any writers parked on the
+		// full pipe (MAZ-149 writer-park backpressure). No-op when nothing
+		// is parked or the buffer is still full.
+		h.wakePipeWriters(e.Pipe)
 		return
 	}
 	// Empty buffer, a writer is still open.
@@ -1089,18 +1106,121 @@ func (h *syscallHandler) sysReadPipe(req sys.SyscallRequest, e *fdtable.Entry) {
 	e.Pipe.Park(&pipeReadWaiter{req: req, end: e.Pipe}) // deferred Reply.
 }
 
+// pipeWriteWaiter is a write request parked on a FULL pipe (MAZ-149
+// writer-park backpressure). It is stored both as the opaque token in
+// pipe.End.ParkWriter (returned by TakeWriterWaiters once a reader drains
+// free space) and in h.parkedPipeWriters (the bounded-park timeout registry).
+// The request's data page stays mapped until Reply, so req.Data() remains
+// valid for the retry — the same contract parked reads rely on.
+type pipeWriteWaiter struct {
+	req      sys.SyscallRequest
+	end      *pipe.End
+	parkedAt time.Time // original park time; re-parks keep it (total bound)
+}
+
+// pipeWriterParkTimeout bounds how long a blocking pipe write stays parked
+// with no reader draining the buffer (MAZ-149 item 7). Unix semantics would
+// block forever; the bound is the escape hatch for a wedged/vanished reader
+// (a reader death does not currently signal parked writers — the timeout
+// covers that case too). On expiry the bytes are DROPPED: the buffer tail is
+// overwritten with the `@\` breadcrumb (pipe.End.MarkDrop) so the reader can
+// detect the loss, and the writer is released with a success count. 30s is
+// far above the multi-second delegate stalls seen in boot storms.
+const pipeWriterParkTimeout = 30 * time.Second
+
+// pipeParkSweepInterval is how often pipeParkWatchdog scans the registry.
+const pipeParkSweepInterval = 5 * time.Second
+
+// parkPipeWriter parks w on its pipe's writer-waiter list and registers it
+// for the timeout sweep. Deferred Reply: handle() returns without replying,
+// releasing shep.mu — nothing is held while parked (mirrors sysReadPipe).
+func (h *syscallHandler) parkPipeWriter(w *pipeWriteWaiter) {
+	h.pipeParkMu.Lock()
+	h.parkedPipeWriters[w] = struct{}{}
+	h.pipeParkMu.Unlock()
+	w.end.ParkWriter(w)
+}
+
+// wakePipeWriters retries writes parked on a full pipe once a reader drained
+// free space — the symmetric counterpart of wakePipeReaders. Called from the
+// pipe read path. A retry that finds the buffer full again (a racing writer
+// refilled it) re-parks; a token the watchdog already abandoned (not in the
+// registry) is skipped — its request was replied at timeout.
+func (h *syscallHandler) wakePipeWriters(end *pipe.End) {
+	for _, tok := range end.TakeWriterWaiters() {
+		w, ok := tok.(*pipeWriteWaiter)
+		if !ok {
+			continue // only parkPipeWriter parks; be defensive.
+		}
+		h.pipeParkMu.Lock()
+		_, live := h.parkedPipeWriters[w]
+		delete(h.parkedPipeWriters, w)
+		h.pipeParkMu.Unlock()
+		if !live {
+			continue // bounded-park timeout already dropped + replied this one.
+		}
+		n, err := w.end.Write(w.req.Data())
+		if err != nil {
+			h.parkPipeWriter(w) // still full: re-park (keeps original parkedAt).
+			continue
+		}
+		// The retried write made data available — wake parked readers (none
+		// and parked writers can coexist on one buf, but another pipe op may
+		// have parked a reader between the drain and this retry).
+		wakePipeReaders(w.end)
+		w.req.Reply(int64(n))
+	}
+}
+
+// pipeParkWatchdog enforces pipeWriterParkTimeout: writers parked longer than
+// the bound are abandoned — bytes dropped, `@\` breadcrumb on the buffer tail,
+// writer released with a success count (MAZ-149 item 7 drop semantics; the
+// pretend-success mirrors the display-channel drop policy: console/capture
+// byte loss is marked, not surfaced as an error). Runs for the shepherd's
+// lifetime; started by startUringDelegateHandler.
+func (h *syscallHandler) pipeParkWatchdog() {
+	for {
+		time.Sleep(pipeParkSweepInterval)
+		now := time.Now()
+		var expired []*pipeWriteWaiter
+		h.pipeParkMu.Lock()
+		for w := range h.parkedPipeWriters {
+			if now.Sub(w.parkedAt) > pipeWriterParkTimeout {
+				delete(h.parkedPipeWriters, w)
+				expired = append(expired, w)
+			}
+		}
+		h.pipeParkMu.Unlock()
+		for _, w := range expired {
+			// The stale token stays on buf.writerWaiters; wakePipeWriters
+			// skips it via the registry-liveness check above.
+			dropped := len(w.req.Data())
+			w.end.MarkDrop()
+			fmt.Printf("[linux] pipe writer-park timeout sid=%d: %d bytes dropped (@\\ marked)\n",
+				w.req.CallerPID, dropped)
+			w.req.Reply(int64(dropped))
+		}
+	}
+}
+
 // sysWritePipe serves a write() on a pipe write-end: it appends to the shared
 // buffer (bounded by the pipe cap) and wakes any reader parked on the pipe.
-// A non-blocking write to a full buffer returns EAGAIN.
+// A full buffer EAGAINs the non-blocking case and PARKS the blocking case
+// (MAZ-149 writer-park — real backpressure via deferred Reply; a later
+// reader drain retries and replies). A partial write into a nearly-full
+// buffer replies the short count — write(2) permits it, and the caller's
+// write loop issues the remainder, which then parks here when full (this is
+// what fixed the old >4 KiB spurious-EAGAIN, review finding #4).
 func (h *syscallHandler) sysWritePipe(req sys.SyscallRequest, e *fdtable.Entry) {
 	data := req.Data()
 	n, err := e.Pipe.Write(data)
 	if err != nil {
-		// ErrWouldBlock: buffer full. Only the non-blocking case is reachable
-		// here (a blocking writer would park, which the small pipe cap +
-		// few-byte fork/exec consumers never hit; MAZ-114 owns the blocking
-		// writer path if a real consumer needs it).
-		req.Reply(EWOULDBLOCK)
+		// ErrWouldBlock: buffer full, nothing accepted.
+		if e.Pipe.Nonblock() {
+			req.Reply(EWOULDBLOCK)
+			return
+		}
+		h.parkPipeWriter(&pipeWriteWaiter{req: req, end: e.Pipe, parkedAt: time.Now()})
 		return
 	}
 	wakePipeReaders(e.Pipe)
@@ -1721,19 +1841,27 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 	data := req.Data()
 
 	e := fdt.Get(fd)
-	if e == nil || e.Kind == fdtable.KindStdout || e.Kind == fdtable.KindStderr {
-		// MAZ-149: fd 1/2 writes are now delegated here (thinned) rather than
-		// pushed to the UART by the kernel fast path. Emit to the serial console
-		// via sys.UartWrite (the fast interrupt-driven TX ring, CR-before-LF for
-		// terminal compatibility) and to the linux-ui display, preserving the fd
-		// (1 vs 2) so stderr stays distinct. The kernel skips its own UART push
-		// for delegated writers, so this is the only console emit — no double.
+	if e == nil {
+		// MAZ-149: a redirect-masked fd 1/2 whose entry is CLOSED lands here —
+		// the mask is set for closed stdio fds precisely so the write reaches
+		// the table (EBADF) instead of the console fast path printing it. A
+		// closed fd>2 is plain EBADF as it always was.
+		req.Reply(EBADF)
+		return
+	}
+	if e.Kind == fdtable.KindStdout || e.Kind == fdtable.KindStderr {
+		// MAZ-149 redesign: console fd 1/2 writes normally take the kernel
+		// fast path (UART push + fire-and-forget display delegate) and never
+		// reach sysWrite. This branch is the mask/table MISMATCH window: a
+		// blocking delegate arrived (redirect bit set at exec time) but the
+		// table now says console — e.g. the future MAZ-151 runtime
+		// re-redirect transition. The kernel skipped its UART push for this
+		// write, so emit to serial (fast interrupt-driven TX ring,
+		// CR-before-LF) + the linux-ui display here, preserving the fd (1 vs
+		// 2) so stderr stays distinct, then Reply. No double-emit either way.
 		if len(data) > 0 {
 			// suppressSerialCopy (SUPPRESS_SERIAL_STDIO_COPY) suppresses the
 			// serial copy of delegated stdio; the linux-ui display still gets it.
-			// This flag went dormant while the kernel fast path pushed bytes to
-			// the TX ring itself; thinning makes the shepherd the serial emitter,
-			// so it is consulted again here.
 			if !suppressSerialCopy {
 				sys.UartWrite(addCRBeforeLF(data))
 			}

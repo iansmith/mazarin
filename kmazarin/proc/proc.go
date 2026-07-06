@@ -177,6 +177,17 @@ type Shepherd struct {
 	NumStartupIntent uint32
 	StartupCwd       [MaxStartupCwdBytes]byte
 	StartupCwdLen    uint32
+
+	// StdioRedirectMask (MAZ-149) — per-process stdio redirect flag: bit 0 =
+	// fd 1 redirected away from the console, bit 1 = fd 2. Computed by the
+	// linux shepherd's sysExecve from the child's final FD-table state and
+	// stored here at creation (SetStartupState, under schedulerLock, before
+	// the child is enqueued) so SyscallWrite can split console writes (kernel
+	// UART fast path + fire-and-forget display delegate) from redirected ones
+	// (blocking delegate the shepherd routes to the capture pipe) without a
+	// shepherd round trip. Zero for boot-launched shepherds (console stdio).
+	// Runtime dup3/close re-redirect maintenance is MAZ-151.
+	StdioRedirectMask uint8
 }
 
 // Id implements the ds.Ider interface for Shepherd.

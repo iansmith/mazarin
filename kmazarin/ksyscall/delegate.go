@@ -74,12 +74,15 @@ type DelegateCallInfo struct {
 }
 
 
-// stdioWriteRingIdx — kernel-side override for the ring a stdio (fd<=2) Write
-// delegate is sent on. When set, fd<=2 Writes go to this ring index of the
-// registered Write handler instead of the handler's default ring (set via
-// RegisterSyscallHandler). The override exists so stdio backpressure can't
-// starve the file-lane delegate ring (or vice versa) when both share the same
-// handler. -1 = unset (no override; stdio Writes use the Write handler's
+// stdioWriteRingIdx — kernel-side override for the ring a CONSOLE stdio
+// (fd<=2, redirect bit clear) Write delegate is sent on. When set, console
+// fd<=2 Writes go to this ring index of the registered Write handler instead
+// of the handler's default ring (set via RegisterSyscallHandler). The
+// override exists so stdio backpressure can't starve the file-lane delegate
+// ring (or vice versa) when both share the same handler. REDIRECTED fd<=2
+// Writes (MAZ-149 mask bit set) deliberately stay on the default file-lane
+// ring — they are ordinary blocking delegates routed to the capture pipe.
+// -1 = unset (no override; console stdio Writes use the Write handler's
 // default ring).
 //
 // Set via SyscallRegisterStdioWriteRing. Read on every Write delegate.
@@ -463,25 +466,35 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		prefaultOutputBuffer(callerBufVA, uintptr(callerBufLen))
 	}
 
-	// stdio Write lane (MAZ-149): a write(fd<=2) is routed to the linux
-	// shepherd's DEDICATED stdio ring (ring 3), kept separate from the file
-	// lane so a slow openat/read can't stall a print. But it is otherwise an
-	// ordinary BLOCKING delegate — the shepherd routes it via its FD table
-	// (KindStdout/Stderr → console, KindPipeWrite → pipe, KindFile → fs) and
-	// Replies the byte count, exactly like a fd>2 write.
+	// Console stdio Write (MAZ-149 redirect-flag split): a write(fd<=2) whose
+	// caller redirect bit is CLEAR is a fire-and-forget display forward. The
+	// kernel already pushed the bytes to the serial TX ring (SyscallWrite's
+	// fast path) and returned the count to the caller at delegate time; the
+	// linux shepherd's stdout lane only feeds the display accumulator and
+	// frees the data page via SysReleaseDelegatePage — no Reply, no blocking.
+	// Blocking a console write here is exactly the cycle the first MAZ-149
+	// impl deadlocked on (handler fmt.Printf inside a delegate handler →
+	// linux Write delegate → linux waiting on the handler that's waiting for
+	// the original delegate), so for console stdio we:
+	//   - Skip delegateCallInfos InUse tracking (no Reply expected).
+	//   - Skip blockForDelegatedSyscall; return the byte count immediately.
 	//
-	// Why blocking is safe here (was fire-and-forget before to dodge a
-	// deadlock): the linux shepherd's OWN stdio writes never reach this path —
-	// IsDelegated (write.go / L116) returns false when caller==handler, so
-	// linux-self output goes straight to the kernel UART, never delegates, and
-	// can't wait on itself. A non-linux shepherd blocking on the stdio lane is
-	// ordinary delegation, and the stdio-lane handler does not block on another
-	// shepherd for a console/pipe write, so no delegate-handler-printf cycle
-	// can form. InUse tracking is now set (like any blocking delegate) so the
-	// reply path reclaims the data page on Reply instead of the handler calling
-	// SysReleaseDelegatePage.
-	stdioLane := id == sysid.Write && arg0 <= 2
-	if int(callerTID) < MaxDelegateThreads {
+	// A REDIRECTED fd<=2 write (caller's redirect bit SET — fork/exec child
+	// with dup3'd stdio) is an ordinary BLOCKING delegate on the handler's
+	// default (file-lane) ring, exactly like a fd>2 write: the shepherd
+	// routes it via its FD table (KindPipeWrite → capture pipe) and must
+	// report the actual byte count. Blocking is safe for these: a redirected
+	// write parks on its parent reader (pipe backpressure), never on fs, so
+	// no cross-shepherd cycle can form.
+	//
+	// IMPORTANT: fire-and-forget is gated on fd<=2 AND redirect-bit-clear so
+	// it only applies to the console lane (which calls SysReleaseDelegatePage).
+	// If a blocking Write were misrouted there, the handler's req.Reply()
+	// would arrive at the kernel as a stale SyscallReply targeting whatever
+	// delegate the caller TID is currently blocked on — unmapping that
+	// (unrelated) syscall's data page and corrupting its return value.
+	consoleStdio := id == sysid.Write && arg0 <= 2 && !stdioRedirected(callerShepherd, arg0)
+	if !consoleStdio && int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
 		info.DataPagePA = dataPagePA
 		info.DataPageVA = handlerDataVA
@@ -504,11 +517,13 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		DataLen:   dataLen,
 	}
 	msg := ipc.EncodeFSDelegateReq(&reqPayload)
-	// Stdio Writes (fd<=2) get routed to the dedicated stdio override ring
-	// when one is registered. Same handler shepherd, different ring —
-	// the kernel-half of the "stdio on its own ring" backpressure split.
+	// Console stdio Writes get routed to the dedicated stdio override ring
+	// when one is registered. Same handler shepherd, different ring — the
+	// kernel-half of the "stdio on its own ring" backpressure split, so a
+	// busy file lane can't stall a print. Redirected fd<=2 Writes stay on
+	// the handler's default (file-lane) ring like any blocking delegate.
 	handlerRingIdx := syscallDelegates[id].ringIdx
-	if stdioLane {
+	if consoleStdio {
 		if r := atomic.LoadInt32(&stdioWriteRingIdx); r >= 0 {
 			handlerRingIdx = uint8(r)
 		}
@@ -516,13 +531,21 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	result, _ := uringSendKernel(-1, handlerSID, handlerRingIdx, uintptr(unsafe.Pointer(&msg)))
 	if result < 0 {
 		// Ring full or target gone — reclaim and fail.
-		if int(callerTID) < MaxDelegateThreads {
+		if !consoleStdio && int(callerTID) < MaxDelegateThreads {
 			delegateCallInfos[callerTID].InUse = false
 		}
 		reclaimDataPage(dataPagePA, handlerDataVA, handlerSID, handlerShepherd)
 		klog.Errf("[DLG] uring send failed sysid=%d handler=%d ring=%d\n",
 			uint32(id), int32(handlerSID), uint32(handlerRingIdx))
 		return -11 // EAGAIN
+	}
+
+	if consoleStdio {
+		// Console semantics: the serial emit already happened on the kernel
+		// fast path and the display bytes are in the handler's ring; return
+		// the byte count without blocking. The handler consumes
+		// asynchronously and frees the page via SysReleaseDelegatePage.
+		return int64(dataLen)
 	}
 
 	// Block the caller until the handler replies via SyscallReply.
@@ -789,7 +812,7 @@ func packExecveDataPage(handlerSID int16, handlerShepherd *proc.Shepherd, pathVA
 	}
 
 	blob, err := linuxabi.MarshalCloneExecParams(
-		linuxabi.PackArgv(argv), linuxabi.PackArgv(envp), nil, nil, path, 0, 0)
+		linuxabi.PackArgv(argv), linuxabi.PackArgv(envp), nil, nil, path, 0, 0, 0)
 	if err != nil || len(blob) > 4096 {
 		return 0, 0, 0, -7 // E2BIG
 	}

@@ -210,7 +210,7 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 		parentPID = req.ParentSID
 	}
 	_, newPID := CreateCloneExecThread(loadedProc.EntryPoint, loadedProc.StackTop, childL0PA,
-		parentPID, req.ReservedPID, req.Intent, req.Cwd)
+		parentPID, req.ReservedPID, req.Intent, req.Cwd, req.StdioRedirectMask)
 
 	// O(1) lookup of the freshly created Shepherd (Allocate just registered it
 	// under newPID). ok is guaranteed true — the slot was allocated under the

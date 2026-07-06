@@ -2906,8 +2906,8 @@ func GetShepherdByPID(pid ShepherdId) *Shepherd {
 // run under schedulerLock.
 //
 //go:nosplit
-func CreateCloneExecThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, parentPID ShepherdId, reservedPID ShepherdId, intent []proc.CloneExecIntentOp, cwd []byte) (tid int16, pid ShepherdId) {
-	return createCloneExecThreadImpl(&NormalSchedulerFunc, entryPoint, stackPtr, pageTableL0PA, parentPID, reservedPID, intent, cwd)
+func CreateCloneExecThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, parentPID ShepherdId, reservedPID ShepherdId, intent []proc.CloneExecIntentOp, cwd []byte, stdioRedirectMask uint8) (tid int16, pid ShepherdId) {
+	return createCloneExecThreadImpl(&NormalSchedulerFunc, entryPoint, stackPtr, pageTableL0PA, parentPID, reservedPID, intent, cwd, stdioRedirectMask)
 }
 
 // createCloneExecThreadImpl is the shared internal implementation behind both
@@ -2926,7 +2926,7 @@ func CreateCloneExecThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, p
 // If non-zero, adopt the reserved PID instead of allocating a fresh one.
 //
 //go:nosplit
-func createCloneExecThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr, parentPID ShepherdId, reservedPID ShepherdId, intent []proc.CloneExecIntentOp, cwd []byte) (tid int16, pid ShepherdId) {
+func createCloneExecThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr, parentPID ShepherdId, reservedPID ShepherdId, intent []proc.CloneExecIntentOp, cwd []byte, stdioRedirectMask uint8) (tid int16, pid ShepherdId) {
 	// BEGIN CRITICAL SECTION - protect all scheduling data structures:
 	// shepherdIdAllocator, proc.Shepherds, threadList, readyQueue
 	savedDAIF := sf.DisableAndSaveDAIF()
@@ -2959,8 +2959,10 @@ func createCloneExecThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	p.ThreadCount = 1 // This shepherd starts with one thread
 
 	// MAZ-112: populate the race-sensitive startup state as a unit, BEFORE the
-	// child is enqueued and becomes schedulable.
-	p.SetStartupState(parentPID, intent, cwd)
+	// child is enqueued and becomes schedulable. The stdio redirect mask
+	// (MAZ-149) rides along — SyscallWrite reads it on the child's very first
+	// write, so it must be visible before enqueue.
+	p.SetStartupState(parentPID, intent, cwd, stdioRedirectMask)
 
 	// Allocate thread slot from static list (panics if exhausted)
 	_, t := threadList.Allocate()
@@ -3010,13 +3012,14 @@ func createCloneExecThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 
 // createUserspaceThreadImpl is the internal implementation with sf for testing.
 // A boot-launched shepherd carries no clone_exec startup state, so this
-// delegates to createCloneExecThreadImpl with an empty parent / intent / cwd —
-// SetStartupState(0, nil, nil) is a no-op on the freshly zeroed Shepherd slot,
-// so the resulting thread is identical to the pre-MAZ-112 path.
+// delegates to createCloneExecThreadImpl with an empty parent / intent / cwd /
+// redirect mask — SetStartupState(0, nil, nil, 0) is a no-op on the freshly
+// zeroed Shepherd slot, so the resulting thread is identical to the
+// pre-MAZ-112 path (boot shepherds keep console stdio).
 //
 //go:nosplit
 func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16 {
-	tid, _ := createCloneExecThreadImpl(sf, entryPoint, stackPtr, pageTableL0PA, 0, 0, nil, nil)
+	tid, _ := createCloneExecThreadImpl(sf, entryPoint, stackPtr, pageTableL0PA, 0, 0, nil, nil, 0)
 	return tid
 }
 

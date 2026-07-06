@@ -103,6 +103,12 @@ type CloneExecRequest struct {
 	Intent []CloneExecIntentOp // FD-flavored ops; cap-checked against MaxStartupIntentOps
 	Cwd    []byte              // chdir target; empty = no chdir; cap-checked against MaxStartupCwdBytes
 
+	// StdioRedirectMask (MAZ-149) — the child's per-process stdio redirect
+	// flag (bit 0 = fd 1, bit 1 = fd 2), computed by sysExecve from the
+	// child's final FD-table state. Stored on the child Shepherd via
+	// SetStartupState before enqueue.
+	StdioRedirectMask uint8
+
 	// --- PID reservation (MAZ-127 vfork) ---
 	// ReservedPID is the child PID reserved at clone time. 0 = no reservation
 	// (boot path); non-zero = adopt this PID instead of allocating a fresh one.

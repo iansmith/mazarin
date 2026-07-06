@@ -57,11 +57,16 @@ var ErrWouldBlock = errors.New("pipe: operation would block")
 // hits EOF, so the shepherd can fulfill the corresponding parked Reply. This
 // keeps "who is blocked on this buffer" inside the package (the shared buf is
 // the natural owner) without the package knowing what a shepherd request is.
+//
+// writerWaiters is the symmetric list for WRITE requests parked on a full
+// buffer (MAZ-149 backpressure): TakeWriterWaiters hands them back once a
+// reader drains free space, so the shepherd can retry the parked write.
 type buf struct {
-	data    []byte
-	writers int
-	flags   int
-	waiters []any
+	data          []byte
+	writers       int
+	flags         int
+	waiters       []any
+	writerWaiters []any
 }
 
 // End is one end of a pipe — either the read end or the write end. Both ends
@@ -204,4 +209,43 @@ func (e *End) TakeWaiters() []any {
 	w := e.b.waiters
 	e.b.waiters = nil
 	return w
+}
+
+// ParkWriter records an opaque token for a writer that found the buffer full
+// and is being parked by the shepherd (MAZ-149 blocking-write backpressure).
+// The token is returned by a later TakeWriterWaiters once a reader drains
+// free space. Symmetric to Park/TakeWaiters for readers.
+func (e *End) ParkWriter(token any) {
+	e.b.writerWaiters = append(e.b.writerWaiters, token)
+}
+
+// TakeWriterWaiters returns and clears the parked-writer tokens if the buffer
+// now has free space for a writer to make progress. While the buffer is still
+// full it returns nil and leaves the parked tokens in place. Tokens are
+// returned in park order (FIFO), so the shepherd retries the oldest writer
+// first (preserving per-writer FIFO byte order).
+func (e *End) TakeWriterWaiters() []any {
+	if len(e.b.writerWaiters) == 0 {
+		return nil
+	}
+	if len(e.b.data) >= bufCap {
+		return nil // still blocked: no free space yet.
+	}
+	w := e.b.writerWaiters
+	e.b.writerWaiters = nil
+	return w
+}
+
+// MarkDrop overwrites the tail of the buffered data with the MAZ-149 drop
+// breadcrumb `@\` so a reader can detect that writer bytes were discarded
+// (bounded-park timeout). A buffer with fewer than len(marker) bytes is left
+// untouched — the loss is then implied by the missing data itself. The marker
+// REPLACES the tail rather than appending, so a full buffer stays full (the
+// drop happened precisely because no space freed up).
+func (e *End) MarkDrop() {
+	const marker = "@\\"
+	if len(e.b.data) < len(marker) {
+		return
+	}
+	copy(e.b.data[len(e.b.data)-len(marker):], marker)
 }

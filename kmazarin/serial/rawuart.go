@@ -15,6 +15,7 @@ package serial
 // back to PollWrite.
 var queueByteFunc func(byte)
 var queueByteTryFunc func(byte) bool
+var txKickFunc func()
 
 // SetQueueByteFunc registers the interrupt-driven TX path.
 // Called during device init with the driver's WriteByte method.
@@ -23,6 +24,11 @@ func SetQueueByteFunc(f func(byte)) { queueByteFunc = f }
 // SetQueueByteTryFunc registers the try-write TX path.
 // Called during device init with the driver's WriteByteTry method.
 func SetQueueByteTryFunc(f func(byte) bool) { queueByteTryFunc = f }
+
+// SetTxKickFunc registers the driver's "drain TX ring toward the FIFO now"
+// primitive (MAZ-149 item 6). Called during device init with the driver's
+// TxKick method.
+func SetTxKickFunc(f func()) { txKickFunc = f }
 
 // QueueByte writes a byte to the TX ring buffer (interrupt-driven).
 // Falls back to PollWrite before driver init.
@@ -48,6 +54,25 @@ func QueueByteTry(b byte) bool {
 		return false
 	}
 	return f(b)
+}
+
+// TxKick drains buffered TX-ring bytes toward the hardware FIFO without
+// relying on the TX interrupt. SVC context runs IRQ-masked, so a caller that
+// found the ring full cannot wait for the interrupt to drain it — TxKick
+// makes progress at hardware line rate instead (MAZ-149 item 6: SysUartWrite
+// preserves byte order by kick-and-retry instead of PollWrite-jumping the
+// queued ring contents). Returns false when no kick primitive is registered
+// (pre-init, or a platform that never registers one) — the caller falls back
+// to the old lossless-but-reordering PollWrite.
+//
+//go:nosplit
+func TxKick() bool {
+	f := txKickFunc
+	if f == nil {
+		return false
+	}
+	f()
+	return true
 }
 
 // QueueString writes a string to the TX ring buffer (interrupt-driven).

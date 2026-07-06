@@ -5,6 +5,7 @@ import (
 	"unsafe"
 
 	"mazzy/maz/linux/internal/execve"
+	"mazzy/maz/linux/internal/fdtable"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/linuxabi"
@@ -88,11 +89,22 @@ func (h *syscallHandler) sysExecve(req sys.SyscallRequest) {
 		return
 	}
 
-	// 5c. Marshal the non-ELF params (faithful argv/envp + intent + cwd +
-	// filename) and stage them into their own mmap region.
+	// 5c. Compute the child's stdio redirect mask (MAZ-149) from the child's
+	// final FD-table state: the base table (the vfork transient's pending
+	// table when its pre-execve dup3s already primed one, else the parent's
+	// live table — the same base step 7a builds the real child table from)
+	// plus the buffered intent ops applied at step 7a. Computed HERE, before
+	// the SVC, because the kernel must store it on the child Shepherd before
+	// the child is enqueued; the real child table is deliberately NOT built
+	// pre-SVC (pipe writer-ref cost on failure paths), so this is a pure
+	// simulation of fd 1/2's final Kinds.
+	stdioMask := h.childStdioRedirectMask(req.CallerTID, fdt, intent)
+
+	// 5d. Marshal the non-ELF params (faithful argv/envp + intent + cwd +
+	// filename + redirect mask) and stage them into their own mmap region.
 	paramsBlob, perr := linuxabi.MarshalCloneExecParams(
 		linuxabi.PackArgv(ceReq.Argv), linuxabi.PackArgv(ceReq.Envp),
-		ceReq.Intent, ceReq.Cwd, []byte(ceReq.Filename), req.CallerTID, req.CallerPID)
+		ceReq.Intent, ceReq.Cwd, []byte(ceReq.Filename), req.CallerTID, req.CallerPID, stdioMask)
 	if perr != nil {
 		munmapStage(elfVA, elfPages)
 		req.Reply(E2BIG)
@@ -160,6 +172,29 @@ func (h *syscallHandler) sysExecve(req sys.SyscallRequest) {
 		return
 	}
 	req.Reply(ret)
+}
+
+// childStdioRedirectMask computes the MAZ-149 per-process stdio redirect mask
+// for the child a sysExecve is about to create. Base table selection mirrors
+// step 7a's getOrCreatePendingChildFDT: if the vfork transient already primed
+// pendingChildFDTs[reservedPID] (its pre-execve dup3s were routed there by
+// resolveTargetFDT), that IS the child's table; otherwise the child starts
+// from a copy of the parent's live table. The buffered clone-window intent is
+// then simulated on top (it is applied for real at step 7a).
+//
+// The pending-table peek holds h.mu (the map's lock); the table itself is
+// quiescent by execve time — the transient issues its dup3s strictly before
+// its execve, and post-MAZ-150 the reserved PID cannot be concurrently reused.
+func (h *syscallHandler) childStdioRedirectMask(callerTID int16, parentFDT *fdtable.Table, intent []linuxabi.IntentOp) uint8 {
+	base := parentFDT
+	if reservedPID := sys.GetVforkReservedPID(callerTID); reservedPID != 0 {
+		h.mu.Lock()
+		if pending := h.pendingChildFDTs[reservedPID]; pending != nil {
+			base = pending
+		}
+		h.mu.Unlock()
+	}
+	return base.StdioRedirectMaskAfterIntent(intent)
 }
 
 // flushCloneWindow flushes sid/tid's clone buffering window under cloneMu and

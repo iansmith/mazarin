@@ -58,7 +58,8 @@ func TestMarshalCloneExecParamsRoundtrip(t *testing.T) {
 
 	const wantTID int16 = 42
 	const wantSID int16 = 7
-	blob, err := MarshalCloneExecParams(PackArgv(argv), PackArgv(envp), intent, cwd, filename, wantTID, wantSID)
+	const wantMask uint8 = 0b11 // both fd 1 and fd 2 redirected
+	blob, err := MarshalCloneExecParams(PackArgv(argv), PackArgv(envp), intent, cwd, filename, wantTID, wantSID, wantMask)
 	if err != nil {
 		t.Fatalf("MarshalCloneExecParams: %v", err)
 	}
@@ -92,12 +93,15 @@ func TestMarshalCloneExecParamsRoundtrip(t *testing.T) {
 	if got.VforkCallerSID != wantSID {
 		t.Errorf("VforkCallerSID = %d, want %d", got.VforkCallerSID, wantSID)
 	}
+	if got.StdioRedirectMask != wantMask {
+		t.Errorf("StdioRedirectMask = %#b, want %#b", got.StdioRedirectMask, wantMask)
+	}
 }
 
 // TestMarshalCloneExecParamsEmpty — a fully-empty request (no argv/envp/intent/
 // cwd/filename) still produces a valid header-only blob that round-trips.
 func TestMarshalCloneExecParamsEmpty(t *testing.T) {
-	blob, err := MarshalCloneExecParams(nil, nil, nil, nil, nil, 0, 0)
+	blob, err := MarshalCloneExecParams(nil, nil, nil, nil, nil, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("MarshalCloneExecParams(empty): %v", err)
 	}
@@ -111,6 +115,9 @@ func TestMarshalCloneExecParamsEmpty(t *testing.T) {
 	if len(got.Argv) != 0 || len(got.Envp) != 0 || len(got.Intent) != 0 ||
 		len(got.Cwd) != 0 || len(got.Filename) != 0 {
 		t.Errorf("empty round-trip non-empty: %+v", got)
+	}
+	if got.StdioRedirectMask != 0 {
+		t.Errorf("empty StdioRedirectMask = %#b, want 0", got.StdioRedirectMask)
 	}
 }
 
@@ -144,7 +151,7 @@ func TestUnmarshalCloneExecParamsRejectsShort(t *testing.T) {
 // TestUnmarshalCloneExecParamsRejectsOverrun — a header that declares section
 // lengths past the blob end is rejected.
 func TestUnmarshalCloneExecParamsRejectsOverrun(t *testing.T) {
-	blob, err := MarshalCloneExecParams([]byte("a\x00b"), nil, nil, nil, nil, 0, 0)
+	blob, err := MarshalCloneExecParams([]byte("a\x00b"), nil, nil, nil, nil, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -159,7 +166,7 @@ func TestUnmarshalCloneExecParamsRejectsOverrun(t *testing.T) {
 // CloneExecArgMax is rejected with ErrCloneExecArgTooBig (E2BIG at the SVC).
 func TestMarshalCloneExecParamsRejectsOversize(t *testing.T) {
 	huge := make([]byte, CloneExecArgMax+1)
-	if _, err := MarshalCloneExecParams(huge, nil, nil, nil, nil, 0, 0); err != ErrCloneExecArgTooBig {
+	if _, err := MarshalCloneExecParams(huge, nil, nil, nil, nil, 0, 0, 0); err != ErrCloneExecArgTooBig {
 		t.Errorf("oversize err = %v, want ErrCloneExecArgTooBig", err)
 	}
 }

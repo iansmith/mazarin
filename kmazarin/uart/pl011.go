@@ -344,6 +344,25 @@ func (u *PL011) WriteByteTry(c byte) bool {
 	return success
 }
 
+// TxKick drains buffered TX-ring bytes to the PL011 FIFO while it has space,
+// re-arming the TX interrupt for any leftovers. Callable IRQ-masked (SVC
+// context): progress does not depend on the TX interrupt — only on the
+// hardware draining its own FIFO. Registered as serial.SetTxKickFunc so
+// SysUartWrite's order-preserving ring-full path (MAZ-149 item 6) can make
+// room without PollWrite-jumping the queued ring contents.
+//
+//go:nosplit
+func (u *PL011) TxKick() {
+	u.txLockAcquire()
+	for u.txBuf.Available() > 0 && u.ReadReg(RegFR)&FR_TXFF == 0 {
+		u.WriteReg(RegDR, uint32(u.txBuf.ReadByte()))
+	}
+	if u.txBuf.Available() > 0 {
+		u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
+	}
+	u.txLockRelease()
+}
+
 // TxTryLock attempts to acquire the TX spinlock without blocking.
 // Returns true if lock acquired, false if already held.
 // Exported for use by the nosplit top-half TX drain.

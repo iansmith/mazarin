@@ -114,19 +114,20 @@ func SyscallCloneExec(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	}
 
 	ctxPtr := submitCloneExec(proc.CloneExecRequest{
-		ELFStartVA:     elfVA,
-		ELFNumBytes:    elfBytes,
-		ELFNumPages:    elfPages,
-		CallerL0PA:     shepherd.PageTableL0PA,
-		CallerShepherd: shepherd,
-		Argv:           params.Argv,
-		Envp:           params.Envp,
-		Intent:         params.Intent,
-		Cwd:            params.Cwd,
-		ReservedPID:    reservedPID,
-		TransientTID:   int32(transientTID),
-		ParentSID:      proc.ShepherdId(params.VforkCallerSID),
-		Filename:       params.Filename,
+		ELFStartVA:        elfVA,
+		ELFNumBytes:       elfBytes,
+		ELFNumPages:       elfPages,
+		CallerL0PA:        shepherd.PageTableL0PA,
+		CallerShepherd:    shepherd,
+		Argv:              params.Argv,
+		Envp:              params.Envp,
+		Intent:            params.Intent,
+		Cwd:               params.Cwd,
+		ReservedPID:       reservedPID,
+		TransientTID:      int32(transientTID),
+		ParentSID:         proc.ShepherdId(params.VforkCallerSID),
+		Filename:          params.Filename,
+		StdioRedirectMask: params.StdioRedirectMask,
 	})
 	if ctxPtr == 0 {
 		// Worker busy or no thread to switch to — EAGAIN, matching RunShepherd's
