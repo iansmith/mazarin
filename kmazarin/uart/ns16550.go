@@ -217,22 +217,30 @@ func (u *NS16550) Write(p []byte) (n int, err error) {
 //go:nosplit
 func (u *NS16550) WriteByte(c byte) {
 	u.txLockAcquire()
-	success := u.txBuf.WriteByte(c)
-	if success {
-		// Drain as much as possible to hardware right now.
-		// This is critical for NS16550 whose TX interrupt is edge-triggered
-		// (fires on THR transition to empty). Writing to THR creates the
-		// transition needed for subsequent TX interrupts.
-		for u.txBuf.Available() > 0 && u.ReadReg(NS_LSR)&NS_LSR_THRE != 0 {
-			data := u.txBuf.ReadByte()
-			u.WriteReg(NS_THR, data)
-		}
-		// Enable TX interrupt for any bytes that didn't fit
-		if u.txBuf.Available() > 0 {
-			u.WriteReg(NS_IER, NS_IER_RDI|NS_IER_THRI)
-		}
+	if u.txBuf.WriteByte(c) {
+		u.drainTxLocked()
 	}
 	u.txLockRelease()
+}
+
+// drainTxLocked drains buffered TX-ring bytes to the THR while it is empty,
+// re-arming the TX interrupt for any leftovers. The single copy of the
+// drain-and-rearm logic shared by WriteByte, WriteByteTry, and TxKick — all
+// of which hold txLock. Caller MUST hold txLock.
+//
+// Draining eagerly here is critical for NS16550, whose TX interrupt is
+// edge-triggered (fires on THR transition to empty): writing to THR creates
+// the transition needed for subsequent TX interrupts.
+//
+//go:nosplit
+func (u *NS16550) drainTxLocked() {
+	for u.txBuf.Available() > 0 && u.ReadReg(NS_LSR)&NS_LSR_THRE != 0 {
+		u.WriteReg(NS_THR, u.txBuf.ReadByte())
+	}
+	// Enable TX interrupt for any bytes that didn't fit.
+	if u.txBuf.Available() > 0 {
+		u.WriteReg(NS_IER, NS_IER_RDI|NS_IER_THRI)
+	}
 }
 
 // WriteByteTry writes a byte to the TX ring buffer (with FIFO drain).
@@ -244,13 +252,7 @@ func (u *NS16550) WriteByteTry(c byte) bool {
 	u.txLockAcquire()
 	success := u.txBuf.WriteByte(c)
 	if success {
-		for u.txBuf.Available() > 0 && u.ReadReg(NS_LSR)&NS_LSR_THRE != 0 {
-			data := u.txBuf.ReadByte()
-			u.WriteReg(NS_THR, data)
-		}
-		if u.txBuf.Available() > 0 {
-			u.WriteReg(NS_IER, NS_IER_RDI|NS_IER_THRI)
-		}
+		u.drainTxLocked()
 	}
 	u.txLockRelease()
 	return success
@@ -264,12 +266,7 @@ func (u *NS16550) WriteByteTry(c byte) bool {
 //go:nosplit
 func (u *NS16550) TxKick() {
 	u.txLockAcquire()
-	for u.txBuf.Available() > 0 && u.ReadReg(NS_LSR)&NS_LSR_THRE != 0 {
-		u.WriteReg(NS_THR, u.txBuf.ReadByte())
-	}
-	if u.txBuf.Available() > 0 {
-		u.WriteReg(NS_IER, NS_IER_RDI|NS_IER_THRI)
-	}
+	u.drainTxLocked()
 	u.txLockRelease()
 }
 

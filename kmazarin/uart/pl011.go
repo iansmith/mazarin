@@ -201,19 +201,26 @@ func (u *PL011) txLockRelease() {
 //go:nosplit
 func (u *PL011) WriteByte(c byte) {
 	u.txLockAcquire()
-	success := u.txBuf.WriteByte(c)
-	if success {
-		// Drain as much as possible to hardware right now
-		for u.txBuf.Available() > 0 && u.ReadReg(RegFR)&FR_TXFF == 0 {
-			data := u.txBuf.ReadByte()
-			u.WriteReg(RegDR, uint32(data))
-		}
-		// Enable TX interrupt for any bytes that didn't fit in the FIFO
-		if u.txBuf.Available() > 0 {
-			u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
-		}
+	if u.txBuf.WriteByte(c) {
+		u.drainTxLocked()
 	}
 	u.txLockRelease()
+}
+
+// drainTxLocked drains buffered TX-ring bytes to the PL011 FIFO while it has
+// space, re-arming the TX interrupt for any leftovers. The single copy of the
+// drain-and-rearm logic shared by WriteByte, WriteByteTry, and TxKick — all
+// of which hold txLock. Caller MUST hold txLock.
+//
+//go:nosplit
+func (u *PL011) drainTxLocked() {
+	for u.txBuf.Available() > 0 && u.ReadReg(RegFR)&FR_TXFF == 0 {
+		u.WriteReg(RegDR, uint32(u.txBuf.ReadByte()))
+	}
+	// Enable TX interrupt for any bytes that didn't fit in the FIFO.
+	if u.txBuf.Available() > 0 {
+		u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
+	}
 }
 
 // WriteString writes a string to the TX ring buffer.
@@ -330,15 +337,7 @@ func (u *PL011) WriteByteTry(c byte) bool {
 	u.txLockAcquire()
 	success := u.txBuf.WriteByte(c)
 	if success {
-		// Drain as much as possible to hardware right now
-		for u.txBuf.Available() > 0 && u.ReadReg(RegFR)&FR_TXFF == 0 {
-			data := u.txBuf.ReadByte()
-			u.WriteReg(RegDR, uint32(data))
-		}
-		// Enable TX interrupt for any bytes that didn't fit in the FIFO
-		if u.txBuf.Available() > 0 {
-			u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
-		}
+		u.drainTxLocked()
 	}
 	u.txLockRelease()
 	return success
@@ -354,12 +353,7 @@ func (u *PL011) WriteByteTry(c byte) bool {
 //go:nosplit
 func (u *PL011) TxKick() {
 	u.txLockAcquire()
-	for u.txBuf.Available() > 0 && u.ReadReg(RegFR)&FR_TXFF == 0 {
-		u.WriteReg(RegDR, uint32(u.txBuf.ReadByte()))
-	}
-	if u.txBuf.Available() > 0 {
-		u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
-	}
+	u.drainTxLocked()
 	u.txLockRelease()
 }
 

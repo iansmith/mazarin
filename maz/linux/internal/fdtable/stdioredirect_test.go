@@ -113,6 +113,54 @@ func TestStdioRedirectMaskSameFdNoop(t *testing.T) {
 	}
 }
 
+// TestStdioRedirectMaskFSetFDCloexec — fcntl(2, F_SETFD, FD_CLOEXEC) means
+// the exec-time CloseCloexecFDs sweep CLOSES fd 2 before the child's first
+// write: the bit must be set so the write delegates (EBADF from the table)
+// instead of the console fast path printing it.
+func TestStdioRedirectMaskFSetFDCloexec(t *testing.T) {
+	tbl := New()
+	ops := []linuxabi.IntentOp{{Kind: linuxabi.IntentFSetFD, Arg0: 2, Arg1: FD_CLOEXEC}}
+	if got := tbl.StdioRedirectMaskAfterIntent(ops); got != linuxabi.StdioRedirectFd2 {
+		t.Errorf("mask = %#b, want %#b (cloexec'd fd 2 closes at exec)", got, linuxabi.StdioRedirectFd2)
+	}
+}
+
+// TestStdioRedirectMaskFSetFDCleared — setting then clearing FD_CLOEXEC on a
+// console fd leaves it console (bit clear): only the FINAL state counts.
+func TestStdioRedirectMaskFSetFDCleared(t *testing.T) {
+	tbl := New()
+	ops := []linuxabi.IntentOp{
+		{Kind: linuxabi.IntentFSetFD, Arg0: 1, Arg1: FD_CLOEXEC},
+		{Kind: linuxabi.IntentFSetFD, Arg0: 1, Arg1: 0},
+	}
+	if got := tbl.StdioRedirectMaskAfterIntent(ops); got != 0 {
+		t.Errorf("mask = %#b, want 0 (cloexec cleared before exec)", got)
+	}
+}
+
+// TestStdioRedirectMaskDup3CloexecFlag — dup3(src, 1, O_CLOEXEC): the new
+// fd 1 is closed by the exec sweep, so the bit is set even though the source
+// was a live pipe.
+func TestStdioRedirectMaskDup3CloexecFlag(t *testing.T) {
+	tbl := New()
+	tbl.Put(5, &Entry{Kind: KindPipeWrite})
+	ops := []linuxabi.IntentOp{{Kind: linuxabi.IntentDup3, Arg0: 5, Arg1: 1, Arg2: OCLOEXEC}}
+	if got := tbl.StdioRedirectMaskAfterIntent(ops); got != linuxabi.StdioRedirectFd1 {
+		t.Errorf("mask = %#b, want %#b (dup3 O_CLOEXEC target closes at exec)", got, linuxabi.StdioRedirectFd1)
+	}
+}
+
+// TestStdioRedirectMaskBaseTableCloexec — a base-table fd 1 entry already
+// carrying Cloexec (primed by the transient's dup3 with O_CLOEXEC) is closed
+// by the exec sweep → bit set.
+func TestStdioRedirectMaskBaseTableCloexec(t *testing.T) {
+	tbl := New()
+	tbl.Put(1, &Entry{Kind: KindPipeWrite, Cloexec: true})
+	if got := tbl.StdioRedirectMaskAfterIntent(nil); got != linuxabi.StdioRedirectFd1 {
+		t.Errorf("mask = %#b, want %#b (base-table cloexec fd 1)", got, linuxabi.StdioRedirectFd1)
+	}
+}
+
 // TestStdioRedirectMaskDoesNotMutate — the computation is a pure read; the
 // table must be byte-identical after (sysExecve runs it on the LIVE pending
 // child table).

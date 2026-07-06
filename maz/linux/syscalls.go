@@ -289,6 +289,15 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 // paths (cleanupShepherd on shepherd death, evictStaleChildShepherd on
 // fork/exec PID reuse) so the two can't drift.
 func (h *syscallHandler) tearDownShepherdFDState(sid int16, s *ShepherdFilesystemData) {
+	// Abandon any pipe writes this shepherd still has parked (MAZ-149): the
+	// kernel has already torn down the dead caller's delegate state, so a
+	// later watchdog/wake Reply would target a stale — or worse, REUSED —
+	// caller TID slot and corrupt an unrelated in-flight delegate (thread
+	// IDs still recycle LIFO; MAZ-150 made only shepherd PIDs monotonic).
+	// Registry removal IS the abandon signal — wakePipeWriters and the
+	// watchdog skip unregistered tokens. No Reply is sent.
+	h.dropParkedPipeWritersForSID(sid)
+
 	// Take per-shepherd lock so any in-flight handler for this shepherd
 	// (already holding s.mu) drains before we touch its FDT.
 	s.mu.Lock()
@@ -728,6 +737,12 @@ func (h *syscallHandler) releaseFDResources(sid int16, fd int, e *fdtable.Entry)
 // transient's pre-execve FD/cwd setup) and sysExecve (picking up whichever
 // table — freshly built or already primed by pre-execve setup — a just-forked
 // child should get), so the map is only ever get-or-created in one place.
+//
+// childStdioRedirectMask (execve.go) deliberately does NOT use this helper:
+// it needs a pre-SVC PEEK, and get-or-create would pay fdt.Copy()'s pipe
+// writer-ref Fork() increments (and store the table) before knowing the exec
+// succeeds — leaking writer refs on the failure paths. If this map's locking
+// or key semantics change (e.g. MAZ-151), update that peek in lockstep.
 func (h *syscallHandler) getOrCreatePendingChildFDT(pid int16, fallback func() *fdtable.Table) *fdtable.Table {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1122,9 +1137,10 @@ type pipeWriteWaiter struct {
 // with no reader draining the buffer (MAZ-149 item 7). Unix semantics would
 // block forever; the bound is the escape hatch for a wedged/vanished reader
 // (a reader death does not currently signal parked writers — the timeout
-// covers that case too). On expiry the bytes are DROPPED: the buffer tail is
-// overwritten with the `@\` breadcrumb (pipe.End.MarkDrop) so the reader can
-// detect the loss, and the writer is released with a success count. 30s is
+// covers that case too). On expiry the bytes are DROPPED: the `@\` breadcrumb
+// is requested via pipe.End.MarkDrop (applied at the NEXT READ, in the
+// reader's dispatch context — the watchdog goroutine must not mutate the
+// buffer itself), and the writer is released with a success count. 30s is
 // far above the multi-second delegate stalls seen in boot storms.
 const pipeWriterParkTimeout = 30 * time.Second
 
@@ -1139,6 +1155,23 @@ func (h *syscallHandler) parkPipeWriter(w *pipeWriteWaiter) {
 	h.parkedPipeWriters[w] = struct{}{}
 	h.pipeParkMu.Unlock()
 	w.end.ParkWriter(w)
+}
+
+// dropParkedPipeWritersForSID abandons every parked pipe write owned by a
+// dead shepherd, WITHOUT replying — the kernel has already cleaned the dead
+// caller's delegate state, and its TID may already be REUSED by an unrelated
+// delegate, so a late Reply would corrupt that delegate's return value (see
+// tearDownShepherdFDState's call site). The stale tokens left on the pipes'
+// writerWaiters lists are skipped by wakePipeWriters and the watchdog via
+// the registry-liveness check.
+func (h *syscallHandler) dropParkedPipeWritersForSID(sid int16) {
+	h.pipeParkMu.Lock()
+	for w := range h.parkedPipeWriters {
+		if w.req.CallerPID == sid {
+			delete(h.parkedPipeWriters, w)
+		}
+	}
+	h.pipeParkMu.Unlock()
 }
 
 // wakePipeWriters retries writes parked on a full pipe once a reader drained

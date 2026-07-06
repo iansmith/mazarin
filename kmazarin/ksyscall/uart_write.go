@@ -71,6 +71,12 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 			// preserved, nothing dropped. A platform with no kick primitive
 			// registered keeps the old PollWrite fallback (lossless, but the
 			// byte can jump the ring's queued contents).
+			//
+			// Liveness: this retry loop progresses at hardware drain rate and
+			// spins only while the FIFO is full — the SAME dependency the old
+			// ring-full PollWrite fallback had (PollWrite spins unbounded on
+			// txReady). A permanently-stalled FIFO hangs either version; this
+			// is parity, not a new hazard.
 			for !serial.QueueByteTry(chunk[i]) {
 				if !serial.TxKick() {
 					serial.PollWrite(chunk[i])

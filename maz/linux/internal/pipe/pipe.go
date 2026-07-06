@@ -25,7 +25,10 @@
 
 package pipe
 
-import "errors"
+import (
+	"errors"
+	"sync/atomic"
+)
 
 // O_CLOEXEC / O_NONBLOCK as seen on the pipe2 flags argument. Linux ARM64 and
 // x86_64 share these values (asm-generic + x86 agree).
@@ -67,6 +70,14 @@ type buf struct {
 	flags         int
 	waiters       []any
 	writerWaiters []any
+
+	// dropPending requests the MAZ-149 `@\` drop breadcrumb. It is the ONLY
+	// cross-goroutine field on buf: the shepherd's park-timeout watchdog runs
+	// on its own goroutine, outside the dispatch serialization that guards
+	// every other buf access, so it may not mutate data directly. MarkDrop
+	// just latches this flag (atomic); Read applies the marker lazily, in the
+	// reader's dispatch context, where mutating data is safe.
+	dropPending atomic.Bool
 }
 
 // End is one end of a pipe — either the read end or the write end. Both ends
@@ -164,6 +175,15 @@ func (e *End) Read(p []byte) (int, error) {
 		}
 		return 0, ErrWouldBlock
 	}
+	// Apply a pending drop breadcrumb (MarkDrop) now, in the reader's
+	// dispatch context — see the dropPending field doc. Fewer buffered bytes
+	// than the marker: skip (the missing data itself implies the loss).
+	if e.b.dropPending.CompareAndSwap(true, false) {
+		const marker = "@\\"
+		if len(e.b.data) >= len(marker) {
+			copy(e.b.data[len(e.b.data)-len(marker):], marker)
+		}
+	}
 	n := copy(p, e.b.data)
 	// Drop the consumed prefix. Reslicing onto a fresh backing array keeps the
 	// buffer from pinning drained bytes (the pipe is short-lived and tiny, so
@@ -236,16 +256,15 @@ func (e *End) TakeWriterWaiters() []any {
 	return w
 }
 
-// MarkDrop overwrites the tail of the buffered data with the MAZ-149 drop
-// breadcrumb `@\` so a reader can detect that writer bytes were discarded
-// (bounded-park timeout). A buffer with fewer than len(marker) bytes is left
-// untouched — the loss is then implied by the missing data itself. The marker
-// REPLACES the tail rather than appending, so a full buffer stays full (the
-// drop happened precisely because no space freed up).
+// MarkDrop requests the MAZ-149 drop breadcrumb: the next Read overwrites
+// the tail of the buffered data with `@\` so the reader can detect that
+// writer bytes were discarded (bounded-park timeout). The application is
+// DEFERRED to Read because MarkDrop's caller (the shepherd's park-timeout
+// watchdog) runs outside the dispatch serialization that guards buf.data —
+// only the flag latch here is cross-goroutine-safe. The marker REPLACES the
+// tail rather than appending, so a full buffer stays full (the drop happened
+// precisely because no space freed up); a buffer shorter than the marker at
+// read time is left untouched (the missing data itself implies the loss).
 func (e *End) MarkDrop() {
-	const marker = "@\\"
-	if len(e.b.data) < len(marker) {
-		return
-	}
-	copy(e.b.data[len(e.b.data)-len(marker):], marker)
+	e.b.dropPending.Store(true)
 }

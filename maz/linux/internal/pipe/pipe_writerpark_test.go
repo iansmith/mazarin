@@ -97,7 +97,9 @@ func TestWriterParkReadEndTake(t *testing.T) {
 
 // TestMarkDropOverwritesTail — the `@\` breadcrumb replaces the buffer tail
 // (bounded-park timeout drop) without changing the buffered length, so a
-// reader can detect the loss.
+// reader can detect the loss. MarkDrop only latches the request (it may be
+// called from the watchdog goroutine); the marker lands at the next Read,
+// in the reader's dispatch context.
 func TestMarkDropOverwritesTail(t *testing.T) {
 	r, w := New(0)
 	if _, err := w.Write([]byte("abcdef")); err != nil {
@@ -126,5 +128,27 @@ func TestMarkDropShortBufferUntouched(t *testing.T) {
 	n, err := r.Read(buf[:])
 	if err != nil || n != 1 || buf[0] != 'z' {
 		t.Fatalf("read = (%q, %v), want (\"z\", nil)", buf[:n], err)
+	}
+}
+
+// TestMarkDropAppliesOnce — the latch is consumed by the read that applies
+// (or skips) it; data written afterward is not re-marked.
+func TestMarkDropAppliesOnce(t *testing.T) {
+	r, w := New(0)
+	if _, err := w.Write([]byte("abcdef")); err != nil {
+		t.Fatalf("write err: %v", err)
+	}
+	w.MarkDrop()
+	var buf [16]byte
+	n, _ := r.Read(buf[:])
+	if string(buf[:n]) != "abcd@\\" {
+		t.Fatalf("first read = %q, want %q", buf[:n], "abcd@\\")
+	}
+	if _, err := w.Write([]byte("ghijkl")); err != nil {
+		t.Fatalf("second write err: %v", err)
+	}
+	n, _ = r.Read(buf[:])
+	if string(buf[:n]) != "ghijkl" {
+		t.Fatalf("second read = %q, want %q (no re-mark)", buf[:n], "ghijkl")
 	}
 }
