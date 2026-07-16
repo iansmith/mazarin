@@ -11,6 +11,7 @@ import (
 	"time"
 	"unsafe"
 
+	"mazzy/maz/linux/internal/dispatch"
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/linuxio"
 	"mazzy/mazarin/mazhost"
@@ -182,16 +183,19 @@ func handleDeathNotification(deadSID int16) {
 //   - File lane (delegateCh): file-system syscalls (may block on fsclient),
 //     stdin reads (async via reqQueue), and notifications (death, idleFlush,
 //     stdinDecRef). The reader hands each SyscallRequest to a fixed-size
-//     persistent worker pool (fileLaneWorkers). Workers serve concurrent
-//     requests so a slow handler (e.g., parked inside fsclient.call waiting
-//     for fs) cannot starve unrelated requests behind it. Per-shepherd
-//     ordering is preserved by ShepherdFilesystemData.mu, which the worker
-//     holds for the dispatch lifetime. Notifications (death, idleFlush,
-//     stdinDecRef) stay on the reader goroutine — they're cheap and
-//     ordering-sensitive relative to the requests they accompany. We use a
-//     persistent pool (not `go handler.handle(req)` per request) because the
-//     .maz plugin runtime's morestack/copystack/unwinder is unstable under
-//     the goroutine-creation rate that unbounded spawning produced (~14k
+//     SID-ordered worker pool (dispatch.Pool, fileLaneWorkers wide). Workers
+//     serve concurrent requests so a slow handler (e.g., parked inside
+//     fsclient.call waiting for fs) cannot starve unrelated requests behind
+//     it. Per-shepherd ordering — same-SID FIFO with exclusion — is enforced
+//     by the pool itself (MAZ-156: a bare channel pool let a later same-SID
+//     request win shep.mu first, so a vfork transient's execve could run
+//     before its own dup3/chdir; shep.mu is retained in handle as defense in
+//     depth). Notifications (death, idleFlush, stdinDecRef) stay on the
+//     reader goroutine — they're cheap and ordering-sensitive relative to
+//     the requests they accompany. We use a persistent pool (not
+//     `go handler.handle(req)` per request) because the .maz plugin
+//     runtime's morestack/copystack/unwinder is unstable under the
+//     goroutine-creation rate that unbounded spawning produced (~14k
 //     spawns per 180s run reliably crashed the runtime in
 //     traceback.go:resolveInternal).
 //
@@ -213,9 +217,9 @@ func handleDeathNotification(deadSID int16) {
 // emitter, as pre-MAZ-149.
 
 // fileLaneWorkers is the number of persistent goroutines that serve
-// delegated SyscallRequests in parallel. Per-shepherd serialization at
-// shep.mu caps in-flight to 1 per shepherd, and concurrent fsclient
-// calls serialize at fsclient's c.mu — so realistic peak concurrent
+// delegated SyscallRequests in parallel. Per-shepherd serialization in
+// dispatch.Pool caps in-flight to 1 per shepherd (MAZ-156), and concurrent
+// fsclient calls serialize at fsclient's c.mu — so realistic peak concurrent
 // demand is ~30 (one per active shepherd). 32 gives modest headroom
 // without the memory waste of the previous 1024 (which was sized as
 // "definitely enough" before we measured what's actually needed).
@@ -227,27 +231,28 @@ const fileLaneWorkers = 32
 type fileLaneWorkItem struct {
 	req         sys.SyscallRequest
 	isStdinRead bool
+	// seq is the per-SID receive-sequence number stamped by the single
+	// delegate reader — the arrival order the MAZ-156 inversion canary
+	// checks against at service time (see handle).
+	seq uint64
 }
 
-// fileLaneWorker runs one of the fileLaneWorkers persistent goroutines.
-// It blocks on workCh, processes one request at a time, and returns to the
-// channel for the next one. Workers exit only when workCh is closed (i.e.
-// shepherd shutdown — never in normal operation).
-func fileLaneWorker(workCh <-chan fileLaneWorkItem, handler *syscallHandler) {
-	for w := range workCh {
-		t0 := time.Now()
-		handler.handle(w.req)
-		// Log only genuinely-stuck handler.handle() calls (>3s). The boot storm
-		// legitimately drives single syscalls to 1-2s under contention, so a 500ms
-		// threshold spammed dozens of low-value lines every boot; 3s keeps the
-		// canary for real downstream wedges without the noise.
-		if elapsed := time.Since(t0); elapsed > 3*time.Second {
-			fmt.Printf("[linux:wkr] SLOW sid=%d sysid=%d tid=%d elapsed=%dms\n",
-				w.req.CallerPID, w.req.SysID, w.req.CallerTID, elapsed.Milliseconds())
-		}
-		if !w.isStdinRead {
-			sidDecRef(w.req.CallerPID)
-		}
+// serveFileLaneItem is the dispatch.Pool handler: it runs one delegated
+// request to completion. The pool guarantees same-SID FIFO with exclusion
+// (MAZ-156) and caps concurrency at fileLaneWorkers.
+func serveFileLaneItem(handler *syscallHandler, w fileLaneWorkItem) {
+	t0 := time.Now()
+	handler.handle(w.req, w.seq)
+	// Log only genuinely-stuck handler.handle() calls (>3s). The boot storm
+	// legitimately drives single syscalls to 1-2s under contention, so a 500ms
+	// threshold spammed dozens of low-value lines every boot; 3s keeps the
+	// canary for real downstream wedges without the noise.
+	if elapsed := time.Since(t0); elapsed > 3*time.Second {
+		fmt.Printf("[linux:wkr] SLOW sid=%d sysid=%d tid=%d elapsed=%dms\n",
+			w.req.CallerPID, w.req.SysID, w.req.CallerTID, elapsed.Milliseconds())
+	}
+	if !w.isStdinRead {
+		sidDecRef(w.req.CallerPID)
 	}
 }
 func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallRequest, handler *syscallHandler) <-chan delegateMsg {
@@ -313,15 +318,19 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 			}
 		}
 	}()
-	// File lane — reader hands each SyscallRequest to a fixed-size persistent
-	// worker pool. Workers serve concurrent requests so a slow handler can't
-	// starve unrelated requests behind it. Per-shepherd ordering is preserved
-	// inside handler.handle by the per-shepherd lock.
-	workCh := make(chan fileLaneWorkItem, fileLaneWorkers)
-	for i := 0; i < fileLaneWorkers; i++ {
-		go fileLaneWorker(workCh, handler)
-	}
+	// File lane — reader hands each SyscallRequest to the SID-ordered worker
+	// pool. Workers serve concurrent requests so a slow handler can't starve
+	// unrelated requests behind it; the pool enforces same-SID FIFO with
+	// exclusion (MAZ-156 — see the dispatch package for the guarantee).
+	pool := dispatch.NewPool(fileLaneWorkers,
+		func(w fileLaneWorkItem) int16 { return w.req.CallerPID },
+		func(w fileLaneWorkItem) { serveFileLaneItem(handler, w) })
 	go func() {
+		defer pool.Close()
+		// laneSeq stamps each SID's requests with their arrival order.
+		// Reader-goroutine-local: this loop is the ONLY enqueuer, so no lock.
+		// Entries are never deleted — bounded by the PID space (≤256).
+		laneSeq := make(map[int16]uint64)
 		for raw := range delegateCh {
 			switch v := raw.(type) {
 			case deathNotification:
@@ -348,7 +357,9 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 				if !isStdinRead {
 					sidIncRef(sid)
 				}
-				workCh <- fileLaneWorkItem{req: req, isStdinRead: isStdinRead}
+				seq := laneSeq[sid]
+				laneSeq[sid] = seq + 1
+				pool.Enqueue(fileLaneWorkItem{req: req, isStdinRead: isStdinRead, seq: seq})
 			}
 		}
 	}()
