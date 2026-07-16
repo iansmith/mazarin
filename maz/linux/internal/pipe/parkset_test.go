@@ -1,6 +1,9 @@
 package pipe
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 // MAZ-155 — parked-request ownership registry spec. Every request the shepherd
 // parks (pipe readers on an empty buffer, pipe writers on a full one) is
@@ -108,5 +111,101 @@ func TestParkSetAbandonedReaderSkippedAtWake(t *testing.T) {
 	}
 	if len(fulfilled) != 1 || fulfilled[0] != liveRdr {
 		t.Fatalf("fulfilled = %v, want exactly [live-sid-7] (dead shepherd's read must be dropped, not replied)", fulfilled)
+	}
+}
+
+// TestParkSetReparkAfterTakeLiveSurvivesOldOwnersDrop — a token taken
+// (fulfilled) and then re-parked under a NEW owner must not be abandoned when
+// the OLD owner (who no longer holds it) later dies. Catches a stale reverse
+// index (owner→tokens) that TakeLive forgot to clean.
+func TestParkSetReparkAfterTakeLiveSurvivesOldOwnersDrop(t *testing.T) {
+	s := NewParkSet()
+	tok := &parkTok{"reused"}
+	s.Park(tok, 5)
+	if !s.TakeLive(tok) {
+		t.Fatalf("TakeLive(first park) = false, want true")
+	}
+	s.Park(tok, 7) // re-parked under a different, still-live owner
+	s.DropOwner(5) // the OLD owner dies; must not touch the re-park
+	if !s.TakeLive(tok) {
+		t.Fatalf("re-parked token abandoned by dead owner 5's DropOwner, want live (owned by 7)")
+	}
+}
+
+// TestParkSetReparkAfterSweepSurvivesOldOwnersDrop — mirrors the TakeLive
+// case above but through Sweep's removal path.
+func TestParkSetReparkAfterSweepSurvivesOldOwnersDrop(t *testing.T) {
+	s := NewParkSet()
+	tok := &parkTok{"swept-then-reused"}
+	s.Park(tok, 5)
+	expired := s.Sweep(func(x any) bool { return x == tok })
+	if len(expired) != 1 || expired[0] != tok {
+		t.Fatalf("Sweep = %v, want [tok]", expired)
+	}
+	s.Park(tok, 7)
+	s.DropOwner(5)
+	if !s.TakeLive(tok) {
+		t.Fatalf("re-parked token abandoned by dead owner 5's DropOwner, want live (owned by 7)")
+	}
+}
+
+// TestParkSetDropOwnerClearsAllDuplicateParks — parking the same token twice
+// for the same (dying) owner must fully abandon it on DropOwner, not just
+// remove one of the duplicate registrations.
+func TestParkSetDropOwnerClearsAllDuplicateParks(t *testing.T) {
+	s := NewParkSet()
+	tok := &parkTok{"double-parked"}
+	s.Park(tok, 5)
+	s.Park(tok, 5) // idempotent re-park, e.g. a retried request
+	s.DropOwner(5)
+	if s.TakeLive(tok) {
+		t.Fatalf("double-parked token still live after DropOwner of its only owner, want abandoned")
+	}
+}
+
+// TestParkSetConcurrentAccessRace — exercises Park/TakeLive/DropOwner/Sweep
+// from multiple goroutines simultaneously, matching real usage (watchdog
+// goroutine + dispatch goroutines): the ParkSet must be internally locked.
+// An unlocked map-based impl passes every other test in this file but
+// crashes or races here.
+func TestParkSetConcurrentAccessRace(t *testing.T) {
+	s := NewParkSet()
+	const n = 200
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			tok := &parkTok{name: "c"}
+			owner := int16(i % 7)
+			s.Park(tok, owner)
+			switch i % 3 {
+			case 0:
+				s.TakeLive(tok)
+			case 1:
+				s.DropOwner(owner)
+			case 2:
+				s.Sweep(func(x any) bool { return x == tok })
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestParkSetZeroOwnerAndNilTokenBoundaries — SID 0 is a valid owner and nil
+// is a valid token; neither may be treated as a sentinel "unset" value that
+// silently no-ops.
+func TestParkSetZeroOwnerAndNilTokenBoundaries(t *testing.T) {
+	s := NewParkSet()
+	tok := &parkTok{"zero-owner"}
+	s.Park(tok, 0)
+	s.DropOwner(0)
+	if s.TakeLive(tok) {
+		t.Fatalf("token owned by SID 0 not abandoned by DropOwner(0)")
+	}
+
+	s.Park(nil, 9)
+	if !s.TakeLive(nil) {
+		t.Fatalf("TakeLive(nil) = false, want true (nil is a valid token)")
 	}
 }
