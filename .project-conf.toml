@@ -1,8 +1,110 @@
 system = "linear"
 key    = "MAZ"
+prefix = "MAZ"
+
+# Project-local ticket tracking (v3 recommended). Relative paths resolve
+# against the main worktree root. .slopstop/ is gitignored — transient
+# working state, not source. Migrated off the ~/.claude/ticket-active
+# default (2026-07-16): that path is a protected path for headless fleet
+# agents (Write silently fails even with --add-dir), and was previously a
+# single directory shared across every slopstop-managed project on this
+# machine.
+tracking_dir = ".slopstop/ticket-active"
+archive_dir  = ".slopstop/ticket-archive"
+
+# Tier→model map for the four-tier slopstop process.
+# Table form (v3.1.0+): each tier is a sub-table with provider, model, and optional
+# version. The tier gate matches on model family and, when pinned, a dotted-prefix
+# version match (e.g. version = "4.6" matches claude-opus-4-6). Stage skills
+# hard-stop when the session model doesn't match the stage's tier; subagent tiers
+# (adversaries/reviewers/fleet) are set from this table. Stage→tier mapping
+# ([stage_tiers]) is left at its defaults.
+[tiers.huge]        # :design + huge-tier checks (ticket-tree/rewrite/report adversaries)
+provider = "anthropic"
+model    = "opus"
+version  = "4.8"
+
+[tiers.large]       # :tickets + failure-driven rewrites + umbrella/integration drift checks
+provider = "anthropic"
+model    = "opus"
+version  = "4.6"
+
+[tiers.medium]      # :run orchestrator + per-ticket reviewer/adversary subagents
+provider = "anthropic"
+model    = "sonnet"
+version  = "5"
+
+[tiers.small]       # fleet implementation agents (no version pin)
+provider = "anthropic"
+model    = "haiku"
+
+# Point this repo's runs at the local Phase-1 metering router (see ~/slopstop/router).
+# :design health-checks it at run start and :run points each fleet agent at it
+# (ANTHROPIC_BASE_URL + X-Slopstop-Run/X-Slopstop-Ticket headers), so fleet traffic is
+# metered by default. A dead router never blocks a run — agents fall back to direct API.
+[fleet.router]
+enabled = true
+host    = "127.0.0.1"
+port    = 8484
+
+# Fleet monitoring posture. "kill" terminates any fleet agent that writes outside
+# its ticket's file map — the graduated posture for real runs (as opposed to
+# "warn", the supervised-observation mode used during the meta-test).
+[fleet.monitoring]
+filemap_violation = "kill"
 
 # PR code review backend for /slopstop-pr.
-# "claude" → in-house /code-review (Skill); "coderabbit" → CodeRabbit bot.
+# "claude" → in-house /code-review (Skill); "coderabbit" → CodeRabbit bot;
+# "greptile" → Greptile bot (not installed on this repo).
 [pr_review]
 backend = "claude"
 effort  = "high"
+# fix=false is REQUIRED here: [autonomous] on_red_findings = "fix-and-retry" below
+# already applies the 🔴 findings. CONFIG.md flags fix=true + fix-and-retry as a
+# double-apply combo. Do NOT set fix=true without removing on_red_findings.
+fix     = false
+
+# Non-interactive mode for the multi-platform bug-fix campaign (2026-07-06).
+#
+# NOTE: enabled=true drives :pr / :start / :archive / :plan autonomously. It does
+# NOT by itself make :merge autonomous — per the skill's merge-autonomous.md, full
+# autonomous :merge is activated by passing --autonomous on the :merge command line.
+# The merge_* / archive_immediately keys below are read only on those --autonomous
+# runs. Interactive :merge still auto-confirms via [workflow] skip_confirm (below).
+[autonomous]
+enabled = true
+
+# :start — this run is bug work
+branch_type = "fix"
+
+# All keys below are set so headless fleet agents never stall on an "ask" prompt
+# with no human present to answer it.
+# :plan — Phase 0 red tests unexpectedly pass (possible stale ticket): proceed.
+on_phase0_tests_pass = "continue"
+# :plan — ≥2 parallel-safe work items found: launch them.
+on_parallel_agents   = "proceed"
+# :plan — adversary-found gap tests: add them all.
+on_test_gaps         = "add-all"
+
+# :pr — simplify pass modifies the working tree: accept the changes.
+on_simplify_changes = "accept"
+# :pr — pre-commit tests fail: abort (do NOT commit-anyway on a real failure).
+on_test_failure     = "abort"
+# :pr — auto-fix 🔴 findings and re-review, rather than asking. Paired with
+# [pr_review] fix=false above — see the double-apply note there.
+on_red_findings     = "fix-and-retry"
+# :pr — slop-detection violations: skip the check rather than stall.
+on_slop_findings    = "skip"
+
+# :merge — repo rule: ALWAYS a real merge commit, never squash/rebase
+merge_strategy      = "merge"
+merge_target_state  = "auto"    # advance the ticket exactly one state, never force-jump to Done
+archive_immediately = true      # chain into :archive when a merge lands a ticket in a terminal state
+
+metrics_emit_path = ".slopstop/metrics"
+
+# Don't prompt for the branch type on /slopstop-start — use the heuristic
+# suggestion (from ticket labels/title) automatically. Only falls back to
+# asking when the heuristic produces no suggestion at all.
+[workflow]
+skip_confirm = true

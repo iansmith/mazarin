@@ -73,7 +73,6 @@ type DelegateCallInfo struct {
 	FlushLength uint64
 }
 
-
 // stdioWriteRingIdx — kernel-side override for the ring a CONSOLE stdio
 // (fd<=2, redirect bit clear) Write delegate is sent on. When set, console
 // fd<=2 Writes go to this ring index of the registered Write handler instead
@@ -206,7 +205,6 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			handlerDataVA = va
 			dataLen = uint32(n)
 		}
-
 
 	// --- File syscalls delegated to the linux shepherd ---
 
@@ -564,13 +562,19 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 // allocAndCopyCallerData allocates a page, copies caller data into it, and
 // maps it into the handler's address space. Returns (PA, handlerVA, bytesCopied).
 func allocAndCopyCallerData(handlerSID int16, handlerShepherd *proc.Shepherd, callerBufVA uintptr, count uint64) (uintptr, uint64, uint64) {
+	// MAZ-156 forensics: every failure branch below silently ENOMEMs the
+	// caller's delegate (the redirected-stdio write-loss suspect), so each
+	// gets a distinct klog line naming the branch and the caller.
 	pa := kmem.AllocPage(kmem.PageSharedIPC, handlerSID)
 	if pa == 0 {
+		klog.Errf("[DLG:alloc] AllocPage FAIL caller=%d free=%d\n",
+			int32(getCurrentThreadSID()), kmem.GetPoolStats().RemainingPages)
 		return 0, 0, 0
 	}
 
 	scratchVA := kmem.MapPAToKernelScratch(pa)
 	if scratchVA == 0 {
+		klog.Errf("[DLG:alloc] scratch map FAIL caller=%d\n", int32(getCurrentThreadSID()))
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
@@ -581,16 +585,22 @@ func allocAndCopyCallerData(handlerSID int16, handlerShepherd *proc.Shepherd, ca
 	// Copy caller data
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(scratchVA)), count)
 	if !kmem.CopyFromUser(dst, callerBufVA, int(count)) {
+		klog.Errf("[DLG:alloc] CopyFromUser FAIL caller=%d va=%x n=%d\n",
+			int32(getCurrentThreadSID()), uint64(callerBufVA), count)
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
 
 	va := bumpAllocForShepherd(handlerShepherd, 4096)
 	if va == 0 {
+		klog.Errf("[DLG:alloc] bump VA exhausted caller=%d handler=%d\n",
+			int32(getCurrentThreadSID()), int32(handlerSID))
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
 	if !kmem.MapPageInProcess(handlerSID, uintptr(va), pa, 0) { // RW
+		klog.Errf("[DLG:alloc] MapPageInProcess FAIL caller=%d handler=%d va=%x\n",
+			int32(getCurrentThreadSID()), int32(handlerSID), va)
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
@@ -604,11 +614,14 @@ func allocAndCopyCallerData(handlerSID int16, handlerShepherd *proc.Shepherd, ca
 func allocEmptyDataPage(handlerSID int16, handlerShepherd *proc.Shepherd) (uintptr, uint64) {
 	pa := kmem.AllocPage(kmem.PageSharedIPC, handlerSID)
 	if pa == 0 {
+		klog.Errf("[DLG:alloc] AllocPage FAIL (empty) caller=%d free=%d\n",
+			int32(getCurrentThreadSID()), kmem.GetPoolStats().RemainingPages)
 		return 0, 0
 	}
 
 	scratchVA := kmem.MapPAToKernelScratch(pa)
 	if scratchVA == 0 {
+		klog.Errf("[DLG:alloc] scratch map FAIL (empty) caller=%d\n", int32(getCurrentThreadSID()))
 		kmem.ReleasePageByPA(pa)
 		return 0, 0
 	}
@@ -616,6 +629,8 @@ func allocEmptyDataPage(handlerSID int16, handlerShepherd *proc.Shepherd) (uintp
 
 	va := bumpAllocForShepherd(handlerShepherd, 4096)
 	if va == 0 {
+		klog.Errf("[DLG:alloc] bump VA exhausted (empty) caller=%d handler=%d\n",
+			int32(getCurrentThreadSID()), int32(handlerSID))
 		kmem.ReleasePageByPA(pa)
 		return 0, 0
 	}
@@ -905,7 +920,6 @@ func SyscallReleaseDelegatePage(arg0, arg1, _, _, _, _ uint64) int64 {
 	return 0
 }
 
-
 // SyscallRegisterSyscallHandler registers the calling shepherd as the handler
 // for a specific SysID. Can be called multiple times for different SysIDs.
 //
@@ -1092,7 +1106,6 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 					}
 				}
 			}
-
 
 			// Reclaim the data page
 			if info.DataPagePA != 0 {
@@ -1357,4 +1370,3 @@ func SyscallDeathAck(arg0, _, _, _, _, _ uint64) int64 {
 
 //go:linkname completeDeferredCleanup main.CompleteDeferredCleanup
 func completeDeferredCleanup(deadSID int16)
-

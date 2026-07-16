@@ -25,4 +25,11 @@ type ShepherdFilesystemData struct {
 	SID   int16
 	FDT   *fdtable.Table
 	Locks *dlist.List[*flockEntry]
+
+	// lastDispatchSeq is the file-lane receive-sequence number of the last
+	// request serviced for this shepherd (stamped by the delegate reader,
+	// checked under mu in handle). A request observing a LOWER stamp than
+	// one already serviced means same-SID delegates were reordered between
+	// the reader and shep.mu — the MAZ-156 inversion canary.
+	lastDispatchSeq uint64
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -37,11 +38,11 @@ func isZapPath(p string) bool {
 // held for the lifetime of a handler. flocks and cache have their own
 // internal locking.
 type syscallHandler struct {
-	mu            sync.Mutex
-	shepherds     map[int16]*ShepherdFilesystemData
-	flocks        *flockTable
-	fs            fsclient.FSClient
-	cache         *pageCache
+	mu        sync.Mutex
+	shepherds map[int16]*ShepherdFilesystemData
+	flocks    *flockTable
+	fs        fsclient.FSClient
+	cache     *pageCache
 
 	// orphanHandles tracks fs handles whose owning fd has been closed
 	// but whose cached mmap pages still need a writeback path. Linux
@@ -217,6 +218,7 @@ func (h *syscallHandler) closeAllOrphanHandlesForSID(sid int16) {
 // creating it lazily on first contact. The returned pointer is stable for
 // the lifetime of the shepherd; callers acquire .mu on it for the duration
 // of a handler.
+
 func (h *syscallHandler) getShepherd(sid int16) *ShepherdFilesystemData {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -227,6 +229,11 @@ func (h *syscallHandler) getShepherd(sid int16) *ShepherdFilesystemData {
 		// empty table. This gives the child its inherited stdin/stdout/stderr
 		// plus any other FDs the parent had open, with O_CLOEXEC FDs already
 		// closed (so the errpipe write-end is gone and os/exec.Run() unblocks).
+		//
+		// MAZ-156: a fork/exec child can reach this consume BEFORE sysExecve's
+		// post-CloneExec code runs (the child starts inside the SVC). That is
+		// safe ONLY because the pending table is fully finalized pre-SVC
+		// (execve.go step 5c) — do not move finalization back after the SVC.
 		fdt := h.pendingChildFDTs[sid]
 		if fdt != nil {
 			delete(h.pendingChildFDTs, sid)
@@ -260,27 +267,46 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 
 	h.mu.Lock()
 	s := h.shepherds[sid]
-	pendingFDT := h.pendingChildFDTs[sid]
-	delete(h.pendingChildFDTs, sid)
 	if s == nil {
 		h.mu.Unlock()
-		if pendingFDT != nil {
-			// Child died before its first syscall: close any non-cloexec pipe ends
-			// it inherited (cloexec ends were already swept at exec time). Without
-			// this the shared pipe writer counts stay elevated and read ends waiting
-			// for EOF (e.g. os/exec errpipe) hang forever.
-			pendingFDT.Each(func(_ int, e *fdtable.Entry) bool {
-				if e.Pipe != nil {
-					e.Pipe.Close()
-				}
-				return true
-			})
-		}
+		// Child died before its first syscall: drop its never-consumed pending
+		// table so the pipe refs it holds don't strand readers.
+		h.dropAbandonedPendingFDT(sid)
 		return
 	}
+	delete(h.pendingChildFDTs, sid)
 	delete(h.shepherds, sid)
 	h.mu.Unlock()
 	h.tearDownShepherdFDState(sid, s)
+}
+
+// dropAbandonedPendingFDT removes pendingChildFDTs[pid] and closes any pipe
+// ends the table holds, waking readers parked on closed write ends. A pending
+// table that will never be consumed — its exec failed after priming (MAZ-156
+// step 5c unwind), or its child died before its first syscall — otherwise
+// keeps the Fork()'d pipe writer counts elevated forever: readers waiting for
+// EOF (e.g. os/exec's stdout capture or errpipe) hang, and a later kernel
+// reuse of the same PID would hand an unrelated child this stale table via
+// getOrCreatePendingChildFDT. Cloexec entries were already swept (fs handles
+// closed) at exec time; non-pipe fs handles here follow the same disposition
+// as the dead-child path always used (pipes only).
+func (h *syscallHandler) dropAbandonedPendingFDT(pid int16) {
+	h.mu.Lock()
+	fdt := h.pendingChildFDTs[pid]
+	delete(h.pendingChildFDTs, pid)
+	h.mu.Unlock()
+	if fdt == nil {
+		return
+	}
+	fdt.Each(func(_ int, e *fdtable.Entry) bool {
+		if e.Pipe != nil {
+			e.Pipe.Close()
+			if e.Kind == fdtable.KindPipeWrite {
+				wakePipeReaders(e.Pipe)
+			}
+		}
+		return true
+	})
 }
 
 // tearDownShepherdFDState closes s's fs handles, pipe ends, advisory locks,
@@ -349,11 +375,15 @@ func (h *syscallHandler) tearDownShepherdFDState(sid int16, s *ShepherdFilesyste
 // table (wrong stdio/cwd) and never consume the pendingChildFDTs[pid] the new
 // child's transient just built — the redirected stdout / chdir silently vanish.
 //
-// sysExecve calls this for the freshly reserved child PID before priming the
-// child's pending table. It is race-free: the reserved PID is not a live PID
-// (the allocator only hands out free ones), so any h.shepherds[pid] present is
-// definitively the dead predecessor's, and this runs strictly before the new
-// child's first syscall reaches getShepherd. It deliberately does NOT touch
+// sysExecve calls this for the reserved child PID BEFORE sys.CloneExec
+// (step 5c) — the only point where it is genuinely race-free: the reserved
+// PID is not a live PID (the allocator only hands out free ones) and the
+// child does not exist yet, so any h.shepherds[pid] present is definitively
+// the dead predecessor's. MAZ-156: calling this AFTER CloneExec (the old
+// step 7a) destroyed the LIVE child's state whenever the child's first
+// syscall beat the post-SVC code — the child starts running inside
+// CloneExec. Only the bare-exec fallback still calls it post-SVC (child PID
+// unknowable earlier; tripwire-logged). It deliberately does NOT touch
 // pendingChildFDTs[pid] (the new child's table, keyed identically) or the
 // parent-keyed clone-window / wait4-waiter state.
 func (h *syscallHandler) evictStaleChildShepherd(sid int16) {
@@ -368,6 +398,11 @@ func (h *syscallHandler) evictStaleChildShepherd(sid int16) {
 	h.tearDownShepherdFDState(sid, s)
 }
 
+// laneInversions counts MAZ-156 file-lane same-SID service-order inversions
+// observed since boot. Expected to stay 0 once the ordered dispatcher is in;
+// any increment is a regression of the same-SID FIFO guarantee.
+var laneInversions atomic.Uint64
+
 // handle dispatches a delegated syscall request to the appropriate handler.
 //
 // Per-shepherd serialization: the caller's ShepherdFilesystemData.mu is held
@@ -377,10 +412,24 @@ func (h *syscallHandler) evictStaleChildShepherd(sid int16) {
 // on each other. The lock is never held across a fsclient call's response
 // wait — fsclient has its own internal mutex that already serializes the
 // underlying IPC.
-func (h *syscallHandler) handle(req sys.SyscallRequest) {
+func (h *syscallHandler) handle(req sys.SyscallRequest, seq uint64) {
 	shep := h.getShepherd(req.CallerPID)
 	shep.mu.Lock()
 	defer shep.mu.Unlock()
+	// MAZ-156 inversion canary: seq is the per-SID arrival order stamped by
+	// the single delegate reader. Service order is shep.mu acquisition order
+	// (we are inside it here). A stamp lower than one already serviced means
+	// this SID's delegates were reordered between reader and lock — the
+	// vfork dup3/chdir-vs-execve race. Monotonic-from-below check only:
+	// shepherd-state eviction (evictStaleChildShepherd) resets the field to
+	// zero, so gaps are legal; decreases never are.
+	if seq < shep.lastDispatchSeq {
+		laneInversions.Add(1)
+		fmt.Printf("[MAZ-156] INVERSION sid=%d sysid=%d tid=%d seq=%d last=%d total=%d\n",
+			req.CallerPID, req.SysID, req.CallerTID, seq, shep.lastDispatchSeq, laneInversions.Load())
+	} else {
+		shep.lastDispatchSeq = seq
+	}
 	switch req.SysID {
 	// --- Process lifecycle ---
 	case sysid.Clone:
@@ -1716,17 +1765,17 @@ func fillSyntheticStatfs(buf []byte) {
 		buf[i] = 0
 	}
 	p := (*[15]uint64)(unsafe.Pointer(&buf[0]))
-	p[0] = 0xEF53       // f_type
-	p[1] = 4096         // f_bsize
-	p[2] = 1 << 20      // f_blocks
-	p[3] = 1 << 19      // f_bfree
-	p[4] = 1 << 19      // f_bavail
-	p[5] = 0            // f_files
-	p[6] = 0            // f_ffree
-	p[7] = 0            // f_fsid
-	p[8] = 255          // f_namelen
-	p[9] = 4096         // f_frsize
-	p[10] = 0           // f_flags
+	p[0] = 0xEF53  // f_type
+	p[1] = 4096    // f_bsize
+	p[2] = 1 << 20 // f_blocks
+	p[3] = 1 << 19 // f_bfree
+	p[4] = 1 << 19 // f_bavail
+	p[5] = 0       // f_files
+	p[6] = 0       // f_ffree
+	p[7] = 0       // f_fsid
+	p[8] = 255     // f_namelen
+	p[9] = 4096    // f_frsize
+	p[10] = 0      // f_flags
 	// p[11..14] — f_spare — already zero
 }
 
@@ -1879,8 +1928,20 @@ func (h *syscallHandler) sysWrite(req sys.SyscallRequest) {
 		// the mask is set for closed stdio fds precisely so the write reaches
 		// the table (EBADF) instead of the console fast path printing it. A
 		// closed fd>2 is plain EBADF as it always was.
+		if fd <= 2 {
+			// MAZ-156 forensics: a redirected stdio write hitting a CLOSED
+			// entry is silent data loss — the stage-2 "stdout empty" shape.
+			fmt.Printf("[lin:write] sid=%d fd=%d CLOSED entry, EBADF, %d bytes dropped\n",
+				req.CallerPID, fd, len(data))
+		}
 		req.Reply(EBADF)
 		return
+	}
+	if fd <= 2 && e.Kind == fdtable.KindPipeRead {
+		// MAZ-156 forensics: redirected stdio fd pointing at a pipe READ end
+		// is a mis-primed table — the write EBADFs silently below.
+		fmt.Printf("[lin:write] sid=%d fd=%d is pipe READ end, EBADF, %d bytes dropped\n",
+			req.CallerPID, fd, len(data))
 	}
 	if e.Kind == fdtable.KindStdout || e.Kind == fdtable.KindStderr {
 		// MAZ-149 redesign: console fd 1/2 writes normally take the kernel
