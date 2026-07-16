@@ -218,13 +218,6 @@ func (h *syscallHandler) closeAllOrphanHandlesForSID(sid int16) {
 // creating it lazily on first contact. The returned pointer is stable for
 // the lifetime of the shepherd; callers acquire .mu on it for the duration
 // of a handler.
-// shepherdExists reports whether per-SID state already exists (MAZ-156
-// forensics helper — does not create).
-func (h *syscallHandler) shepherdExists(sid int16) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.shepherds[sid] != nil
-}
 
 func (h *syscallHandler) getShepherd(sid int16) *ShepherdFilesystemData {
 	h.mu.Lock()
@@ -274,27 +267,46 @@ func (h *syscallHandler) cleanupShepherd(sid int16) {
 
 	h.mu.Lock()
 	s := h.shepherds[sid]
-	pendingFDT := h.pendingChildFDTs[sid]
-	delete(h.pendingChildFDTs, sid)
 	if s == nil {
 		h.mu.Unlock()
-		if pendingFDT != nil {
-			// Child died before its first syscall: close any non-cloexec pipe ends
-			// it inherited (cloexec ends were already swept at exec time). Without
-			// this the shared pipe writer counts stay elevated and read ends waiting
-			// for EOF (e.g. os/exec errpipe) hang forever.
-			pendingFDT.Each(func(_ int, e *fdtable.Entry) bool {
-				if e.Pipe != nil {
-					e.Pipe.Close()
-				}
-				return true
-			})
-		}
+		// Child died before its first syscall: drop its never-consumed pending
+		// table so the pipe refs it holds don't strand readers.
+		h.dropAbandonedPendingFDT(sid)
 		return
 	}
+	delete(h.pendingChildFDTs, sid)
 	delete(h.shepherds, sid)
 	h.mu.Unlock()
 	h.tearDownShepherdFDState(sid, s)
+}
+
+// dropAbandonedPendingFDT removes pendingChildFDTs[pid] and closes any pipe
+// ends the table holds, waking readers parked on closed write ends. A pending
+// table that will never be consumed — its exec failed after priming (MAZ-156
+// step 5c unwind), or its child died before its first syscall — otherwise
+// keeps the Fork()'d pipe writer counts elevated forever: readers waiting for
+// EOF (e.g. os/exec's stdout capture or errpipe) hang, and a later kernel
+// reuse of the same PID would hand an unrelated child this stale table via
+// getOrCreatePendingChildFDT. Cloexec entries were already swept (fs handles
+// closed) at exec time; non-pipe fs handles here follow the same disposition
+// as the dead-child path always used (pipes only).
+func (h *syscallHandler) dropAbandonedPendingFDT(pid int16) {
+	h.mu.Lock()
+	fdt := h.pendingChildFDTs[pid]
+	delete(h.pendingChildFDTs, pid)
+	h.mu.Unlock()
+	if fdt == nil {
+		return
+	}
+	fdt.Each(func(_ int, e *fdtable.Entry) bool {
+		if e.Pipe != nil {
+			e.Pipe.Close()
+			if e.Kind == fdtable.KindPipeWrite {
+				wakePipeReaders(e.Pipe)
+			}
+		}
+		return true
+	})
 }
 
 // tearDownShepherdFDState closes s's fs handles, pipe ends, advisory locks,

@@ -135,12 +135,14 @@ func (h *syscallHandler) sysExecve(req sys.SyscallRequest) {
 		ceReq.Intent, ceReq.Cwd, []byte(ceReq.Filename), req.CallerTID, req.CallerPID, stdioMask)
 	if perr != nil {
 		munmapStage(elfVA, elfPages)
+		h.dropAbandonedPendingFDT(reservedPID)
 		req.Reply(E2BIG)
 		return
 	}
 	paramsVA, paramsPages, merr := mmapStage(paramsBlob)
 	if merr != 0 {
 		munmapStage(elfVA, elfPages)
+		h.dropAbandonedPendingFDT(reservedPID)
 		req.Reply(merr)
 		return
 	}
@@ -162,47 +164,53 @@ func (h *syscallHandler) sysExecve(req sys.SyscallRequest) {
 	// call wait4 before EventExecComplete is processed. Registering here
 	// (synchronously, before any reply) ensures the reaper already knows
 	// about the child when that wait4 arrives.
-	if ret > 0 {
+	if ret <= 0 {
+		// Exec failed after step 5c primed the reserved PID's table: unwind
+		// it. Left in place, its Fork()'d pipe writer refs strand readers
+		// waiting for EOF, and a later kernel reuse of the PID would hand an
+		// unrelated child this dead exec's table (review finding, MAZ-156).
+		h.dropAbandonedPendingFDT(reservedPID)
+	} else {
 		// MAZ-156 forensics: one line per successful exec — the mask the
 		// kernel stored, the reservation, and whether the child consumed its
 		// pending table before we got here (both orders are correct for
 		// vfork; this is the soak's verification probe for the exec family).
+		// One h.mu snapshot for both fields.
 		h.mu.Lock()
 		pendingPrimed := h.pendingChildFDTs[int16(ret)] != nil
+		childShepExists := h.shepherds[int16(ret)] != nil
 		h.mu.Unlock()
 		fmt.Printf("[lin:execve] sid=%d ret=%d mask=%#x reserved=%d pendingPrimed=%v childShepExists=%v\n",
-			req.CallerPID, ret, stdioMask, reservedPID, pendingPrimed, h.shepherdExists(int16(ret)))
+			req.CallerPID, ret, stdioMask, reservedPID, pendingPrimed, childShepExists)
 
-		switch {
-		case reservedPID != 0 && int16(ret) == reservedPID:
-			// vfork: the child's table was finalized pre-SVC (step 5c) under
-			// this PID — nothing to evict, nothing to prime. Whether the
-			// child has already consumed it or will on its first syscall,
-			// both orders are correct.
-
-		case reservedPID != 0:
+		if reservedPID != 0 && int16(ret) != reservedPID {
 			// The kernel returned a DIFFERENT pid than it reserved — should
-			// be impossible (CreateCloneExecThread consumes the reservation).
-			// Log loudly and fall back to the legacy post-SVC prime under the
-			// actual pid so the child at least gets an inherited table.
+			// be impossible (createCloneExecThreadImpl adopts the reservation
+			// verbatim). Log loudly, unwind the orphaned reserved-PID table,
+			// and fall back to the legacy post-SVC prime under the actual pid
+			// so the child at least gets an inherited table.
 			fmt.Printf("[lin:execve] BUG? reserved=%d but ret=%d — legacy re-prime\n",
 				reservedPID, ret)
-			fallthrough
-
-		default:
-			// Bare (non-vfork) exec: the child PID is unknowable pre-SVC, so
-			// the legacy post-SVC evict+prime remains — along with its
-			// (narrower) first-syscall race. No current caller takes this
-			// path with redirected stdio; the tripwire below fires if a
-			// racing child ever consumed a FRESH table here.
-			if h.shepherdExists(int16(ret)) {
-				fmt.Printf("[lin:execve] WARN bare-exec child sid=%d raced 7a (fresh table)\n", ret)
+			h.dropAbandonedPendingFDT(reservedPID)
+		}
+		if reservedPID == 0 || int16(ret) != reservedPID {
+			// Bare (non-vfork) exec — the child PID is unknowable pre-SVC, so
+			// the legacy post-SVC evict+prime remains, along with its
+			// (narrower) first-syscall race; no current caller takes this
+			// path with redirected stdio — or the impossible-case fallback
+			// above. The tripwire fires if a racing child already consumed a
+			// FRESH table here.
+			if childShepExists {
+				fmt.Printf("[lin:execve] WARN exec child sid=%d raced 7a (fresh table)\n", ret)
 			}
 			h.evictStaleChildShepherd(int16(ret))
 			childFDT := h.getOrCreatePendingChildFDT(int16(ret), fdt.Copy)
 			childFDT.ApplyStartupIntent(intent, cwd)
 			childFDT.CloseCloexecFDs(func(handle uint32) { h.fs.Close(handle) })
 		}
+		// vfork with ret == reservedPID (the normal case): the child's table
+		// was finalized pre-SVC at step 5c — nothing to evict, nothing to
+		// prime, either consume order is correct.
 		h.reaper.RegisterChild(int32(req.CallerPID), int32(ret))
 	}
 
