@@ -62,22 +62,59 @@ func RenderGlyph(face *goFont.Face, gid goFont.GID, scale float32) (*GlyphInfo, 
 		}
 	}
 
-	// Pixel bounds with 1px padding for anti-aliasing.
+	// Grid-fit the vertical extent so the glyph's device-pixel rows are not
+	// split by a fractional top edge. FreeType (and Skia's glyph pipeline
+	// built on it) hint/grid-fit the outline before rasterizing so that a
+	// glyph whose design height is an integral number of pixels — e.g. the
+	// Ahem test font, whose em box is exactly font-size px tall — lands on
+	// whole bitmap rows with fully-opaque interior. Without grid-fitting, a
+	// fractional minY (Ahem ascent at 16px is 12.797px, so minY = -12.797)
+	// would place the outline's top edge partway down mask row 0, spreading
+	// the em box across an extra antialiased row (top ~0.8 coverage, bottom
+	// ~0.2) — a visible seam once the mask composites onto the page. See
+	// LOU-367. No Blink analog at the layout level: this is rasterizer-stage
+	// grid-fitting, the louis14 equivalent of Skia's Freetype hinting.
+	//
+	// The snap: rasterize with the y origin at the EXACT fractional top edge
+	// (offY = minY), mapping that edge to mask row 0.0, and hand the compositor
+	// a ROUNDED placement offset (DrMinY = round(minY)). The fractional part is
+	// thereby absorbed into the mask rather than leaking into per-row coverage.
+	// This holds only because the compositor adds DrMinY to an already-INTEGER
+	// pen: layout.go floors it via `py := (penY + sg.YOffset) >> 6`, and
+	// fontcache/face.go via `dot.Y.Floor()`. Integer pen + integer DrMinY means
+	// mask row 0 always lands on a whole device row. Rounding minY rather than
+	// flooring it only picks the nearer of the two integer placements, bounding
+	// the placement error at 0.5px instead of 1px.
+	//
+	// Pixel bounds, with 1px of trailing padding for anti-aliasing.
 	pixMinX := int(math.Floor(float64(minX)))
-	pixMinY := int(math.Floor(float64(minY)))
 	pixMaxX := int(math.Ceil(float64(maxX))) + 1
-	pixMaxY := int(math.Ceil(float64(maxY))) + 1
+	pixMinY := int(math.Round(float64(minY)))
 
 	w := pixMaxX - pixMinX
-	h := pixMaxY - pixMinY
+	// Mask height spans from the exact top edge (row 0) down to the outline's
+	// bottom, plus 1px AA padding — measured from minY, not the rounded
+	// pixMinY, so the mask fully contains the grid-fitted outline regardless of
+	// the rounding direction. No top padding is needed: the outline cannot
+	// cross row 0, since minY bounds the control points and a Bezier is
+	// contained in their convex hull.
+	h := int(math.Ceil(float64(maxY-minY))) + 1
 	if w <= 0 || h <= 0 {
 		return &GlyphInfo{Advance: advFixed}, nil
 	}
 
-	// Rasterize outline to alpha bitmap.
+	// Rasterize outline to alpha bitmap. X keeps the existing floor-based
+	// origin, and is deliberately NOT grid-fitted — not because it is immune:
+	// offX = floor(minX) leaves the left edge at minX-floor(minX) in [0,1), the
+	// same fractional split the Y path had before this change. It just doesn't
+	// bite for the case here, where the horizontal origin is already integral
+	// while minY is fractional (minY derives from the font-wide ascent).
+	// Snapping X too would distort glyph shape and inter-glyph spacing on real
+	// fonts, so leave it — revisit only with a case that shows an actual
+	// vertical seam.
 	r := vector.NewRasterizer(w, h)
 	offX := float32(pixMinX)
-	offY := float32(pixMinY)
+	offY := minY
 	for _, seg := range outline.Segments {
 		switch seg.Op {
 		case ot.SegmentOpMoveTo:
@@ -101,12 +138,14 @@ func RenderGlyph(face *goFont.Face, gid goFont.GID, scale float32) (*GlyphInfo, 
 	alpha := image.NewAlpha(image.Rect(0, 0, w, h))
 	r.Draw(alpha, alpha.Bounds(), image.Opaque, image.Point{})
 
+	// DrMinY is the integer (rounded) top edge used by the compositor to
+	// place the grid-fitted mask; DrMaxY stays consistent as DrMinY + Height.
 	return &GlyphInfo{
 		Advance: advFixed,
 		DrMinX:  int16(pixMinX),
 		DrMinY:  int16(pixMinY),
-		DrMaxX:  int16(pixMaxX),
-		DrMaxY:  int16(pixMaxY),
+		DrMaxX:  int16(pixMinX + w),
+		DrMaxY:  int16(pixMinY + h),
 		Width:   uint16(w),
 		Height:  uint16(h),
 	}, alpha.Pix
