@@ -1,8 +1,11 @@
 # Build output
 build/
 
-# Documentation (managed outside git)
-docs/
+# Personal scratch space (managed outside git; formerly docs/)
+scratch/
+
+# slopstop project-local ticket tracking (transient working state, not source)
+.slopstop/
 
 # Binary artifacts
 *.o
