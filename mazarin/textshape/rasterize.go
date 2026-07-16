@@ -75,32 +75,43 @@ func RenderGlyph(face *goFont.Face, gid goFont.GID, scale float32) (*GlyphInfo, 
 	// LOU-367. No Blink analog at the layout level: this is rasterizer-stage
 	// grid-fitting, the louis14 equivalent of Skia's Freetype hinting.
 	//
-	// The snap is expressed as: rasterize the outline with the y origin at the
-	// EXACT fractional top edge (offY = minY) so the top edge maps to mask row
-	// 0.0, while the mask's on-page placement offset DrMinY is the ROUNDED top
-	// (round(minY)), an integer the DrawText compositor adds to the rounded
-	// baseline. So the fractional part of the top edge is absorbed into the
-	// mask (grid-fitting it) rather than leaking into per-row coverage.
+	// The snap: rasterize with the y origin at the EXACT fractional top edge
+	// (offY = minY), mapping that edge to mask row 0.0, and hand the compositor
+	// a ROUNDED placement offset (DrMinY = round(minY)). The fractional part is
+	// thereby absorbed into the mask rather than leaking into per-row coverage.
+	// This holds only because the compositor adds DrMinY to an already-INTEGER
+	// pen: layout.go floors it via `py := (penY + sg.YOffset) >> 6`, and
+	// fontcache/face.go via `dot.Y.Floor()`. Integer pen + integer DrMinY means
+	// mask row 0 always lands on a whole device row. Rounding minY rather than
+	// flooring it only picks the nearer of the two integer placements, bounding
+	// the placement error at 0.5px instead of 1px.
 	//
-	// Pixel bounds with 1px padding for anti-aliasing.
+	// Pixel bounds, with 1px of trailing padding for anti-aliasing.
 	pixMinX := int(math.Floor(float64(minX)))
-	pixMinY := int(math.Round(float64(minY)))
 	pixMaxX := int(math.Ceil(float64(maxX))) + 1
-	// Mask height spans from the exact top edge (offY = minY, mapped to row 0)
-	// down to the outline's bottom, plus 1px AA padding — measured from minY,
-	// not the rounded pixMinY, so the mask fully contains the grid-fitted
-	// outline regardless of the rounding direction.
-	pixMaxY := int(math.Ceil(float64(maxY-minY))) + 1
+	pixMinY := int(math.Round(float64(minY)))
 
 	w := pixMaxX - pixMinX
-	h := pixMaxY
+	// Mask height spans from the exact top edge (row 0) down to the outline's
+	// bottom, plus 1px AA padding — measured from minY, not the rounded
+	// pixMinY, so the mask fully contains the grid-fitted outline regardless of
+	// the rounding direction. No top padding is needed: the outline cannot
+	// cross row 0, since minY bounds the control points and a Bezier is
+	// contained in their convex hull.
+	h := int(math.Ceil(float64(maxY-minY))) + 1
 	if w <= 0 || h <= 0 {
 		return &GlyphInfo{Advance: advFixed}, nil
 	}
 
-	// Rasterize outline to alpha bitmap. The vertical origin is the exact
-	// fractional top edge (minY), grid-fitting the outline onto whole rows;
-	// the horizontal origin keeps the existing floor-based placement.
+	// Rasterize outline to alpha bitmap. X keeps the existing floor-based
+	// origin, and is deliberately NOT grid-fitted — not because it is immune:
+	// offX = floor(minX) leaves the left edge at minX-floor(minX) in [0,1), the
+	// same fractional split the Y path had before this change. It just doesn't
+	// bite for the case here, where the horizontal origin is already integral
+	// while minY is fractional (minY derives from the font-wide ascent).
+	// Snapping X too would distort glyph shape and inter-glyph spacing on real
+	// fonts, so leave it — revisit only with a case that shows an actual
+	// vertical seam.
 	r := vector.NewRasterizer(w, h)
 	offX := float32(pixMinX)
 	offY := minY
