@@ -92,9 +92,16 @@ func wireStdio(c *exec.Cmd) {
 // child that exits 42 and recover that status via wait4. cmd.Run() does the
 // clone+execve and Process.Wait()'s PID-path wait4 under the hood.
 func stageSingleChild() bool {
+	say("stageSingleChild: calling Start")
 	cmd := exec.Command(childPath, fmt.Sprintf("%d", singleExit))
 	wireStdio(cmd)
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		say(fmt.Sprintf("FAIL single child: Start err=%v", err))
+		return false
+	}
+	say(fmt.Sprintf("stageSingleChild: Start ok pid=%d, calling Wait", cmd.Process.Pid))
+	err := cmd.Wait()
+	say(fmt.Sprintf("stageSingleChild: Wait returned err=%v", err))
 	code, pid, ok := exitInfo(cmd, err)
 	if !ok {
 		say(fmt.Sprintf("FAIL single child: unexpected err=%v", err))

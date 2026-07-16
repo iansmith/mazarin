@@ -234,8 +234,10 @@ tasks:
     cmds:
       # Check GOTOOLCHAIN
       - '{{.GO}} tool go-env -check GOTOOLCHAIN=auto -msg "GOTOOLCHAIN must be ''auto''. Run: export GOTOOLCHAIN=auto"'
-      # Check Go version >= 1.24
-      - '{{.GO}} tool check-version -go {{.GO}} -min 1.24'
+      # Check Go version >= 1.26.4 — runtime-patches/ is rebased onto the
+      # 1.26.4 runtime sources (MAZ-154); an older local go recreates the
+      # sysReserveAligned collision in reverse at kernel link time.
+      - '{{.GO}} tool check-version -go {{.GO}} -min 1.26.4'
       # Check QEMU version >= 10.2
       - '{{.GO}} tool check-version -qemu {{.QEMU}} -min 10.2'
       # Verify KMAZARIN_LOAD_ADDR matches the constant
@@ -278,14 +280,14 @@ tasks:
   # Mazlink — patched Go linker for plugin-shape output (no cgo)
   # ===========================================================================
 
+  # Deliberately always-run (no sources/generates): the JSON embeds absolute
+  # GOROOT paths, and a toolchain upgrade changes GOROOT without touching
+  # mazlink-patches/ — fingerprinting on the patch files alone reused a stale
+  # JSON (MAZ-154). Downstream builds fingerprint the JSON itself.
   mazlink-overlay:
     run: once
     desc: Generate overlay JSON from mazlink-patches/ onto stock cmd/link sources
     deps: [build-dir]
-    sources:
-      - '{{.MAZLINK_PATCHES_DIR}}/**/*'
-    generates:
-      - '{{.MAZLINK_OVERLAY_JSON}}'
     cmds:
       - '{{.GO}} tool gen-overlay -type mazlink -patches {{.MAZLINK_PATCHES_DIR}} -o {{.MAZLINK_OVERLAY_JSON}}'
 
@@ -485,44 +487,55 @@ tasks:
       - '{{.GO}} tool go-cat -o {{.BUILD_DIR}}/boot-image.bin assets/boot-mazarin.bin'
 
   # ===========================================================================
-  # Stage Embedded fs.elf for go:embed
+  # Stage embedded fs ELF for go:embed
   # ===========================================================================
 
-  # NOTE: All three staging tasks write to the SAME output file
-  # (kmazarin/kmazarin/fs.elf). We deliberately omit `generates` so that
-  # Task always runs the copy when switching architectures. With `generates`,
-  # Task's mtime fingerprinting considers the file up-to-date if a previous
-  # arch's copy is newer — embedding the wrong architecture's binary.
+  # Each architecture stages into its own file (embedded_fs_{arm64,amd64}.go
+  # embeds the matching name), so the two arch chains of `task all` can run in
+  # parallel without racing on a shared destination, and arch switching needs
+  # no always-run copy (MAZ-153). cmd/embedaudit re-verifies the final kernel.
   stage-embedded-fs-arm64:
-    desc: Copy fs.elf into kmazarin/kmazarin/ for go:embed
+    desc: Copy fs.elf into kmazarin/kmazarin/fs_arm64.elf for go:embed
     deps: [fs:arm64]
+    sources:
+      - '{{.FS_ELF}}'
+    generates:
+      - kmazarin/kmazarin/fs_arm64.elf
     cmds:
-      - '{{.GO}} tool go-cp {{.FS_ELF}} kmazarin/kmazarin/fs.elf'
+      - '{{.GO}} tool go-cp {{.FS_ELF}} kmazarin/kmazarin/fs_arm64.elf'
 
   stage-embedded-fs-x86_64:
-    desc: Copy fs-amd64.elf into kmazarin/kmazarin/ for go:embed
+    desc: Copy fs-amd64.elf into kmazarin/kmazarin/fs_amd64.elf for go:embed
     deps: [fs:x86_64]
+    sources:
+      - '{{.FS_AMD64_ELF}}'
+    generates:
+      - kmazarin/kmazarin/fs_amd64.elf
     cmds:
-      - '{{.GO}} tool go-cp {{.FS_AMD64_ELF}} kmazarin/kmazarin/fs.elf'
+      - '{{.GO}} tool go-cp {{.FS_AMD64_ELF}} kmazarin/kmazarin/fs_amd64.elf'
 
   # ===========================================================================
-  # Stage Embedded kernel.toml for go:embed
+  # Stage embedded kernel config for go:embed
   # ===========================================================================
 
-  # NOTE: All three staging tasks write to the SAME output file
-  # (kmazarin/kmazarin/kernel.toml). We deliberately omit `generates` so that
-  # Task always runs the copy when switching architectures. With `generates`,
-  # Task's mtime fingerprinting considers the file up-to-date if a previous
-  # arch's copy is newer — embedding the wrong architecture's config.
+  # Per-arch staged names, same rationale as the fs staging above (MAZ-153).
   stage-kernel-config-arm64:
-    desc: Copy kernel.arm64.toml into kmazarin/kmazarin/ for go:embed
+    desc: Copy kernel.arm64.toml into kmazarin/kmazarin/kernel_arm64.toml for go:embed
+    sources:
+      - config/kernel.arm64.toml
+    generates:
+      - kmazarin/kmazarin/kernel_arm64.toml
     cmds:
-      - '{{.GO}} tool go-cp config/kernel.arm64.toml kmazarin/kmazarin/kernel.toml'
+      - '{{.GO}} tool go-cp config/kernel.arm64.toml kmazarin/kmazarin/kernel_arm64.toml'
 
   stage-kernel-config-x86_64:
-    desc: Copy kernel.amd64.toml into kmazarin/kmazarin/ for go:embed
+    desc: Copy kernel.amd64.toml into kmazarin/kmazarin/kernel_amd64.toml for go:embed
+    sources:
+      - config/kernel.amd64.toml
+    generates:
+      - kmazarin/kmazarin/kernel_amd64.toml
     cmds:
-      - '{{.GO}} tool go-cp config/kernel.amd64.toml kmazarin/kmazarin/kernel.toml'
+      - '{{.GO}} tool go-cp config/kernel.amd64.toml kmazarin/kmazarin/kernel_amd64.toml'
 
   # ===========================================================================
   # Kmazarin Kernel Build
@@ -640,7 +653,7 @@ tasks:
     # diplomat boots the kernel embedded in the ESP (/EFI/Linux/kmazarin.elf via mkesp),
     # NEVER from this ext2 disk. Staging it here was a footgun: rebuilding the disk but
     # not the ESP showed a "fresh" kernel on disk while booting the stale embedded one.
-    deps: [shepherd:x86_64, rachel:x86_64, linux:x86_64, fs:x86_64, net:x86_64, clocks:amd64, versai:amd64, calc:amd64, mail-app:x86_64, helloworld:amd64, prefs:amd64, fontsvc:amd64, keymapper:amd64, gvisor:amd64, linux-ui:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64, sophie:amd64, protocol-http:amd64, convert-boot-image]
+    deps: [shepherd:x86_64, rachel:x86_64, linux:x86_64, fs:x86_64, net:x86_64, clocks:amd64, versai:amd64, calc:amd64, mail-app:x86_64, helloworld:amd64, prefs:amd64, fontsvc:amd64, keymapper:amd64, gvisor:amd64, linux-ui:amd64, fti:x86_64, maildb:x86_64, mail-ui:amd64, forkexectest:x86_64, forkexecchild:x86_64, sophie:amd64, protocol-http:amd64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -664,6 +677,8 @@ tasks:
       - '{{.FTI_MAZ_AMD64}}'
       - '{{.MAILDB_MAZ_AMD64}}'
       - '{{.MAIL_UI_MAZ_AMD64}}'
+      - '{{.FORKEXECTEST_AMD64_ELF}}'
+      - '{{.FORKEXECCHILD_AMD64_ELF}}'
       - '{{.SOPHIE_MAZ_AMD64}}'
       - '{{.PROTOCOL_HTTP_MAZ_AMD64}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
@@ -696,12 +711,14 @@ tasks:
       - '{{.GO}} tool go-cp {{.FTI_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fti.maz'
       - '{{.GO}} tool go-cp {{.MAILDB_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/maildb.maz'
       - '{{.GO}} tool go-cp {{.MAIL_UI_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz'
+      - '{{.GO}} tool go-cp {{.FORKEXECTEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/forkexectest.elf'
+      - '{{.GO}} tool go-cp {{.FORKEXECCHILD_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/forkexecchild.elf'
       - '{{.GO}} tool go-cp {{.SOPHIE_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/sophie.maz'
       - '{{.GO}} tool go-cp {{.PROTOCOL_HTTP_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/protocol-http.maz'
       - '{{.GO}} tool go-cp config/startup.amd64.toml {{.BUILD_DIR}}/disk-staging-amd64/startup.toml'
       - '{{.GO}} tool go-cp config/rachel.amd64.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml'
       - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
-      - '{{.GO}} tool mkext2 -o {{.DISK_AMD64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data -dir /sophie=./sophie -dir /protocol-http=./protocol-http {{.BUILD_DIR}}/disk-staging-amd64/shepherd.elf {{.BUILD_DIR}}/disk-staging-amd64/rachel.maz {{.BUILD_DIR}}/disk-staging-amd64/linux.maz {{.BUILD_DIR}}/disk-staging-amd64/fs.elf {{.BUILD_DIR}}/disk-staging-amd64/net.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.maz {{.BUILD_DIR}}/disk-staging-amd64/versai.maz {{.BUILD_DIR}}/disk-staging-amd64/calc.maz {{.BUILD_DIR}}/disk-staging-amd64/mail.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz {{.BUILD_DIR}}/disk-staging-amd64/gvisor.maz {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/fti.maz {{.BUILD_DIR}}/disk-staging-amd64/maildb.maz {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/sophie.maz {{.BUILD_DIR}}/disk-staging-amd64/protocol-http.maz {{.BUILD_DIR}}/disk-staging-amd64/startup.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkext2 -o {{.DISK_AMD64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} -dir /user=./user -dir /data=./data -dir /sophie=./sophie -dir /protocol-http=./protocol-http {{.BUILD_DIR}}/disk-staging-amd64/shepherd.elf {{.BUILD_DIR}}/disk-staging-amd64/rachel.maz {{.BUILD_DIR}}/disk-staging-amd64/linux.maz {{.BUILD_DIR}}/disk-staging-amd64/fs.elf {{.BUILD_DIR}}/disk-staging-amd64/net.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.maz {{.BUILD_DIR}}/disk-staging-amd64/versai.maz {{.BUILD_DIR}}/disk-staging-amd64/calc.maz {{.BUILD_DIR}}/disk-staging-amd64/mail.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz {{.BUILD_DIR}}/disk-staging-amd64/keymapper.maz {{.BUILD_DIR}}/disk-staging-amd64/gvisor.maz {{.BUILD_DIR}}/disk-staging-amd64/linux-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/fti.maz {{.BUILD_DIR}}/disk-staging-amd64/maildb.maz {{.BUILD_DIR}}/disk-staging-amd64/mail-ui.maz {{.BUILD_DIR}}/disk-staging-amd64/forkexectest.elf {{.BUILD_DIR}}/disk-staging-amd64/forkexecchild.elf {{.BUILD_DIR}}/disk-staging-amd64/sophie.maz {{.BUILD_DIR}}/disk-staging-amd64/protocol-http.maz {{.BUILD_DIR}}/disk-staging-amd64/startup.toml {{.BUILD_DIR}}/disk-staging-amd64/rachel.toml {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   # ===========================================================================
@@ -956,6 +973,9 @@ tasks:
     cmds:
       - '{{.GO}} tool go-echo "Cleaning build artifacts..."'
       - '{{.GO}} tool go-rm -r {{.BUILD_DIR}}'
+      - '{{.GO}} tool go-rm -f kmazarin/kmazarin/fs_arm64.elf kmazarin/kmazarin/fs_amd64.elf'
+      - '{{.GO}} tool go-rm -f kmazarin/kmazarin/kernel_arm64.toml kmazarin/kmazarin/kernel_amd64.toml'
+      # Legacy shared-path staged names (pre-MAZ-153) — clear stale copies.
       - '{{.GO}} tool go-rm -f kmazarin/kmazarin/fs.elf'
       - '{{.GO}} tool go-rm -f kmazarin/kmazarin/kernel.toml'
       - '{{.GO}} tool go-echo "Cleaned."'

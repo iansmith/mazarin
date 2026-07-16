@@ -17,4 +17,7 @@ func initCOM1Uart() {
 	enableIOAPICIRQ(com1IOAPICInput)
 	serial.SetQueueByteFunc(serial.COM1QueueByte)
 	serial.SetQueueByteTryFunc(serial.COM1QueueByteTry)
+	// COM1DrainTx is the pre-existing "drain ring toward THR now" primitive
+	// (the TX top-half body) — exactly TxKick's contract (MAZ-149 item 6).
+	serial.SetTxKickFunc(serial.COM1DrainTx)
 }

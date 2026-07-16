@@ -56,7 +56,10 @@ func TestMarshalCloneExecParamsRoundtrip(t *testing.T) {
 	cwd := []byte("/work/src")
 	filename := []byte("/usr/bin/compile")
 
-	blob, err := MarshalCloneExecParams(PackArgv(argv), PackArgv(envp), intent, cwd, filename)
+	const wantTID int16 = 42
+	const wantSID int16 = 7
+	const wantMask uint8 = 0b11 // both fd 1 and fd 2 redirected
+	blob, err := MarshalCloneExecParams(PackArgv(argv), PackArgv(envp), intent, cwd, filename, wantTID, wantSID, wantMask)
 	if err != nil {
 		t.Fatalf("MarshalCloneExecParams: %v", err)
 	}
@@ -84,12 +87,21 @@ func TestMarshalCloneExecParamsRoundtrip(t *testing.T) {
 			t.Errorf("intent[%d] = %+v, want %+v", i, got.Intent[i], intent[i])
 		}
 	}
+	if got.VforkCallerTID != wantTID {
+		t.Errorf("VforkCallerTID = %d, want %d", got.VforkCallerTID, wantTID)
+	}
+	if got.VforkCallerSID != wantSID {
+		t.Errorf("VforkCallerSID = %d, want %d", got.VforkCallerSID, wantSID)
+	}
+	if got.StdioRedirectMask != wantMask {
+		t.Errorf("StdioRedirectMask = %#b, want %#b", got.StdioRedirectMask, wantMask)
+	}
 }
 
 // TestMarshalCloneExecParamsEmpty — a fully-empty request (no argv/envp/intent/
 // cwd/filename) still produces a valid header-only blob that round-trips.
 func TestMarshalCloneExecParamsEmpty(t *testing.T) {
-	blob, err := MarshalCloneExecParams(nil, nil, nil, nil, nil)
+	blob, err := MarshalCloneExecParams(nil, nil, nil, nil, nil, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("MarshalCloneExecParams(empty): %v", err)
 	}
@@ -104,6 +116,28 @@ func TestMarshalCloneExecParamsEmpty(t *testing.T) {
 		len(got.Cwd) != 0 || len(got.Filename) != 0 {
 		t.Errorf("empty round-trip non-empty: %+v", got)
 	}
+	if got.StdioRedirectMask != 0 {
+		t.Errorf("empty StdioRedirectMask = %#b, want 0", got.StdioRedirectMask)
+	}
+}
+
+// TestCloneExecParamsHeaderCarriesStdioRedirectMask (MAZ-149 Phase 0 RED) —
+// the params header reserves room for the per-process stdio redirect mask
+// (bit 0 = fd 1 redirected, bit 1 = fd 2 redirected), which sysExecve computes
+// from the child's final FD-table state and the kernel stores on the child
+// Shepherd at creation (SetStartupState) so SyscallWrite can split console
+// (fast path) from redirected (blocking delegate) without consulting the
+// shepherd. Wire layout: header grows 24 → 32 (stays 8-byte aligned), mask
+// byte at [24], [25:32] reserved-zero.
+//
+// This locks only the header sizing; the mask round-trip assertions land with
+// the implementation (they cannot compile until the field exists). The
+// behavioral acceptance gate is the forkexectest stage-2 boot smoke.
+func TestCloneExecParamsHeaderCarriesStdioRedirectMask(t *testing.T) {
+	if CloneExecParamsHeaderSize != 32 {
+		t.Fatalf("CloneExecParamsHeaderSize = %d, want 32 (room for StdioRedirectMask at byte [24])",
+			CloneExecParamsHeaderSize)
+	}
 }
 
 // TestUnmarshalCloneExecParamsRejectsShort — a blob shorter than the header is
@@ -117,7 +151,7 @@ func TestUnmarshalCloneExecParamsRejectsShort(t *testing.T) {
 // TestUnmarshalCloneExecParamsRejectsOverrun — a header that declares section
 // lengths past the blob end is rejected.
 func TestUnmarshalCloneExecParamsRejectsOverrun(t *testing.T) {
-	blob, err := MarshalCloneExecParams([]byte("a\x00b"), nil, nil, nil, nil)
+	blob, err := MarshalCloneExecParams([]byte("a\x00b"), nil, nil, nil, nil, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -132,7 +166,7 @@ func TestUnmarshalCloneExecParamsRejectsOverrun(t *testing.T) {
 // CloneExecArgMax is rejected with ErrCloneExecArgTooBig (E2BIG at the SVC).
 func TestMarshalCloneExecParamsRejectsOversize(t *testing.T) {
 	huge := make([]byte, CloneExecArgMax+1)
-	if _, err := MarshalCloneExecParams(huge, nil, nil, nil, nil); err != ErrCloneExecArgTooBig {
+	if _, err := MarshalCloneExecParams(huge, nil, nil, nil, nil, 0, 0, 0); err != ErrCloneExecArgTooBig {
 		t.Errorf("oversize err = %v, want ErrCloneExecArgTooBig", err)
 	}
 }

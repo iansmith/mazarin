@@ -73,14 +73,16 @@ type DelegateCallInfo struct {
 	FlushLength uint64
 }
 
-
-// stdioWriteRingIdx — kernel-side override for pipe-buffered Write
-// delegation. When set, fd<=2 Writes are sent on this ring index of
-// the registered Write handler instead of the handler's default ring
-// (set via RegisterSyscallHandler). The override exists so stdio
-// backpressure can't starve the blocking-delegate ring (or vice versa)
-// when both share the same handler. -1 = unset (no override; pipe
-// Writes use the default ring of the Write handler).
+// stdioWriteRingIdx — kernel-side override for the ring a CONSOLE stdio
+// (fd<=2, redirect bit clear) Write delegate is sent on. When set, console
+// fd<=2 Writes go to this ring index of the registered Write handler instead
+// of the handler's default ring (set via RegisterSyscallHandler). The
+// override exists so stdio backpressure can't starve the file-lane delegate
+// ring (or vice versa) when both share the same handler. REDIRECTED fd<=2
+// Writes (MAZ-149 mask bit set) deliberately stay on the default file-lane
+// ring — they are ordinary blocking delegates routed to the capture pipe.
+// -1 = unset (no override; console stdio Writes use the Write handler's
+// default ring).
 //
 // Set via SyscallRegisterStdioWriteRing. Read on every Write delegate.
 // int32 (not uint8) for atomic alignment; values ≤ MaxRingsPerShepherd.
@@ -203,7 +205,6 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			handlerDataVA = va
 			dataLen = uint32(n)
 		}
-
 
 	// --- File syscalls delegated to the linux shepherd ---
 
@@ -345,11 +346,28 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataLen = 4096
 		}
 
-	case sysid.Getdents64, sysid.Getcwd:
-		// Output buffer syscalls: handler fills data page, kernel copies back.
-		// Like Read: allocate empty page for handler to fill.
+	case sysid.Getdents64:
+		// getdents64(fd, dirp, count): arg1=dirp (output buf), arg2=count.
 		if arg1 != 0 && arg2 > 0 {
 			count := arg2
+			if count > 4096 {
+				count = 4096
+			}
+			pa, va := allocEmptyDataPage(handlerSID, handlerShepherd)
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = uint32(count)
+		}
+
+	case sysid.Getcwd:
+		// getcwd(buf, size): arg0=buf (output), arg1=size.
+		// Condition was wrong when sharing the Getdents64 case (used arg2 which is
+		// always 0 for getcwd's 2-arg signature, so the page was never allocated).
+		if arg0 != 0 && arg1 > 0 {
+			count := arg1
 			if count > 4096 {
 				count = 4096
 			}
@@ -446,30 +464,35 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		prefaultOutputBuffer(callerBufVA, uintptr(callerBufLen))
 	}
 
-	// Pipe-buffered Write delegation: on Linux, write(fd=1/2) to a stdout pipe
-	// returns near-instantly once the bytes land in the pipe buffer — the
-	// reader consumes asynchronously. Mazzy's synchronous delegate-and-block
-	// pattern would turn the same call into a cross-process IPC round-trip
-	// that can close deadlock cycles (handler fmt.Printf inside a delegate
-	// handler → linux Write delegate → linux waiting on the handler that's
-	// waiting for the original delegate). For stdio Write we therefore:
-	//   - Skip delegateCallInfos InUse tracking (no Reply expected; the
-	//     handler will free the data page via SysReleaseDelegatePage).
+	// Console stdio Write (MAZ-149 redirect-flag split): a write(fd<=2) whose
+	// caller redirect bit is CLEAR is a fire-and-forget display forward. The
+	// kernel already pushed the bytes to the serial TX ring (SyscallWrite's
+	// fast path) and returned the count to the caller at delegate time; the
+	// linux shepherd's stdout lane only feeds the display accumulator and
+	// frees the data page via SysReleaseDelegatePage — no Reply, no blocking.
+	// Blocking a console write here is exactly the cycle the first MAZ-149
+	// impl deadlocked on (handler fmt.Printf inside a delegate handler →
+	// linux Write delegate → linux waiting on the handler that's waiting for
+	// the original delegate), so for console stdio we:
+	//   - Skip delegateCallInfos InUse tracking (no Reply expected).
 	//   - Skip blockForDelegatedSyscall; return the byte count immediately.
-	// All other delegated syscalls (incl. write to fd>2) keep the original
-	// block-until-reply semantics, because the handler must report the
-	// actual number of bytes written by the underlying file system and the
-	// kernel must reclaim the data page on Reply rather than relying on the
-	// handler to do so.
 	//
-	// IMPORTANT: pipe-buffering is gated on fd<=2 so it only applies to the
-	// linux shepherd's stdout/stderr lane (which calls SysReleaseDelegatePage).
-	// If we pipe-buffered fd>2 Writes too, the linux file lane's req.Reply()
+	// A REDIRECTED fd<=2 write (caller's redirect bit SET — fork/exec child
+	// with dup3'd stdio) is an ordinary BLOCKING delegate on the handler's
+	// default (file-lane) ring, exactly like a fd>2 write: the shepherd
+	// routes it via its FD table (KindPipeWrite → capture pipe) and must
+	// report the actual byte count. Blocking is safe for these: a redirected
+	// write parks on its parent reader (pipe backpressure), never on fs, so
+	// no cross-shepherd cycle can form.
+	//
+	// IMPORTANT: fire-and-forget is gated on fd<=2 AND redirect-bit-clear so
+	// it only applies to the console lane (which calls SysReleaseDelegatePage).
+	// If a blocking Write were misrouted there, the handler's req.Reply()
 	// would arrive at the kernel as a stale SyscallReply targeting whatever
 	// delegate the caller TID is currently blocked on — unmapping that
 	// (unrelated) syscall's data page and corrupting its return value.
-	pipeBuffered := id == sysid.Write && arg0 <= 2
-	if !pipeBuffered && int(callerTID) < MaxDelegateThreads {
+	consoleStdio := id == sysid.Write && arg0 <= 2 && !stdioRedirected(callerShepherd, arg0)
+	if !consoleStdio && int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
 		info.DataPagePA = dataPagePA
 		info.DataPageVA = handlerDataVA
@@ -492,11 +515,13 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		DataLen:   dataLen,
 	}
 	msg := ipc.EncodeFSDelegateReq(&reqPayload)
-	// Pipe-buffered Writes (fd<=2) get routed to the stdio override ring
-	// when one is registered. Same handler shepherd, different ring —
-	// the kernel-half of the "stdio on its own ring" backpressure split.
+	// Console stdio Writes get routed to the dedicated stdio override ring
+	// when one is registered. Same handler shepherd, different ring — the
+	// kernel-half of the "stdio on its own ring" backpressure split, so a
+	// busy file lane can't stall a print. Redirected fd<=2 Writes stay on
+	// the handler's default (file-lane) ring like any blocking delegate.
 	handlerRingIdx := syscallDelegates[id].ringIdx
-	if pipeBuffered {
+	if consoleStdio {
 		if r := atomic.LoadInt32(&stdioWriteRingIdx); r >= 0 {
 			handlerRingIdx = uint8(r)
 		}
@@ -504,7 +529,7 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	result, _ := uringSendKernel(-1, handlerSID, handlerRingIdx, uintptr(unsafe.Pointer(&msg)))
 	if result < 0 {
 		// Ring full or target gone — reclaim and fail.
-		if !pipeBuffered && int(callerTID) < MaxDelegateThreads {
+		if !consoleStdio && int(callerTID) < MaxDelegateThreads {
 			delegateCallInfos[callerTID].InUse = false
 		}
 		reclaimDataPage(dataPagePA, handlerDataVA, handlerSID, handlerShepherd)
@@ -513,10 +538,11 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		return -11 // EAGAIN
 	}
 
-	if pipeBuffered {
-		// Linux-pipe semantics: bytes are in the handler's ring buffer
-		// (uring queue); return bytes-written count to caller without
-		// blocking. Handler consumes asynchronously.
+	if consoleStdio {
+		// Console semantics: the serial emit already happened on the kernel
+		// fast path and the display bytes are in the handler's ring; return
+		// the byte count without blocking. The handler consumes
+		// asynchronously and frees the page via SysReleaseDelegatePage.
 		return int64(dataLen)
 	}
 
@@ -536,13 +562,19 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 // allocAndCopyCallerData allocates a page, copies caller data into it, and
 // maps it into the handler's address space. Returns (PA, handlerVA, bytesCopied).
 func allocAndCopyCallerData(handlerSID int16, handlerShepherd *proc.Shepherd, callerBufVA uintptr, count uint64) (uintptr, uint64, uint64) {
+	// MAZ-156 forensics: every failure branch below silently ENOMEMs the
+	// caller's delegate (the redirected-stdio write-loss suspect), so each
+	// gets a distinct klog line naming the branch and the caller.
 	pa := kmem.AllocPage(kmem.PageSharedIPC, handlerSID)
 	if pa == 0 {
+		klog.Errf("[DLG:alloc] AllocPage FAIL caller=%d free=%d\n",
+			int32(getCurrentThreadSID()), kmem.GetPoolStats().RemainingPages)
 		return 0, 0, 0
 	}
 
 	scratchVA := kmem.MapPAToKernelScratch(pa)
 	if scratchVA == 0 {
+		klog.Errf("[DLG:alloc] scratch map FAIL caller=%d\n", int32(getCurrentThreadSID()))
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
@@ -553,16 +585,22 @@ func allocAndCopyCallerData(handlerSID int16, handlerShepherd *proc.Shepherd, ca
 	// Copy caller data
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(scratchVA)), count)
 	if !kmem.CopyFromUser(dst, callerBufVA, int(count)) {
+		klog.Errf("[DLG:alloc] CopyFromUser FAIL caller=%d va=%x n=%d\n",
+			int32(getCurrentThreadSID()), uint64(callerBufVA), count)
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
 
 	va := bumpAllocForShepherd(handlerShepherd, 4096)
 	if va == 0 {
+		klog.Errf("[DLG:alloc] bump VA exhausted caller=%d handler=%d\n",
+			int32(getCurrentThreadSID()), int32(handlerSID))
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
 	if !kmem.MapPageInProcess(handlerSID, uintptr(va), pa, 0) { // RW
+		klog.Errf("[DLG:alloc] MapPageInProcess FAIL caller=%d handler=%d va=%x\n",
+			int32(getCurrentThreadSID()), int32(handlerSID), va)
 		kmem.ReleasePageByPA(pa)
 		return 0, 0, 0
 	}
@@ -576,11 +614,14 @@ func allocAndCopyCallerData(handlerSID int16, handlerShepherd *proc.Shepherd, ca
 func allocEmptyDataPage(handlerSID int16, handlerShepherd *proc.Shepherd) (uintptr, uint64) {
 	pa := kmem.AllocPage(kmem.PageSharedIPC, handlerSID)
 	if pa == 0 {
+		klog.Errf("[DLG:alloc] AllocPage FAIL (empty) caller=%d free=%d\n",
+			int32(getCurrentThreadSID()), kmem.GetPoolStats().RemainingPages)
 		return 0, 0
 	}
 
 	scratchVA := kmem.MapPAToKernelScratch(pa)
 	if scratchVA == 0 {
+		klog.Errf("[DLG:alloc] scratch map FAIL (empty) caller=%d\n", int32(getCurrentThreadSID()))
 		kmem.ReleasePageByPA(pa)
 		return 0, 0
 	}
@@ -588,6 +629,8 @@ func allocEmptyDataPage(handlerSID int16, handlerShepherd *proc.Shepherd) (uintp
 
 	va := bumpAllocForShepherd(handlerShepherd, 4096)
 	if va == 0 {
+		klog.Errf("[DLG:alloc] bump VA exhausted (empty) caller=%d handler=%d\n",
+			int32(getCurrentThreadSID()), int32(handlerSID))
 		kmem.ReleasePageByPA(pa)
 		return 0, 0
 	}
@@ -784,7 +827,7 @@ func packExecveDataPage(handlerSID int16, handlerShepherd *proc.Shepherd, pathVA
 	}
 
 	blob, err := linuxabi.MarshalCloneExecParams(
-		linuxabi.PackArgv(argv), linuxabi.PackArgv(envp), nil, nil, path)
+		linuxabi.PackArgv(argv), linuxabi.PackArgv(envp), nil, nil, path, 0, 0, 0)
 	if err != nil || len(blob) > 4096 {
 		return 0, 0, 0, -7 // E2BIG
 	}
@@ -876,7 +919,6 @@ func SyscallReleaseDelegatePage(arg0, arg1, _, _, _, _ uint64) int64 {
 	}
 	return 0
 }
-
 
 // SyscallRegisterSyscallHandler registers the calling shepherd as the handler
 // for a specific SysID. Can be called multiple times for different SysIDs.
@@ -1064,7 +1106,6 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 					}
 				}
 			}
-
 
 			// Reclaim the data page
 			if info.DataPagePA != 0 {
@@ -1329,4 +1370,3 @@ func SyscallDeathAck(arg0, _, _, _, _, _ uint64) int64 {
 
 //go:linkname completeDeferredCleanup main.CompleteDeferredCleanup
 func completeDeferredCleanup(deadSID int16)
-

@@ -25,7 +25,10 @@
 
 package pipe
 
-import "errors"
+import (
+	"errors"
+	"sync/atomic"
+)
 
 // O_CLOEXEC / O_NONBLOCK as seen on the pipe2 flags argument. Linux ARM64 and
 // x86_64 share these values (asm-generic + x86 agree).
@@ -57,11 +60,24 @@ var ErrWouldBlock = errors.New("pipe: operation would block")
 // hits EOF, so the shepherd can fulfill the corresponding parked Reply. This
 // keeps "who is blocked on this buffer" inside the package (the shared buf is
 // the natural owner) without the package knowing what a shepherd request is.
+//
+// writerWaiters is the symmetric list for WRITE requests parked on a full
+// buffer (MAZ-149 backpressure): TakeWriterWaiters hands them back once a
+// reader drains free space, so the shepherd can retry the parked write.
 type buf struct {
-	data    []byte
-	writers int
-	flags   int
-	waiters []any
+	data          []byte
+	writers       int
+	flags         int
+	waiters       []any
+	writerWaiters []any
+
+	// dropPending requests the MAZ-149 `@\` drop breadcrumb. It is the ONLY
+	// cross-goroutine field on buf: the shepherd's park-timeout watchdog runs
+	// on its own goroutine, outside the dispatch serialization that guards
+	// every other buf access, so it may not mutate data directly. MarkDrop
+	// just latches this flag (atomic); Read applies the marker lazily, in the
+	// reader's dispatch context, where mutating data is safe.
+	dropPending atomic.Bool
 }
 
 // End is one end of a pipe — either the read end or the write end. Both ends
@@ -81,6 +97,32 @@ type End struct {
 func New(flags int) (read *End, write *End) {
 	b := &buf{writers: 1, flags: flags}
 	return &End{b: b}, &End{b: b, isWriter: true}
+}
+
+// Fork creates a new End that shares the same underlying pipe buffer as e,
+// modeling Linux fork(2) FD inheritance: the child gets an independent End
+// struct pointing at the same shared data plane.
+//
+// For a write end, Fork increments the shared writer count (buf.writers++) so
+// that Close on the fork decrements it to the pre-fork count, and Close on the
+// original decrements it further — only when both are closed does the reader
+// see EOF. This mirrors Linux's get_file() reference-count increment inside
+// copy_files() during fork.
+//
+// For a read end, Fork returns a new End pointing at the same buf without
+// changing the writer count (read ends carry no reference count of their own).
+//
+// Panics if e is already closed: forking a closed End is a programming error
+// (the caller must not inherit a file descriptor that has already been closed).
+func (e *End) Fork() *End {
+	if e.closed {
+		panic("pipe: Fork called on a closed End")
+	}
+	if e.isWriter {
+		e.b.writers++
+		return &End{b: e.b, isWriter: true}
+	}
+	return &End{b: e.b}
 }
 
 // Cloexec reports whether this end was created with O_CLOEXEC. The shepherd
@@ -133,6 +175,15 @@ func (e *End) Read(p []byte) (int, error) {
 		}
 		return 0, ErrWouldBlock
 	}
+	// Apply a pending drop breadcrumb (MarkDrop) now, in the reader's
+	// dispatch context — see the dropPending field doc. Fewer buffered bytes
+	// than the marker: skip (the missing data itself implies the loss).
+	if e.b.dropPending.CompareAndSwap(true, false) {
+		const marker = "@\\"
+		if len(e.b.data) >= len(marker) {
+			copy(e.b.data[len(e.b.data)-len(marker):], marker)
+		}
+	}
 	n := copy(p, e.b.data)
 	// Drop the consumed prefix. Reslicing onto a fresh backing array keeps the
 	// buffer from pinning drained bytes (the pipe is short-lived and tiny, so
@@ -178,4 +229,42 @@ func (e *End) TakeWaiters() []any {
 	w := e.b.waiters
 	e.b.waiters = nil
 	return w
+}
+
+// ParkWriter records an opaque token for a writer that found the buffer full
+// and is being parked by the shepherd (MAZ-149 blocking-write backpressure).
+// The token is returned by a later TakeWriterWaiters once a reader drains
+// free space. Symmetric to Park/TakeWaiters for readers.
+func (e *End) ParkWriter(token any) {
+	e.b.writerWaiters = append(e.b.writerWaiters, token)
+}
+
+// TakeWriterWaiters returns and clears the parked-writer tokens if the buffer
+// now has free space for a writer to make progress. While the buffer is still
+// full it returns nil and leaves the parked tokens in place. Tokens are
+// returned in park order (FIFO), so the shepherd retries the oldest writer
+// first (preserving per-writer FIFO byte order).
+func (e *End) TakeWriterWaiters() []any {
+	if len(e.b.writerWaiters) == 0 {
+		return nil
+	}
+	if len(e.b.data) >= bufCap {
+		return nil // still blocked: no free space yet.
+	}
+	w := e.b.writerWaiters
+	e.b.writerWaiters = nil
+	return w
+}
+
+// MarkDrop requests the MAZ-149 drop breadcrumb: the next Read overwrites
+// the tail of the buffered data with `@\` so the reader can detect that
+// writer bytes were discarded (bounded-park timeout). The application is
+// DEFERRED to Read because MarkDrop's caller (the shepherd's park-timeout
+// watchdog) runs outside the dispatch serialization that guards buf.data —
+// only the flag latch here is cross-goroutine-safe. The marker REPLACES the
+// tail rather than appending, so a full buffer stays full (the drop happened
+// precisely because no space freed up); a buffer shorter than the marker at
+// read time is left untouched (the missing data itself implies the loss).
+func (e *End) MarkDrop() {
+	e.b.dropPending.Store(true)
 }

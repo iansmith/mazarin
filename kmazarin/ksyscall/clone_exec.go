@@ -201,8 +201,16 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 	// the worker thread, OUTSIDE schedulerLock — AllocUringIPCRing is not
 	// nosplit, allocates pages, and takes the buddy lock, so it must never run
 	// under the scheduler spinlock.
+	// parentPID is the SID of the real parent process. For vfork calls, this is
+	// req.ParentSID (forkexectest); for boot/non-vfork, it falls back to the
+	// CallerShepherd's PID (linux delegate). Using the correct parentPID ensures
+	// the child's ParentPID field is set so EventChildExit reaches the right shepherd.
+	parentPID := req.CallerShepherd.PID
+	if req.ParentSID != 0 {
+		parentPID = req.ParentSID
+	}
 	_, newPID := CreateCloneExecThread(loadedProc.EntryPoint, loadedProc.StackTop, childL0PA,
-		req.CallerShepherd.PID, req.ReservedPID, req.Intent, req.Cwd)
+		parentPID, req.ReservedPID, req.Intent, req.Cwd, req.StdioRedirectMask)
 
 	// O(1) lookup of the freshly created Shepherd (Allocate just registered it
 	// under newPID). ok is guaranteed true — the slot was allocated under the
@@ -262,16 +270,24 @@ func DoCloneExecWork(req *proc.CloneExecRequest) int64 {
 		wakeVforkParent(int16(req.TransientTID), int64(newPID))
 	}
 
-	// Deliver EventExecComplete to the parent (MAZ-71). The event lands in the
-	// parent's ring; it observes it when it next polls (wait4, MAZ-80). The
-	// returned switch target is discarded — see kernelPublishProcessNotify.
-	kernelPublishProcessNotify(req.CallerShepherd.PID, proc.NotificationEvent{
-		Type:      proc.EventExecComplete,
-		Pid:       int16(newPID),
-		ParentPid: int16(req.CallerShepherd.PID),
-	})
+	// Deliver EventExecComplete to the linux shepherd (MAZ-71). The linux shepherd
+	// manages reaper.RegisterChild and wait4 bookkeeping for all shepherds —
+	// it reads from its OWN ring (LinuxDelegateSID), not the parent's ring.
+	// The event carries ParentPid for routing inside the linux shepherd.
+	// The returned switch target is discarded — see kernelPublishProcessNotify.
+	linuxSID := proc.ShepherdId(LinuxDelegateSID())
+	if linuxSID >= 0 {
+		kernelPublishProcessNotify(linuxSID, proc.NotificationEvent{
+			Type:      proc.EventExecComplete,
+			Pid:       int16(newPID),
+			ParentPid: int16(req.CallerShepherd.PID),
+		})
+	}
 
-	klog.Criticalf("[CE]", "[CloneExec] ok child=%d parent=%d entry=0x%x\n",
+	// MAZ-149: fork/exec success trace on the interrupt-driven ring (Logf), not
+	// the slow direct-poll path (Criticalf). Now that fork/exec is working, a
+	// fork/exec-heavy workload must not inflate the slow UART path.
+	klog.Logf("[CloneExec] ok child=%d parent=%d entry=0x%x\n",
 		newPID, req.CallerShepherd.PID, loadedProc.EntryPoint)
 	return int64(newPID)
 }

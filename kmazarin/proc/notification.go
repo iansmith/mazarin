@@ -54,7 +54,7 @@ const (
 //
 // Pid/ParentPid are int16 to match the wire ABI (shared/ipc/uring_ring.go
 // ProcessNotification). MAZ-73 widens ShepherdId to int32 in Go, but the
-// PID range [MinPID, MaxPID] = [2, 4095] still fits in int16; callers
+// PID range [MinPID, MaxPID] still fits in int16; callers
 // narrow at the boundary. Size-match with the wire struct is enforced
 // by the assertion in kmazarin/kmazarin/uring_ipc.go.
 type NotificationEvent struct {

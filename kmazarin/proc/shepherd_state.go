@@ -178,7 +178,9 @@ func (s *Shepherd) GetEnviron() []byte {
 // SetStartupState records, as a single unit, every race-sensitive field a
 // clone_exec child needs before it becomes schedulable: the parent identity
 // (ParentPID), the buffered FD-flavored intent ops (StartupIntent /
-// NumStartupIntent), and the chdir target (StartupCwd / StartupCwdLen).
+// NumStartupIntent), the chdir target (StartupCwd / StartupCwdLen), and the
+// stdio redirect mask (StdioRedirectMask, MAZ-149 — read by SyscallWrite on
+// the child's very first write, so it must be set before enqueue).
 //
 // MAZ-112: CreateCloneExecThread calls this UNDER schedulerLock, BEFORE the
 // child is enqueued to the ready queue, so a consumer racing the child's first
@@ -195,11 +197,12 @@ func (s *Shepherd) GetEnviron() []byte {
 // MaxStartupCwdBytes. The returned counts reflect what was actually stored.
 //
 //go:nosplit
-func (s *Shepherd) SetStartupState(parentPID ShepherdId, intent []CloneExecIntentOp, cwd []byte) (intentCopied, cwdCopied int) {
+func (s *Shepherd) SetStartupState(parentPID ShepherdId, intent []CloneExecIntentOp, cwd []byte, stdioRedirectMask uint8) (intentCopied, cwdCopied int) {
 	s.ParentPID = parentPID
 	n := copy(s.StartupIntent[:], intent)
 	s.NumStartupIntent = uint32(n)
 	c := copy(s.StartupCwd[:], cwd)
 	s.StartupCwdLen = uint32(c)
+	s.StdioRedirectMask = stdioRedirectMask
 	return n, c
 }

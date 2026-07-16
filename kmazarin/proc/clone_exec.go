@@ -103,6 +103,12 @@ type CloneExecRequest struct {
 	Intent []CloneExecIntentOp // FD-flavored ops; cap-checked against MaxStartupIntentOps
 	Cwd    []byte              // chdir target; empty = no chdir; cap-checked against MaxStartupCwdBytes
 
+	// StdioRedirectMask (MAZ-149) — the child's per-process stdio redirect
+	// flag (bit 0 = fd 1, bit 1 = fd 2), computed by sysExecve from the
+	// child's final FD-table state. Stored on the child Shepherd via
+	// SetStartupState before enqueue.
+	StdioRedirectMask uint8
+
 	// --- PID reservation (MAZ-127 vfork) ---
 	// ReservedPID is the child PID reserved at clone time. 0 = no reservation
 	// (boot path); non-zero = adopt this PID instead of allocating a fresh one.
@@ -114,6 +120,14 @@ type CloneExecRequest struct {
 	// worker runs on thread 0, so GetCurrentThreadTID() there would return the
 	// wrong TID. 0 = non-vfork path (boot).
 	TransientTID int32
+
+	// ParentSID is the shepherd SID of the REAL parent process (the one that
+	// called clone(CLONE_VFORK), e.g. forkexectest). For non-vfork paths this
+	// is 0 (boot / linux delegate itself). DoCloneExecWork passes this as the
+	// child's ParentPID so that EventChildExit reaches the correct shepherd and
+	// wait4 can complete. Distinct from CallerShepherd which is always the linux
+	// delegate (used only for page-table walks and AddChild bookkeeping).
+	ParentSID ShepherdId
 
 	// --- Diagnostics ---
 	Filename []byte // shepherd-name for logging + symbol table cache

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"syscall"
 	"unsafe"
 
 	"mazzy/maz/linux/internal/execve"
+	"mazzy/maz/linux/internal/fdtable"
 	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/linuxabi"
@@ -88,19 +90,59 @@ func (h *syscallHandler) sysExecve(req sys.SyscallRequest) {
 		return
 	}
 
-	// 5c. Marshal the non-ELF params (faithful argv/envp + intent + cwd +
-	// filename) and stage them into their own mmap region.
+	// 5c. Finalize the child's FD table BEFORE the SVC when the child's PID
+	// is already known — the vfork path, where the kernel reserved it at
+	// clone time (MAZ-156 root cause). The child starts running INSIDE
+	// sys.CloneExec, so its first delegated syscall can reach getShepherd
+	// before ANY post-SVC code here runs. The old post-SVC step 7a then
+	// evicted the LIVE child's state as if it were a dead predecessor's —
+	// destroying the correctly-primed table (closing its pipe fd1 write end,
+	// so the parent read EOF-empty) and re-priming an orphan copy of the
+	// parent's table (console fd1, parent cwd → the `child cwd=/` console
+	// leak). Pre-SVC this sequence is race-free BY CONSTRUCTION: the child
+	// does not exist yet.
+	//
+	// The transient's pre-execve dup3/chdir already primed
+	// pendingChildFDTs[reservedPID] (so pipe Fork() refs are already paid);
+	// intent/cwd are empty on this path (the ops were applied directly, not
+	// buffered), leaving ApplyStartupIntent a no-op and CloseCloexecFDs the
+	// only real work. On CloneExec failure the finalized pending table is
+	// abandoned exactly as an unconsumed primed table is today — no new
+	// leak class.
+	reservedPID := sys.GetVforkReservedPID(req.CallerTID)
+	if reservedPID != 0 {
+		// Any state under the reserved PID at this point is definitively a
+		// dead predecessor's: the allocator only reserves free PIDs and the
+		// child cannot have run yet.
+		h.evictStaleChildShepherd(reservedPID)
+		childFDT := h.getOrCreatePendingChildFDT(reservedPID, fdt.Copy)
+		childFDT.ApplyStartupIntent(intent, cwd)
+		childFDT.CloseCloexecFDs(func(handle uint32) { h.fs.Close(handle) })
+	}
+
+	// Compute the child's stdio redirect mask (MAZ-149). For vfork the
+	// pending table above is now FINAL, so the peek inside
+	// childStdioRedirectMask reads exact fd 1/2 Kinds (intent is empty). For
+	// bare execs it remains a simulation on the parent's table + intent.
+	// Computed pre-SVC because the kernel must store it on the child
+	// Shepherd before the child is enqueued.
+	stdioMask := h.childStdioRedirectMask(req.CallerTID, fdt, intent)
+
+	// 5d. Marshal the non-ELF params (faithful argv/envp + intent + cwd +
+	// filename + redirect mask) and stage them into their own mmap region.
 	paramsBlob, perr := linuxabi.MarshalCloneExecParams(
 		linuxabi.PackArgv(ceReq.Argv), linuxabi.PackArgv(ceReq.Envp),
-		ceReq.Intent, ceReq.Cwd, []byte(ceReq.Filename))
+		ceReq.Intent, ceReq.Cwd, []byte(ceReq.Filename), req.CallerTID, req.CallerPID, stdioMask)
 	if perr != nil {
 		munmapStage(elfVA, elfPages)
+		h.dropAbandonedPendingFDT(reservedPID)
 		req.Reply(E2BIG)
 		return
 	}
 	paramsVA, paramsPages, merr := mmapStage(paramsBlob)
 	if merr != 0 {
 		munmapStage(elfVA, elfPages)
+		h.dropAbandonedPendingFDT(reservedPID)
 		req.Reply(merr)
 		return
 	}
@@ -113,8 +155,100 @@ func (h *syscallHandler) sysExecve(req sys.SyscallRequest) {
 	munmapStage(elfVA, elfPages)
 	munmapStage(paramsVA, paramsPages)
 
-	// 8. Reply the child PID / negative errno to the parked caller.
+	// 7a. On success: register the child in the reaper, and for the bare
+	// (non-vfork) path only, build+stash the child's inherited FD table
+	// (the vfork path finalized it pre-SVC at step 5c — MAZ-156).
+	//
+	// RegisterChild closes the wait4 race: for vfork, wakeVforkParent fires
+	// inside DoCloneExecWork before sys.CloneExec returns, so the parent can
+	// call wait4 before EventExecComplete is processed. Registering here
+	// (synchronously, before any reply) ensures the reaper already knows
+	// about the child when that wait4 arrives.
+	if ret <= 0 {
+		// Exec failed after step 5c primed the reserved PID's table: unwind
+		// it. Left in place, its Fork()'d pipe writer refs strand readers
+		// waiting for EOF, and a later kernel reuse of the PID would hand an
+		// unrelated child this dead exec's table (review finding, MAZ-156).
+		h.dropAbandonedPendingFDT(reservedPID)
+	} else {
+		// MAZ-156 forensics: one line per successful exec — the mask the
+		// kernel stored, the reservation, and whether the child consumed its
+		// pending table before we got here (both orders are correct for
+		// vfork; this is the soak's verification probe for the exec family).
+		// One h.mu snapshot for both fields.
+		h.mu.Lock()
+		pendingPrimed := h.pendingChildFDTs[int16(ret)] != nil
+		childShepExists := h.shepherds[int16(ret)] != nil
+		h.mu.Unlock()
+		fmt.Printf("[lin:execve] sid=%d ret=%d mask=%#x reserved=%d pendingPrimed=%v childShepExists=%v\n",
+			req.CallerPID, ret, stdioMask, reservedPID, pendingPrimed, childShepExists)
+
+		if reservedPID != 0 && int16(ret) != reservedPID {
+			// The kernel returned a DIFFERENT pid than it reserved — should
+			// be impossible (createCloneExecThreadImpl adopts the reservation
+			// verbatim). Log loudly, unwind the orphaned reserved-PID table,
+			// and fall back to the legacy post-SVC prime under the actual pid
+			// so the child at least gets an inherited table.
+			fmt.Printf("[lin:execve] BUG? reserved=%d but ret=%d — legacy re-prime\n",
+				reservedPID, ret)
+			h.dropAbandonedPendingFDT(reservedPID)
+		}
+		if reservedPID == 0 || int16(ret) != reservedPID {
+			// Bare (non-vfork) exec — the child PID is unknowable pre-SVC, so
+			// the legacy post-SVC evict+prime remains, along with its
+			// (narrower) first-syscall race; no current caller takes this
+			// path with redirected stdio — or the impossible-case fallback
+			// above. The tripwire fires if a racing child already consumed a
+			// FRESH table here.
+			if childShepExists {
+				fmt.Printf("[lin:execve] WARN exec child sid=%d raced 7a (fresh table)\n", ret)
+			}
+			h.evictStaleChildShepherd(int16(ret))
+			childFDT := h.getOrCreatePendingChildFDT(int16(ret), fdt.Copy)
+			childFDT.ApplyStartupIntent(intent, cwd)
+			childFDT.CloseCloexecFDs(func(handle uint32) { h.fs.Close(handle) })
+		}
+		// vfork with ret == reservedPID (the normal case): the child's table
+		// was finalized pre-SVC at step 5c — nothing to evict, nothing to
+		// prime, either consume order is correct.
+		h.reaper.RegisterChild(int32(req.CallerPID), int32(ret))
+	}
+
+	// 8. If this was a vfork execve (CallerTID is a transient vfork thread) and it
+	// succeeded, reap the transient thread instead of replying to it. The parent was
+	// already woken by wakeVforkParent inside DoCloneExecWork; the transient must
+	// not return to userspace (it would write errno=0 to the errpipe and confuse
+	// os/exec). On failure we still reply to the transient so it can write the real
+	// errno to the errpipe, letting the parent's cmd.Start() return the correct error.
+	// For bare execves (non-vfork), ReapVforkTransient returns false and we fall
+	// through to req.Reply.
+	if ret > 0 && sys.ReapVforkTransient(req.CallerTID) {
+		return
+	}
 	req.Reply(ret)
+}
+
+// childStdioRedirectMask computes the MAZ-149 per-process stdio redirect mask
+// for the child a sysExecve is about to create. Base table selection mirrors
+// step 7a's getOrCreatePendingChildFDT: if the vfork transient already primed
+// pendingChildFDTs[reservedPID] (its pre-execve dup3s were routed there by
+// resolveTargetFDT), that IS the child's table; otherwise the child starts
+// from a copy of the parent's live table. The buffered clone-window intent is
+// then simulated on top (it is applied for real at step 7a).
+//
+// The pending-table peek holds h.mu (the map's lock); the table itself is
+// quiescent by execve time — the transient issues its dup3s strictly before
+// its execve, and post-MAZ-150 the reserved PID cannot be concurrently reused.
+func (h *syscallHandler) childStdioRedirectMask(callerTID int16, parentFDT *fdtable.Table, intent []linuxabi.IntentOp) uint8 {
+	base := parentFDT
+	if reservedPID := sys.GetVforkReservedPID(callerTID); reservedPID != 0 {
+		h.mu.Lock()
+		if pending := h.pendingChildFDTs[reservedPID]; pending != nil {
+			base = pending
+		}
+		h.mu.Unlock()
+	}
+	return base.StdioRedirectMaskAfterIntent(intent)
 }
 
 // flushCloneWindow flushes sid/tid's clone buffering window under cloneMu and

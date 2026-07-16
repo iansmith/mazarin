@@ -32,8 +32,8 @@ type NotifyQueue struct {
 }
 
 // notifyQueues is the per-shepherd notification queue array.
-// Indexed by ShepherdId (0 to MaxLiveShepherds-1). The shepherdIdAllocator's
-// backing array is also MaxLiveShepherds long, so allocated PIDs fit.
+// Indexed by ShepherdId (0 to MaxLiveShepherds-1). PIDAllocator caps MaxPID at
+// MaxLiveShepherds-1 (MAZ-150), so every allocated PID is a valid index here.
 var notifyQueues [proc.MaxLiveShepherds]NotifyQueue
 
 // initNotifyQueues initializes all notification queues.

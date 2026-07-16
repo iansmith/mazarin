@@ -60,15 +60,17 @@ func runCloneExecRaceSelfTest() {
 		res.gotParentPID == cloneExecRaceParentPID &&
 		res.gotNumIntent == cloneExecRaceNumIntent &&
 		res.gotCwdLen == cloneExecRaceCwdLen &&
+		res.gotStdioMask == cloneExecRaceStdioMask &&
 		res.delta == 0
 
 	if pass {
-		klog.Criticalf("[CR]", "[clone-exec-race] PASS — fields populated before enqueue (parent=%d nIntent=%d cwdLen=%d) delta=%d\n",
-			res.gotParentPID, res.gotNumIntent, res.gotCwdLen, res.delta)
+		klog.Criticalf("[CR]", "[clone-exec-race] PASS — fields populated before enqueue (parent=%d nIntent=%d cwdLen=%d stdioMask=%d) delta=%d\n",
+			res.gotParentPID, res.gotNumIntent, res.gotCwdLen, res.gotStdioMask, res.delta)
 	} else {
-		klog.Criticalf("[CR]", "[clone-exec-race] FAIL — observed=%v parent=%d(want %d) nIntent=%d(want %d) cwdLen=%d(want %d) delta=%d\n",
+		klog.Criticalf("[CR]", "[clone-exec-race] FAIL — observed=%v parent=%d(want %d) nIntent=%d(want %d) cwdLen=%d(want %d) stdioMask=%d(want %d) delta=%d\n",
 			res.observed, res.gotParentPID, cloneExecRaceParentPID,
-			res.gotNumIntent, cloneExecRaceNumIntent, res.gotCwdLen, cloneExecRaceCwdLen, res.delta)
+			res.gotNumIntent, cloneExecRaceNumIntent, res.gotCwdLen, cloneExecRaceCwdLen,
+			res.gotStdioMask, cloneExecRaceStdioMask, res.delta)
 	}
 }
 
@@ -83,8 +85,9 @@ const (
 	cloneExecRaceStackVA = uintptr(0x4001_0000)
 
 	cloneExecRaceParentPID proc.ShepherdId = proc.MinPID + 7
-	cloneExecRaceNumIntent uint32          = 2  // len(intent) below
-	cloneExecRaceCwdLen    uint32          = 25 // len(cwd) below
+	cloneExecRaceNumIntent uint32          = 2    // len(intent) below
+	cloneExecRaceCwdLen    uint32          = 25   // len(cwd) below
+	cloneExecRaceStdioMask uint8           = 0b01 // fd 1 redirected (MAZ-149)
 )
 
 // cloneExecRaceResult captures one create/reap cycle's observations.
@@ -93,6 +96,7 @@ type cloneExecRaceResult struct {
 	gotParentPID proc.ShepherdId // child ParentPID read at the hook
 	gotNumIntent uint32          // child NumStartupIntent read at the hook
 	gotCwdLen    uint32          // child StartupCwdLen read at the hook
+	gotStdioMask uint8           // child StdioRedirectMask read at the hook (MAZ-149)
 	delta        int64           // free-frame delta across the balanced window (0 == no leak)
 }
 
@@ -163,6 +167,7 @@ func runCloneExecRaceCycle() cloneExecRaceResult {
 			res.gotParentPID = p.ParentPID
 			res.gotNumIntent = p.NumStartupIntent
 			res.gotCwdLen = p.StartupCwdLen
+			res.gotStdioMask = p.StdioRedirectMask
 			return false // found it
 		})
 	}
@@ -171,7 +176,7 @@ func runCloneExecRaceCycle() cloneExecRaceResult {
 	// No reserved PID for this test (0 = allocate fresh, non-vfork path).
 	childTID, childPID := createCloneExecThreadImpl(&selftestSF,
 		uint64(cloneExecRaceEntryVA), uint64(cloneExecRaceStackVA),
-		childL0PA, cloneExecRaceParentPID, 0, intent, cwd)
+		childL0PA, cloneExecRaceParentPID, 0, intent, cwd, cloneExecRaceStdioMask)
 
 	// --- Reap the real child so frame / PID / TID counts stay balanced. The
 	// child must be plucked from the ready queue BEFORE its slot is released so
@@ -206,7 +211,7 @@ func reapSelfTestChild(childTID int16, childPID proc.ShepherdId, childL0PA uintp
 
 	if _, ok := proc.Shepherds.Get(childPID); ok {
 		proc.Shepherds.Release(childPID)
-		shepherdIdAllocator.Release(childPID)
+		shepherdIdAllocator.Free(childPID)
 	}
 
 	schedulerLock.Unlock()

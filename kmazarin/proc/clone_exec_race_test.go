@@ -45,11 +45,15 @@ func TestSetStartupStatePopulatesAllRaceSensitiveFields(t *testing.T) {
 	}
 	cwd := []byte("/work/dir")
 	const parent ShepherdId = MinPID + 1
+	const mask uint8 = 0b01 // fd 1 redirected (MAZ-149)
 
-	nIntent, nCwd := sh.SetStartupState(parent, intent, cwd)
+	nIntent, nCwd := sh.SetStartupState(parent, intent, cwd, mask)
 
 	if sh.ParentPID != parent {
 		t.Errorf("ParentPID = %d, want %d", sh.ParentPID, parent)
+	}
+	if sh.StdioRedirectMask != mask {
+		t.Errorf("StdioRedirectMask = %#b, want %#b", sh.StdioRedirectMask, mask)
 	}
 	if int(sh.NumStartupIntent) != len(intent) {
 		t.Errorf("NumStartupIntent = %d, want %d", sh.NumStartupIntent, len(intent))
@@ -90,7 +94,7 @@ func TestSetStartupStateEmptyIntentAndCwd(t *testing.T) {
 	}
 	const parent ShepherdId = MinPID + 2
 
-	nIntent, nCwd := sh.SetStartupState(parent, nil, nil)
+	nIntent, nCwd := sh.SetStartupState(parent, nil, nil, 0)
 
 	if sh.ParentPID != parent {
 		t.Errorf("ParentPID = %d, want %d", sh.ParentPID, parent)
@@ -100,6 +104,9 @@ func TestSetStartupStateEmptyIntentAndCwd(t *testing.T) {
 	}
 	if sh.StartupCwdLen != 0 || nCwd != 0 {
 		t.Errorf("StartupCwdLen = %d (returned %d), want 0", sh.StartupCwdLen, nCwd)
+	}
+	if sh.StdioRedirectMask != 0 {
+		t.Errorf("StdioRedirectMask = %#b, want 0 (console stdio)", sh.StdioRedirectMask)
 	}
 }
 
@@ -124,7 +131,7 @@ func TestSetStartupStateCapBoundedCopy(t *testing.T) {
 		overCwd[i] = 'a'
 	}
 
-	nIntent, nCwd := sh.SetStartupState(MinPID+3, overIntent, overCwd)
+	nIntent, nCwd := sh.SetStartupState(MinPID+3, overIntent, overCwd, 0)
 
 	if nIntent != MaxStartupIntentOps {
 		t.Errorf("intentCopied = %d, want clamp to %d", nIntent, MaxStartupIntentOps)

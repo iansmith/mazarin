@@ -4,7 +4,16 @@ package ksyscall
 //
 // Allows userspace shepherds (particularly linux) to push bytes directly
 // into the UART output path. This decouples screen rendering (fast, handled
-// by linux via delegated SyscallWrite) from serial output (slow, UART speed).
+// by linux via delegated SyscallWrite) from serial output.
+//
+// Bytes go through the interrupt-driven TX ring (serial.QueueByteTry), the same
+// fast path SyscallWrite's fd 1/2 fast path uses — NOT the byte-at-a-time
+// polling path. A byte that doesn't fit the ring falls back to serial.PollWrite
+// so a status message is never silently dropped (matches the old guaranteed-
+// delivery contract, but only pays the slow-poll cost under ring pressure).
+// This matters because the linux shepherd routes real program stdout/stderr
+// through SysUartWrite once fd 1/2 writes are thinned onto the FD table
+// (MAZ-149): that traffic must not land on the slow direct-poll path.
 
 import (
 	"mazzy/kmazarin/kmem"
@@ -12,7 +21,13 @@ import (
 )
 
 // SyscallUartWrite writes bytes from a user buffer to the UART TX ring buffer.
-// Non-blocking: pushes what fits, drops the rest. Interrupt-driven drain.
+// Lossless and order-preserving (MAZ-149 item 6): the whole buffer is written
+// — no 4 KiB truncation — and a full ring is drained toward the hardware FIFO
+// in place (serial.TxKick) rather than PollWrite-jumping the new byte past the
+// ring's queued contents, which scrambled byte order under ring pressure. SVC
+// context runs IRQ-masked, so waiting for the TX interrupt to drain the ring
+// would deadlock; TxKick drains it ourselves at hardware line rate — the same
+// cost the old PollWrite fallback paid, without the reorder.
 //
 // NOTE: This syscall is NOT gated by suppressSerial. The caller (linux shepherd)
 // explicitly wants to write to UART — the suppressSerial flag only controls
@@ -33,9 +48,6 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 	if !isValidUserAddr(bufPtr) {
 		return -14 // EFAULT
 	}
-	if count > 4096 {
-		count = 4096
-	}
 
 	var chunk [256]byte
 	written := uint64(0)
@@ -54,7 +66,23 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 			return -14 // EFAULT
 		}
 		for i := uint64(0); i < n; i++ {
-			serial.PollWrite(chunk[i])
+			// Fast path: push onto the interrupt-driven TX ring. On ring-full,
+			// drain the ring toward the FIFO ourselves and retry — order
+			// preserved, nothing dropped. A platform with no kick primitive
+			// registered keeps the old PollWrite fallback (lossless, but the
+			// byte can jump the ring's queued contents).
+			//
+			// Liveness: this retry loop progresses at hardware drain rate and
+			// spins only while the FIFO is full — the SAME dependency the old
+			// ring-full PollWrite fallback had (PollWrite spins unbounded on
+			// txReady). A permanently-stalled FIFO hangs either version; this
+			// is parity, not a new hazard.
+			for !serial.QueueByteTry(chunk[i]) {
+				if !serial.TxKick() {
+					serial.PollWrite(chunk[i])
+					break
+				}
+			}
 			written++
 		}
 		offset += n

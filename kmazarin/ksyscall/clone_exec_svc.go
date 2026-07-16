@@ -100,30 +100,34 @@ func SyscallCloneExec(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	}
 
 	// Retrieve the reserved PID and transient TID for this vfork child (MAZ-127).
-	// Both must be captured NOW while we are still in the transient thread's SVC
-	// context — DoCloneExecWork runs on the kernel worker (thread 0), so
-	// GetCurrentThreadTID() there would return the wrong TID.
-	reservedPIDValue := GetVforkReservedPID()
+	// SyscallCloneExec runs in the linux-dispatcher worker thread's SVC context,
+	// not in the transient vfork thread. The linux-dispatcher passes the original
+	// CallerTID and CallerSID (the transient thread's TID and the real parent's SID)
+	// in params so we can look up the vfork table and set ParentPID correctly.
 	var reservedPID proc.ShepherdId
-	var transientTID int32
-	if reservedPIDValue != 0 {
-		reservedPID = proc.ShepherdId(reservedPIDValue)
-		transientTID = int32(GetCurrentThreadTID())
+	var transientTID int16
+	if params.VforkCallerTID != 0 {
+		if pid := GetVforkReservedPIDForTID(params.VforkCallerTID); pid != 0 {
+			reservedPID = proc.ShepherdId(pid)
+			transientTID = params.VforkCallerTID
+		}
 	}
 
 	ctxPtr := submitCloneExec(proc.CloneExecRequest{
-		ELFStartVA:     elfVA,
-		ELFNumBytes:    elfBytes,
-		ELFNumPages:    elfPages,
-		CallerL0PA:     shepherd.PageTableL0PA,
-		CallerShepherd: shepherd,
-		Argv:           params.Argv,
-		Envp:           params.Envp,
-		Intent:         params.Intent,
-		Cwd:            params.Cwd,
-		ReservedPID:    reservedPID,
-		TransientTID:   transientTID,
-		Filename:       params.Filename,
+		ELFStartVA:        elfVA,
+		ELFNumBytes:       elfBytes,
+		ELFNumPages:       elfPages,
+		CallerL0PA:        shepherd.PageTableL0PA,
+		CallerShepherd:    shepherd,
+		Argv:              params.Argv,
+		Envp:              params.Envp,
+		Intent:            params.Intent,
+		Cwd:               params.Cwd,
+		ReservedPID:       reservedPID,
+		TransientTID:      int32(transientTID),
+		ParentSID:         proc.ShepherdId(params.VforkCallerSID),
+		Filename:          params.Filename,
+		StdioRedirectMask: params.StdioRedirectMask,
 	})
 	if ctxPtr == 0 {
 		// Worker busy or no thread to switch to — EAGAIN, matching RunShepherd's
@@ -133,4 +137,34 @@ func SyscallCloneExec(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	}
 	SetSyscallSwitchTarget(ctxPtr)
 	return 0
+}
+
+// SyscallReapVforkTransient implements the SysReapVforkTransient SVC (MAZ-63).
+// Called by the linux dispatcher shepherd after a successful vfork execve to
+// terminate the transient thread without returning it to userspace.
+//
+// arg0 = transient thread TID (int16)
+//
+//go:noinline
+func SyscallReapVforkTransient(arg0, _, _, _, _, _ uint64) int64 {
+	tid := int16(arg0)
+	if !ReapVforkTransient(tid) {
+		return -3 // ESRCH — not found or not a vfork transient
+	}
+	return 0
+}
+
+// SyscallGetVforkReservedPID implements the SysGetVforkReservedPID SVC (MAZ-63).
+// Lets the linux shepherd ask "is the caller of this delegated syscall a vfork
+// transient, and if so what child PID was reserved for it?" — used by
+// sysDup3/sysFcntl/sysChdir to route a vfork child's pre-execve FD/cwd setup
+// onto the child's own (eagerly-copied) FD table instead of the live parent's,
+// since the transient shares the parent's SID for normal delegate routing.
+//
+// arg0 = thread TID (int16). Returns the reserved child PID, or 0 if tid is
+// not a known vfork transient (ordinary, non-vfork call).
+//
+//go:noinline
+func SyscallGetVforkReservedPID(arg0, _, _, _, _, _ uint64) int64 {
+	return int64(GetVforkReservedPIDForTID(int16(arg0)))
 }
