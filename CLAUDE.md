@@ -7,6 +7,14 @@ The Go binary is unmodified — the project keeps a full Go runtime in the kerne
 
 ---
 
+<!-- BEGIN UNIVERSAL SECTION -->
+<!-- Mirrored byte-identically across all six projects (see §10). Do not edit here alone:
+     edit once, then replace this marked region in the other five and verify they hash the same.
+     Extract with the ANCHORED pattern (^...$) — an unanchored one also matches the
+     marker names mentioned in prose below, and stops early:
+       awk '/^<!-- BEGIN UNIVERSAL SECTION -->$/,/^<!-- END UNIVERSAL SECTION -->$/' CLAUDE.md
+     Project-specific overrides go OUTSIDE these markers. -->
+
 # Universal Project Rules
 
 These rules apply across all of Ian's projects unless this CLAUDE.md explicitly overrides them.
@@ -70,18 +78,39 @@ These rules apply across all of Ian's projects unless this CLAUDE.md explicitly 
 - `design/` is **tracked**, but you do **not** add files to it without explicit user confirmation. Design docs are deliberate artifacts.
 - Files specific to a particular ticket (continuation prompts, mid-flight notes, ticket-local plans) go into the **ticket's local storage directory** (`~/.claude/ticket-active/<TICKET>/`), not into `docs/` or `design/`.
 
-## 9. CodeRabbit (universal)
+## 9. Automated PR review
 
-- Every project should have at least one remote that can be used with CodeRabbit. `/simplify`'s pre-commit role is to preempt CodeRabbit findings, not to substitute for the actual review.
-- When the project has multiple remotes, **prefer the GitHub remote** for CodeRabbit. **CodeRabbit does not work on Bitbucket**; if Bitbucket is the only remote, factor that into the review plan separately.
+- **CodeRabbit is OFF** — the subscription was cancelled 2026-07-17. Do not wait for it, do not post `@coderabbitai review`, and do not treat its absence on a PR as a problem. (Greptile is under consideration; nothing is decided.)
+- **The review backend is per-project config, not a fixed tool.** `[pr_review] backend` in `.project-conf.toml` selects it: `claude` (Claude's own `/code-review`), `coderabbit`, or `greptile`. Both lyos repos are on `claude`. Switching later is a one-line config change — do not hard-code a tool name into a workflow.
+- `/simplify`'s pre-commit role is to preempt review findings, not to substitute for the actual review.
+- When a project has multiple remotes, **prefer the GitHub remote** for any hosted review bot. Bot reviews do not work on Bitbucket; if Bitbucket is the only remote, factor that into the review plan separately.
 
 ## 10. Adding a new rule — where it lives
 
 - **Project-specific operational tip or bug record** → `feedback_*.md` in this project's memory dir; index it in `MEMORY.md`. Default home for new learnings.
 - **Project-specific rule every session must follow** → the project-specific section of this `CLAUDE.md`. Delete the memory file if it would duplicate.
-- **Universal rule applying to every project of Ian's** → propose adding to the universal §1-§10 block of all four projects' `CLAUDE.md` files identically. Don't drift one project's universal block.
+- **Universal rule applying to every project of Ian's** → propose adding to the universal block of **all six projects'** `CLAUDE.md` files identically. Don't drift one project's universal block.
+
+The six: `lyos/mobile-v2`, `lyos/server-v2`, `louis14`, `mazzy` (mazarin), `sophie`, `ticket-plugin` (slopstop).
+
+**Mirroring is mechanical — do not hand-copy.** The block is delimited by
+`<!-- BEGIN UNIVERSAL SECTION -->` / `<!-- END UNIVERSAL SECTION -->` markers so it can be
+extracted and replaced with a script. Edit it in one project, then replace the marked region in
+the other five and verify the extracts hash identically:
+
+```bash
+# extract (works in any of the six). The ^...$ anchors matter: the marker names
+# also appear in this prose, and an unanchored pattern terminates on them.
+awk '/^<!-- BEGIN UNIVERSAL SECTION -->$/,/^<!-- END UNIVERSAL SECTION -->$/' CLAUDE.md
+```
+
+A project-specific section may deliberately **override** a universal rule (e.g. mazzy's
+"Pre-commit (overrides universal §1)"). That is fine and belongs *outside* the markers — the
+marked region must stay byte-identical everywhere.
 
 Promotion is one-way: memory → project-specific → universal. Rules go up when they prove durable.
+
+<!-- END UNIVERSAL SECTION -->
 
 ---
 
