@@ -113,7 +113,7 @@ awk '/^<!-- BEGIN UNIVERSAL SECTION -->$/,/^<!-- END UNIVERSAL SECTION -->$/' \
 
 # 2. replace the marked region in each mirror, then verify — all six must print one hash:
 for f in ~/ticket-plugin/CLAUDE.md ~/lyos/mobile-v2/CLAUDE.md ~/lyos/server-v2/CLAUDE.md \
-         ~/louis14/CLAUDE.md ~/mazzy/CLAUDE.md ~/sophie/CLAUDE.md; do
+         ~/louis14/CLAUDE.md ~/mazzy/CLAUDE.md ~/sophie/sophie/CLAUDE.md; do
   awk '/^<!-- BEGIN UNIVERSAL SECTION -->$/,/^<!-- END UNIVERSAL SECTION -->$/' "$f" | md5 -q
 done | sort -u   # exactly one line = in sync
 ```
