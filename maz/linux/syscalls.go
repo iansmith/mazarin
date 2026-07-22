@@ -1178,10 +1178,7 @@ func (h *syscallHandler) sysReadPipe(req sys.SyscallRequest, e *fdtable.Entry) {
 		return
 	}
 	w := &pipeReadWaiter{req: req, end: e.Pipe}
-	if !h.parkedPipeReaders.Park(w, req.CallerPID) {
-		req.Reply(ENOENT)
-		return
-	}
+	h.parkedPipeReaders.Park(w, req.CallerPID)
 	e.Pipe.Park(w) // deferred Reply.
 }
 
@@ -1215,10 +1212,7 @@ const pipeParkSweepInterval = 5 * time.Second
 // for the timeout sweep. Deferred Reply: handle() returns without replying,
 // releasing shep.mu — nothing is held while parked (mirrors sysReadPipe).
 func (h *syscallHandler) parkPipeWriter(w *pipeWriteWaiter) {
-	if !h.parkedPipeWriters.Park(w, w.req.CallerPID) {
-		w.req.Reply(ENOENT)
-		return
-	}
+	h.parkedPipeWriters.Park(w, w.req.CallerPID)
 	w.end.ParkWriter(w)
 }
 
@@ -1254,19 +1248,27 @@ func (h *syscallHandler) wakePipeWriters(end *pipe.End) {
 		if !ok {
 			continue // only parkPipeWriter parks; be defensive.
 		}
-		if !h.parkedPipeWriters.TakeLive(w) {
-			continue // timeout already dropped + replied, or the owner died.
-		}
-		n, err := w.end.Write(w.req.Data())
-		if err != nil {
-			h.parkPipeWriter(w) // still full: re-park (keeps original parkedAt).
+		n, wrote := func() (int64, bool) {
+			h.parkedPipeWriters.BeginWake()
+			defer h.parkedPipeWriters.EndWake()
+			if !h.parkedPipeWriters.TakeLive(w) {
+				return 0, false // timeout already dropped + replied, or the owner died.
+			}
+			n, err := w.end.Write(w.req.Data())
+			if err != nil {
+				h.parkPipeWriter(w) // still full: re-park (keeps original parkedAt).
+				return 0, false
+			}
+			return int64(n), true
+		}()
+		if !wrote {
 			continue
 		}
 		// The retried write made data available — wake parked readers (none
 		// and parked writers can coexist on one buf, but another pipe op may
 		// have parked a reader between the drain and this retry).
 		h.wakePipeReaders(w.end)
-		w.req.Reply(int64(n))
+		w.req.Reply(n)
 	}
 }
 
@@ -1333,16 +1335,19 @@ func (h *syscallHandler) wakePipeReaders(end *pipe.End) {
 		if !ok {
 			continue // only sysReadPipe parks, always a *pipeReadWaiter; be defensive.
 		}
-		if !h.parkedPipeReaders.TakeLive(w) {
-			continue // owner died while parked — abandoned, never replied.
-		}
-		if !drainPipeInto(w.req, w.end) {
-			// Still would-block (e.g. another reader drained the buffer first
-			// and a writer remains): re-park rather than spuriously waking.
-			if h.parkedPipeReaders.Park(w, w.req.CallerPID) {
+		func() {
+			h.parkedPipeReaders.BeginWake()
+			defer h.parkedPipeReaders.EndWake()
+			if !h.parkedPipeReaders.TakeLive(w) {
+				return // owner died while parked — abandoned, never replied.
+			}
+			if !drainPipeInto(w.req, w.end) {
+				// Still would-block (e.g. another reader drained the buffer first
+				// and a writer remains): re-park rather than spuriously waking.
+				h.parkedPipeReaders.Park(w, w.req.CallerPID)
 				w.end.Park(w)
 			}
-		}
+		}()
 	}
 }
 

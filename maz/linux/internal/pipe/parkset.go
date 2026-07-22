@@ -19,32 +19,37 @@ import "sync"
 // Stale tokens left on a pipe's waiter lists after DropOwner/Sweep are
 // harmless: whoever takes them from the pipe checks liveness here first.
 //
+// A wake loop's TakeLive→re-Park sequence must be atomic with respect to
+// DropOwner: without exclusion, DropOwner can run between TakeLive removing
+// the token and Park re-adding it, leaving a zombie registration for a dead
+// owner that no future DropOwner will ever clean (SIDs are monotonic). Wake
+// loops bracket each token's window with BeginWake/EndWake; DropOwner waits
+// out in-flight windows before sweeping. Fresh parks (dispatch path) need no
+// bracket: dispatch holds the per-SID refcount for the whole handle() call,
+// and teardown's DropOwner only runs after that refcount drains, so a fresh
+// park strictly happens-before its own owner's DropOwner.
+//
 // Internally locked: the watchdog goroutine and the dispatch goroutines
 // touch the set concurrently.
 type ParkSet struct {
-	mu   sync.Mutex
-	live map[any]int16 // token → owner SID
-	dead map[int16]bool
+	mu     sync.Mutex
+	live   map[any]int16 // token → owner SID
+	wakeMu sync.RWMutex  // excludes DropOwner from wake windows
 }
 
 // NewParkSet returns an empty registry.
 func NewParkSet() *ParkSet {
-	return &ParkSet{live: make(map[any]int16), dead: make(map[int16]bool)}
+	return &ParkSet{live: make(map[any]int16)}
 }
 
 // Park registers tok as a live parked request owned by the shepherd with
-// the given SID. Returns true if registered, false if the owner was already
-// dropped (SIDs are monotonic — once dead, always dead). A false return
-// means the caller must NOT park the token on the pipe's waiter list.
-func (s *ParkSet) Park(tok any, owner int16) bool {
+// the given SID. Re-parking a token (a woken request that must block again)
+// simply re-registers it, possibly under a new owner. Re-parks must happen
+// inside the BeginWake/EndWake window that took the token.
+func (s *ParkSet) Park(tok any, owner int16) {
 	s.mu.Lock()
-	if s.dead[owner] {
-		s.mu.Unlock()
-		return false
-	}
 	s.live[tok] = owner
 	s.mu.Unlock()
-	return true
 }
 
 // TakeLive removes tok from the registry and reports whether it was still
@@ -58,13 +63,27 @@ func (s *ParkSet) TakeLive(tok any) bool {
 	return live
 }
 
-// DropOwner abandons every park owned by the given SID and marks the SID
-// as dead. Future Park calls for this owner are rejected (SIDs are
-// monotonic — a dead SID can never come back). Removal IS the abandon
-// signal — no Reply is sent for dropped tokens.
+// BeginWake opens a wake window: the TakeLive→reply-or-re-Park sequence for
+// one token. DropOwner waits for all open windows, so a re-park inside the
+// window always lands before the owner's death sweep. Windows do not block
+// each other; hold one only for a single token's processing.
+func (s *ParkSet) BeginWake() {
+	s.wakeMu.RLock()
+}
+
+// EndWake closes the window opened by BeginWake.
+func (s *ParkSet) EndWake() {
+	s.wakeMu.RUnlock()
+}
+
+// DropOwner abandons every park owned by the given SID. Removal IS the
+// abandon signal — no Reply is sent for dropped tokens. Waits out in-flight
+// wake windows first, so any re-park racing this death lands before the
+// sweep and is collected by it.
 func (s *ParkSet) DropOwner(owner int16) {
+	s.wakeMu.Lock()
+	defer s.wakeMu.Unlock()
 	s.mu.Lock()
-	s.dead[owner] = true
 	for tok, o := range s.live {
 		if o == owner {
 			delete(s.live, tok)
