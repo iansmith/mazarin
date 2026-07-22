@@ -1178,7 +1178,10 @@ func (h *syscallHandler) sysReadPipe(req sys.SyscallRequest, e *fdtable.Entry) {
 		return
 	}
 	w := &pipeReadWaiter{req: req, end: e.Pipe}
-	h.parkedPipeReaders.Park(w, req.CallerPID)
+	if !h.parkedPipeReaders.Park(w, req.CallerPID) {
+		req.Reply(ENOENT)
+		return
+	}
 	e.Pipe.Park(w) // deferred Reply.
 }
 
@@ -1212,7 +1215,10 @@ const pipeParkSweepInterval = 5 * time.Second
 // for the timeout sweep. Deferred Reply: handle() returns without replying,
 // releasing shep.mu — nothing is held while parked (mirrors sysReadPipe).
 func (h *syscallHandler) parkPipeWriter(w *pipeWriteWaiter) {
-	h.parkedPipeWriters.Park(w, w.req.CallerPID)
+	if !h.parkedPipeWriters.Park(w, w.req.CallerPID) {
+		w.req.Reply(ENOENT)
+		return
+	}
 	w.end.ParkWriter(w)
 }
 
@@ -1333,8 +1339,9 @@ func (h *syscallHandler) wakePipeReaders(end *pipe.End) {
 		if !drainPipeInto(w.req, w.end) {
 			// Still would-block (e.g. another reader drained the buffer first
 			// and a writer remains): re-park rather than spuriously waking.
-			h.parkedPipeReaders.Park(w, w.req.CallerPID)
-			w.end.Park(w)
+			if h.parkedPipeReaders.Park(w, w.req.CallerPID) {
+				w.end.Park(w)
+			}
 		}
 	}
 }

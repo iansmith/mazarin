@@ -59,9 +59,9 @@ filemap_violation = "kill"
 [pr_review]
 backend = "claude"
 effort  = "high"
-# fix=false is REQUIRED here: [autonomous] on_red_findings = "fix-and-retry" below
-# already applies the 🔴 findings. CONFIG.md flags fix=true + fix-and-retry as a
-# double-apply combo. Do NOT set fix=true without removing on_red_findings.
+# fix=false pairs with [autonomous] on_red_findings = "fix-and-retry" below,
+# which already applies the 🔴/🟡 findings. Setting fix=true too would just make
+# on_red_findings a harmless no-op (slopstop v3.5.0+: warns once, doesn't error).
 fix     = false
 
 # Non-interactive mode for the multi-platform bug-fix campaign (2026-07-06).
@@ -69,8 +69,9 @@ fix     = false
 # NOTE: enabled=true drives :pr / :start / :archive / :plan autonomously. It does
 # NOT by itself make :merge autonomous — per the skill's merge-autonomous.md, full
 # autonomous :merge is activated by passing --autonomous on the :merge command line.
-# The merge_* / archive_immediately keys below are read only on those --autonomous
-# runs. Interactive :merge still auto-confirms via [workflow] skip_confirm (below).
+# The merge_* keys below are read only on those --autonomous runs. Interactive
+# :merge still auto-confirms via [workflow] skip_confirm (below). [workflow]
+# skip_archive, unlike these, applies in BOTH modes — it's not [autonomous]-scoped.
 [autonomous]
 enabled = true
 
@@ -90,8 +91,8 @@ on_test_gaps         = "add-all"
 on_simplify_changes = "accept"
 # :pr — pre-commit tests fail: abort (do NOT commit-anyway on a real failure).
 on_test_failure     = "abort"
-# :pr — auto-fix 🔴 findings and re-review, rather than asking. Paired with
-# [pr_review] fix=false above — see the double-apply note there.
+# :pr — auto-fix 🔴 and 🟡 findings and re-review, rather than asking. Paired
+# with [pr_review] fix=false above — see the note there.
 on_red_findings     = "fix-and-retry"
 # :pr — slop-detection violations: skip the check rather than stall.
 on_slop_findings    = "skip"
@@ -99,12 +100,15 @@ on_slop_findings    = "skip"
 # :merge — repo rule: ALWAYS a real merge commit, never squash/rebase
 merge_strategy      = "merge"
 merge_target_state  = "auto"    # advance the ticket exactly one state, never force-jump to Done
-archive_immediately = true      # chain into :archive when a merge lands a ticket in a terminal state
 
 metrics_emit_path = ".slopstop/metrics"
 
 # Don't prompt for the branch type on /slopstop-start — use the heuristic
 # suggestion (from ticket labels/title) automatically. Only falls back to
 # asking when the heuristic produces no suggestion at all.
+# skip_archive=false: :merge always chains into :archive on terminal state
+# (slopstop v3.4.0+, both interactive and autonomous — replaces the old
+# [autonomous] archive_immediately key, which no longer exists).
 [workflow]
 skip_confirm = true
+skip_archive = false
