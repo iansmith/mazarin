@@ -13,6 +13,7 @@ package kmem
 import (
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/serial"
+	"mazzy/shared/constants"
 	"sync/atomic"
 	"unsafe"
 )
@@ -191,6 +192,77 @@ func buddyAddRange(start, end uintptr) {
 	}
 }
 
+// buddyPoisonCheck enables the MAZ-15 free-page tripwire: every block on a
+// free list is tagged (word1 = pa ^ magic) and its interior filled with a
+// constant poison pattern at insert; every remove verifies both. A page that
+// something writes AFTER it was freed — a stale mapping, an in-flight DMA, a
+// late IPC — is caught deterministically at realloc time, with the foreign
+// content preserved for fingerprinting the writer. Debug instrumentation:
+// costs a block fill per free and a block scan per alloc.
+const buddyPoisonCheck = constants.Maz15Debug
+
+const (
+	buddyPoisonTagMagic = uintptr(0x504F49534F4E5047) // "POISONPG"
+	buddyPoisonPattern  = uintptr(0xF4EEF4EEF4EEF4EE) // constant so splits/merges stay valid
+	buddyPoisonHdr      = uintptr(16)                 // word0 = list link, word1 = tag
+)
+
+// buddyPoisonUAFCatches counts poison verification failures (late writes to
+// freed pages). Read via serial diagnostics; expected 0.
+var buddyPoisonUAFCatches uint64
+
+// buddyPoisonFill tags the block and fills its interior with the poison
+// pattern. Caller must have already written word0 (the free-list link).
+//
+//go:nosplit
+func buddyPoisonFill(pa uintptr, order int) {
+	va := pa + buddyAlloc.kernelVAOffset
+	*(*uintptr)(unsafe.Pointer(va + 8)) = pa ^ buddyPoisonTagMagic
+	end := va + (uintptr(PageSize) << uint(order))
+	for p := va + buddyPoisonHdr; p < end; p += 8 {
+		*(*uintptr)(unsafe.Pointer(p)) = buddyPoisonPattern
+	}
+}
+
+// buddyPoisonVerify checks a block popped from a free list. A missing tag
+// means the block predates poisoning (init seeding) — skipped. A present tag
+// with a scribbled interior = a write landed while the page was FREE: the
+// MAZ-15 use-after-free class, caught red-handed. Reports the first two
+// corrupt words, then stops (no spam). NOT a halt — we want every catch.
+//
+//go:nosplit
+func buddyPoisonVerify(pa uintptr, order int) {
+	va := pa + buddyAlloc.kernelVAOffset
+	if *(*uintptr)(unsafe.Pointer(va + 8)) != pa^buddyPoisonTagMagic {
+		return // never poisoned (init-seeded) — no verdict possible
+	}
+	end := va + (uintptr(PageSize) << uint(order))
+	reported := 0
+	for p := va + buddyPoisonHdr; p < end; p += 8 {
+		got := *(*uintptr)(unsafe.Pointer(p))
+		if got == buddyPoisonPattern {
+			continue
+		}
+		if reported == 0 {
+			buddyPoisonUAFCatches++
+			SerialPuts("[PAGE_UAF] pa=")
+			SerialHex16(uint64(pa))
+			SerialPuts(" off=")
+			SerialHex16(uint64(p - va))
+		}
+		SerialPuts(" got=")
+		SerialHex16(uint64(got))
+		reported++
+		if reported >= 2 {
+			SerialPuts("\n")
+			return
+		}
+	}
+	if reported > 0 {
+		SerialPuts("\n")
+	}
+}
+
 // buddyInsertFree inserts a block at the head of the free list for the given order.
 // Writes the next pointer into the first 8 bytes of the block via linear map.
 //
@@ -205,6 +277,9 @@ func buddyInsertFree(pa uintptr, order int) {
 	*listSlot = pa
 	countSlot := (*uint64)(unsafe.Pointer(uintptr(unsafe.Pointer(&buddyAlloc.freeCount[0])) + uintptr(order)*unsafe.Sizeof(uint64(0))))
 	*countSlot++
+	if buddyPoisonCheck {
+		buddyPoisonFill(pa, order)
+	}
 }
 
 // buddyContainsPA walks the free list for the given order and returns true if
@@ -266,6 +341,9 @@ func buddyRemoveFree(order int) uintptr {
 	}
 	buddyAlloc.freeList[idx] = next
 	buddyAlloc.freeCount[idx]--
+	if buddyPoisonCheck {
+		buddyPoisonVerify(pa, order)
+	}
 	return pa
 }
 
@@ -558,6 +636,9 @@ func buddyRemoveSpecific(pa uintptr, order int) bool {
 			nextNext := *(*uintptr)(unsafe.Pointer(paVA))
 			*(*uintptr)(unsafe.Pointer(prevVA)) = nextNext
 			buddyAlloc.freeCount[order]--
+			if buddyPoisonCheck {
+				buddyPoisonVerify(pa, order)
+			}
 			return true
 		}
 		prev = next

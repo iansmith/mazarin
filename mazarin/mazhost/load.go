@@ -14,12 +14,14 @@ package mazhost
 
 import (
 	"fmt"
+	"hash/crc32"
 	"runtime"
 	"time"
 
 	merror "mazzy/mazarin/error"
 	"mazzy/mazarin/fsclient"
 	"mazzy/mazarin/mazdl"
+	"mazzy/shared/constants"
 )
 
 // LoadMazBootstrap loads a .maz module and returns (MazarinMain, MazarinShepherd-addr).
@@ -141,6 +143,16 @@ func loadMazInternal(fc fsclient.FSClient, filename string) (func(), uintptr, *m
 	}
 	dRead := time.Since(tRead)
 
+	// MAZ-15 instrumentation (gated): checksum the module image as received,
+	// and again after OpenBytes maps it. crcIn vs the build-time file CRC
+	// bisects the pipeline (disk→fs→transfer-IPC→heap vs mapping); crcIn vs
+	// crcPost detects the shepherd's own heap copy being scribbled DURING
+	// mapping.
+	var crcIn uint32
+	if constants.Maz15Debug {
+		crcIn = crc32.ChecksumIEEE(data)
+	}
+
 	tOpen := time.Now()
 	h, err := mazdl.OpenBytes(filename, data)
 	if err != nil {
@@ -150,8 +162,13 @@ func loadMazInternal(fc fsclient.FSClient, filename string) (func(), uintptr, *m
 	// PERF instrumentation: split .maz load into IPC-read vs relocate phases to
 	// locate the ~30s boot stall. Times are captured before printing, so print
 	// latency does not skew them.
-	fmt.Printf("[mazhost] %s: ReadFile=%dms (%d bytes) OpenBytes=%dms\n",
+	summary := fmt.Sprintf("[mazhost] %s: ReadFile=%dms (%d bytes) OpenBytes=%dms",
 		filename, dRead.Milliseconds(), len(data), dOpen.Milliseconds())
+	if constants.Maz15Debug {
+		crcPost := crc32.ChecksumIEEE(data)
+		summary += fmt.Sprintf(" crcIn=%08x crcPost=%08x", crcIn, crcPost)
+	}
+	fmt.Println(summary)
 
 	entryAddr, err := h.Sym("MazarinMain")
 	if err != nil {
