@@ -1807,19 +1807,6 @@ func fillSyntheticStatfs(buf []byte) {
 // Data syscalls (via fs IPC)
 // ============================================================
 
-// isStdinRead returns true if the request is a read on fd 0 (stdin).
-// Used by the delegate handler to skip wrapping stdin reads with sidIncRef/sidDecRef
-// since those have their own async refcount lifecycle.
-func (h *syscallHandler) isStdinRead(req sys.SyscallRequest) bool {
-	if req.SysID != sysid.Read {
-		return false
-	}
-	fdt := h.getShepherd(req.CallerPID).FDT
-	fd := int(req.Arg0())
-	e := fdt.Get(fd)
-	return e != nil && e.Kind == fdtable.KindStdin
-}
-
 func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT
 	fd := int(req.Arg0())

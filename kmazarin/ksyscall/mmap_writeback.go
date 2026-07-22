@@ -67,9 +67,9 @@ func flushAndCleanupPages(fd uint64, callerSID int16, startOffset, length uint64
 	kmem.MapPageInProcess(handlerSID, uintptr(responseHandlerVA), responsePA, 0) // RW
 	handlerShepherd.Spans.Add(responseHandlerVA, 4096)
 
-
 	// Set up DelegateCallInfo with flush round state
 	info := &delegateCallInfos[callerTID]
+	prepareDelegateSlotForReuse(info)
 	info.DataPagePA = 0
 	info.DataPageVA = 0
 	info.HandlerSID = handlerSID
@@ -139,7 +139,6 @@ func handleFlushReply(callerTID int16, info *DelegateCallInfo) bool {
 
 	count := *(*uint32)(unsafe.Pointer(scratchVA))
 	vasPtr := (*[maxFlushVAsPerRound]uint64)(unsafe.Pointer(scratchVA + 8))
-
 
 	// Unmap each handler VA from the handler's page table and release
 	// the physical page. The caller's PTE was already removed by

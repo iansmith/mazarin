@@ -80,6 +80,7 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 		return false
 	}
 	info := &delegateCallInfos[callerTID]
+	prepareDelegateSlotForReuse(info)
 	info.DataPagePA = framePA
 	info.DataPageVA = handlerDataVA
 	info.HandlerSID = handlerSID
@@ -120,4 +121,3 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 
 	return true
 }
-

@@ -16,6 +16,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ksync"
 	"mazzy/kmazarin/ksyscall/replygate"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/constants"
@@ -110,6 +111,54 @@ var delegateCallInfos [MaxDelegateThreads]DelegateCallInfo
 // been corruption: some holder replied after its caller died. Each rejection
 // also klogs a [DLG:stale-reply] line.
 var DelegateStaleReplyRejects atomic.Uint64
+
+// DelegateRetiredPageDrops counts retired pages dropped because a slot was
+// reused a SECOND time while the first retired page was still unclaimed.
+// The dropped page leaks — freeing it could fault its handler, which may
+// still be reading it — so the counter makes the leak visible instead of
+// silent. Expected to read 0; requires two caller deaths on one TID with
+// neither late reply arrived.
+var DelegateRetiredPageDrops atomic.Uint64
+
+// retiredLock guards the Retired* triple in every DelegateCallInfo. Three
+// paths race cross-CPU with no other common lock: dispatch retiring a dead
+// incarnation's page (preemptible), the stale-reply reclaim in SyscallReply
+// (handler's CPU), and clearRetiredPagesForHandler (death cleanup, under
+// schedulerLock with IRQs off — hence IRQ-atomic, and a leaf: nothing is
+// acquired while held). Without it a claim can tear — pairing one record's
+// PA with another's VA/handler and unmapping the wrong page.
+var retiredLock ksync.Spinlock
+
+// prepareDelegateSlotForReuse readies a delegateCallInfos slot that a new
+// dispatch is about to overwrite (MAZ-155). If the previous incarnation's
+// caller died with its delegate in flight (CleanupDelegateForDeadShepherd
+// Part 1 latched CallerDead and left the slot for the handler's late
+// reply), the old data page moves to the Retired* fields so that late
+// reply can still reclaim it, and the stale CallerDead flag is cleared so
+// THIS delegate's genuine reply doesn't skip its wake and strand a live
+// caller forever. EVERY dispatch path that writes a slot must call this
+// first — DelegateSyscall, the mmap page-fault fill, and the mmap flush.
+func prepareDelegateSlotForReuse(info *DelegateCallInfo) {
+	if info.CallerDead && info.InUse && info.DataPagePA != 0 {
+		retiredLock.Lock()
+		// Two unclaimed retired pages can't both be tracked; keep the newer
+		// (its handler's late reply is the one still expected) and leak the
+		// older. Capture it under the lock but report outside — retiredLock is
+		// an IRQ-masking leaf, so no klog inside.
+		droppedPA := info.RetiredDataPagePA
+		droppedSID := info.RetiredHandlerSID
+		info.RetiredDataPagePA = info.DataPagePA
+		info.RetiredDataPageVA = info.DataPageVA
+		info.RetiredHandlerSID = info.HandlerSID
+		retiredLock.Unlock()
+		if droppedPA != 0 {
+			DelegateRetiredPageDrops.Add(1)
+			klog.Errf("[DLG:retire-drop] leaking unclaimed retired pa=%x handler=%d\n",
+				uint64(droppedPA), int32(droppedSID))
+		}
+	}
+	info.CallerDead = false
+}
 
 func init() {
 	for i := range syscallDelegates {
@@ -511,11 +560,7 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	consoleStdio := id == sysid.Write && arg0 <= 2 && !stdioRedirected(callerShepherd, arg0)
 	if !consoleStdio && int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
-		if info.CallerDead && info.InUse && info.DataPagePA != 0 {
-			info.RetiredDataPagePA = info.DataPagePA
-			info.RetiredDataPageVA = info.DataPageVA
-			info.RetiredHandlerSID = info.HandlerSID
-		}
+		prepareDelegateSlotForReuse(info)
 		info.DataPagePA = dataPagePA
 		info.DataPageVA = handlerDataVA
 		info.HandlerSID = handlerSID
@@ -524,14 +569,6 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		info.CallerBufLen = callerBufLen
 		info.CallerL0PA = callerShepherd.PageTableL0PA
 		info.SysID = id
-		// Clear any stale CallerDead inherited from a previous incarnation of
-		// this TID (MAZ-155): the previous caller died with its delegate in
-		// flight (CleanupDelegateForDeadShepherd Part 1 latched CallerDead and
-		// left the slot for the handler's late reply), the TID was freed at
-		// death and reused by THIS delegate. Without the reset, this
-		// delegate's genuine reply would skip the wake and strand a live
-		// caller forever.
-		info.CallerDead = false
 		info.InUse = true
 	}
 
@@ -1046,16 +1083,25 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		// the slot — if in use it belongs to the new delegate, whose real
 		// reply is still coming — and do NOT wake anyone.
 		//
-		// Reclaim the retired data page if one was saved at slot reuse
-		// (the old handler has finished processing — it's calling Reply
-		// now — so the unmap is safe).
-		retPA := info.RetiredDataPagePA
-		if retPA != 0 {
-			retVA := info.RetiredDataPageVA
-			retSID := info.RetiredHandlerSID
+		// Reclaim the retired data page if one was saved at slot reuse —
+		// but only when THIS replier is the retired handler: it calling
+		// Reply proves it has finished with the page, so the unmap is
+		// safe. Any other stale replier must leave the record alone (the
+		// retired handler may still be reading the page). The claim is
+		// under retiredLock so it can't tear against a concurrent retire
+		// or death-cleanup clear.
+		var retPA uintptr
+		var retVA uint64
+		retSID := int16(replyingShepherd.PID)
+		retiredLock.Lock()
+		if info.RetiredDataPagePA != 0 && info.RetiredHandlerSID == retSID {
+			retPA = info.RetiredDataPagePA
+			retVA = info.RetiredDataPageVA
 			info.RetiredDataPagePA = 0
-			hs := proc.FindShepherdBySID(proc.ShepherdId(retSID))
-			reclaimDataPage(retPA, retVA, retSID, hs)
+		}
+		retiredLock.Unlock()
+		if retPA != 0 {
+			reclaimDataPage(retPA, retVA, retSID, replyingShepherd)
 		}
 		DelegateStaleReplyRejects.Add(1)
 		klog.Errf("[DLG:stale-reply] replier=%d claimed-caller=%d tid=%d slot: inuse=%t caller=%d ret=%d\n",
@@ -1370,14 +1416,18 @@ func HasInFlightDelegateCallsAsCaller(pid int16) bool {
 
 // clearRetiredPagesForHandler clears retired-page bookkeeping for every slot
 // whose retired handler is pid. The underlying PA is NOT freed here —
-// CleanupShepherdPages reclaims it via the span walk.
+// CleanupShepherdPages reclaims it via the span walk. retiredLock excludes a
+// concurrent stale-reply claim, which would otherwise double-free the page
+// (once here via the span walk, once via reclaimDataPage).
 func clearRetiredPagesForHandler(pid int16) {
+	retiredLock.Lock()
 	for i := 0; i < MaxDelegateThreads; i++ {
 		info := &delegateCallInfos[i]
 		if info.RetiredHandlerSID == pid && info.RetiredDataPagePA != 0 {
 			info.RetiredDataPagePA = 0
 		}
 	}
+	retiredLock.Unlock()
 }
 
 // CleanupDelegateForDeadShepherdHandlerOnly runs Parts 2+3 of delegate cleanup

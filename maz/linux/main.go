@@ -225,12 +225,9 @@ func handleDeathNotification(deadSID int16) {
 // "definitely enough" before we measured what's actually needed).
 const fileLaneWorkers = 32
 
-// fileLaneWorkItem is what the reader hands to the worker pool. We carry
-// the stdin-read flag explicitly so workers know whether to sidDecRef on
-// completion (stdin reads have their own inc/dec via sysRead+fulfillRead).
+// fileLaneWorkItem is what the reader hands to the worker pool.
 type fileLaneWorkItem struct {
-	req         sys.SyscallRequest
-	isStdinRead bool
+	req sys.SyscallRequest
 	// seq is the per-SID receive-sequence number stamped by the single
 	// delegate reader — the arrival order the MAZ-156 inversion canary
 	// checks against at service time (see handle).
@@ -251,9 +248,7 @@ func serveFileLaneItem(handler *syscallHandler, w fileLaneWorkItem) {
 		fmt.Printf("[linux:wkr] SLOW sid=%d sysid=%d tid=%d elapsed=%dms\n",
 			w.req.CallerPID, w.req.SysID, w.req.CallerTID, elapsed.Milliseconds())
 	}
-	if !w.isStdinRead {
-		sidDecRef(w.req.CallerPID)
-	}
+	sidDecRef(w.req.CallerPID)
 }
 func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallRequest, handler *syscallHandler) <-chan delegateMsg {
 	dataCh := make(chan delegateMsg, 32)
@@ -348,18 +343,21 @@ func startUringDelegateHandler(delegateCh chan any, stdoutCh chan sys.SyscallReq
 			case sys.SyscallRequest:
 				req := v // capture by value for the worker
 				sid := req.CallerPID
-				// For stdin reads, sidIncRef happens at enqueue time in sysRead,
-				// and sidDecRef happens in fulfillRead. For all other syscalls,
-				// take a refcount for the dispatch lifetime so concurrent
-				// shepherd-death cleanup doesn't tear out state mid-call. The
-				// matching sidDecRef runs in fileLaneWorker once handle returns.
-				isStdinRead := req.SysID == sysid.Read && handler.isStdinRead(req)
-				if !isStdinRead {
-					sidIncRef(sid)
-				}
+				// Take a refcount for the dispatch lifetime so concurrent
+				// shepherd-death cleanup doesn't tear out state mid-call —
+				// UNCONDITIONALLY. Classifying stdin reads here to skip the
+				// wrap raced the FDT: a queued dup3 could retarget fd 0 to a
+				// pipe before the read executed, and the pipe park then ran
+				// with no refcount held, letting DropOwner sweep BEFORE the
+				// park registered — a permanent zombie ParkSet entry. Stdin
+				// reads keep their own inc/dec pair (sysRead → fulfillRead)
+				// for the long-lived queue park on top of this dispatch pair.
+				// The matching sidDecRef runs in serveFileLaneItem once
+				// handle returns.
+				sidIncRef(sid)
 				seq := laneSeq[sid]
 				laneSeq[sid] = seq + 1
-				pool.Enqueue(fileLaneWorkItem{req: req, isStdinRead: isStdinRead, seq: seq})
+				pool.Enqueue(fileLaneWorkItem{req: req, seq: seq})
 			}
 		}
 	}()
