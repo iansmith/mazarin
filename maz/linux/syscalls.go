@@ -109,14 +109,19 @@ type syscallHandler struct {
 	displayFeed func(fd byte, data []byte)
 
 	// parkedPipeWriters registers every write request currently parked on a
-	// full pipe (MAZ-149 writer-park backpressure), guarded by pipeParkMu.
-	// It exists for the bounded-park timeout: pipeParkWatchdog sweeps entries
-	// older than pipeWriterParkTimeout, drops their bytes (MarkDrop `@\`
-	// breadcrumb on the buffer tail) and releases the writer. Removal from
-	// this registry is the fulfilled-or-abandoned signal — wakePipeWriters
-	// skips tokens no longer registered (the watchdog already replied).
-	pipeParkMu        sync.Mutex
-	parkedPipeWriters map[*pipeWriteWaiter]struct{}
+	// full pipe (MAZ-149 writer-park backpressure). It exists for the
+	// bounded-park timeout: pipeParkWatchdog sweeps entries older than
+	// pipeWriterParkTimeout, drops their bytes (MarkDrop `@\` breadcrumb on
+	// the buffer tail) and releases the writer. Removal from this registry
+	// is the fulfilled-or-abandoned signal — wakePipeWriters skips tokens no
+	// longer registered (the watchdog already replied, or the owner died).
+	parkedPipeWriters *pipe.ParkSet
+
+	// parkedPipeReaders is the reader-side twin (MAZ-155): every read request
+	// parked on an empty pipe, so shepherd teardown can abandon a dead SID's
+	// parked reads instead of letting a later wakePipeReaders Reply at a
+	// stale-or-reused caller TID. Same removal-is-abandonment protocol.
+	parkedPipeReaders *pipe.ParkSet
 }
 
 // waiterKey identifies a single parked wait4 caller thread. A thread blocks on
@@ -148,7 +153,8 @@ func newSyscallHandler(fs fsclient.FSClient) *syscallHandler {
 		waiters:          make(map[waiterKey]wait4Waiter),
 		pendingChildFDTs: make(map[int16]*fdtable.Table),
 
-		parkedPipeWriters: make(map[*pipeWriteWaiter]struct{}),
+		parkedPipeWriters: pipe.NewParkSet(),
+		parkedPipeReaders: pipe.NewParkSet(),
 	}
 }
 
@@ -302,7 +308,7 @@ func (h *syscallHandler) dropAbandonedPendingFDT(pid int16) {
 		if e.Pipe != nil {
 			e.Pipe.Close()
 			if e.Kind == fdtable.KindPipeWrite {
-				wakePipeReaders(e.Pipe)
+				h.wakePipeReaders(e.Pipe)
 			}
 		}
 		return true
@@ -321,8 +327,12 @@ func (h *syscallHandler) tearDownShepherdFDState(sid int16, s *ShepherdFilesyste
 	// caller TID slot and corrupt an unrelated in-flight delegate (thread
 	// IDs still recycle LIFO; MAZ-150 made only shepherd PIDs monotonic).
 	// Registry removal IS the abandon signal — wakePipeWriters and the
-	// watchdog skip unregistered tokens. No Reply is sent.
+	// watchdog skip unregistered tokens. No Reply is sent. The reader sweep
+	// (MAZ-155) must also run BEFORE the FDT walk below: the walk's own
+	// wakePipeReaders calls would otherwise reply for the dying shepherd
+	// itself.
 	h.dropParkedPipeWritersForSID(sid)
+	h.dropParkedPipeReadersForSID(sid)
 
 	// Take per-shepherd lock so any in-flight handler for this shepherd
 	// (already holding s.mu) drains before we touch its FDT.
@@ -342,7 +352,7 @@ func (h *syscallHandler) tearDownShepherdFDState(sid int16, s *ShepherdFilesyste
 		if e.Pipe != nil {
 			e.Pipe.Close()
 			if e.Kind == fdtable.KindPipeWrite {
-				wakePipeReaders(e.Pipe)
+				h.wakePipeReaders(e.Pipe)
 			}
 		}
 		return true
@@ -744,7 +754,7 @@ func (h *syscallHandler) sysClose(req sys.SyscallRequest) {
 		// skip releaseFDResources entirely.
 		e.Pipe.Close()
 		if e.Kind == fdtable.KindPipeWrite {
-			wakePipeReaders(e.Pipe)
+			h.wakePipeReaders(e.Pipe)
 		}
 		fdt.Free(fd)
 		req.Reply(EOK)
@@ -1167,7 +1177,9 @@ func (h *syscallHandler) sysReadPipe(req sys.SyscallRequest, e *fdtable.Entry) {
 		req.Reply(EWOULDBLOCK)
 		return
 	}
-	e.Pipe.Park(&pipeReadWaiter{req: req, end: e.Pipe}) // deferred Reply.
+	w := &pipeReadWaiter{req: req, end: e.Pipe}
+	h.parkedPipeReaders.Park(w, req.CallerPID)
+	e.Pipe.Park(w) // deferred Reply.
 }
 
 // pipeWriteWaiter is a write request parked on a FULL pipe (MAZ-149
@@ -1200,9 +1212,7 @@ const pipeParkSweepInterval = 5 * time.Second
 // for the timeout sweep. Deferred Reply: handle() returns without replying,
 // releasing shep.mu — nothing is held while parked (mirrors sysReadPipe).
 func (h *syscallHandler) parkPipeWriter(w *pipeWriteWaiter) {
-	h.pipeParkMu.Lock()
-	h.parkedPipeWriters[w] = struct{}{}
-	h.pipeParkMu.Unlock()
+	h.parkedPipeWriters.Park(w, w.req.CallerPID)
 	w.end.ParkWriter(w)
 }
 
@@ -1214,13 +1224,17 @@ func (h *syscallHandler) parkPipeWriter(w *pipeWriteWaiter) {
 // writerWaiters lists are skipped by wakePipeWriters and the watchdog via
 // the registry-liveness check.
 func (h *syscallHandler) dropParkedPipeWritersForSID(sid int16) {
-	h.pipeParkMu.Lock()
-	for w := range h.parkedPipeWriters {
-		if w.req.CallerPID == sid {
-			delete(h.parkedPipeWriters, w)
-		}
-	}
-	h.pipeParkMu.Unlock()
+	h.parkedPipeWriters.DropOwner(sid)
+}
+
+// dropParkedPipeReadersForSID abandons every parked pipe read owned by a dead
+// shepherd, WITHOUT replying — the reader-side twin of the writer sweep above
+// (MAZ-155): a late drainPipeInto(...).Reply(...) for the dead caller would
+// land at a stale-or-reused TID and corrupt an unrelated in-flight delegate.
+// The stale tokens left on the pipes' waiters lists are skipped by
+// wakePipeReaders via the registry-liveness check.
+func (h *syscallHandler) dropParkedPipeReadersForSID(sid int16) {
+	h.parkedPipeReaders.DropOwner(sid)
 }
 
 // wakePipeWriters retries writes parked on a full pipe once a reader drained
@@ -1234,23 +1248,27 @@ func (h *syscallHandler) wakePipeWriters(end *pipe.End) {
 		if !ok {
 			continue // only parkPipeWriter parks; be defensive.
 		}
-		h.pipeParkMu.Lock()
-		_, live := h.parkedPipeWriters[w]
-		delete(h.parkedPipeWriters, w)
-		h.pipeParkMu.Unlock()
-		if !live {
-			continue // bounded-park timeout already dropped + replied this one.
-		}
-		n, err := w.end.Write(w.req.Data())
-		if err != nil {
-			h.parkPipeWriter(w) // still full: re-park (keeps original parkedAt).
+		n, wrote := func() (int64, bool) {
+			h.parkedPipeWriters.BeginWake()
+			defer h.parkedPipeWriters.EndWake()
+			if !h.parkedPipeWriters.TakeLive(w) {
+				return 0, false // timeout already dropped + replied, or the owner died.
+			}
+			n, err := w.end.Write(w.req.Data())
+			if err != nil {
+				h.parkPipeWriter(w) // still full: re-park (keeps original parkedAt).
+				return 0, false
+			}
+			return int64(n), true
+		}()
+		if !wrote {
 			continue
 		}
 		// The retried write made data available — wake parked readers (none
 		// and parked writers can coexist on one buf, but another pipe op may
 		// have parked a reader between the drain and this retry).
-		wakePipeReaders(w.end)
-		w.req.Reply(int64(n))
+		h.wakePipeReaders(w.end)
+		w.req.Reply(n)
 	}
 }
 
@@ -1264,16 +1282,12 @@ func (h *syscallHandler) pipeParkWatchdog() {
 	for {
 		time.Sleep(pipeParkSweepInterval)
 		now := time.Now()
-		var expired []*pipeWriteWaiter
-		h.pipeParkMu.Lock()
-		for w := range h.parkedPipeWriters {
-			if now.Sub(w.parkedAt) > pipeWriterParkTimeout {
-				delete(h.parkedPipeWriters, w)
-				expired = append(expired, w)
-			}
-		}
-		h.pipeParkMu.Unlock()
-		for _, w := range expired {
+		expired := h.parkedPipeWriters.Sweep(func(tok any) bool {
+			w, ok := tok.(*pipeWriteWaiter)
+			return ok && now.Sub(w.parkedAt) > pipeWriterParkTimeout
+		})
+		for _, tok := range expired {
+			w := tok.(*pipeWriteWaiter)
 			// The stale token stays on buf.writerWaiters; wakePipeWriters
 			// skips it via the registry-liveness check above.
 			dropped := len(w.req.Data())
@@ -1305,25 +1319,35 @@ func (h *syscallHandler) sysWritePipe(req sys.SyscallRequest, e *fdtable.Entry) 
 		h.parkPipeWriter(&pipeWriteWaiter{req: req, end: e.Pipe, parkedAt: time.Now()})
 		return
 	}
-	wakePipeReaders(e.Pipe)
+	h.wakePipeReaders(e.Pipe)
 	req.Reply(int64(n))
 }
 
 // wakePipeReaders fulfills readers parked on a pipe once it became readable
 // (data written) or hit EOF (last writer closed). Each woken reader re-runs the
 // read against the shared buffer and replies. Called after a pipe write and
-// after a pipe write-end close.
-func wakePipeReaders(end *pipe.End) {
+// after a pipe write-end close. A token whose owner died (abandoned by
+// dropParkedPipeReadersForSID, MAZ-155) is skipped without a Reply — the
+// dead caller's TID may already be reused by an unrelated delegate.
+func (h *syscallHandler) wakePipeReaders(end *pipe.End) {
 	for _, tok := range end.TakeWaiters() {
 		w, ok := tok.(*pipeReadWaiter)
 		if !ok {
 			continue // only sysReadPipe parks, always a *pipeReadWaiter; be defensive.
 		}
-		if !drainPipeInto(w.req, w.end) {
-			// Still would-block (e.g. another reader drained the buffer first
-			// and a writer remains): re-park rather than spuriously waking.
-			w.end.Park(w)
-		}
+		func() {
+			h.parkedPipeReaders.BeginWake()
+			defer h.parkedPipeReaders.EndWake()
+			if !h.parkedPipeReaders.TakeLive(w) {
+				return // owner died while parked — abandoned, never replied.
+			}
+			if !drainPipeInto(w.req, w.end) {
+				// Still would-block (e.g. another reader drained the buffer first
+				// and a writer remains): re-park rather than spuriously waking.
+				h.parkedPipeReaders.Park(w, w.req.CallerPID)
+				w.end.Park(w)
+			}
+		}()
 	}
 }
 
@@ -1782,19 +1806,6 @@ func fillSyntheticStatfs(buf []byte) {
 // ============================================================
 // Data syscalls (via fs IPC)
 // ============================================================
-
-// isStdinRead returns true if the request is a read on fd 0 (stdin).
-// Used by the delegate handler to skip wrapping stdin reads with sidIncRef/sidDecRef
-// since those have their own async refcount lifecycle.
-func (h *syscallHandler) isStdinRead(req sys.SyscallRequest) bool {
-	if req.SysID != sysid.Read {
-		return false
-	}
-	fdt := h.getShepherd(req.CallerPID).FDT
-	fd := int(req.Arg0())
-	e := fdt.Get(fd)
-	return e != nil && e.Kind == fdtable.KindStdin
-}
 
 func (h *syscallHandler) sysRead(req sys.SyscallRequest) {
 	fdt := h.getShepherd(req.CallerPID).FDT

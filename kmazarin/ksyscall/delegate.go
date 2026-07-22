@@ -16,6 +16,8 @@ package ksyscall
 import (
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ksync"
+	"mazzy/kmazarin/ksyscall/replygate"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/constants"
 	"mazzy/shared/ipc"
@@ -60,6 +62,14 @@ type DelegateCallInfo struct {
 	// caller is gone, so Reply still reclaims the page but skips the wake.
 	CallerDead bool
 
+	// Retired page state: when a CallerDead slot is overwritten by a new
+	// delegate (TID reused), the old data page can't be reclaimed yet (the
+	// old handler may still be reading it). We save the old page info here
+	// so the old handler's stale reply can reclaim it after processing.
+	RetiredDataPagePA uintptr
+	RetiredDataPageVA uint64
+	RetiredHandlerSID int16
+
 	// MmapPageFlush round state — used by the reply path to continue
 	// sending rounds if the response page was full (count == 511).
 	FlushResponsePA uintptr // PA of response page (kernel owns)
@@ -93,6 +103,62 @@ var syscallDelegates [sysid.NumIDs]delegateHandler
 
 // delegateCallInfos tracks in-flight delegated calls (indexed by caller TID).
 var delegateCallInfos [MaxDelegateThreads]DelegateCallInfo
+
+// DelegateStaleReplyRejects counts replies SyscallReply rejected because the
+// targeted delegate no longer exists (slot free, or its TID reused by a
+// different caller incarnation — MAZ-155). Lock-free (MAZ-139 pattern).
+// Expected to read 0 in a clean boot; any increment is a caught would-have-
+// been corruption: some holder replied after its caller died. Each rejection
+// also klogs a [DLG:stale-reply] line.
+var DelegateStaleReplyRejects atomic.Uint64
+
+// DelegateRetiredPageDrops counts retired pages dropped because a slot was
+// reused a SECOND time while the first retired page was still unclaimed.
+// The dropped page leaks — freeing it could fault its handler, which may
+// still be reading it — so the counter makes the leak visible instead of
+// silent. Expected to read 0; requires two caller deaths on one TID with
+// neither late reply arrived.
+var DelegateRetiredPageDrops atomic.Uint64
+
+// retiredLock guards the Retired* triple in every DelegateCallInfo. Three
+// paths race cross-CPU with no other common lock: dispatch retiring a dead
+// incarnation's page (preemptible), the stale-reply reclaim in SyscallReply
+// (handler's CPU), and clearRetiredPagesForHandler (death cleanup, under
+// schedulerLock with IRQs off — hence IRQ-atomic, and a leaf: nothing is
+// acquired while held). Without it a claim can tear — pairing one record's
+// PA with another's VA/handler and unmapping the wrong page.
+var retiredLock ksync.Spinlock
+
+// prepareDelegateSlotForReuse readies a delegateCallInfos slot that a new
+// dispatch is about to overwrite (MAZ-155). If the previous incarnation's
+// caller died with its delegate in flight (CleanupDelegateForDeadShepherd
+// Part 1 latched CallerDead and left the slot for the handler's late
+// reply), the old data page moves to the Retired* fields so that late
+// reply can still reclaim it, and the stale CallerDead flag is cleared so
+// THIS delegate's genuine reply doesn't skip its wake and strand a live
+// caller forever. EVERY dispatch path that writes a slot must call this
+// first — DelegateSyscall, the mmap page-fault fill, and the mmap flush.
+func prepareDelegateSlotForReuse(info *DelegateCallInfo) {
+	if info.CallerDead && info.InUse && info.DataPagePA != 0 {
+		retiredLock.Lock()
+		// Two unclaimed retired pages can't both be tracked; keep the newer
+		// (its handler's late reply is the one still expected) and leak the
+		// older. Capture it under the lock but report outside — retiredLock is
+		// an IRQ-masking leaf, so no klog inside.
+		droppedPA := info.RetiredDataPagePA
+		droppedSID := info.RetiredHandlerSID
+		info.RetiredDataPagePA = info.DataPagePA
+		info.RetiredDataPageVA = info.DataPageVA
+		info.RetiredHandlerSID = info.HandlerSID
+		retiredLock.Unlock()
+		if droppedPA != 0 {
+			DelegateRetiredPageDrops.Add(1)
+			klog.Errf("[DLG:retire-drop] leaking unclaimed retired pa=%x handler=%d\n",
+				uint64(droppedPA), int32(droppedSID))
+		}
+	}
+	info.CallerDead = false
+}
 
 func init() {
 	for i := range syscallDelegates {
@@ -494,6 +560,7 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	consoleStdio := id == sysid.Write && arg0 <= 2 && !stdioRedirected(callerShepherd, arg0)
 	if !consoleStdio && int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
+		prepareDelegateSlotForReuse(info)
 		info.DataPagePA = dataPagePA
 		info.DataPageVA = handlerDataVA
 		info.HandlerSID = handlerSID
@@ -994,136 +1061,176 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		return -1 // EPERM
 	}
 
-	// Look up the in-flight call info
+	// Look up the in-flight call info. The reply gate (MAZ-155) validates
+	// the caller INCARNATION, not just the handler: delegateCallInfos is
+	// keyed by caller TID and TIDs recycle LIFO immediately at thread death,
+	// so a late reply from a handler that held the request past its
+	// caller's death would otherwise fulfill an UNRELATED delegate that
+	// reused the TID — corrupting its return value and unmapping the wrong
+	// data page. arg0 (the replier's recorded caller SID) is the
+	// incarnation witness: shepherd PIDs are monotonic (MAZ-150), so a dead
+	// caller's SID can never match a reused slot.
 	isPageFaultReply := false
-	if int(callerTID) < MaxDelegateThreads {
-		info := &delegateCallInfos[callerTID]
-		if info.InUse {
-			isPageFaultReply = info.SysID == sysid.MmapPageFill
-			// Verify the replying shepherd is the registered handler for this
-			// delegation. Without this check, any shepherd that guesses a
-			// caller's TID could forge a reply with an arbitrary return value.
-			if info.HandlerSID != int16(replyingShepherd.PID) {
-				return -1 // EPERM
+	if callerTID < 0 || int(callerTID) >= MaxDelegateThreads {
+		return -22 // EINVAL
+	}
+	info := &delegateCallInfos[callerTID]
+	switch replygate.Check(info.InUse, info.CallerSID, callerSID,
+		info.HandlerSID, int16(replyingShepherd.PID)) {
+	case replygate.RejectSlotFree, replygate.RejectCallerMismatch:
+		// Stale reply: the delegate this reply targeted is gone (slot
+		// already cleaned, or reused by a different caller). Do NOT touch
+		// the slot — if in use it belongs to the new delegate, whose real
+		// reply is still coming — and do NOT wake anyone.
+		//
+		// Reclaim the retired data page if one was saved at slot reuse —
+		// but only when THIS replier is the retired handler: it calling
+		// Reply proves it has finished with the page, so the unmap is
+		// safe. Any other stale replier must leave the record alone (the
+		// retired handler may still be reading the page). The claim is
+		// under retiredLock so it can't tear against a concurrent retire
+		// or death-cleanup clear.
+		var retPA uintptr
+		var retVA uint64
+		retSID := int16(replyingShepherd.PID)
+		retiredLock.Lock()
+		if info.RetiredDataPagePA != 0 && info.RetiredHandlerSID == retSID {
+			retPA = info.RetiredDataPagePA
+			retVA = info.RetiredDataPageVA
+			info.RetiredDataPagePA = 0
+		}
+		retiredLock.Unlock()
+		if retPA != 0 {
+			reclaimDataPage(retPA, retVA, retSID, replyingShepherd)
+		}
+		DelegateStaleReplyRejects.Add(1)
+		klog.Errf("[DLG:stale-reply] replier=%d claimed-caller=%d tid=%d slot: inuse=%t caller=%d ret=%d\n",
+			int32(replyingShepherd.PID), int32(callerSID), int32(callerTID),
+			info.InUse, int32(info.CallerSID), returnVal)
+		return -3 // ESRCH — the caller this reply was for no longer exists
+	case replygate.RejectHandlerMismatch:
+		// Verify the replying shepherd is the registered handler for this
+		// delegation. Without this check, any shepherd that guesses a
+		// caller's TID could forge a reply with an arbitrary return value.
+		return -1 // EPERM
+	}
+	isPageFaultReply = info.SysID == sysid.MmapPageFill
+	// For MmapPageFill: map into faulting shepherd's page table.
+	// Keep the page mapped in the handler too — this provides
+	// mmap page cache coherence (same physical page visible to
+	// both sides, so read/pread/write/pwrite through the handler
+	// see the same data as mmap'd memory in the caller).
+	if info.SysID == sysid.MmapPageFill && info.DataPagePA != 0 {
+		// Check if faulting shepherd is still alive
+		callerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.CallerSID))
+		if callerShepherd == nil {
+			// Shepherd died while waiting — unmap from handler, free the page
+			hs := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
+			if hs != nil {
+				kmem.UnmapUserPageWithL0(uintptr(info.DataPageVA), hs.PageTableL0PA)
+				hs.Spans.Remove(info.DataPageVA, 4096)
 			}
-			// For MmapPageFill: map into faulting shepherd's page table.
-			// Keep the page mapped in the handler too — this provides
-			// mmap page cache coherence (same physical page visible to
-			// both sides, so read/pread/write/pwrite through the handler
-			// see the same data as mmap'd memory in the caller).
-			if info.SysID == sysid.MmapPageFill && info.DataPagePA != 0 {
-				// Check if faulting shepherd is still alive
-				callerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.CallerSID))
-				if callerShepherd == nil {
-					// Shepherd died while waiting — unmap from handler, free the page
-					hs := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
-					if hs != nil {
-						kmem.UnmapUserPageWithL0(uintptr(info.DataPageVA), hs.PageTableL0PA)
-						hs.Spans.Remove(info.DataPageVA, 4096)
-					}
-					kmem.ReleasePageByPA(info.DataPagePA)
-				} else {
-					elfFlags := uint32(kmem.ELF_PF_R)
-					if info.WritableMapping {
-						elfFlags |= kmem.ELF_PF_W
-					}
-					mapOK := kmem.MapPageInProcess(info.CallerSID, uintptr(info.CallerBufVA), info.DataPagePA, elfFlags)
-
-					if !mapOK {
-						klog.Errf("[mmap-verify] MAP FAIL PA=%x cVA=%x\n", uint64(info.DataPagePA), uint64(info.CallerBufVA))
-					} else {
-						// Mark as file-backed so CleanupShepherdPages Phase 1
-						// skips this page. The handler (linux shepherd) still
-						// holds a live PTE; handleFlushReply releases the page
-						// after the handler has finished reading/writing.
-						if desc := kmem.GetPageDescriptor(info.DataPagePA); desc != nil {
-							desc.Flags |= kmem.PD_FILE_BACKED
-						}
-					}
-
-					// Handler-side pageCache tracks the dual mapping.
-					// On munmap/death, flushAndCleanupPages sends IPC
-					// rounds to flush dirty pages and return handler VAs
-					// for unmapping — no kernel-side tracking needed.
-				}
-
-				// Prevent reclaimDataPage from freeing it
-				info.DataPagePA = 0
-				info.InUse = false
+			kmem.ReleasePageByPA(info.DataPagePA)
+		} else {
+			elfFlags := uint32(kmem.ELF_PF_R)
+			if info.WritableMapping {
+				elfFlags |= kmem.ELF_PF_W
 			}
+			mapOK := kmem.MapPageInProcess(info.CallerSID, uintptr(info.CallerBufVA), info.DataPagePA, elfFlags)
 
-			// For MmapPageFlush: process response page (unmap handler VAs).
-			// If count == 511, send another round and keep caller blocked.
-			if info.SysID == sysid.MmapPageFlush {
-				if handleFlushReply(callerTID, info) {
-					// Another round sent — caller stays blocked, don't wake
-					return 0
-				}
-				info.InUse = false
-			}
-
-			// For Read: copy data from handler's page back to caller's buffer.
-			// Linux semantics: if the copy faults at any point (even after
-			// partial success), read() returns -EFAULT. A partial copy means
-			// the caller's buffer was bogus.
-			//
-			// bytesToCopy is normally the byte count the handler returned. pipe2
-			// is the exception: it succeeds with returnVal == 0 (Linux pipe2
-			// returns 0) yet must still copy its fixed 8-byte pipefd[2] payload,
-			// so it copies a fixed length on success rather than reading it from
-			// the return value.
-			if isCopyBackSyscall(info.SysID) && info.DataPagePA != 0 {
-				var bytesToCopy uint32
-				switch {
-				case info.SysID == sysid.Pipe2:
-					// pipe2 succeeds with returnVal == 0 yet still copies its
-					// fixed 8-byte pipefd[2] payload.
-					if returnVal == 0 {
-						bytesToCopy = pipe2FDBytes
-					}
-				case info.SysID == sysid.Wait4:
-					// wait4's returnVal is the reaped PID (> 0 on success), not
-					// a byte count — copy the fixed 4-byte *wstatus on a reap.
-					if returnVal > 0 {
-						bytesToCopy = waitStatusBytes
-					}
-				case returnVal > 0:
-					// Read-family: returnVal is the byte count the handler wrote.
-					bytesToCopy = uint32(returnVal)
-				}
-				if bytesToCopy > info.CallerBufLen {
-					bytesToCopy = info.CallerBufLen
-				}
-				if bytesToCopy > 4096 {
-					bytesToCopy = 4096
-				}
-				if bytesToCopy > 0 {
-					actual := copyDataPageToCaller(info.DataPagePA, info.CallerBufVA, info.CallerL0PA, bytesToCopy)
-					if uint32(actual) < bytesToCopy {
-						klog.Errf("[DLG] unable to write to client buffer @0x%x, only %d of %d were written before a fault\n",
-							uint64(info.CallerBufVA), actual, bytesToCopy)
-						returnVal = -14 // EFAULT
-					}
+			if !mapOK {
+				klog.Errf("[mmap-verify] MAP FAIL PA=%x cVA=%x\n", uint64(info.DataPagePA), uint64(info.CallerBufVA))
+			} else {
+				// Mark as file-backed so CleanupShepherdPages Phase 1
+				// skips this page. The handler (linux shepherd) still
+				// holds a live PTE; handleFlushReply releases the page
+				// after the handler has finished reading/writing.
+				if desc := kmem.GetPageDescriptor(info.DataPagePA); desc != nil {
+					desc.Flags |= kmem.PD_FILE_BACKED
 				}
 			}
 
-			// Reclaim the data page
-			if info.DataPagePA != 0 {
-				handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
-				reclaimDataPage(info.DataPagePA, info.DataPageVA, info.HandlerSID, handlerShepherd)
+			// Handler-side pageCache tracks the dual mapping.
+			// On munmap/death, flushAndCleanupPages sends IPC
+			// rounds to flush dirty pages and return handler VAs
+			// for unmapping — no kernel-side tracking needed.
+		}
+
+		// Prevent reclaimDataPage from freeing it
+		info.DataPagePA = 0
+		info.InUse = false
+	}
+
+	// For MmapPageFlush: process response page (unmap handler VAs).
+	// If count == 511, send another round and keep caller blocked.
+	if info.SysID == sysid.MmapPageFlush {
+		if handleFlushReply(callerTID, info) {
+			// Another round sent — caller stays blocked, don't wake
+			return 0
+		}
+		info.InUse = false
+	}
+
+	// For Read: copy data from handler's page back to caller's buffer.
+	// Linux semantics: if the copy faults at any point (even after
+	// partial success), read() returns -EFAULT. A partial copy means
+	// the caller's buffer was bogus.
+	//
+	// bytesToCopy is normally the byte count the handler returned. pipe2
+	// is the exception: it succeeds with returnVal == 0 (Linux pipe2
+	// returns 0) yet must still copy its fixed 8-byte pipefd[2] payload,
+	// so it copies a fixed length on success rather than reading it from
+	// the return value.
+	if isCopyBackSyscall(info.SysID) && info.DataPagePA != 0 {
+		var bytesToCopy uint32
+		switch {
+		case info.SysID == sysid.Pipe2:
+			// pipe2 succeeds with returnVal == 0 yet still copies its
+			// fixed 8-byte pipefd[2] payload.
+			if returnVal == 0 {
+				bytesToCopy = pipe2FDBytes
 			}
-
-			callerDead := info.CallerDead
-			info.InUse = false
-			info.CallerDead = false
-
-			// If the caller died while this delegate was in flight (see
-			// CleanupDelegateForDeadShepherd Part 1), there is no thread to
-			// wake — the data-page cleanup above is the only cleanup needed.
-			if callerDead {
-				return 0
+		case info.SysID == sysid.Wait4:
+			// wait4's returnVal is the reaped PID (> 0 on success), not
+			// a byte count — copy the fixed 4-byte *wstatus on a reap.
+			if returnVal > 0 {
+				bytesToCopy = waitStatusBytes
+			}
+		case returnVal > 0:
+			// Read-family: returnVal is the byte count the handler wrote.
+			bytesToCopy = uint32(returnVal)
+		}
+		if bytesToCopy > info.CallerBufLen {
+			bytesToCopy = info.CallerBufLen
+		}
+		if bytesToCopy > 4096 {
+			bytesToCopy = 4096
+		}
+		if bytesToCopy > 0 {
+			actual := copyDataPageToCaller(info.DataPagePA, info.CallerBufVA, info.CallerL0PA, bytesToCopy)
+			if uint32(actual) < bytesToCopy {
+				klog.Errf("[DLG] unable to write to client buffer @0x%x, only %d of %d were written before a fault\n",
+					uint64(info.CallerBufVA), actual, bytesToCopy)
+				returnVal = -14 // EFAULT
 			}
 		}
+	}
+
+	// Reclaim the data page
+	if info.DataPagePA != 0 {
+		handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(info.HandlerSID))
+		reclaimDataPage(info.DataPagePA, info.DataPageVA, info.HandlerSID, handlerShepherd)
+	}
+
+	callerDead := info.CallerDead
+	info.InUse = false
+	info.CallerDead = false
+
+	// If the caller died while this delegate was in flight (see
+	// CleanupDelegateForDeadShepherd Part 1), there is no thread to
+	// wake — the data-page cleanup above is the only cleanup needed.
+	if callerDead {
+		return 0
 	}
 
 	// Wake the blocked caller thread.
@@ -1265,6 +1372,8 @@ func CleanupDelegateForDeadShepherd(pid int16) int {
 		}
 	}
 
+	clearRetiredPagesForHandler(pid)
+
 	// Part 3: Dying shepherd was a HANDLER — find orphaned callers.
 	// Data pages are owned by the dying handler and will be freed by
 	// CleanupShepherdPages. Clear InUse and record caller TIDs to wake.
@@ -1305,6 +1414,22 @@ func HasInFlightDelegateCallsAsCaller(pid int16) bool {
 	return false
 }
 
+// clearRetiredPagesForHandler clears retired-page bookkeeping for every slot
+// whose retired handler is pid. The underlying PA is NOT freed here —
+// CleanupShepherdPages reclaims it via the span walk. retiredLock excludes a
+// concurrent stale-reply claim, which would otherwise double-free the page
+// (once here via the span walk, once via reclaimDataPage).
+func clearRetiredPagesForHandler(pid int16) {
+	retiredLock.Lock()
+	for i := 0; i < MaxDelegateThreads; i++ {
+		info := &delegateCallInfos[i]
+		if info.RetiredHandlerSID == pid && info.RetiredDataPagePA != 0 {
+			info.RetiredDataPagePA = 0
+		}
+	}
+	retiredLock.Unlock()
+}
+
 // CleanupDelegateForDeadShepherdHandlerOnly runs Parts 2+3 of delegate cleanup
 // (dying shepherd as HANDLER) but skips Part 1 (dying shepherd as CALLER).
 // This is used in the two-phase death protocol: the linux shepherd still needs
@@ -1320,6 +1445,8 @@ func CleanupDelegateForDeadShepherdHandlerOnly(pid int16) int {
 			atomic.StoreInt32(&syscallDelegates[sid].pid, -1)
 		}
 	}
+
+	clearRetiredPagesForHandler(pid)
 
 	// Part 3: Dying shepherd was a HANDLER — find orphaned callers.
 	for i := 0; i < MaxDelegateThreads; i++ {
