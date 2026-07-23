@@ -116,7 +116,7 @@ func ScanAccessedBits(shepherdID proc.ShepherdId) (accessedCount int, totalCount
 			// On ARM64 without FEAT_HAFDBS, platformClearDirty is a no-op (returns false).
 			wasDirty := platformClearDirty(va)
 			if wasDirty && desc != nil {
-				desc.Flags |= PD_DIRTY
+				SetPageDescriptorFlags(desc, PD_DIRTY)
 			}
 		}
 	})
@@ -126,9 +126,9 @@ func ScanAccessedBits(shepherdID proc.ShepherdId) (accessedCount int, totalCount
 
 // FindEvictionCandidates returns up to count physical addresses suitable for
 // eviction from the given shepherd's address space. Pages are ranked:
-//   1. Clean + unaccessed (best: not recently used, no write-back needed)
-//   2. Clean + accessed   (recently used but clean — cheap to evict)
-//   3. Dirty + unaccessed (not recently used, but requires write-back)
+//  1. Clean + unaccessed (best: not recently used, no write-back needed)
+//  2. Clean + accessed   (recently used but clean — cheap to evict)
+//  3. Dirty + unaccessed (not recently used, but requires write-back)
 //
 // Pinned pages and already-swapped pages are never returned.
 // Returned PAs are still mapped; the caller must call SwapOutPage to evict.
@@ -206,7 +206,7 @@ func FindEvictionCandidates(shepherdID proc.ShepherdId, count int) []uintptr {
 					dirtyUnaccessed[nDirtyUnacc] = pa
 					nDirtyUnacc++
 				}
-			// dirty+accessed: worst candidate, skip
+				// dirty+accessed: worst candidate, skip
 			}
 		}
 	})
@@ -224,4 +224,3 @@ func FindEvictionCandidates(shepherdID proc.ShepherdId, count int) []uintptr {
 	}
 	return result
 }
-

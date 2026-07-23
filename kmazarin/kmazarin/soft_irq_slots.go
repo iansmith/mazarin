@@ -18,14 +18,14 @@ var dbgPreemptSwitchCount uint64
 var dbgPreemptNoNextCount uint64
 
 // Debug counters for WakeSlotForIRQ / BlockOnSlot instrumentation
-var dbgWakeSlotCalls uint32       // total WakeSlotForIRQ calls
-var dbgWakeSlotNoSlot uint32      // IRQ had no registered slot
-var dbgWakeSlotNoThread uint32    // slot had no blocked thread (blockedTID < 0)
-var dbgWakeSlotWoke uint32        // successfully woke a blocked thread
-var dbgWakeSlotStale uint32       // thread found but state wasn't BlockedSoftIRQ
-var dbgBlockOnSlotCalls uint32    // total BlockOnSlot calls
-var dbgBlockOnSlotBlocked uint32  // thread actually blocked (next thread found)
-var dbgBlockOnSlotNoNext uint32   // no next thread found, fell through to WFI loop
+var dbgWakeSlotCalls uint32      // total WakeSlotForIRQ calls
+var dbgWakeSlotNoSlot uint32     // IRQ had no registered slot
+var dbgWakeSlotNoThread uint32   // slot had no blocked thread (blockedTID < 0)
+var dbgWakeSlotWoke uint32       // successfully woke a blocked thread
+var dbgWakeSlotStale uint32      // thread found but state wasn't BlockedSoftIRQ
+var dbgBlockOnSlotCalls uint32   // total BlockOnSlot calls
+var dbgBlockOnSlotBlocked uint32 // thread actually blocked (next thread found)
+var dbgBlockOnSlotNoNext uint32  // no next thread found, fell through to WFI loop
 
 // Debug counters for deadline/signal wake tracking
 var dbgDeadlineWokeSleeper uint64
@@ -112,14 +112,13 @@ func RegisterBlockCompletionRing(ringVA uintptr, shepherdID int16) int64 {
 	if desc == nil {
 		return -14 // EFAULT
 	}
-	desc.Flags |= kmem.PD_PINNED
-	desc.RefCount++
+	kmem.RefSharedPage(desc, kmem.PD_PINNED)
 
 	// Compute kernel VA (all RAM is identity-mapped at KernelVAOffset)
 	kva := kmem.MapPAToKernelScratch(pa)
 	if kva == 0 {
-		desc.Flags &^= kmem.PD_PINNED
-		desc.RefCount--
+		kmem.ClearPageDescriptorFlags(desc, kmem.PD_PINNED)
+		kmem.UnrefSharedPage(desc, 0)
 		return -14 // EFAULT
 	}
 
@@ -149,8 +148,8 @@ func CleanupBlockCompletionRing(shepherdID int16) {
 	if blockCompletionRingPA != 0 {
 		desc := kmem.GetPageDescriptor(blockCompletionRingPA)
 		if desc != nil {
-			desc.Flags &^= kmem.PD_PINNED
-			desc.RefCount--
+			kmem.ClearPageDescriptorFlags(desc, kmem.PD_PINNED)
+			kmem.UnrefSharedPage(desc, 0)
 		}
 	}
 	blockCompletionRingKVA = 0
@@ -203,14 +202,13 @@ func RegisterInputCompletionRing(ringVA uintptr, shepherdID int16) int64 {
 	if desc == nil {
 		return -14 // EFAULT
 	}
-	desc.Flags |= kmem.PD_PINNED
-	desc.RefCount++
+	kmem.RefSharedPage(desc, kmem.PD_PINNED)
 
 	// Compute kernel VA
 	kva := kmem.MapPAToKernelScratch(pa)
 	if kva == 0 {
-		desc.Flags &^= kmem.PD_PINNED
-		desc.RefCount--
+		kmem.ClearPageDescriptorFlags(desc, kmem.PD_PINNED)
+		kmem.UnrefSharedPage(desc, 0)
 		return -14 // EFAULT
 	}
 
@@ -239,8 +237,8 @@ func CleanupInputCompletionRing(shepherdID int16) {
 	if wmInputRingPA != 0 {
 		desc := kmem.GetPageDescriptor(wmInputRingPA)
 		if desc != nil {
-			desc.Flags &^= kmem.PD_PINNED
-			desc.RefCount--
+			kmem.ClearPageDescriptorFlags(desc, kmem.PD_PINNED)
+			kmem.UnrefSharedPage(desc, 0)
 		}
 	}
 	wmInputRingKVA = 0
@@ -261,14 +259,14 @@ const maxSoftIRQSlots = 32
 
 // softIRQSlot represents one registered soft IRQ slot.
 type softIRQSlot struct {
-	active        uint32         // atomic: 1 = active
-	irqNum        uint32
-	shepherdID      int16
-	devIdx        int            // index into input.AllDevices()
-	intKind       hid.InterruptType // KeyboardInterrupt or MouseInterrupt
-	blockedTID       ThreadId // TID of thread blocked on this slot (-1 = none)
-	blockedThreadPtr uintptr  // cached *Thread as uintptr (avoids GC write barrier in nosplit ISR)
-	ring          *softIRQRing   // pointer to per-device ring buffer
+	active           uint32 // atomic: 1 = active
+	irqNum           uint32
+	shepherdID       int16
+	devIdx           int               // index into input.AllDevices()
+	intKind          hid.InterruptType // KeyboardInterrupt or MouseInterrupt
+	blockedTID       ThreadId          // TID of thread blocked on this slot (-1 = none)
+	blockedThreadPtr uintptr           // cached *Thread as uintptr (avoids GC write barrier in nosplit ISR)
+	ring             *softIRQRing      // pointer to per-device ring buffer
 }
 
 // Ider implementation for StaticList compatibility.
@@ -435,7 +433,6 @@ func WakeSlotForIRQ(irqNum uint32) {
 	enqueueReadySchedLockHeld(t)
 	asm.Dsb() // Memory barrier to ensure enqueue is visible to other CPUs
 
-
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 }
@@ -479,8 +476,8 @@ func BlockOnSlot(slotNum int32) uintptr {
 
 	// Commit: block current thread, record in slot
 	t.State = ThreadBlockedSoftIRQ
-	t.SoftIRQSlotArg = uint64(slotNum)    // Save for RewindToSyscall arg restore
-	t.SoftIRQSyscallNum = 0x100A          // sysWaitSoftIRQ — for x86_64 RAX restore
+	t.SoftIRQSlotArg = uint64(slotNum) // Save for RewindToSyscall arg restore
+	t.SoftIRQSyscallNum = 0x100A       // sysWaitSoftIRQ — for x86_64 RAX restore
 	softIRQSlotData[slotNum].blockedTID = t.TID
 	softIRQSlotData[slotNum].blockedThreadPtr = uintptr(unsafe.Pointer(t))
 
@@ -559,7 +556,6 @@ func WakeKernelRingPusher() {
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 }
-
 
 // PushTimerEventAndWake pushes time events into the timer ring and wakes the slot.
 // Called from processStaticDeadlinesSchedLockHeld when a timer deadline expires.

@@ -21,14 +21,14 @@ const ConstraintPageVersion = 4        // bumped from 3: added ValueColl region 
 // --- Single source of truth: region capacities ---
 // Change ONLY these values to resize the constraint system.
 const (
-	RegionNodeCap       = 16384 // max attribute node slots
-	RegionEdgeCap       = 65535 // max edges (uint16 cap)
-	RegionBytecodeCap   = 65535 // header field (uint16); actual limit is RegionBytecodeSize
-	RegionStringCap     = 4096  // max string slots
-	RegionCollCap       = 65536 // max collection elements — sized for 64 query slots × 1024 entries each
-	RegionTrieCap       = 16384 // max trie nodes
-	RegionValueCollSlots = 32   // number of discrete writable value-collection slots
-	MaxValueCollEntries  = 256  // max int64 entries per value-coll slot (sentinel kicks in at >256)
+	RegionNodeCap        = 16384                                      // max attribute node slots
+	RegionEdgeCap        = 65535                                      // max edges (uint16 cap)
+	RegionBytecodeCap    = 65535                                      // header field (uint16); actual limit is RegionBytecodeSize
+	RegionStringCap      = 4096                                       // max string slots
+	RegionCollCap        = 65536                                      // max collection elements — sized for 64 query slots × 1024 entries each
+	RegionTrieCap        = 16384                                      // max trie nodes
+	RegionValueCollSlots = 32                                         // number of discrete writable value-collection slots
+	MaxValueCollEntries  = 256                                        // max int64 entries per value-coll slot (sentinel kicks in at >256)
 	RegionValueCollCap   = RegionValueCollSlots * MaxValueCollEntries // total value-coll entries
 )
 
@@ -78,23 +78,23 @@ type SharedPageHeader struct {
 	Generation uint64 // bumped on attr destroy / trie mutation
 
 	// Region table: offset + capacity pairs
-	NodeRegionOff    uint32
-	NodeCapacity     uint16
-	_pad0            uint16
-	EdgeRegionOff    uint32
-	EdgeCapacity     uint16
-	_pad1            uint16
+	NodeRegionOff     uint32
+	NodeCapacity      uint16
+	_pad0             uint16
+	EdgeRegionOff     uint32
+	EdgeCapacity      uint16
+	_pad1             uint16
 	BytecodeRegionOff uint32
-	BytecodeCapacity uint16
-	_pad2            uint16
-	StringRegionOff  uint32
-	StringCapacity   uint16
-	_pad3            uint16
-	CollRegionOff    uint32
-	CollCapacity     uint32 // widened to uint32 for per-query fixed slots (may exceed 65535)
-	TrieRegionOff    uint32
-	TrieCapacity     uint16
-	_pad5            uint16
+	BytecodeCapacity  uint16
+	_pad2             uint16
+	StringRegionOff   uint32
+	StringCapacity    uint16
+	_pad3             uint16
+	CollRegionOff     uint32
+	CollCapacity      uint32 // widened to uint32 for per-query fixed slots (may exceed 65535)
+	TrieRegionOff     uint32
+	TrieCapacity      uint16
+	_pad5             uint16
 
 	// v4: writable value-collection region (for CollI64 attrs like SelectedSet)
 	ValueCollRegionOff uint32
@@ -105,6 +105,7 @@ type SharedPageHeader struct {
 
 // Compile-time size assertion.
 const _sharedPageHeaderSize = unsafe.Sizeof(SharedPageHeader{})
+
 var _ [256 - _sharedPageHeaderSize]byte
 var _ [_sharedPageHeaderSize - 256]byte
 
@@ -126,7 +127,7 @@ func InitConstraintPages() bool {
 	// Derive buddy order from ConstraintTotalSize.
 	// Order N = 2^N pages = 2^N × 4KB.
 	order := 0
-	for (1 << order) * 4096 < ConstraintTotalSize {
+	for (1<<order)*4096 < ConstraintTotalSize {
 		order++
 	}
 	pa := BuddyAllocTyped(order, PageConstraintShared, 0)
@@ -171,7 +172,7 @@ func InitConstraintPages() bool {
 	// cannot release it. Constraint pages are a system-lifetime shared resource
 	// and must survive all shepherd deaths.
 	if desc := GetPageDescriptor(pa); desc != nil {
-		desc.Flags |= PD_PINNED
+		SetPageDescriptorFlags(desc, PD_PINNED)
 	}
 
 	logConstraintPagesInit(pa)

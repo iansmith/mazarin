@@ -1,4 +1,3 @@
-
 package kmem
 
 import (
@@ -174,12 +173,12 @@ func pgClobDiagnostic(pageAddrNow, framePANow uint64) {
 // The relocation script would corrupt compile-time initialized values
 // that look like physical addresses or kernel VAs.
 var (
-	pagingInitialized  bool
-	ttbr1L0PA          uintptr // Physical address of TTBR1 L0 table (lazy init)
-	ttbr0L0PA          uintptr // Physical address of TTBR0 L0 table (Cardinal's original)
-	pfSuccessCount     uint64  // Successful page fault handling counter
-	pfLastFaultAddr    uintptr // Last faulting address (to detect repeated faults)
-	pfRepeatCount      uint64  // Counter for repeated faults at same page
+	pagingInitialized bool
+	ttbr1L0PA         uintptr // Physical address of TTBR1 L0 table (lazy init)
+	ttbr0L0PA         uintptr // Physical address of TTBR0 L0 table (Cardinal's original)
+	pfSuccessCount    uint64  // Successful page fault handling counter
+	pfLastFaultAddr   uintptr // Last faulting address (to detect repeated faults)
+	pfRepeatCount     uint64  // Counter for repeated faults at same page
 	// NOTE: processL0PA global removed - use readCurrentL0PA() to get current L0PA
 	ttbr1L1PA uintptr // Physical address of TTBR1 L1 table (lazy init)
 	// NOTE: ptPoolNext removed - PT allocation now uses unified pool
@@ -351,9 +350,10 @@ func SwitchTTBR0ToPA(l0PA uintptr) {
 // coexist, avoiding full TLB flush on every context switch.
 //
 // Register value construction is arch-specific (via constructTTBR0Value):
-//   ARM64 TTBR0: [63:48]=ASID, [47:1]=PA, [0]=CnP
-//   RISC-V SATP: [63:60]=MODE(9=Sv48), [59:44]=ASID, [43:0]=PPN(PA>>12)
-//   x86_64 CR3:  [63:12]=PML4 PA, [11:0]=PCID
+//
+//	ARM64 TTBR0: [63:48]=ASID, [47:1]=PA, [0]=CnP
+//	RISC-V SATP: [63:60]=MODE(9=Sv48), [59:44]=ASID, [43:0]=PPN(PA>>12)
+//	x86_64 CR3:  [63:12]=PML4 PA, [11:0]=PCID
 //
 // Page fault handlers read TTBR0/SATP/CR3 directly to get the current L0PA,
 // so no global state update is needed here.
@@ -370,11 +370,11 @@ func SwitchTTBR0WithASID(l0PA uintptr, asid uint16) {
 	regVal := constructTTBR0Value(l0PA, asid)
 
 	// Memory barrier, write register, flush TLB
-	dsbISH()             // Memory barrier before page table operations
+	dsbISH()              // Memory barrier before page table operations
 	writeTTBR0Asm(regVal) // Write new TTBR0/SATP/CR3 value
-	tlbiVMALLE1IS()      // Invalidate all TLB entries
-	dsbISH()             // Barrier to ensure write and TLB flush complete
-	isbSY()              // Instruction barrier for new translations
+	tlbiVMALLE1IS()       // Invalidate all TLB entries
+	dsbISH()              // Barrier to ensure write and TLB flush complete
+	isbSY()               // Instruction barrier for new translations
 }
 
 // paToVA converts a physical address to a virtual address using identity mapping.
@@ -489,12 +489,12 @@ func allocPTPage() uintptr {
 	// Use cached IDs from the current page fault context (set by HandlePageFault
 	// or HandleUserPageFault before calling into page table allocation).
 	QueueDeferredRecord(DeferredPageRecord{
-		PA:       pa,
-		VA:       va,
-		Type:     PageAllocKernelPT,
+		PA:         pa,
+		VA:         va,
+		Type:       PageAllocKernelPT,
 		ShepherdID: pfContextShepherdID,
-		ThreadID: pfContextThreadID,
-		Order:    0,
+		ThreadID:   pfContextThreadID,
+		Order:      0,
 	})
 
 	return va
@@ -699,12 +699,12 @@ func HandlePageFault(faultAddr uintptr) bool {
 	// Queue deferred record for bottom-half page tracking
 	debugPrint('3') // DEBUG: before QueueDeferredRecord
 	QueueDeferredRecord(DeferredPageRecord{
-		PA:       frame,
-		VA:       pageAddr,
-		Type:     PageAllocKernelHeap,
+		PA:         frame,
+		VA:         pageAddr,
+		Type:       PageAllocKernelHeap,
 		ShepherdID: currentShepherdID(),
-		ThreadID: getCurrentThreadTID(),
-		Order:    0,
+		ThreadID:   getCurrentThreadTID(),
+		Order:      0,
 	})
 	debugPrint('4') // DEBUG: after QueueDeferredRecord
 
@@ -726,7 +726,6 @@ const repeatFaultMax = 10
 
 // userPFCount tracks total user page faults for diagnostic breadcrumbs.
 var userPFCount uint64
-
 
 // HandleUserPageFault handles a page fault at a userspace virtual address.
 // This is called from the exception handler for data/instruction aborts from userspace.
@@ -922,12 +921,12 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 
 	// Queue deferred record for bottom-half page tracking
 	QueueDeferredRecord(DeferredPageRecord{
-		PA:       framePA,
-		VA:       pageAddr,
-		Type:     PageAllocUser,
+		PA:         framePA,
+		VA:         pageAddr,
+		Type:       PageAllocUser,
 		ShepherdID: currentShepherdID(),
-		ThreadID: getCurrentThreadTID(),
-		Order:    0,
+		ThreadID:   getCurrentThreadTID(),
+		Order:      0,
 	})
 
 	return true
@@ -1010,12 +1009,12 @@ func DemandMapUserPage(va uintptr, l0PA uintptr) uintptr {
 
 	// Track the allocation
 	QueueDeferredRecord(DeferredPageRecord{
-		PA:       framePA,
-		VA:       pageAddr,
-		Type:     PageAllocUser,
+		PA:         framePA,
+		VA:         pageAddr,
+		Type:       PageAllocUser,
 		ShepherdID: pfContextShepherdID,
-		ThreadID: pfContextThreadID,
-		Order:    0,
+		ThreadID:   pfContextThreadID,
+		Order:      0,
 	})
 
 	// Return PA with page offset
@@ -1422,6 +1421,7 @@ func dcCIVACAsm(va uintptr)
 func dcCVAUAsm(va uintptr)
 func icIVAUAsm(va uintptr)
 func icIALLUAsm()
+
 // readCurrentL0PA is arch-specific: reads the hardware page table base register
 // and returns the L0 page table physical address.
 // See paging_arm64.go, paging_riscv64.go, paging_amd64.go.
@@ -1429,7 +1429,7 @@ func dcZVAAsm(addr uintptr)
 func bzero4KAsm(ptr uintptr)
 func bzeroNAsm(ptr uintptr, n uintptr)
 func writeTTBR0Asm(val uint64)
-func atS1E0R(va uintptr) uint64 // Hardware address translation EL0 read
+func atS1E0R(va uintptr) uint64   // Hardware address translation EL0 read
 func tlbiASIDE1ISAsm(asid uint16) // Invalidate TLB by ASID (inner shareable)
 
 // Bzero4K zeros a 4KB page using DC ZVA for maximum performance.
@@ -2285,7 +2285,6 @@ func UnmapUserPage(va uintptr) uintptr {
 	// Get PA before clearing
 	pa := pteExtractPA(l3Entry)
 
-
 	// Clear the L3 entry (unmap the page)
 	*l3EntryPtr = 0
 
@@ -2380,7 +2379,6 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 
 	// Get PA before clearing
 	pa := pteExtractPA(l3Entry)
-
 
 	// Clear the L3 entry (unmap the page)
 	*l3EntryPtr = 0
@@ -3240,8 +3238,7 @@ func MapExistingUserPageWithL0(userVA, pa uintptr, elfFlags uint32, l0PA uintptr
 		return false
 	}
 	if desc := GetPageDescriptor(pa); desc != nil {
-		desc.RefCount++
-		desc.Flags |= PD_SHARED
+		RefSharedPage(desc, PD_SHARED)
 	}
 	return true
 }

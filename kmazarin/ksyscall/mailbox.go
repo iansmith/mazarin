@@ -58,17 +58,13 @@ func SyscallSharePages(arg0, arg1, _, _, _, _ uint64) int64 {
 		return -1 // EPERM
 	}
 
-	// Increment refcount, mark shared
-	desc.RefCount++
-	desc.Flags |= kmem.PD_SHARED
+	// Increment refcount, mark shared (locked cluster — MAZ-15)
+	kmem.RefSharedPage(desc, kmem.PD_SHARED)
 
 	// Allocate VA in target
 	targetPageVAu64 := bumpAllocForShepherd(targetShepherd, uint64(kmem.PageSize))
 	if targetPageVAu64 == 0 {
-		desc.RefCount--
-		if desc.RefCount <= 1 {
-			desc.Flags &^= kmem.PD_SHARED
-		}
+		kmem.UnrefSharedPage(desc, kmem.PD_SHARED)
 		return -12 // ENOMEM
 	}
 	targetPageVA := uintptr(targetPageVAu64)
@@ -77,10 +73,7 @@ func SyscallSharePages(arg0, arg1, _, _, _, _ uint64) int64 {
 
 	if !kmem.MapPageInProcess(targetSID, targetPageVA, pa, 0) {
 		targetShepherd.Spans.Remove(targetPageVAu64, uint64(kmem.PageSize))
-		desc.RefCount--
-		if desc.RefCount <= 1 {
-			desc.Flags &^= kmem.PD_SHARED
-		}
+		kmem.UnrefSharedPage(desc, kmem.PD_SHARED)
 		return -12 // ENOMEM
 	}
 

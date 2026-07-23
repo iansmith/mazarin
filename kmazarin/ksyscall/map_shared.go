@@ -59,18 +59,14 @@ func SyscallMapSharedPage(arg0, arg1, arg2, _, _, _ uint64) int64 {
 		return -1 // EPERM
 	}
 
-	// Increment refcount and mark as shared
-	desc.RefCount++
-	desc.Flags |= kmem.PD_SHARED
+	// Increment refcount and mark as shared (locked cluster — MAZ-15)
+	kmem.RefSharedPage(desc, kmem.PD_SHARED)
 
 	// Allocate caller VA
 	callerVA := bumpAllocForShepherd(callerShepherd, uint64(kmem.PageSize))
 	if callerVA == 0 {
 		// Roll back refcount
-		desc.RefCount--
-		if desc.RefCount <= 1 {
-			desc.Flags &^= kmem.PD_SHARED
-		}
+		kmem.UnrefSharedPage(desc, kmem.PD_SHARED)
 		return -12 // ENOMEM
 	}
 
@@ -81,10 +77,7 @@ func SyscallMapSharedPage(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	if !kmem.MapPageInProcess(callerSID, uintptr(callerVA), pa, elfFlags) {
 		// Roll back
 		callerShepherd.Spans.Remove(callerVA, uint64(kmem.PageSize))
-		desc.RefCount--
-		if desc.RefCount <= 1 {
-			desc.Flags &^= kmem.PD_SHARED
-		}
+		kmem.UnrefSharedPage(desc, kmem.PD_SHARED)
 		return -12 // ENOMEM
 	}
 
@@ -154,8 +147,7 @@ func SyscallShareNetPageWithClient(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	}
 
 	const sharedFlags = uint8(kmem.PD_SHARED | kmem.PD_NET_OWNED_SHARED)
-	desc.RefCount++
-	desc.Flags |= sharedFlags
+	kmem.RefSharedPage(desc, sharedFlags)
 
 	clientVA := bumpAllocForShepherd(clientShepherd, uint64(kmem.PageSize))
 	if clientVA == 0 {
@@ -177,12 +169,9 @@ func SyscallShareNetPageWithClient(arg0, arg1, arg2, _, _, _ uint64) int64 {
 // unrefShared rolls back the RefCount bump + flag set performed at the start
 // of a share path when a subsequent step fails. The flags are only cleared
 // once the page is no longer shared (RefCount back to 1, the owner's own
-// mapping).
+// mapping). Delegates to the locked kmem cluster (MAZ-15).
 func unrefShared(desc *kmem.PageDescriptor, flags uint8) {
-	desc.RefCount--
-	if desc.RefCount <= 1 {
-		desc.Flags &^= flags
-	}
+	kmem.UnrefSharedPage(desc, flags)
 }
 
 // SyscallSharePagesWithTarget maps a range of the caller's pages into a target
@@ -266,8 +255,7 @@ func SyscallSharePagesWithTarget(arg0, arg1, arg2, _, _, _ uint64) int64 {
 			return -1 // EPERM
 		}
 
-		desc.RefCount++
-		desc.Flags |= kmem.PD_SHARED
+		kmem.RefSharedPage(desc, kmem.PD_SHARED)
 
 		dstVA := uintptr(targetVABase) + uintptr(i)*kmem.PageSize
 		if !kmem.MapPageInProcess(targetSID, dstVA, pa, 0) {
@@ -359,8 +347,7 @@ func SyscallUnshareFromTarget(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		// records it; we don't recurse into rollback-of-rollback.
 		for _, u := range rolled {
 			if d := kmem.GetPageDescriptor(u.pa); d != nil {
-				d.RefCount = u.refCount
-				d.Flags = u.flags
+				kmem.RestorePageShareState(d, u.refCount, u.flags)
 			}
 			if !kmem.MapPageInProcess(targetSID, u.dstVA, u.pa, 0) {
 				klog.Errf("[IPC] UnshareFromTarget: rollback re-map failed at VA %x PA %x — target left inconsistent\n",

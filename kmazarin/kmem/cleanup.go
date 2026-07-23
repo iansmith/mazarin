@@ -107,7 +107,7 @@ func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGrou
 func releasePTPage(pa uintptr, unpin bool) bool {
 	if unpin {
 		if desc := GetPageDescriptor(pa); desc != nil {
-			desc.Flags &^= PD_PINNED
+			ClearPageDescriptorFlags(desc, PD_PINNED)
 		}
 	}
 	return releasePageByPA(pa)
@@ -128,7 +128,16 @@ func releasePageByPA(pa uintptr) bool {
 	if desc == nil {
 		return false // Not in pool (diplomat-mapped, MMIO, or out of range)
 	}
+	// MAZ-15: the whole check→decrement→clear sequence runs under
+	// pageDescLock. This path runs PREEMPTIBLE on thread 0 (deferred shepherd
+	// cleanup); without the lock, a syscall's RefCount++ on the same
+	// descriptor could interleave into the middle of the plain int16 RMW and
+	// be lost — freeing a page that is still mapped elsewhere. The lock is
+	// dropped before BuddyFreeTyped (lock order: never buddy inside
+	// pageDescLock).
+	pageDescLock.Lock()
 	if desc.RefCount <= 0 {
+		pageDescLock.Unlock()
 		// Bug B family diagnostic: caller asked us to release a page whose
 		// RefCount is already 0 (or negative, meaning a prior decrement
 		// underflowed). Either: (a) something released this page already
@@ -145,6 +154,7 @@ func releasePageByPA(pa uintptr) bool {
 		return false // Already freed or untracked
 	}
 	if desc.Flags&PD_PINNED != 0 {
+		pageDescLock.Unlock()
 		return false // Pinned system pages (e.g. constraint shared block) are never freed
 	}
 
@@ -153,6 +163,7 @@ func releasePageByPA(pa uintptr) bool {
 	// calling ReleasePageByPA). Any other caller releasing a FILE_BACKED page has
 	// a stale handler PTE → corruption. Block the free and log the site.
 	if desc.Flags&PD_FILE_BACKED != 0 {
+		pageDescLock.Unlock()
 		klog.Criticalf("[kmem]", " BLOCKED: premature release of FILE_BACKED page pa=%x owner=%d\n",
 			uint64(pa), int(desc.Owner))
 		return false
@@ -160,17 +171,23 @@ func releasePageByPA(pa uintptr) bool {
 
 	desc.RefCount--
 	if desc.RefCount > 0 {
+		pageDescLock.Unlock()
 		return false // Still referenced (shared IPC page, etc.)
 	}
 
-	// RefCount reached zero — capture type/order before clearing.
+	// RefCount reached zero — capture type/order, clear the descriptor inline
+	// (NOT via ClearPageDescriptor, which takes pageDescLock itself — the
+	// spinlock is not reentrant), then release the lock before the buddy free.
 	pageType := desc.Type
 	order := int(desc.Order)
+	desc.PA = 0
+	desc.Type = 0
+	desc.Owner = 0
+	desc.RefCount = 0
+	desc.Order = 0
+	desc.Flags = 0
+	pageDescLock.Unlock()
 
-	// Clear the descriptor first, then return to buddy (no window where
-	// RefCount=0 but page is not yet in the free list matters here because
-	// we run with the scheduler lock held during shepherd cleanup).
-	ClearPageDescriptor(pa)
 	BuddyFreeTyped(pa, order, pageType)
 	return true
 }
@@ -188,6 +205,7 @@ func releasePageByPA(pa uintptr) bool {
 //   - the freeLeaves walk frees only genuinely process-owned leaves, silently
 //     skipping shared/mapped-in frames (framebuffer, constraint block) rather
 //     than routing them through releasePageByPA (which would spam UNDERFLOW).
+//
 // When teardown is false (shepherd-exit via CleanupShepherdPages), behavior is
 // unchanged: PT pages honor PD_PINNED and every leaf goes through releasePageByPA.
 //
