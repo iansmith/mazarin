@@ -22,12 +22,12 @@ archive_dir  = ".slopstop/ticket-archive"
 [tiers.huge]        # :design + huge-tier checks (ticket-tree/rewrite/report adversaries)
 provider = "anthropic"
 model    = "opus"
-version  = "4.8"
+version  = "5"
 
 [tiers.large]       # :tickets + failure-driven rewrites + umbrella/integration drift checks
 provider = "anthropic"
 model    = "opus"
-version  = "4.6"
+version  = "5"
 
 [tiers.medium]      # :run orchestrator + per-ticket reviewer/adversary subagents
 provider = "anthropic"
@@ -36,7 +36,8 @@ version  = "5"
 
 [tiers.small]       # fleet implementation agents (no version pin)
 provider = "anthropic"
-model    = "haiku"
+model    = "sonnet"
+version  = "5"  # set 2026-08-01 (grand synchronization)
 
 # Point this repo's runs at the local Phase-1 metering router (see ~/slopstop/router).
 # :design health-checks it at run start and :run points each fleet agent at it
@@ -76,7 +77,7 @@ fix     = false
 enabled = true
 
 # :start — this run is bug work
-branch_type = "fix"
+# branch_type intentionally unset 2026-08-01 — :start picks the prefix per ticket
 
 # All keys below are set so headless fleet agents never stall on an "ask" prompt
 # with no human present to answer it.
