@@ -83,6 +83,22 @@ func trackerIdxAt(idx uintptr) *uint32 {
 // from InitUnifiedPool right after InitPageDescriptors (same poolStart/
 // poolEnd, same bump allocator, so its pages are counted as bootstrap pages
 // the same way).
+//
+// COST: one uint32 per POOL page — sized by the pool, not by how many
+// records the tracker actually holds. For the ARM64 2.5 GiB unified pool
+// (0x5BC58000-0xFBC58000, 655,360 pages) that is 2.5 MiB / 640 pages,
+// bump-allocated at boot and never freed. For scale, the PageDescriptor
+// array on the line above is 16 bytes per pool page = 10 MiB; the two
+// together are ~0.5% of the pool. Direct PFN indexing means a slot for
+// every possible address rather than every occupied one — that is the
+// price of O(1) lookup with no hashing and no GC write barriers, which
+// page_descriptor.go's "No Go maps. No Go slices." rule requires.
+//
+// The entry type is uint32 DELIBERATELY, not uint16. Slot+1 currently fits
+// in a uint16 (MaxTrackedPages = 32768), so uint16 would halve this array —
+// that trade was considered and declined, to keep the entry type
+// independent of MaxTrackedPages. Do not "optimize" it without raising the
+// coupling that would introduce.
 func InitPageTrackerIndex(poolStart, poolEnd uintptr) {
 	if atomic.LoadUint32(&trackerIdxInitialized) != 0 {
 		return
@@ -240,6 +256,15 @@ func shepherdIndex(pid int16) int {
 // untrack record silently reintroduces the tracker-full leak this ticket
 // fixes. Called from pageAuditBottomHalf (kmazarin/kmazarin/bottom_half.go)
 // on the same ~30s cadence as LogPageAudit — normal Go context, not nosplit.
+//
+// REVIEWED AND ACCEPTED: GetMemoryStats scans every live record (up to
+// MaxTrackedPages = 32768) holding trackerLock, which TrackPage/UntrackPage
+// also take on the deferred-drain path. This call is what makes that
+// pre-existing O(n) hold live for the first time. Keeping the scan was a
+// deliberate call — at a ~30s cadence the amortized cost is negligible, and
+// maintaining incremental per-type counters in TrackPage/UntrackPage would
+// add bookkeeping to the hot path to save a scan that runs twice a minute.
+// Revisit only if the cadence tightens or MaxTrackedPages grows materially.
 func LogMemoryStats() {
 	stats := GetMemoryStats()
 	overflows := GetDeferredOverflows()
