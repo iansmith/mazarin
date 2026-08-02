@@ -12,14 +12,27 @@ package kmem
 
 import "sync/atomic"
 
+// DeferredOp identifies what ProcessDeferredRecords should do with a queued
+// record. Zero value (DeferredOpTrack) keeps every pre-MAZ-163 enqueue site
+// in paging.go — none of which set Op — behaving exactly as before.
+type DeferredOp uint8
+
+const (
+	// DeferredOpTrack calls TrackPage with the record's fields. Zero value.
+	DeferredOpTrack DeferredOp = iota
+	// DeferredOpUntrack calls UntrackPage(PA); only PA is meaningful.
+	DeferredOpUntrack
+)
+
 // DeferredPageRecord is the data queued by the top-half for later processing.
 type DeferredPageRecord struct {
-	PA       uintptr
-	VA       uintptr
-	Type     PageAllocType
+	Op         DeferredOp
+	PA         uintptr
+	VA         uintptr
+	Type       PageAllocType
 	ShepherdID int16
-	ThreadID int16
-	Order    uint8
+	ThreadID   int16
+	Order      uint8
 }
 
 // MaxDeferredRecords is the ring buffer capacity. Must be a power of 2.
@@ -77,14 +90,19 @@ func ProcessDeferredRecords() {
 		rec := deferredQueue[head&(MaxDeferredRecords-1)]
 		atomic.StoreUint32(&deferredHead, (head+1)&(MaxDeferredRecords-1))
 
-		TrackPage(PageAllocInfo{
-			PA:       rec.PA,
-			VA:       rec.VA,
-			Type:     rec.Type,
-			ShepherdID: rec.ShepherdID,
-			ThreadID: rec.ThreadID,
-			Order:    rec.Order,
-		})
+		switch rec.Op {
+		case DeferredOpUntrack:
+			UntrackPage(rec.PA)
+		default: // DeferredOpTrack
+			TrackPage(PageAllocInfo{
+				PA:         rec.PA,
+				VA:         rec.VA,
+				Type:       rec.Type,
+				ShepherdID: rec.ShepherdID,
+				ThreadID:   rec.ThreadID,
+				Order:      rec.Order,
+			})
+		}
 	}
 }
 

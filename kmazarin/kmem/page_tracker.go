@@ -44,6 +44,13 @@ var (
 	trackerCount int
 	trackerLock  Spinlock
 
+	// pageIndex maps a tracked PA to its slot in pageTracker, so UntrackPage
+	// (MAZ-163) resolves a PA in O(1) instead of scanning up to
+	// MaxTrackedPages entries under trackerLock. Mutated only under
+	// trackerLock, alongside pageTracker/trackerCount. Normal Go context
+	// only (bottom-half) — never touched from nosplit/IRQ-off code.
+	pageIndex = make(map[uintptr]int, MaxTrackedPages)
+
 	// trackerFullWarnings counts how many times TrackPage has hit the
 	// tracker-full branch below. Read via GetTrackerFullWarnings(); used by
 	// the page_tracker_selftest (MAZ-163) to assert saturation produces zero
@@ -58,6 +65,7 @@ func TrackPage(info PageAllocInfo) {
 	trackerLock.Lock()
 	if trackerCount < MaxTrackedPages {
 		pageTracker[trackerCount] = info
+		pageIndex[info.PA] = trackerCount
 		trackerCount++
 		trackerLock.Unlock()
 		return
@@ -93,18 +101,31 @@ func GetTrackerFullWarnings() uint64 {
 	return atomic.LoadUint64(&trackerFullWarnings)
 }
 
-// UntrackPage removes the record for a given PA. Called from bottom-half.
+// UntrackPage removes the record for a given PA. Called from bottom-half
+// (normal Go context, not nosplit) — the deferred-untrack drain
+// (ProcessDeferredRecords) is the only caller; never call this directly
+// from //go:nosplit or IRQ-off code (see deferred.go's doc comment).
+//
+// O(1): pageIndex resolves pa to its slot directly instead of scanning
+// pageTracker (MAZ-163 — the O(n) scan under trackerLock was fine at the
+// old single-caller call rate but is the wrong shape once every
+// BuddyFreeTyped enqueues an untrack).
 func UntrackPage(pa uintptr) {
 	trackerLock.Lock()
-	for i := 0; i < trackerCount; i++ {
-		if pageTracker[i].PA == pa {
-			// Swap with last entry
-			trackerCount--
-			pageTracker[i] = pageTracker[trackerCount]
-			trackerLock.Unlock()
-			return
-		}
+	i, ok := pageIndex[pa]
+	if !ok {
+		trackerLock.Unlock()
+		return // Not tracked (e.g. a pinned/shared page, or already untracked)
 	}
+	// Swap with the last live entry, then fix up the index for whatever
+	// record just moved into slot i (unless i was already the last slot).
+	trackerCount--
+	moved := pageTracker[trackerCount]
+	pageTracker[i] = moved
+	if i != trackerCount {
+		pageIndex[moved.PA] = i
+	}
+	delete(pageIndex, pa)
 	trackerLock.Unlock()
 }
 
@@ -131,6 +152,23 @@ func shepherdIndex(pid int16) int {
 		return 0 // treat out-of-range as kernel
 	}
 	return idx
+}
+
+// LogMemoryStats is the GetMemoryStats() consumer (MAZ-163 — the subsystem
+// was previously write-only: five QueueDeferredRecord sites feed it on
+// every page allocation, and nothing ever read it back). Logs the per-type
+// breakdown plus the deferred-queue overflow count, since a dropped
+// untrack record silently reintroduces the tracker-full leak this ticket
+// fixes. Called from pageAuditBottomHalf (kmazarin/kmazarin/bottom_half.go)
+// on the same ~30s cadence as LogPageAudit — normal Go context, not nosplit.
+func LogMemoryStats() {
+	stats := GetMemoryStats()
+	overflows := GetDeferredOverflows()
+	warnings := GetTrackerFullWarnings()
+	klog.Logf("[kmem] tracker: total=%d kernelHeap=%d kernelPT=%d user=%d userPT=%d fileBuf=%d deferredOverflows=%d fullWarnings=%d\n",
+		stats.TotalTracked, stats.KernelHeapPages, stats.KernelPTPages,
+		stats.UserPages, stats.UserPTPages, stats.FileBufferPages,
+		overflows, warnings)
 }
 
 // GetMemoryStats scans the tracker and returns per-type and per-shepherd counts.
