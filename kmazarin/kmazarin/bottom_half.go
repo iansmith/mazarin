@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -81,23 +80,23 @@ type softIRQRing struct {
 }
 
 type topHalfDev struct {
-	irqNum           uint32
-	usedVA           uintptr // VA of VirtQUsed (Device-mapped)
-	evtBufVA         uintptr // VA of EventBuffers array (Device-mapped)
-	availVA          uintptr // VA of VirtQAvailable (Device-mapped)
-	descVA           uintptr // VA of descriptor table (Device-mapped)
-	notifyAddr       uintptr // VA of notify register (Device-mapped MMIO)
-	evtBufPA         uintptr // PA of EventBuffers (for descriptor addr field)
-	isrBase          uintptr // VA of VirtIO ISR register (read to deassert PCI INTx)
-	lastUsedIdx      uint16
-	queueSize        uint16
-	nextAvailIdx     uint16
-	ring             *softIRQRing
-	lastUsedIdxSync  *uint16 // points to VirtQueue.LastUsedIdx to prevent double-drain
+	irqNum          uint32
+	usedVA          uintptr // VA of VirtQUsed (Device-mapped)
+	evtBufVA        uintptr // VA of EventBuffers array (Device-mapped)
+	availVA         uintptr // VA of VirtQAvailable (Device-mapped)
+	descVA          uintptr // VA of descriptor table (Device-mapped)
+	notifyAddr      uintptr // VA of notify register (Device-mapped MMIO)
+	evtBufPA        uintptr // PA of EventBuffers (for descriptor addr field)
+	isrBase         uintptr // VA of VirtIO ISR register (read to deassert PCI INTx)
+	lastUsedIdx     uint16
+	queueSize       uint16
+	nextAvailIdx    uint16
+	ring            *softIRQRing
+	lastUsedIdxSync *uint16 // points to VirtQueue.LastUsedIdx to prevent double-drain
 	// Debug counters
-	dbgPushOK        uint32     // events successfully pushed to ring
-	dbgPushFail      uint32     // events dropped (ring full)
-	dbgIRQCount      uint32     // total IRQ invocations
+	dbgPushOK   uint32 // events successfully pushed to ring
+	dbgPushFail uint32 // events dropped (ring full)
+	dbgIRQCount uint32 // total IRQ invocations
 }
 
 var topHalfKbdRing softIRQRing
@@ -108,10 +107,9 @@ var topHalfTimerRing softIRQRing
 var topHalfBlockRing softIRQRing
 
 // Debug counters for event flow tracking
-var dbgDrainTotal uint32          // total events drained by userspace
-var dbgDrainCalls uint32          // total drain syscalls
+var dbgDrainTotal uint32                    // total events drained by userspace
+var dbgDrainCalls uint32                    // total drain syscalls
 var dbgDrainPerSlot [maxSoftIRQSlots]uint32 // per-slot drain counts
-
 
 // uartIRQNum is set during device init so the event poller can wake
 // the soft IRQ slot after UART dispatch.
@@ -130,41 +128,41 @@ var blockIOComplete *uint32
 // CQE-push path: ISR ack, RX engine for PopUsedNoFree, device pointer
 // for RxIRQTimestamps writeback.
 var (
-	netIRQNum       uint32
-	netISRBase      uintptr // ISR register VA for ack
-	netRxEnginePtr  uintptr // *virtio.Engine stored as uintptr (nosplit-safe)
-	netTxEnginePtr  uintptr // *virtio.Engine stored as uintptr (TX completions)
-	netDevicePtr    uintptr // *net.VirtIONetDevice stored as uintptr (for RxIRQTimestamps writeback)
+	netIRQNum      uint32
+	netISRBase     uintptr // ISR register VA for ack
+	netRxEnginePtr uintptr // *virtio.Engine stored as uintptr (nosplit-safe)
+	netTxEnginePtr uintptr // *virtio.Engine stored as uintptr (TX completions)
+	netDevicePtr   uintptr // *net.VirtIONetDevice stored as uintptr (for RxIRQTimestamps writeback)
 )
 
 // Net IRQ debug counters — bumped from nosplit top-half.
 var (
-	dbgNetIRQCount      uint32 // total net IRQs received (mirrors net.dbgNetIRQCount; this is the bottom_half copy)
-	dbgNetRxDrained     uint32 // total RX completions drained from RxEng (cumulative)
-	dbgNetTxDrained     uint32 // total TX completions drained from TxEng (cumulative)
-	dbgNetCQEWritten    uint32 // RX+TX completions written to io_uring CQ
-	dbgNetCQEMissed     uint32 // RX+TX completions dropped because no io_uring ring registered
+	dbgNetIRQCount   uint32 // total net IRQs received (mirrors net.dbgNetIRQCount; this is the bottom_half copy)
+	dbgNetRxDrained  uint32 // total RX completions drained from RxEng (cumulative)
+	dbgNetTxDrained  uint32 // total TX completions drained from TxEng (cumulative)
+	dbgNetCQEWritten uint32 // RX+TX completions written to io_uring CQ
+	dbgNetCQEMissed  uint32 // RX+TX completions dropped because no io_uring ring registered
 )
 
 // Debug counters for block IRQ instrumentation
-var dbgBlockIRQCount uint32       // total block IRQs received
-var dbgBlockIRQSync uint32        // handled in sync mode (IOComplete)
-var dbgBlockIRQAsync uint32       // handled in async mode (ring push + wake)
-var dbgBlockAsyncEvents uint32    // total async completion events pushed to ring
+var dbgBlockIRQCount uint32    // total block IRQs received
+var dbgBlockIRQSync uint32     // handled in sync mode (IOComplete)
+var dbgBlockIRQAsync uint32    // handled in async mode (ring push + wake)
+var dbgBlockAsyncEvents uint32 // total async completion events pushed to ring
 
 // Additional instrumentation counters (set by nosplit top-half, read by SVC path)
-var dbgBlockTotalDrained uint32   // total completions drained across all IRQs
-var dbgBlockEmptyIRQ uint32       // IRQs where HasUsed() was false (drained=0)
-var dbgBlockRingFull uint32       // completion ring push failures (ring full)
+var dbgBlockTotalDrained uint32     // total completions drained across all IRQs
+var dbgBlockEmptyIRQ uint32         // IRQs where HasUsed() was false (drained=0)
+var dbgBlockRingFull uint32         // completion ring push failures (ring full)
 var dbgBlockEmptyRawUsedIdx uint32  // raw Used.Idx on first empty-drain IRQ
 var dbgBlockEmptyLastUsedIdx uint32 // LastUsedIdx at first empty-drain
 var dbgBlockEmptyUsedPtr uint64     // VQ.Used pointer at first empty-drain
 var dbgBlockEmptySnapped uint32     // 1 once the empty-drain snapshot is taken
-var dbgBlockLastNumFree uint32    // last snapshot of VQ.NumFree
-var dbgBlockLastUsedIdx uint32    // last snapshot of VQ.LastUsedIdx
-var dbgBlockLastAvailIdx uint32   // last snapshot of VQ.Available.Idx
-var dbgBlockCQEWritten uint32     // completions written to io_uring CQ
-var dbgBlockCQEMissed uint32      // completions routed to legacy path (ioRing was nil)
+var dbgBlockLastNumFree uint32      // last snapshot of VQ.NumFree
+var dbgBlockLastUsedIdx uint32      // last snapshot of VQ.LastUsedIdx
+var dbgBlockLastAvailIdx uint32     // last snapshot of VQ.Available.Idx
+var dbgBlockCQEWritten uint32       // completions written to io_uring CQ
+var dbgBlockCQEMissed uint32        // completions routed to legacy path (ioRing was nil)
 
 // Block async completion state (Phase 4).
 // When blockAsyncMode=1, the top-half drains the Engine used ring and
@@ -175,8 +173,8 @@ var dbgBlockCQEMissed uint32      // completions routed to legacy path (ioRing w
 // shepherd ELF loading) runs before the fs shepherd process exists and
 // before any io_uring ring is registered — the WFI path is the only
 // mechanism available at that stage.
-var blockEnginePtr uintptr // *virtio.Engine stored as uintptr (nosplit-safe)
-var blockAsyncMode uint32  // atomic: 0=sync (early boot), 1=async (shepherd active)
+var blockEnginePtr uintptr      // *virtio.Engine stored as uintptr (nosplit-safe)
+var blockAsyncMode uint32       // atomic: 0=sync (early boot), 1=async (shepherd active)
 var blockSidecarFreePtr *uint64 // pointer to SidecarPool.FreeBits for release
 
 // blockAsyncSlot tracks per-IOTag metadata for async completions.
@@ -357,11 +355,11 @@ func completionRingPush(kva uintptr, ev hid.HIDEvent) bool {
 var priorityWakePending uint32
 
 // Priority wake diagnostics — written from assembly, read from Go status printer
-var dbgPWakeChecked uint32 // priorityWakePending was set when IRQ returned
-var dbgPWakeEL1h uint32    // blocked by EL1h (SPSR.M[0]=1)
-var dbgPWakeSVC uint32     // blocked by svcDepth != 0
-var dbgPWakeNoG0 uint32    // g0 not ready
-var dbgPWakeNoCtx uint32   // CheckThreadPreemption returned 0
+var dbgPWakeChecked uint32  // priorityWakePending was set when IRQ returned
+var dbgPWakeEL1h uint32     // blocked by EL1h (SPSR.M[0]=1)
+var dbgPWakeSVC uint32      // blocked by svcDepth != 0
+var dbgPWakeNoG0 uint32     // g0 not ready
+var dbgPWakeNoCtx uint32    // CheckThreadPreemption returned 0
 var dbgPWakeSwitched uint32 // successfully switched to priority thread
 
 // RingDrain copies up to max events from the ring into buf.
@@ -679,7 +677,6 @@ var (
 
 // uartRxBottomHalf processes received UART data in safe Go context.
 // It blocks on a channel until the event poller signals that data is available.
-//
 func uartRxBottomHalf() {
 	for range uartRxEventChan {
 		// Process all available bytes from ring buffer
@@ -689,7 +686,6 @@ func uartRxBottomHalf() {
 
 // processUartRxBuffer reads bytes from the RX ring buffer (filled by IRQ handler)
 // and processes them. This runs in safe Go context.
-//
 func processUartRxBuffer() {
 	for {
 		// Atomically read head and tail
@@ -719,7 +715,6 @@ func processUartRxBuffer() {
 // processRxByte handles a single received byte.
 // This is where protocol handling, echoing, etc. would go.
 // Runs in normal goroutine context, safe to call console functions.
-//
 func processRxByte(b byte) {
 	// For now, just echo back using console abstraction
 	// In the future, this could build command buffers, parse protocols, etc.
@@ -733,7 +728,6 @@ func processRxByte(b byte) {
 // deadlineBottomHalf processes timer deadlines in safe Go context.
 // It blocks on a channel until the timer IRQ handler signals that
 // deadlines need to be checked.
-//
 func deadlineBottomHalf() {
 	for range deadlineEventChan {
 		// Process deadline queue in safe Go context
@@ -752,8 +746,6 @@ func pageTrackingBottomHalf() {
 		kmem.ProcessDeferredRecords()
 	}
 }
-
-
 
 // SetupUartSoftIRQ records the UART IRQ number so NonTimerIRQTopHalf
 // can recognize it and drain the PL011 FIFO directly.
@@ -787,9 +779,13 @@ func epochStatusBottomHalf() {
 
 // pageAuditBottomHalf calls kmem.LogPageAudit in safe Go context.
 // Bridged from processDeadlinesPostLock via pageAuditChan every ~30s.
+// Also drives kmem.LogMemoryStats (MAZ-163) on the same cadence — the page
+// tracker's first live consumer, surfacing per-type counts alongside the
+// deferred-queue overflow count so a leak-reintroducing drop is visible.
 func pageAuditBottomHalf() {
 	for range pageAuditChan {
 		kmem.LogPageAudit()
+		kmem.LogMemoryStats()
 	}
 }
 
@@ -808,7 +804,6 @@ func pageAuditBottomHalf() {
 
 // StartBottomHalfProcessors starts all bottom half processor goroutines.
 // Must be called during initialization, BEFORE enabling interrupts.
-//
 func StartBottomHalfProcessors() {
 	go uartRxBottomHalf()
 	go deadlineBottomHalf()

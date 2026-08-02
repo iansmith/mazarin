@@ -67,22 +67,22 @@ const PageUser = PageUserHeap
 
 // pageTypeNames maps PageType values to human-readable strings.
 var pageTypeNames = [PageTypeCount]string{
-	PageKernelHeap:  "KernelHeap",
-	PageKernelPT:    "KernelPT",
-	PageKernelStack: "KernelStack",
-	PageKernelMMIO:  "KernelMMIO",
-	PageFramebuffer: "Framebuffer",
-	PageVirtIOQueue: "VirtIOQueue",
-	PageUserText:    "UserText",
-	PageUserROData:  "UserROData",
-	PageUserData:    "UserData",
-	PageUserHeap:    "UserHeap",
-	PageUserStack:   "UserStack",
-	PageUserPT:      "UserPT",
-	PageSharedIPC:   "SharedIPC",
-	PageFileBuffer:  "FileBuffer",
-	PageBackingStore: "BackingStore",
-	PageDriver:      "Driver",
+	PageKernelHeap:       "KernelHeap",
+	PageKernelPT:         "KernelPT",
+	PageKernelStack:      "KernelStack",
+	PageKernelMMIO:       "KernelMMIO",
+	PageFramebuffer:      "Framebuffer",
+	PageVirtIOQueue:      "VirtIOQueue",
+	PageUserText:         "UserText",
+	PageUserROData:       "UserROData",
+	PageUserData:         "UserData",
+	PageUserHeap:         "UserHeap",
+	PageUserStack:        "UserStack",
+	PageUserPT:           "UserPT",
+	PageSharedIPC:        "SharedIPC",
+	PageFileBuffer:       "FileBuffer",
+	PageBackingStore:     "BackingStore",
+	PageDriver:           "Driver",
 	PageVDSO:             "VDSO",
 	PageConstraintShared: "ConstraintShared",
 	PageFontCache:        "FontCache",
@@ -183,7 +183,13 @@ func InitUnifiedPool() {
 	// as bootstrap pages and marked as used.
 	InitPageDescriptors(globalPool.initialNext, globalPool.end)
 
-	// Count how many pages the bump allocator used (PageDescriptor array)
+	// Initialize the page tracker's PA->slot index array (MAZ-163), same
+	// bump allocator and PFN scheme as PageDescriptor above, so its pages
+	// are also counted as bootstrap pages by GetBumpAllocatedPages() below.
+	InitPageTrackerIndex(globalPool.initialNext, globalPool.end)
+
+	// Count how many pages the bump allocator used (PageDescriptor + page
+	// tracker index arrays)
 	bootstrapPages := GetBumpAllocatedPages()
 
 	// MAZ-139: the g0/exc stacks are mapped at KernelStacksVirtBase

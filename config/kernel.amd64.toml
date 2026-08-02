@@ -46,3 +46,7 @@ clone_exec_race_test = false
 # Left ON as the DoD#2 value-flow regression guard (catches a wrong-source rewiring
 # that presence/clobber checks can't see).
 ctx_marshal_test = true
+
+# MAZ-163: run the page tracker shed-on-free self-test at boot. See
+# kernel.arm64.toml for the full rationale. OFF by default.
+page_tracker_test = false

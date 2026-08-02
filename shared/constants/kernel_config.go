@@ -6,8 +6,8 @@ type KernelConfig struct {
 	Timezone string `toml:"timezone"`
 
 	// Memory
-	KernelBudgetMB int `toml:"kernel_budget_mb"`
-	GoMemLimitMB   int `toml:"go_mem_limit"`
+	KernelBudgetMB   int `toml:"kernel_budget_mb"`
+	GoMemLimitMB     int `toml:"go_mem_limit"`
 	KernelMemLimitMB int `toml:"kernel_mem_limit"`
 
 	// FramebufferMaxMB caps the GPU framebuffer allocation (megabytes). This is
@@ -55,6 +55,13 @@ type KernelConfig struct {
 	// enable in test/CI configs. (MAZ-139 removed the dead SaveCurrentThreadContext
 	// + the global xmmSaveArea; the test now drives the per-frame saver only.)
 	CtxMarshalTest bool `toml:"ctx_marshal_test"`
+
+	// PageTrackerTest runs the MAZ-163 page tracker shed-on-free self-test at
+	// boot (same quiescent window as the other diagnostics above). Verifies
+	// TrackedPageCount() returns to baseline after alloc/free cycles and that
+	// saturating past MaxTrackedPages produces zero "page tracker full"
+	// warnings. OFF by default; enable only for tracker verification.
+	PageTrackerTest bool `toml:"page_tracker_test"`
 }
 
 // DefaultFramebufferMaxMB is the framebuffer cap (megabytes) used when the kernel

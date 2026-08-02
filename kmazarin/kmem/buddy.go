@@ -448,6 +448,11 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 		return
 	}
 
+	// Captured before the merge loop below can reassign pa to a merged
+	// buddy's (lower) address — the tracker record we need to shed was
+	// filed under the ORIGINAL pa, not whatever this block merges into.
+	originalPA := pa
+
 	pagesFreed := uint64(1) << uint(order)
 
 	buddyAlloc.lock.Lock()
@@ -526,6 +531,23 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 	}
 
 	buddyAlloc.lock.Unlock()
+
+	// MAZ-163: shed the page tracker's record for this PA. BuddyFreeTyped is
+	// the common path every free eventually reaches (releasePageByPA,
+	// FreeBuffer, munmap.go, mmap.go's error-unwind), so enqueuing the
+	// deferred untrack here — rather than at each individual call site —
+	// gives the tracker exactly one shed point. This function is
+	// //go:nosplit on the SyscallMunmap -> munmapClump -> BuddyFreeTyped
+	// IRQ-off chain, so it must NOT call UntrackPage directly (splittable,
+	// O(n) scan under trackerLock — see page_tracker.go's doc comment).
+	// QueueDeferredRecord is nosplit and lock-free; the SAME ring as every
+	// TrackPage enqueue, deliberately — FIFO ordering across one ring is
+	// what keeps a PA's track/untrack/re-track sequence correctly ordered
+	// (see deferred.go's header comment for why a separate ring broke this).
+	QueueDeferredRecord(DeferredPageRecord{
+		Op: DeferredOpUntrack,
+		PA: originalPA,
+	})
 }
 
 // buddyRemoveSpecific removes a specific PA from a free list.
@@ -706,12 +728,14 @@ func AllocBuffer(size uint64) *BuddyBuffer {
 }
 
 // FreeBuffer returns a buddy-allocated buffer to the allocator.
+//
+// MAZ-163: BuddyFreeTyped now enqueues the untrack itself; do not add a
+// second call here.
 func FreeBuffer(buf *BuddyBuffer) {
 	if buf == nil {
 		return
 	}
 	BuddyFreeTyped(buf.PA, buf.Order, buf.Type)
-	UntrackPage(buf.PA)
 }
 
 // Bytes returns a []byte slice backed by the buddy-allocated buffer.
