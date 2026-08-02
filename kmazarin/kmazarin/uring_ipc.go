@@ -7,6 +7,7 @@ import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ksync"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/ipc"
 	"mazzy/shared/mazzy"
@@ -36,16 +37,26 @@ const uringSendBlockDeadlineMs = 10
 var nextUringID uint64 = 1
 
 // UringIPCSlot holds per-shepherd kernel state for the IPC ring.
+//
+// StateLock (MAZ-15) guards the ring's LIFECYCLE state: OwnerSID, Dead,
+// KVA[], PA[], RingRefCount, and the publish/unpublish transitions. Producers
+// hold it from the liveness check through the message copy; teardown holds it
+// across unpublish. Without it, teardown (preemptible thread-0 context) can
+// free the ring pages between a producer's liveness check and its 128-byte
+// copy, scribbling IPC message bytes into a page already reallocated to
+// another shepherd's heap — the MAZ-15 corruption. BlockedTID/BlockedPtr and
+// the sender-blocking fields remain schedulerLock-protected (unchanged).
 type UringIPCSlot struct {
-	KVA               [ipc.UringIPCPagesNeeded]uintptr // kernel VAs for the 3 ring pages
-	PA                [ipc.UringIPCPagesNeeded]uintptr // physical addresses for cleanup
-	OwnerSID          int16                            // shepherd that consumes from this ring (-1 = unused)
-	BlockedTID        int16                            // TID blocked in SysUringRecv (-1 = none)
-	BlockedPtr        uintptr                          // *Thread as uintptr (nosplit-safe pointer)
-	BlockedSenderTID  int16                            // TID blocked in SyscallUringSend (ring full) — single blocker per slot, -1 = none
-	BlockedSenderPtr  uintptr                          // *Thread for the blocked sender
-	RingRefCount      int32                            // number of connections targeting this ring
-	Dead              bool                             // owner terminated; pages freed when RingRefCount reaches 0
+	KVA              [ipc.UringIPCPagesNeeded]uintptr // kernel VAs for the 3 ring pages (StateLock)
+	PA               [ipc.UringIPCPagesNeeded]uintptr // physical addresses for cleanup (StateLock)
+	OwnerSID         int16                            // shepherd that consumes from this ring (-1 = unused) (StateLock)
+	BlockedTID       int16                            // TID blocked in SysUringRecv (-1 = none)
+	BlockedPtr       uintptr                          // *Thread as uintptr (nosplit-safe pointer)
+	BlockedSenderTID int16                            // TID blocked in SyscallUringSend (ring full) — single blocker per slot, -1 = none
+	BlockedSenderPtr uintptr                          // *Thread for the blocked sender
+	RingRefCount     int32                            // number of connections targeting this ring (StateLock)
+	Dead             bool                             // owner terminated; pages freed when RingRefCount reaches 0 (StateLock)
+	StateLock        ksync.Spinlock                   // IRQ-atomic guard for lifecycle state (see doc above)
 }
 
 var uringIPCSlots [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]UringIPCSlot
@@ -53,9 +64,9 @@ var uringIPCSlots [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]UringIPCSlot
 // UringConnection tracks an active connection between two shepherds.
 type UringConnection struct {
 	InUse         bool
-	CallerSID     int16   // who established the connection
-	TargetSID     int16   // whose ring the caller can send to
-	TargetRingIdx uint8   // which ring on the target (0, 1, or 2)
+	CallerSID     int16 // who established the connection
+	TargetSID     int16 // whose ring the caller can send to
+	TargetRingIdx uint8 // which ring on the target (0, 1, or 2)
 	RefCount      int32
 	TargetRingKVA uintptr // KVA of target's ring page 0 (for fast send path)
 }
@@ -216,8 +227,9 @@ func DoUringConnectWork(req *UringConnectWorkRequest) int64 {
 		return -22 // EINVAL — invalid ring index
 	}
 	slot := &uringIPCSlots[targetSID][ringIdx]
-	if slot.OwnerSID != targetSID || slot.KVA[0] == 0 {
-		return -3 // ESRCH — ring not allocated
+	// Advisory fast-fail; the authoritative check runs under StateLock below.
+	if slot.OwnerSID != targetSID || slot.KVA[0] == 0 || slot.Dead {
+		return -3 // ESRCH — ring not allocated (or owner dead)
 	}
 
 	// Check for existing connection (bump refcount)
@@ -232,9 +244,16 @@ func DoUringConnectWork(req *UringConnectWorkRequest) int64 {
 		}
 	}
 
-	// Allocate new connection
+	// Allocate new connection. Liveness check + RingRefCount bump + KVA
+	// capture are one StateLock section (MAZ-15): connect runs in preemptible
+	// thread-0 context and must not interleave with ring teardown.
 	for i := range uringConnections {
 		if !uringConnections[i].InUse {
+			slot.StateLock.Lock()
+			if slot.OwnerSID != targetSID || slot.KVA[0] == 0 || slot.Dead {
+				slot.StateLock.Unlock()
+				return -3 // ESRCH — ring not allocated (or owner dead)
+			}
 			uringConnections[i] = UringConnection{
 				InUse:         true,
 				CallerSID:     req.CallerSID,
@@ -244,6 +263,7 @@ func DoUringConnectWork(req *UringConnectWorkRequest) int64 {
 				TargetRingKVA: slot.KVA[0],
 			}
 			slot.RingRefCount++
+			slot.StateLock.Unlock()
 			return int64(i)
 		}
 	}
@@ -311,11 +331,11 @@ func releaseProducerLock(hdr *ipc.UringIPCRingHeader) {
 //   - (0, 0)             : send completed, no thread to switch to
 //   - (0, recvCtxPtr)    : send completed AND woke a blocked receiver — switch
 //   - (0, blockCtxPtr)   : sender blocked; switch to the returned thread.
-//                          Caller's syscall return is meaningless (will be
-//                          overwritten on rewind+retry when sender wakes).
+//     Caller's syscall return is meaningless (will be
+//     overwritten on rewind+retry when sender wakes).
 //   - (-11, 0)           : EAGAIN — ring full and either kernel-internal
-//                          caller, or another sender already blocked, or
-//                          we just woke from a 10ms deadline expiry.
+//     caller, or another sender already blocked, or
+//     we just woke from a 10ms deadline expiry.
 //   - (-22, 0)           : EINVAL
 //   - (-3,  0)           : ESRCH (target ring dead/missing)
 //
@@ -326,9 +346,6 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 	}
 
 	slot := &uringIPCSlots[targetSID][ringIdx]
-	if slot.OwnerSID != targetSID || slot.KVA[0] == 0 || slot.Dead {
-		return -3, 0 // ESRCH — no ring for target (or owner dead)
-	}
 
 	// If this is a rewind+retry from a deadline-expired wake, surface EAGAIN
 	// without re-blocking. Only userspace senders set this flag.
@@ -342,9 +359,19 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 		}
 	}
 
-	hdr := ringHeader(slot)
-
 	savedDAIF := SaveAndDisableIRQs()
+
+	// MAZ-15: liveness check and message copy must be one atomic section
+	// w.r.t. ring teardown, or teardown can free the pages in between and the
+	// copy scribbles a reallocated page. StateLock is held through the copy.
+	slot.StateLock.Lock()
+	if slot.OwnerSID != targetSID || slot.KVA[0] == 0 || slot.Dead {
+		slot.StateLock.Unlock()
+		RestoreIRQs(savedDAIF)
+		return -3, 0 // ESRCH — no ring for target (or owner dead)
+	}
+
+	hdr := ringHeader(slot)
 
 	acquireProducerLock(hdr)
 
@@ -354,6 +381,7 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 	if tail-head >= ipc.UringIPCCapacity {
 		// Ring full. Decide between immediate-EAGAIN and block.
 		releaseProducerLock(hdr)
+		slot.StateLock.Unlock()
 
 		// Kernel-internal caller (KernelWriteToRing): never block; EAGAIN.
 		if senderSID < 0 || senderThread == nil {
@@ -368,8 +396,19 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 		// BlockedSenderTID == -1 (we hadn't published yet), miss the wake,
 		// and leave us waiting for nothing but the deadline.
 		schedulerLock.Lock()
+		// Re-validate liveness before touching hdr again — StateLock was
+		// dropped above, so teardown may have freed the ring in between.
+		// Lock order: schedulerLock → StateLock (never the reverse).
+		slot.StateLock.Lock()
+		if slot.OwnerSID != targetSID || slot.KVA[0] == 0 || slot.Dead {
+			slot.StateLock.Unlock()
+			schedulerLock.Unlock()
+			RestoreIRQs(savedDAIF)
+			return -3, 0 // ESRCH — ring torn down while we were unlocked
+		}
 		head = atomic.LoadUint32(&hdr.Head)
 		tail = atomic.LoadUint32(&hdr.Tail)
+		slot.StateLock.Unlock()
 		if tail-head < ipc.UringIPCCapacity {
 			// Drainer drained while we were releasing producer lock —
 			// the slot is no longer full. Drop straight back into the
@@ -433,6 +472,7 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 	atomic.StoreUint32(&hdr.Tail, tail+1)
 
 	releaseProducerLock(hdr)
+	slot.StateLock.Unlock()
 
 	// Wake blocked receiver if any
 	var wokenCtx uintptr
@@ -540,7 +580,6 @@ func KernelPublishProcessNotify(targetSID proc.ShepherdId, ev proc.NotificationE
 	return KernelWriteToRing(int16(targetSID), &msg)
 }
 
-
 // KernelWriteToRingFromIRQ is a nosplit-safe version of KernelWriteToRing
 // for use from IRQ top-half handlers. Always writes to ring 0.
 // Instead of returning the woken thread's context pointer, it sets the
@@ -558,7 +597,13 @@ func KernelWriteToRingFromIRQ(targetSID int16, msg *ipc.UringIPCMsg) {
 	}
 
 	slot := &uringIPCSlots[targetSID][0]
-	if slot.OwnerSID != targetSID || slot.KVA[0] == 0 {
+
+	// MAZ-15: hold StateLock across the liveness check AND the copy — same
+	// teardown race as UringSendKernel (IRQs are already masked here, so the
+	// lock's own mask nests as a no-op).
+	slot.StateLock.Lock()
+	if slot.OwnerSID != targetSID || slot.KVA[0] == 0 || slot.Dead {
+		slot.StateLock.Unlock()
 		return
 	}
 
@@ -571,6 +616,7 @@ func KernelWriteToRingFromIRQ(targetSID int16, msg *ipc.UringIPCMsg) {
 	tail := atomic.LoadUint32(&hdr.Tail)
 	if tail-head >= ipc.UringIPCCapacity {
 		releaseProducerLock(hdr)
+		slot.StateLock.Unlock()
 		return // drop message if ring full
 	}
 
@@ -584,6 +630,7 @@ func KernelWriteToRingFromIRQ(targetSID int16, msg *ipc.UringIPCMsg) {
 	// Advance tail
 	atomic.StoreUint32(&hdr.Tail, tail+1)
 	releaseProducerLock(hdr)
+	slot.StateLock.Unlock()
 
 	// Wake blocked receiver if any
 	schedulerLock.Lock()
@@ -764,10 +811,14 @@ func ReleaseUringConnection(handle int, callerSID int16) int64 {
 		// and this was the last reference, free the ring pages.
 		if targetSID >= 0 && int(targetSID) < proc.MaxLiveShepherds && targetRingIdx < ipc.MaxRingsPerShepherd {
 			slot := &uringIPCSlots[targetSID][targetRingIdx]
+			slot.StateLock.Lock()
 			slot.RingRefCount--
+			var pas [ipc.UringIPCPagesNeeded]uintptr
 			if slot.Dead && slot.RingRefCount <= 0 {
-				freeUringRingPages(slot)
+				pas = unpublishUringRingLocked(slot)
 			}
+			slot.StateLock.Unlock()
+			releaseUringRingPAs(&pas)
 		}
 	}
 
@@ -778,20 +829,38 @@ func ReleaseUringConnection(handle int, callerSID int16) int64 {
 // Cleanup (called from TerminateShepherd)
 // ============================================================================
 
-// freeUringRingPages releases the physical pages backing a shepherd's uring ring
-// and zeroes the slot. Called when the ring owner is dead and all references
-// (connections targeting this ring) have been released.
-func freeUringRingPages(slot *UringIPCSlot) {
+// unpublishUringRingLocked retires a dead ring: zeroes the slot's KVA/PA and
+// owner so no producer can reach the pages, and returns the PAs for the
+// caller to release AFTER dropping StateLock. Caller MUST hold slot.StateLock.
+//
+// The unpublish-then-release split is load-bearing (MAZ-15): the old code
+// released each page to the buddy pool BEFORE zeroing its KVA, leaving a
+// window where a producer saw a live KVA for a page already in the pool.
+// It also keeps the splittable ReleasePageByPA call outside the IRQ-masked
+// lock hold (nosplit discipline).
+//
+//go:nosplit
+func unpublishUringRingLocked(slot *UringIPCSlot) (pas [ipc.UringIPCPagesNeeded]uintptr) {
 	for i := 0; i < ipc.UringIPCPagesNeeded; i++ {
-		if slot.PA[i] != 0 {
-			kmem.ReleasePageByPA(slot.PA[i])
-			slot.PA[i] = 0
-			slot.KVA[i] = 0
-		}
+		pas[i] = slot.PA[i]
+		slot.PA[i] = 0
+		slot.KVA[i] = 0
 	}
 	slot.OwnerSID = -1
 	slot.Dead = false
 	slot.RingRefCount = 0
+	return pas
+}
+
+// releaseUringRingPAs returns unpublished ring pages to the pool. Call with
+// no locks held; zero entries are skipped.
+func releaseUringRingPAs(pas *[ipc.UringIPCPagesNeeded]uintptr) {
+	for i := 0; i < ipc.UringIPCPagesNeeded; i++ {
+		if pas[i] != 0 {
+			kmem.ReleasePageByPA(pas[i])
+			pas[i] = 0
+		}
+	}
 }
 
 // CleanupUringIPCForShepherd handles uring teardown when a shepherd dies.
@@ -871,10 +940,14 @@ func CleanupUringIPCForShepherd(sid int16) {
 			targetRingIdx := conn.TargetRingIdx
 			if targetSID >= 0 && int(targetSID) < proc.MaxLiveShepherds && targetRingIdx < ipc.MaxRingsPerShepherd {
 				targetSlot := &uringIPCSlots[targetSID][targetRingIdx]
+				targetSlot.StateLock.Lock()
 				targetSlot.RingRefCount--
+				var pas [ipc.UringIPCPagesNeeded]uintptr
 				if targetSlot.Dead && targetSlot.RingRefCount <= 0 {
-					freeUringRingPages(targetSlot)
+					pas = unpublishUringRingLocked(targetSlot)
 				}
+				targetSlot.StateLock.Unlock()
+				releaseUringRingPAs(&pas)
 			}
 			conn.InUse = false
 			conn.RefCount = 0
@@ -888,22 +961,33 @@ func CleanupUringIPCForShepherd(sid int16) {
 			// But decrement our ring's refcount now.
 			ringIdx := conn.TargetRingIdx
 			if ringIdx < ipc.MaxRingsPerShepherd {
-				uringIPCSlots[sid][ringIdx].RingRefCount--
+				slot := &uringIPCSlots[sid][ringIdx]
+				slot.StateLock.Lock()
+				slot.RingRefCount--
+				slot.StateLock.Unlock()
 			}
 		}
 	}
 
 	// 4. Mark rings Dead. Free pages only if no outstanding references.
+	// Dead is set (or the ring unpublished) under StateLock, so a producer
+	// that already passed its liveness check has finished its copy before we
+	// get the lock, and one that hasn't will see Dead/zero-KVA and bail.
 	for ri := 0; ri < ipc.MaxRingsPerShepherd; ri++ {
 		slot := &uringIPCSlots[sid][ri]
+		slot.StateLock.Lock()
 		if slot.KVA[0] == 0 {
+			slot.StateLock.Unlock()
 			continue // ring not allocated
 		}
+		var pas [ipc.UringIPCPagesNeeded]uintptr
 		if slot.RingRefCount <= 0 {
-			freeUringRingPages(slot)
+			pas = unpublishUringRingLocked(slot)
 		} else {
 			slot.Dead = true
 		}
+		slot.StateLock.Unlock()
+		releaseUringRingPAs(&pas)
 	}
 
 	// 5. Clear the ID map entry.
