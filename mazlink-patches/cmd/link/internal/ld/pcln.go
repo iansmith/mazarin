@@ -146,6 +146,21 @@ func computeDeferReturn(ctxt *Link, deferReturnSym, s loader.Sym) uint32 {
 	deferreturn := uint32(0)
 	lastWasmAddr := uint32(0)
 
+	// mazlink: under -dlopen-host-packages, runtime.deferreturn is a
+	// host-policy SDYNIMPORT. pclntab content is produced by generator
+	// symbols that materialize during asmb — AFTER dynreloc has retargeted
+	// every direct call to a SDYNIMPORT symbol onto the .plt marker symbol
+	// (arch Adddynrel: r.SetSym(syms.PLT); r.SetAdd(add + SymPlt(targ))).
+	// The r.Sym()==deferReturnSym match below therefore never fires and
+	// every function got deferreturn==0, which turns any panic in a
+	// function with open-coded defers into a fatal "missing deferreturn"
+	// throw at runtime (runtime/panic.go initOpenCodedDefers). Recognize
+	// the rewritten call by its PLT slot offset instead. Stock builds are
+	// unaffected: deferReturnPlt stays -1 unless the symbol has a PLT slot.
+	deferReturnPlt := int64(-1)
+	if deferReturnSym != 0 && ldr.SymPlt(deferReturnSym) >= 0 {
+		deferReturnPlt = int64(ldr.SymPlt(deferReturnSym))
+	}
 	relocs := ldr.Relocs(s)
 	for ri := 0; ri < relocs.Count(); ri++ {
 		r := relocs.At(ri)
@@ -156,7 +171,8 @@ func computeDeferReturn(ctxt *Link, deferReturnSym, s loader.Sym) uint32 {
 			// R_ADDR relocation on the ARESUMEPOINT.
 			lastWasmAddr = uint32(r.Add())
 		}
-		if r.Type().IsDirectCall() && (r.Sym() == deferReturnSym || ldr.IsDeferReturnTramp(r.Sym())) {
+		if r.Type().IsDirectCall() && (r.Sym() == deferReturnSym || ldr.IsDeferReturnTramp(r.Sym()) ||
+			(deferReturnPlt >= 0 && r.Sym() == ctxt.PLT && r.Add() == deferReturnPlt)) {
 			if target.IsWasm() {
 				deferreturn = lastWasmAddr - 1
 			} else {

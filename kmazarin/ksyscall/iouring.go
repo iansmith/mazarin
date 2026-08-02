@@ -19,9 +19,9 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/block"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/klog"
 	"mazzy/shared/constants"
 	"mazzy/shared/iouring"
 	"mazzy/shared/mazzy"
@@ -95,14 +95,13 @@ func SyscallIOUringSetup(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	if desc == nil {
 		return -14 // EFAULT
 	}
-	desc.Flags |= kmem.PD_PINNED
-	desc.RefCount++
+	kmem.RefSharedPage(desc, kmem.PD_PINNED)
 
 	// Map to kernel VA.
 	kva := kmem.MapPAToKernelScratch(pa)
 	if kva == 0 {
-		desc.Flags &^= kmem.PD_PINNED
-		desc.RefCount--
+		kmem.ClearPageDescriptorFlags(desc, kmem.PD_PINNED)
+		kmem.UnrefSharedPage(desc, 0)
 		return -14 // EFAULT
 	}
 
@@ -193,103 +192,103 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 			}
 			// Fall through to Phase B (wait for completions).
 		} else {
-		_, ok := device.GetBlockDevice()
-		if !ok {
-			return -19 // ENODEV
-		}
-		dev := block.GetDevice()
-		if dev == nil || dev.IRQNum == 0 {
-			return -19 // ENODEV
-		}
-		blockSize := uint64(dev.BlockSizeBytes)
-		if blockSize == 0 {
-			return -19 // ENODEV
-		}
-
-		for i := uint32(0); i < toSubmit; i++ {
-			idx := (sqHead + i) & iouring.SQMask
-			sqe := &ring.SQEntries[idx]
-
-			if sqe.Opcode == iouring.IOUringOpNop {
-				continue
+			_, ok := device.GetBlockDevice()
+			if !ok {
+				return -19 // ENODEV
 			}
-			if sqe.Opcode != iouring.IOUringOpRead && sqe.Opcode != iouring.IOUringOpWrite {
-				return -22 // EINVAL — unknown opcode
+			dev := block.GetDevice()
+			if dev == nil || dev.IRQNum == 0 {
+				return -19 // ENODEV
+			}
+			blockSize := uint64(dev.BlockSizeBytes)
+			if blockSize == 0 {
+				return -19 // ENODEV
 			}
 
-			// Translate VA → PA via DMA clump (same logic as SyscallBlockSubmit).
-			bufVA := uintptr(sqe.Addr)
-			clump := shepherd.FindClumpByVA(bufVA)
-			if clump == nil {
-				klog.Errf("[IOUring] EFAULT: VA not in clump\n")
-				return -14 // EFAULT
+			for i := uint32(0); i < toSubmit; i++ {
+				idx := (sqHead + i) & iouring.SQMask
+				sqe := &ring.SQEntries[idx]
+
+				if sqe.Opcode == iouring.IOUringOpNop {
+					continue
+				}
+				if sqe.Opcode != iouring.IOUringOpRead && sqe.Opcode != iouring.IOUringOpWrite {
+					return -22 // EINVAL — unknown opcode
+				}
+
+				// Translate VA → PA via DMA clump (same logic as SyscallBlockSubmit).
+				bufVA := uintptr(sqe.Addr)
+				clump := shepherd.FindClumpByVA(bufVA)
+				if clump == nil {
+					klog.Errf("[IOUring] EFAULT: VA not in clump\n")
+					return -14 // EFAULT
+				}
+				totalBytes := uint64(sqe.Len) * blockSize
+				pa := clump.LookupPA(bufVA)
+				endPA := clump.LookupPA(bufVA + uintptr(totalBytes) - 1)
+				if pa == 0 || endPA == 0 {
+					return -14 // EFAULT
+				}
+				atomic.AddInt32(&clump.InFlight, 1)
+
+				// Cache management: writes need clean (push dirty lines to RAM),
+				// reads need pre-invalidate (discard dirty lines so DMA'd data
+				// isn't overwritten by stale cache writeback).
+				kernelVA := pa + constants.KernelVAOffset
+				requestType := block.VIRTIO_BLK_T_IN
+				if sqe.Opcode == iouring.IOUringOpWrite {
+					requestType = block.VIRTIO_BLK_T_OUT
+					asm.CleanDCacheRange(kernelVA, uintptr(totalBytes))
+					asm.DmaWmb()
+				} else {
+					asm.InvalidateDCacheRange(kernelVA, uintptr(totalBytes))
+					asm.DmaWmb()
+				}
+
+				// Submit to VirtIO engine.
+				tag, err := dev.DoBlockIOSubmit(uint32(requestType), sqe.Off, nil, 0, pa, uint32(totalBytes))
+				if err != nil {
+					klog.Errf("[IOUring] submit failed\n")
+					return -5 // EIO
+				}
+
+				// Store per-tag metadata for IRQ top-half.
+				sidecarSlot := dev.GetInFlightSidecar(0)
+				dataKernelVA := pa + constants.KernelVAOffset
+				if sqe.Opcode == iouring.IOUringOpWrite {
+					dataKernelVA = 0
+				}
+				setBlockAsyncSlot(tag, sidecarSlot.VA+16, sidecarSlot.Index,
+					dataKernelVA, uint32(totalBytes), uintptr(unsafe.Pointer(clump)),
+					sqe.UserData)
+
+				submitted++
 			}
-			totalBytes := uint64(sqe.Len) * blockSize
-			pa := clump.LookupPA(bufVA)
-			endPA := clump.LookupPA(bufVA + uintptr(totalBytes) - 1)
-			if pa == 0 || endPA == 0 {
-				return -14 // EFAULT
-			}
-			atomic.AddInt32(&clump.InFlight, 1)
 
-			// Cache management: writes need clean (push dirty lines to RAM),
-			// reads need pre-invalidate (discard dirty lines so DMA'd data
-			// isn't overwritten by stale cache writeback).
-			kernelVA := pa + constants.KernelVAOffset
-			requestType := block.VIRTIO_BLK_T_IN
-			if sqe.Opcode == iouring.IOUringOpWrite {
-				requestType = block.VIRTIO_BLK_T_OUT
-				asm.CleanDCacheRange(kernelVA, uintptr(totalBytes))
-				asm.DmaWmb()
-			} else {
-				asm.InvalidateDCacheRange(kernelVA, uintptr(totalBytes))
-				asm.DmaWmb()
-			}
-
-			// Submit to VirtIO engine.
-			tag, err := dev.DoBlockIOSubmit(uint32(requestType), sqe.Off, nil, 0, pa, uint32(totalBytes))
-			if err != nil {
-				klog.Errf("[IOUring] submit failed\n")
-				return -5 // EIO
+			// Single doorbell for the whole batch. Each Submit() above already
+			// placed its chain in the avail ring (with its own DSB + avail.idx
+			// bump), so one Notify here kicks the device for all of them. This
+			// collapses N per-block doorbell writes into one: on x86 nested-KVM
+			// each doorbell is a guest→host VM exit (~ms-scale) that dominated
+			// .maz read throughput (MAZ-136). Shared path — both arches benefit,
+			// no new x86/ARM divergence.
+			if submitted > 0 {
+				// EVENT_IDX (MAZ-136): arm the completion-IRQ threshold BEFORE the
+				// kick so the device raises one interrupt when this batch finishes,
+				// not one per block. Must precede Notify so the threshold is in place
+				// before the device starts completing requests.
+				// This arms `used_event` for the submit+wait (full-batch) pattern.
+				// A submit-less wait on a block ring (toSubmit=0, minComplete>0)
+				// skips this block (submitted==0) and instead rearms in Phase B
+				// before blocking — see the rearm there — so wait-only block
+				// callers don't sleep until timeout on a stale threshold.
+				armBlockCompletionEvent(minComplete)
+				asm.Dsb()
+				dev.Eng.Notify()
 			}
 
-			// Store per-tag metadata for IRQ top-half.
-			sidecarSlot := dev.GetInFlightSidecar(0)
-			dataKernelVA := pa + constants.KernelVAOffset
-			if sqe.Opcode == iouring.IOUringOpWrite {
-				dataKernelVA = 0
-			}
-			setBlockAsyncSlot(tag, sidecarSlot.VA+16, sidecarSlot.Index,
-				dataKernelVA, uint32(totalBytes), uintptr(unsafe.Pointer(clump)),
-				sqe.UserData)
-
-			submitted++
-		}
-
-		// Single doorbell for the whole batch. Each Submit() above already
-		// placed its chain in the avail ring (with its own DSB + avail.idx
-		// bump), so one Notify here kicks the device for all of them. This
-		// collapses N per-block doorbell writes into one: on x86 nested-KVM
-		// each doorbell is a guest→host VM exit (~ms-scale) that dominated
-		// .maz read throughput (MAZ-136). Shared path — both arches benefit,
-		// no new x86/ARM divergence.
-		if submitted > 0 {
-			// EVENT_IDX (MAZ-136): arm the completion-IRQ threshold BEFORE the
-			// kick so the device raises one interrupt when this batch finishes,
-			// not one per block. Must precede Notify so the threshold is in place
-			// before the device starts completing requests.
-			// This arms `used_event` for the submit+wait (full-batch) pattern.
-			// A submit-less wait on a block ring (toSubmit=0, minComplete>0)
-			// skips this block (submitted==0) and instead rearms in Phase B
-			// before blocking — see the rearm there — so wait-only block
-			// callers don't sleep until timeout on a stale threshold.
-			armBlockCompletionEvent(minComplete)
-			asm.Dsb()
-			dev.Eng.Notify()
-		}
-
-		// Advance SQ head.
-		atomic.StoreUint32(&ring.SQHead, sqHead+toSubmit)
+			// Advance SQ head.
+			atomic.StoreUint32(&ring.SQHead, sqHead+toSubmit)
 		} // end of block-device else branch
 	}
 

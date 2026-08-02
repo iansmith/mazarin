@@ -306,7 +306,12 @@ tasks:
     env:
       GOEXPERIMENT: ''
     sources:
+      # The overlay JSON only maps stock paths to patch paths, so it does not
+      # change when an already-listed patch file's CONTENT changes — fingerprint
+      # the patch tree too or edits to existing patches never trigger a rebuild.
       - '{{.MAZLINK_OVERLAY_JSON}}'
+      - '{{.MAZLINK_PATCHES_DIR}}/**/*.go'
+      - '{{.MAZLINK_PATCHES_DIR}}/**/*.txt'
     generates:
       - '{{.MAZLINK_BIN}}'
     cmds:

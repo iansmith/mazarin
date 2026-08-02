@@ -1146,7 +1146,7 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 				// holds a live PTE; handleFlushReply releases the page
 				// after the handler has finished reading/writing.
 				if desc := kmem.GetPageDescriptor(info.DataPagePA); desc != nil {
-					desc.Flags |= kmem.PD_FILE_BACKED
+					kmem.SetPageDescriptorFlags(desc, kmem.PD_FILE_BACKED)
 				}
 			}
 

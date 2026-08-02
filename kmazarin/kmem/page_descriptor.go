@@ -128,6 +128,7 @@ func SetPageDescriptor(pa uintptr, pageType PageType, owner int16, order uint8) 
 		return // Out of pool range
 	}
 	desc := pdAt(idx)
+	pageDescLock.Lock()
 	desc.PA = pa
 	desc.Type = pageType
 	desc.Owner = owner
@@ -138,6 +139,7 @@ func SetPageDescriptor(pa uintptr, pageType PageType, owner int16, order uint8) 
 	if pageType.IsKernelType() {
 		desc.Flags = PD_PINNED
 	}
+	pageDescLock.Unlock()
 }
 
 // GetPageDescriptor returns a pointer to the PageDescriptor for a given PA.
@@ -171,12 +173,78 @@ func ClearPageDescriptor(pa uintptr) {
 		return
 	}
 	desc := pdAt(idx)
+	pageDescLock.Lock()
 	desc.PA = 0
 	desc.Type = 0
 	desc.Owner = 0
 	desc.RefCount = 0
 	desc.Order = 0
 	desc.Flags = 0
+	pageDescLock.Unlock()
+}
+
+// pageDescLock serializes RefCount/Flags/Owner mutations on PageDescriptors
+// (MAZ-15). The read-modify-write clusters ("bump + set flag", "dec + maybe
+// clear flag", "dec-to-zero + clear + free") run from two context classes:
+// IRQ-masked syscall handlers AND preemptible thread-0 cleanup
+// (DrainDeferredCleanups → CleanupShepherdPages). Without a shared IRQ-atomic
+// lock, thread-0's plain int16 RMW can be preempted mid-update by a syscall's
+// bump on the same descriptor — the lost increment frees a page that is still
+// mapped elsewhere, and the next owner of that page gets its heap scribbled.
+// Lock order: the buddy lock may be held when taking pageDescLock
+// (SetPageDescriptor from BuddyAllocTyped); NEVER take the buddy lock while
+// holding pageDescLock — release it first (see releasePageByPA).
+var pageDescLock Spinlock
+
+// RefSharedPage bumps RefCount and sets flags as one atomic cluster.
+//
+//go:nosplit
+func RefSharedPage(desc *PageDescriptor, flags uint8) {
+	pageDescLock.Lock()
+	desc.RefCount++
+	desc.Flags |= flags
+	pageDescLock.Unlock()
+}
+
+// UnrefSharedPage decrements RefCount and clears flags once the page is back
+// to owner-only (RefCount <= 1), as one atomic cluster.
+//
+//go:nosplit
+func UnrefSharedPage(desc *PageDescriptor, flags uint8) {
+	pageDescLock.Lock()
+	desc.RefCount--
+	if desc.RefCount <= 1 {
+		desc.Flags &^= flags
+	}
+	pageDescLock.Unlock()
+}
+
+// SetPageDescriptorFlags ORs flags into the descriptor under the lock.
+//
+//go:nosplit
+func SetPageDescriptorFlags(desc *PageDescriptor, flags uint8) {
+	pageDescLock.Lock()
+	desc.Flags |= flags
+	pageDescLock.Unlock()
+}
+
+// ClearPageDescriptorFlags clears flags on the descriptor under the lock.
+//
+//go:nosplit
+func ClearPageDescriptorFlags(desc *PageDescriptor, flags uint8) {
+	pageDescLock.Lock()
+	desc.Flags &^= flags
+	pageDescLock.Unlock()
+}
+
+// RestorePageShareState overwrites RefCount+Flags from a rollback snapshot.
+//
+//go:nosplit
+func RestorePageShareState(desc *PageDescriptor, refCount int16, flags uint8) {
+	pageDescLock.Lock()
+	desc.RefCount = refCount
+	desc.Flags = flags
+	pageDescLock.Unlock()
 }
 
 // BumpPageRefCount increments the refcount of the page at pa. Returns the new
@@ -189,9 +257,12 @@ func BumpPageRefCount(pa uintptr) int16 {
 	if desc == nil {
 		return 0
 	}
+	pageDescLock.Lock()
 	desc.RefCount++
 	desc.Flags |= PD_SHARED
-	return desc.RefCount
+	rc := desc.RefCount
+	pageDescLock.Unlock()
+	return rc
 }
 
 // TransferPageOwnership atomically changes the owner of a physical page.
@@ -200,10 +271,16 @@ func BumpPageRefCount(pa uintptr) int16 {
 //go:nosplit
 func TransferPageOwnership(pa uintptr, fromPID, toPID int16) bool {
 	desc := GetPageDescriptor(pa)
-	if desc == nil || desc.Owner != fromPID {
+	if desc == nil {
+		return false
+	}
+	pageDescLock.Lock()
+	if desc.Owner != fromPID {
+		pageDescLock.Unlock()
 		return false
 	}
 	desc.Owner = toPID
+	pageDescLock.Unlock()
 	return true
 }
 
@@ -354,4 +431,3 @@ var (
 	lastAuditFingerprint uint64
 	lastAuditValid       bool
 )
-
