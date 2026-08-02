@@ -47,12 +47,24 @@ func (f *File) ReadAt(p []byte, off int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	staging, err := f.fs.readWindowBlocks(blockNums)
+	if err != nil {
+		return 0, err
+	}
 
-	// Read every non-sparse block in one readBlocks call into a zero-filled
-	// staging buffer, so sparse blocks read as zeros.
-	staging := make([]byte, uint64(count)*bs)
-	physBlocks := make([]uint32, 0, count)
-	windowIdx := make([]uint32, 0, count) // window index of each, parallel to physBlocks
+	skew := uint64(off) % bs
+	copy(p[:n], staging[skew:skew+n])
+	return int(n), nil
+}
+
+// readWindowBlocks reads every non-sparse block in blockNums with one batched
+// readBlocks call and returns the window's bytes with sparse blocks
+// zero-filled. Caller must hold fs.mu.
+func (fs *FileSystem) readWindowBlocks(blockNums []uint32) ([]byte, error) {
+	bs := uint64(fs.blockSize)
+	staging := make([]byte, uint64(len(blockNums))*bs)
+	physBlocks := make([]uint32, 0, len(blockNums))
+	windowIdx := make([]uint32, 0, len(blockNums)) // window index of each, parallel to physBlocks
 	for i, bn := range blockNums {
 		if bn != 0 {
 			physBlocks = append(physBlocks, bn)
@@ -60,25 +72,22 @@ func (f *File) ReadAt(p []byte, off int64) (int, error) {
 		}
 	}
 	switch {
-	case len(physBlocks) == int(count):
+	case len(physBlocks) == len(blockNums):
 		// No holes: readBlocks' contiguous layout is already the window
 		// layout, so it can land straight in staging.
-		if err := f.fs.readBlocks(physBlocks, staging); err != nil {
-			return 0, err
+		if err := fs.readBlocks(physBlocks, staging); err != nil {
+			return nil, err
 		}
 	case len(physBlocks) > 0:
 		compact := make([]byte, uint64(len(physBlocks))*bs)
-		if err := f.fs.readBlocks(physBlocks, compact); err != nil {
-			return 0, err
+		if err := fs.readBlocks(physBlocks, compact); err != nil {
+			return nil, err
 		}
 		for i, pos := range windowIdx {
 			copy(staging[uint64(pos)*bs:], compact[uint64(i)*bs:uint64(i+1)*bs])
 		}
 	}
-
-	skew := uint64(off) % bs
-	copy(p[:n], staging[skew:skew+n])
-	return int(n), nil
+	return staging, nil
 }
 
 // resolveBlockRangeBatched resolves the physical block numbers for data
@@ -90,9 +99,6 @@ func (f *File) ReadAt(p []byte, off int64) (int, error) {
 // Caller must hold fs.mu.
 func (fs *FileSystem) resolveBlockRangeBatched(inode *Inode, startBlock, count uint32) ([]uint32, error) {
 	ptrsPerBlock := fs.blockSize / 4
-	bs := int(fs.blockSize)
-
-	// Region bounds (block indices within the file).
 	singleEnd := NDirect + ptrsPerBlock
 	doubleEnd := singleEnd + ptrsPerBlock*ptrsPerBlock
 	if startBlock+count > doubleEnd {
@@ -103,56 +109,20 @@ func (fs *FileSystem) resolveBlockRangeBatched(inode *Inode, startBlock, count u
 	needSingle := startBlock < singleEnd && end > NDirect && inode.Block[IndirectBlock] != 0
 	needDouble := end > singleEnd && inode.Block[DblIndirectBlock] != 0
 
-	// Phase 1 — level-1 tables in one batch.
-	var l1Single, l1Double []byte
-	var l1Blocks []uint32
-	if needSingle {
-		l1Blocks = append(l1Blocks, inode.Block[IndirectBlock])
+	l1Single, l1Double, err := fs.fetchL1Tables(inode, needSingle, needDouble)
+	if err != nil {
+		return nil, err
 	}
-	if needDouble {
-		l1Blocks = append(l1Blocks, inode.Block[DblIndirectBlock])
+	l2ByBlock, err := fs.fetchL2Tables(l1Double, startBlock, end, singleEnd, ptrsPerBlock)
+	if err != nil {
+		return nil, err
 	}
-	if len(l1Blocks) > 0 {
-		buf := make([]byte, len(l1Blocks)*bs)
-		if err := fs.readBlocks(l1Blocks, buf); err != nil {
-			return nil, err
-		}
-		if needSingle {
-			l1Single = buf[:bs]
-			buf = buf[bs:]
-		}
-		if needDouble {
-			l1Double = buf[:bs]
-		}
-	}
+	return assembleBlockList(inode, l1Single, l1Double, l2ByBlock, startBlock, count, singleEnd, ptrsPerBlock), nil
+}
 
-	// Phase 2 — distinct L2 tables in one batch.
-	var l2ByBlock map[uint32][]byte
-	if needDouble {
-		firstIdx1 := uint32(0)
-		if startBlock > singleEnd {
-			firstIdx1 = (startBlock - singleEnd) / ptrsPerBlock
-		}
-		lastIdx1 := (end - 1 - singleEnd) / ptrsPerBlock
-		var l2Blocks []uint32
-		for idx1 := firstIdx1; idx1 <= lastIdx1; idx1++ {
-			if bn := binary.LittleEndian.Uint32(l1Double[idx1*4:]); bn != 0 {
-				l2Blocks = append(l2Blocks, bn)
-			}
-		}
-		if len(l2Blocks) > 0 {
-			buf := make([]byte, len(l2Blocks)*bs)
-			if err := fs.readBlocks(l2Blocks, buf); err != nil {
-				return nil, err
-			}
-			l2ByBlock = make(map[uint32][]byte, len(l2Blocks))
-			for i, bn := range l2Blocks {
-				l2ByBlock[bn] = buf[i*bs : (i+1)*bs]
-			}
-		}
-	}
-
-	// Assemble the data-block list from the cached tables.
+// assembleBlockList maps each file block index in the range to its physical
+// block number using the already-fetched in-memory tables (0 = sparse).
+func assembleBlockList(inode *Inode, l1Single, l1Double []byte, l2ByBlock map[uint32][]byte, startBlock, count, singleEnd, ptrsPerBlock uint32) []uint32 {
 	blocks := make([]uint32, 0, count)
 	for i := range count {
 		n := startBlock + i
@@ -160,24 +130,86 @@ func (fs *FileSystem) resolveBlockRangeBatched(inode *Inode, startBlock, count u
 		case n < NDirect:
 			blocks = append(blocks, inode.Block[n])
 		case n < singleEnd:
-			if l1Single == nil {
-				blocks = append(blocks, 0)
-				continue
-			}
-			blocks = append(blocks, binary.LittleEndian.Uint32(l1Single[(n-NDirect)*4:]))
+			blocks = append(blocks, tablePtr(l1Single, n-NDirect))
 		default:
-			if l1Double == nil {
-				blocks = append(blocks, 0)
-				continue
-			}
 			adj := n - singleEnd
-			l2 := l2ByBlock[binary.LittleEndian.Uint32(l1Double[adj/ptrsPerBlock*4:])]
-			if l2 == nil {
-				blocks = append(blocks, 0)
-				continue
-			}
-			blocks = append(blocks, binary.LittleEndian.Uint32(l2[adj%ptrsPerBlock*4:]))
+			l2 := l2ByBlock[tablePtr(l1Double, adj/ptrsPerBlock)]
+			blocks = append(blocks, tablePtr(l2, adj%ptrsPerBlock))
 		}
 	}
-	return blocks, nil
+	return blocks
+}
+
+// fetchL1Tables reads the level-1 indirect tables the range needs — the
+// single-indirect table and/or the double-indirect L1 — in one batched
+// readBlocks call. Either return may be nil (table not needed or absent,
+// meaning those blocks are sparse). Caller must hold fs.mu.
+func (fs *FileSystem) fetchL1Tables(inode *Inode, needSingle, needDouble bool) (l1Single, l1Double []byte, err error) {
+	bs := int(fs.blockSize)
+	var l1Blocks []uint32
+	if needSingle {
+		l1Blocks = append(l1Blocks, inode.Block[IndirectBlock])
+	}
+	if needDouble {
+		l1Blocks = append(l1Blocks, inode.Block[DblIndirectBlock])
+	}
+	if len(l1Blocks) == 0 {
+		return nil, nil, nil
+	}
+	buf := make([]byte, len(l1Blocks)*bs)
+	if err := fs.readBlocks(l1Blocks, buf); err != nil {
+		return nil, nil, err
+	}
+	if needSingle {
+		l1Single = buf[:bs]
+		buf = buf[bs:]
+	}
+	if needDouble {
+		l1Double = buf[:bs]
+	}
+	return l1Single, l1Double, nil
+}
+
+// fetchL2Tables reads every distinct L2 table the range's double-indirect
+// span references, in one batched readBlocks call, keyed by table block
+// number. Returns nil when the range has no double-indirect span (l1Double
+// nil) or every referenced table pointer is sparse. Caller must hold fs.mu.
+func (fs *FileSystem) fetchL2Tables(l1Double []byte, startBlock, end, singleEnd, ptrsPerBlock uint32) (map[uint32][]byte, error) {
+	if l1Double == nil {
+		return nil, nil
+	}
+	firstIdx1 := uint32(0)
+	if startBlock > singleEnd {
+		firstIdx1 = (startBlock - singleEnd) / ptrsPerBlock
+	}
+	lastIdx1 := (end - 1 - singleEnd) / ptrsPerBlock
+	var l2Blocks []uint32
+	for idx1 := firstIdx1; idx1 <= lastIdx1; idx1++ {
+		if bn := binary.LittleEndian.Uint32(l1Double[idx1*4:]); bn != 0 {
+			l2Blocks = append(l2Blocks, bn)
+		}
+	}
+	if len(l2Blocks) == 0 {
+		return nil, nil
+	}
+	bs := int(fs.blockSize)
+	buf := make([]byte, len(l2Blocks)*bs)
+	if err := fs.readBlocks(l2Blocks, buf); err != nil {
+		return nil, err
+	}
+	l2ByBlock := make(map[uint32][]byte, len(l2Blocks))
+	for i, bn := range l2Blocks {
+		l2ByBlock[bn] = buf[i*bs : (i+1)*bs]
+	}
+	return l2ByBlock, nil
+}
+
+// tablePtr reads the idx'th little-endian block pointer from an in-memory
+// indirect table; a nil table (absent = sparse) yields 0, matching the
+// sparse-block convention.
+func tablePtr(table []byte, idx uint32) uint32 {
+	if table == nil {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(table[idx*4:])
 }

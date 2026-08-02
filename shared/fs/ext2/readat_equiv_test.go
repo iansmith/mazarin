@@ -93,12 +93,19 @@ func TestReadAtMatchesReadAcrossRegions(t *testing.T) {
 	}
 }
 
-func TestReadAtSparseHoles(t *testing.T) {
-	dir := t.TempDir()
-	img := buildEmptyImage(t, dir, 16, "sparse165")
+// sparseTailOff is where buildSparseImage writes the tail data, leaving a
+// ~5 MB unallocated hole (spanning the direct/single/double boundaries)
+// between the 4 KB head and the 8 KB tail.
+const sparseTailOff = 5 << 20
 
-	// Write phase needs a device whose WriteBlock actually writes —
-	// counting4kDev and fileBlockDev both no-op writes.
+// buildSparseImage creates an image holding /holey.dat with a real sparse
+// hole (forward seek + write leaves the middle unallocated) and returns the
+// expected file contents. The write phase needs a device whose WriteBlock
+// actually writes — counting4kDev and fileBlockDev both no-op writes.
+func buildSparseImage(t *testing.T, dir string) (img string, want []byte) {
+	t.Helper()
+	img = buildEmptyImage(t, dir, 16, "sparse165")
+
 	wdev := openRWBlockDev(t, img)
 	wfs, err := ext2.MountRW(wdev)
 	if err != nil {
@@ -108,16 +115,12 @@ func TestReadAtSparseHoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// Layout: 4 KB of data, a ~5 MB hole (spanning the direct/single/double
-	// boundaries), then 8 KB of data. Forward seek + write leaves the hole
-	// unallocated (sparse).
 	headData := bytes.Repeat([]byte{0xAB}, 4096)
 	tailData := bytes.Repeat([]byte{0xCD}, 8192)
-	const tailOff = 5 << 20
 	if _, err := wf.Write(headData); err != nil {
 		t.Fatalf("write head: %v", err)
 	}
-	if err := wf.Seek(tailOff); err != nil {
+	if err := wf.Seek(sparseTailOff); err != nil {
 		t.Fatalf("seek: %v", err)
 	}
 	if _, err := wf.Write(tailData); err != nil {
@@ -128,6 +131,15 @@ func TestReadAtSparseHoles(t *testing.T) {
 		t.Fatalf("Sync: %v", err)
 	}
 	wdev.Close()
+
+	want = make([]byte, sparseTailOff+len(tailData))
+	copy(want, headData)
+	copy(want[sparseTailOff:], tailData)
+	return img, want
+}
+
+func TestReadAtSparseHoles(t *testing.T) {
+	img, want := buildSparseImage(t, t.TempDir())
 
 	// Read phase: reopen through the counting 4 KB device (read-only).
 	f0, err := os.Open(img)
@@ -151,10 +163,6 @@ func TestReadAtSparseHoles(t *testing.T) {
 	}
 	defer rf.Close()
 
-	want := make([]byte, tailOff+len(tailData))
-	copy(want, headData)
-	copy(want[tailOff:], tailData)
-
 	cases := []struct {
 		name string
 		off  int64
@@ -162,7 +170,7 @@ func TestReadAtSparseHoles(t *testing.T) {
 	}{
 		{"head_into_hole", 0, 16 * 1024},
 		{"pure_hole_single_indirect", 1 << 20, 64 * 1024},
-		{"hole_into_tail", tailOff - 32*1024, 48 * 1024},
+		{"hole_into_tail", sparseTailOff - 32*1024, 48 * 1024},
 		{"hole_direct_single_boundary", 40 * 1024, 32 * 1024},
 	}
 	for _, tc := range cases {
