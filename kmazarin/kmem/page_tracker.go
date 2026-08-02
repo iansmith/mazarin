@@ -11,7 +11,9 @@ package kmem
 
 import (
 	"mazzy/kmazarin/klog"
+	"mazzy/kmazarin/serial"
 	"sync/atomic"
+	"unsafe"
 )
 
 // PageAllocType identifies the purpose of a page allocation.
@@ -44,13 +46,6 @@ var (
 	trackerCount int
 	trackerLock  Spinlock
 
-	// pageIndex maps a tracked PA to its slot in pageTracker, so UntrackPage
-	// (MAZ-163) resolves a PA in O(1) instead of scanning up to
-	// MaxTrackedPages entries under trackerLock. Mutated only under
-	// trackerLock, alongside pageTracker/trackerCount. Normal Go context
-	// only (bottom-half) — never touched from nosplit/IRQ-off code.
-	pageIndex = make(map[uintptr]int, MaxTrackedPages)
-
 	// trackerFullWarnings counts how many times TrackPage has hit the
 	// tracker-full branch below. Read via GetTrackerFullWarnings(); used by
 	// the page_tracker_selftest (MAZ-163) to assert saturation produces zero
@@ -59,13 +54,93 @@ var (
 	trackerFullWarnings uint64
 )
 
+// --- PA -> tracker-slot index (MAZ-163) ---
+//
+// A flat array indexed by PFN — (PA - trackerIdxPoolStart) >> PageShift —
+// storing the tracker slot number for that PA (0 = untracked, else slot+1).
+// This mirrors page_descriptor.go's pdAt/pdBase exactly (same bump
+// allocator, same PFN scheme), per that file's package-wide rule: "No Go
+// maps. No Go slices. All data structures are flat arrays accessed via raw
+// pointer arithmetic." UntrackPage is not itself nosplit — it only runs from
+// the bottom-half drain — but it shares the package's flat-array convention
+// rather than introducing the one Go-map PA index in kmem.
+var (
+	trackerIdxBase        uintptr // VA of the PFN -> (slot+1) index array
+	trackerIdxPoolStart   uintptr // Start of pool (PA), mirrors pdPoolStart
+	trackerIdxCapacity    uint64  // Number of PFN entries covered
+	trackerIdxInitialized uint32  // Atomic: 1 = ready
+)
+
+// trackerIdxAt returns a pointer to the uint32 slot-plus-one for PFN index idx.
+// No bounds checking — caller must verify idx < trackerIdxCapacity.
+//
+//go:nosplit
+func trackerIdxAt(idx uintptr) *uint32 {
+	return (*uint32)(unsafe.Pointer(trackerIdxBase + idx*4))
+}
+
+// InitPageTrackerIndex allocates the PFN->slot index array. Called once,
+// from InitUnifiedPool right after InitPageDescriptors (same poolStart/
+// poolEnd, same bump allocator, so its pages are counted as bootstrap pages
+// the same way).
+func InitPageTrackerIndex(poolStart, poolEnd uintptr) {
+	if atomic.LoadUint32(&trackerIdxInitialized) != 0 {
+		return
+	}
+
+	trackerIdxPoolStart = poolStart
+	totalPages := uint64(poolEnd-poolStart) / PageSize
+	trackerIdxCapacity = totalPages
+
+	arraySize := uintptr(totalPages) * 4 // one uint32 per PFN
+	arrayPages := (arraySize + PageSize - 1) / PageSize
+
+	globalPool.lock.Lock()
+	allocSize := arrayPages * PageSize
+	if globalPool.next+allocSize > globalPool.end {
+		globalPool.lock.Unlock()
+		serial.RawUARTPuts("[kmem] FATAL: pool too small for page tracker index array!\r\n")
+		for {
+		}
+	}
+	arrayPA := globalPool.next
+	globalPool.next += allocSize
+	globalPool.lock.Unlock()
+
+	arrayVA := paToVA(arrayPA)
+	for i := uintptr(0); i < arrayPages; i++ {
+		Bzero4K(arrayVA + i*PageSize)
+	}
+
+	trackerIdxBase = arrayVA
+	atomic.StoreUint32(&trackerIdxInitialized, 1)
+}
+
+// trackerIdxSlotPtr returns a pointer to the index slot for pa, or nil if
+// the index isn't initialized yet or pa is outside the pool it covers.
+func trackerIdxSlotPtr(pa uintptr) *uint32 {
+	if atomic.LoadUint32(&trackerIdxInitialized) == 0 {
+		return nil
+	}
+	if pa < trackerIdxPoolStart {
+		return nil
+	}
+	idx := (pa - trackerIdxPoolStart) >> PageShift
+	if idx >= uintptr(trackerIdxCapacity) {
+		return nil
+	}
+	return trackerIdxAt(idx)
+}
+
 // TrackPage records a page allocation. Called from the bottom-half only
 // (normal Go context, not nosplit).
 func TrackPage(info PageAllocInfo) {
 	trackerLock.Lock()
 	if trackerCount < MaxTrackedPages {
 		pageTracker[trackerCount] = info
-		pageIndex[info.PA] = trackerCount
+		if slot := trackerIdxSlotPtr(info.PA); slot != nil {
+			*slot = uint32(trackerCount) + 1 // +1: 0 means "untracked"
+		}
 		trackerCount++
 		trackerLock.Unlock()
 		return
@@ -106,26 +181,30 @@ func GetTrackerFullWarnings() uint64 {
 // (ProcessDeferredRecords) is the only caller; never call this directly
 // from //go:nosplit or IRQ-off code (see deferred.go's doc comment).
 //
-// O(1): pageIndex resolves pa to its slot directly instead of scanning
-// pageTracker (MAZ-163 — the O(n) scan under trackerLock was fine at the
-// old single-caller call rate but is the wrong shape once every
+// O(1): trackerIdxSlotPtr resolves pa to its slot directly instead of
+// scanning pageTracker (MAZ-163 — the O(n) scan under trackerLock was fine
+// at the old single-caller call rate but is the wrong shape once every
 // BuddyFreeTyped enqueues an untrack).
 func UntrackPage(pa uintptr) {
 	trackerLock.Lock()
-	i, ok := pageIndex[pa]
-	if !ok {
+	slot := trackerIdxSlotPtr(pa)
+	if slot == nil || *slot == 0 {
 		trackerLock.Unlock()
 		return // Not tracked (e.g. a pinned/shared page, or already untracked)
 	}
+	i := int(*slot - 1)
+
 	// Swap with the last live entry, then fix up the index for whatever
 	// record just moved into slot i (unless i was already the last slot).
 	trackerCount--
 	moved := pageTracker[trackerCount]
 	pageTracker[i] = moved
 	if i != trackerCount {
-		pageIndex[moved.PA] = i
+		if movedSlot := trackerIdxSlotPtr(moved.PA); movedSlot != nil {
+			*movedSlot = uint32(i) + 1
+		}
 	}
-	delete(pageIndex, pa)
+	*slot = 0
 	trackerLock.Unlock()
 }
 
@@ -164,11 +243,12 @@ func shepherdIndex(pid int16) int {
 func LogMemoryStats() {
 	stats := GetMemoryStats()
 	overflows := GetDeferredOverflows()
+	untrackOverflows := GetDeferredUntrackOverflows()
 	warnings := GetTrackerFullWarnings()
-	klog.Logf("[kmem] tracker: total=%d kernelHeap=%d kernelPT=%d user=%d userPT=%d fileBuf=%d deferredOverflows=%d fullWarnings=%d\n",
+	klog.Logf("[kmem] tracker: total=%d kernelHeap=%d kernelPT=%d user=%d userPT=%d fileBuf=%d deferredOverflows=%d deferredUntrackOverflows=%d fullWarnings=%d\n",
 		stats.TotalTracked, stats.KernelHeapPages, stats.KernelPTPages,
 		stats.UserPages, stats.UserPTPages, stats.FileBufferPages,
-		overflows, warnings)
+		overflows, untrackOverflows, warnings)
 }
 
 // GetMemoryStats scans the tracker and returns per-type and per-shepherd counts.

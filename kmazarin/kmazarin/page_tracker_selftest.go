@@ -14,63 +14,31 @@ import (
 // kmem leak selftest — before launchEmbeddedFS and before IRQs/timer are
 // enabled — so no other thread allocates/frees a page mid-measurement.
 //
-// Drains the deferred queue once before either cycle's baseline is taken.
-// By this point in boot, real kernel/PT allocations have already queued
-// deferred track records that nothing has drained yet — the bottom-half
-// goroutine that normally does this needs the scheduler running, which
-// this quiescent point predates. Left undrained, that backlog (observed:
-// ~1023 records, 75 already dropped by ring overflow before this self-test
-// even starts) lands on whichever cycle calls ProcessDeferredRecords()
-// first, corrupting its baseline. Draining it up front, before either
-// cycle's "before" snapshot, isolates each cycle's own alloc/free
-// behavior from ordinary boot noise.
+// Drains the deferred queue once up front, before either cycle's baseline
+// is taken, to isolate each cycle's own alloc/free behavior from ordinary
+// boot-time queueing that hasn't been drained yet (see commit history for
+// why this matters and what it measured).
 //
 // Two cycles:
 //
 //	A. alloc/free balance — repeatedly build a process page table, map
-//	   pagesPerProcA user pages (draining the deferred queue after both the
-//	   alloc and the free), then tear the table down. Measures
-//	   kmem.TrackedPageCount() before/after the whole loop; delta must be
-//	   exactly 0 — every mapped page's tracker record must be shed when its
-//	   frame is freed. RED today: delta == itersA*pagesPerProcA-ish (nothing
-//	   ever calls UntrackPage for demand-paged user pages or PT pages).
+//	   pagesPerProcA user pages via AllocAndMapUserPageWithL0, then tear the
+//	   table down. Measures kmem.TrackedPageCount() before/after the whole
+//	   loop; delta must be exactly 0. RED today: delta > 0 (nothing calls
+//	   UntrackPage for demand-paged user pages or PT pages).
 //	B. saturation — a single process page table, built once and freed once
-//	   (both inside the measurement window, matching cycle A's bracket-the-
-//	   whole-cycle shape), with itersB repetitions in between of: map one
-//	   leaf page at a fixed VA (DemandMapUserPage), drain, unmap it
-//	   (UnmapUserPageWithL0) and release its frame (ReleasePageByPA — the
-//	   real BuddyFreeTyped path), drain again. itersB > 2*kmem.MaxTrackedPages,
-//	   so the cumulative number of tracked allocations exceeds the tracker's
-//	   capacity many times over. Verifies kmem.GetTrackerFullWarnings() does
-//	   not advance (no "[kmem] WARN: page tracker full" during the run) and
-//	   that the tracked count returns to its pre-cycle baseline once the L0
-//	   itself is torn down. RED today: the warning fires once the 32768th
-//	   record lands and then continuously for the rest of the cycle.
-//
-//	   Reuses one L0 across all itersB iterations (rather than cycle A's
-//	   per-iteration CreateProcessPageTable/FreeProcessPageTable): a naive
-//	   per-iteration rebuild, run itersB times, drives enough distinct
-//	   L1/L2/L3 page-table-page churn to fill the unrelated, separately
-//	   fixed-size ptVACache (paging.go, 2048 entries, append-only, never
-//	   evicts — already close to full from ordinary boot-time page table
-//	   setup by the time this quiescent-point selftest runs) and spam ITS
-//	   own unbounded warning — not a page-tracker bug, but it made cycle B
-//	   unable to finish at any iteration count. Reusing a single L0/VA means
-//	   every iteration after the first walks straight to the existing L3
-//	   leaf slot (paToVAOrCache, read-only) instead of allocating new PT
-//	   pages, so this cycle's ptVACache footprint is O(1) regardless of
-//	   itersB.
-//
-//	   DemandMapUserPage (not AllocAndMapUserPageWithL0, which cycle A
-//	   uses) is deliberate: AllocAndMapUserPageWithL0's own frame-alloc path
-//	   (AllocUserFrame + mapUserPageWithL0) never calls QueueDeferredRecord
-//	   — cycle A's delta comes entirely from its on-demand L1/L2/L3
-//	   page-table-page tracking, not its leaf pages. DemandMapUserPage is
-//	   one of the five real QueueDeferredRecord sites (paging.go,
-//	   Type=PageAllocUser) and, since leafVAB is unmapped at the top of
-//	   every iteration (freed at the bottom), tracks a genuinely new record
-//	   each time — the shape this cycle needs to actually drive the tracker
-//	   to its cap.
+//	   (bracketing the whole cycle, like cycle A brackets each iteration),
+//	   with itersB (> 2*kmem.MaxTrackedPages) repetitions of: map one leaf
+//	   page at a fixed VA (DemandMapUserPage, a real per-leaf tracking site,
+//	   unlike AllocAndMapUserPageWithL0), unmap it (UnmapUserPageWithL0),
+//	   release its frame (ReleasePageByPA — the real BuddyFreeTyped path).
+//	   Reuses a single L0/VA across the whole loop rather than rebuilding
+//	   per iteration, to avoid churning through page-table pages at a scale
+//	   that saturates the separate, pre-existing ptVACache (paging.go) —
+//	   not a page-tracker bug, out of scope here. Verifies
+//	   kmem.GetTrackerFullWarnings() doesn't advance and the tracked count
+//	   returns to baseline. RED today: the warning fires once the tracker
+//	   hits its cap and never lets go.
 func runPageTrackerSelfTest() {
 	const (
 		itersA        = 64
@@ -86,9 +54,10 @@ func runPageTrackerSelfTest() {
 
 	preDrainCount := kmem.TrackedPageCount()
 	preDrainOverflows := kmem.GetDeferredOverflows()
+	preDrainUntrackOverflows := kmem.GetDeferredUntrackOverflows()
 	kmem.ProcessDeferredRecords()
-	klog.Criticalf("[PT]", "[page-tracker-test] initial drain: pre-count=%d post-count=%d overflows=%d\n",
-		preDrainCount, kmem.TrackedPageCount(), preDrainOverflows)
+	klog.Criticalf("[PT]", "[page-tracker-test] initial drain: pre-count=%d post-count=%d overflows=%d untrackOverflows=%d\n",
+		preDrainCount, kmem.TrackedPageCount(), preDrainOverflows, preDrainUntrackOverflows)
 
 	// --- Cycle A: alloc/free balance ---
 	beforeA := kmem.TrackedPageCount()
@@ -166,14 +135,15 @@ func runPageTrackerSelfTest() {
 	deltaB := int64(afterB) - int64(beforeB)
 	warningsAfterB := kmem.GetTrackerFullWarnings()
 	warningsDeltaB := warningsAfterB - warningsBeforeB
+	untrackOverflows := kmem.GetDeferredUntrackOverflows()
 
-	klog.Criticalf("[PT]", "[page-tracker-test] B saturate : before=%d after=%d delta=%d completed=%d/%d warnings=%d\n",
-		beforeB, afterB, deltaB, completed, itersB, warningsDeltaB)
+	klog.Criticalf("[PT]", "[page-tracker-test] B saturate : before=%d after=%d delta=%d completed=%d/%d warnings=%d untrackOverflows=%d\n",
+		beforeB, afterB, deltaB, completed, itersB, warningsDeltaB, untrackOverflows)
 
-	if deltaA == 0 && deltaB == 0 && warningsDeltaB == 0 && completed == itersB {
+	if deltaA == 0 && deltaB == 0 && warningsDeltaB == 0 && completed == itersB && untrackOverflows == 0 {
 		klog.Criticalf("[PT]", "[page-tracker-test] PASS — tracker sheds records on free; no saturation warnings\n")
 	} else {
-		klog.Criticalf("[PT]", "[page-tracker-test] LEAK/FAIL — deltaA=%d deltaB=%d warnings=%d completed=%d/%d\n",
-			deltaA, deltaB, warningsDeltaB, completed, itersB)
+		klog.Criticalf("[PT]", "[page-tracker-test] LEAK/FAIL — deltaA=%d deltaB=%d warnings=%d completed=%d/%d untrackOverflows=%d\n",
+			deltaA, deltaB, warningsDeltaB, completed, itersB, untrackOverflows)
 	}
 }

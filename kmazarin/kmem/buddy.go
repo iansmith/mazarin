@@ -540,12 +540,10 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 	// //go:nosplit on the SyscallMunmap -> munmapClump -> BuddyFreeTyped
 	// IRQ-off chain, so it must NOT call UntrackPage directly (splittable,
 	// O(n) scan under trackerLock — see page_tracker.go's doc comment).
-	// QueueDeferredRecord is nosplit and lock-free; the bottom-half drains
-	// it into UntrackPage in normal Go context.
-	QueueDeferredRecord(DeferredPageRecord{
-		Op: DeferredOpUntrack,
-		PA: originalPA,
-	})
+	// QueueDeferredUntrack is nosplit and lock-free, and uses its own ring
+	// (separate from QueueDeferredRecord's) so this call — made on every
+	// free, tracked or not — can't starve pending track records.
+	QueueDeferredUntrack(originalPA)
 }
 
 // buddyRemoveSpecific removes a specific PA from a free list.
@@ -727,11 +725,8 @@ func AllocBuffer(size uint64) *BuddyBuffer {
 
 // FreeBuffer returns a buddy-allocated buffer to the allocator.
 //
-// MAZ-163: BuddyFreeTyped itself enqueues the deferred untrack now (the
-// single shed point for every free path), so this no longer calls
-// UntrackPage directly — doing so here too would double-untrack (harmless,
-// since UntrackPage on an already-gone PA is a no-op, but redundant and a
-// second maintenance point for the same invariant).
+// MAZ-163: BuddyFreeTyped now enqueues the untrack itself; do not add a
+// second call here.
 func FreeBuffer(buf *BuddyBuffer) {
 	if buf == nil {
 		return
