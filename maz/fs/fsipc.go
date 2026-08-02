@@ -20,7 +20,6 @@ func isZapPath(p string) bool {
 	return strings.HasSuffix(p, ".zap")
 }
 
-
 const maxFSHandles = 256
 
 // fsHandle tracks one open file on the fs side.
@@ -31,6 +30,14 @@ type fsHandle struct {
 	ftype uint8 // ext2.FTFile or ext2.FTDir
 	isDir bool
 	path  string // recorded for diagnostic prints when read returns EISDIR
+
+	// file is the open ext2 file cached across FSOpRead chunks, so a chunked
+	// ReadFile pays the inode read once per handle instead of once per 64 KB
+	// chunk (MAZ-165). Only populated for mountRoot handles: the root fs is
+	// mounted read-only, so the cached inode can never go stale; tmp is a
+	// ramdisk where the per-chunk OpenInum costs no device I/O, and skipping
+	// the cache there sidesteps write/truncate coherence entirely.
+	file *ext2.File
 }
 
 // fsIPCConn tracks one connected shepherd's IPC state.
@@ -70,6 +77,10 @@ func (c *fsIPCConn) getHandle(handle uint32) *fsHandle {
 
 func (c *fsIPCConn) freeHandle(handle uint32) {
 	if handle > 0 && handle <= maxFSHandles {
+		if h := c.handles[handle-1]; h != nil && h.file != nil {
+			h.file.Close()
+			h.file = nil
+		}
 		c.handles[handle-1] = nil
 	}
 }
@@ -104,8 +115,72 @@ type fsIPCRequest struct {
 	payload   ipc.FSIPCReqPayload
 }
 
+// Serve-time telemetry (MAZ-165): accumulated by recordServeStats and printed
+// once per svcStatsEvery requests, so the serial cost is amortized to ~one
+// line per 1000 requests. utilization = svcTotal / wall distinguishes a
+// saturated serve loop (requests queue behind each other) from an idle one
+// (per-trip time is wake/queue latency outside fs).
+var (
+	svcCount     int
+	svcTotal     time.Duration
+	svcMax       time.Duration
+	svcLastPrint time.Time
+)
+
+const (
+	svcStatsEvery    = 1000
+	svcStatsInterval = 10 * time.Second
+	svcSlowThreshold = time.Second
+)
+
+// recordServeStats folds one served request into the aggregate and prints the
+// SLOW line for requests over svcSlowThreshold. respondStart is the instant
+// respond() was entered, splitting serve time from respond time; it is zero if
+// the request returned before responding.
+func recordServeStats(req *ipc.FSIPCReqPayload, sid int16, t0, respondStart time.Time) {
+	dt := time.Since(t0)
+	if dt > svcSlowThreshold {
+		respondMs := int64(0)
+		if !respondStart.IsZero() {
+			respondMs = time.Since(respondStart).Milliseconds()
+		}
+		fmt.Printf("[fs:svc] SLOW op=%d sid=%d dt=%dms respond=%dms arg0=%d arg1=%d handle=%d pathlen=%d\n",
+			req.Op, sid, dt.Milliseconds(), respondMs,
+			req.Arg0, req.Arg1, req.Handle, req.PathLen)
+	}
+	svcCount++
+	svcTotal += dt
+	if dt > svcMax {
+		svcMax = dt
+	}
+	// Time-gate the aggregate line: at steady-state request rates the count
+	// gate alone would print every ~60 ms, and sync serial is expensive
+	// (IRQ-masked busy-spin).
+	if svcCount%svcStatsEvery != 0 {
+		return
+	}
+	wall := time.Since(svcLastPrint)
+	if svcLastPrint.IsZero() {
+		wall = svcTotal
+	} else if wall < svcStatsInterval {
+		return
+	}
+	util := 0
+	if wall > 0 {
+		util = int(svcTotal * 100 / wall)
+	}
+	fmt.Printf("[fs:svc] n=%d svcTotal=%dms max=%dms wall=%dms util=%d%%\n",
+		svcCount, svcTotal.Milliseconds(), svcMax.Milliseconds(), wall.Milliseconds(), util)
+	svcTotal, svcMax = 0, 0
+	svcLastPrint = time.Now()
+}
+
 // processRequest handles one uring-delivered file operation request.
 func (s *fsIPCServer) processRequest(raw fsIPCRequest, mt *mountTable) {
+	t0 := time.Now()
+	var respondStart time.Time
+	defer func() { recordServeStats(&raw.payload, raw.senderSID, t0, respondStart) }()
+
 	req := &raw.payload
 	sid := raw.senderSID
 
@@ -161,6 +236,7 @@ func (s *fsIPCServer) processRequest(raw fsIPCRequest, mt *mountTable) {
 		resp.Err = -38 // ENOSYS
 	}
 
+	respondStart = time.Now()
 	s.respond(sid, &resp)
 }
 
@@ -202,7 +278,7 @@ func (s *fsIPCServer) respond(sid int16, resp *ipc.FSIPCRespPayload) {
 		ring = uint8(ipc.RingFSResp)
 	}
 	msg := ipc.EncodeFSIPCResp(resp)
-	const respondMaxAttempts = 100             // 100 × 30 ms ≈ 3 s total budget
+	const respondMaxAttempts = 100 // 100 × 30 ms ≈ 3 s total budget
 	const respondPerAttemptMs = 30 * time.Millisecond
 	for attempt := 0; attempt < respondMaxAttempts; attempt++ {
 		err := uring.SendWithRing(int(sid), &msg, int(ring))
@@ -307,7 +383,7 @@ func (s *fsIPCServer) ipcOpen(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *i
 	// file already exists. Caller relies on this for atomic "create-only"
 	// patterns (lock files, fresh segment files). Returning the existing
 	// handle silently violates the contract.
-	if (flags&(oCREAT|oEXCL)) == (oCREAT | oEXCL) {
+	if (flags & (oCREAT | oEXCL)) == (oCREAT | oEXCL) {
 		if zapTrace {
 			fmt.Printf("[fs:open .zap EEXIST] path=%q inum=%d flags=0x%x\n", path, inum, flags)
 		}
@@ -375,14 +451,21 @@ func (s *fsIPCServer) ipcRead(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *i
 	}
 
 	fsys := mt.getFS(h.kind)
-	f, err := fsys.OpenInum(h.inum)
-	if err != nil {
-		resp.Err = ext2ToErrno(err)
-		return
+	f := h.file
+	if f == nil {
+		var err error
+		f, err = fsys.OpenInum(h.inum)
+		if err != nil {
+			resp.Err = ext2ToErrno(err)
+			return
+		}
+		if h.kind == mountRoot {
+			h.file = f // read-only mount — inode cannot go stale (see fsHandle)
+		} else {
+			defer f.Close()
+		}
 	}
-	defer f.Close()
-	_ = f.Seek(uint64(offset))
-	n, err := f.Read(area[:count])
+	n, err := f.ReadAt(area[:count], int64(offset))
 	if err != nil && err != ext2.ErrEndOfFile {
 		// Diagnostic: scorch merger has been mmap'ing handles whose
 		// inum points at a directory — log path/inum/ftype/isDir to
@@ -664,7 +747,7 @@ func marshalDirents(buf []byte, entries []ext2.DirEntry, startIdx int) (int, int
 		de := &entries[i]
 		nameLen := len(de.Name)
 		reclen := 8 + 8 + 2 + 1 + nameLen + 1 // ino + off + reclen + type + name + null
-		reclen = (reclen + 7) &^ 7             // align to 8
+		reclen = (reclen + 7) &^ 7            // align to 8
 		if off+reclen > len(buf) {
 			break
 		}
