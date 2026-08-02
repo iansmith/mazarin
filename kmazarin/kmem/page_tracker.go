@@ -9,7 +9,10 @@
 
 package kmem
 
-import "mazzy/kmazarin/klog"
+import (
+	"mazzy/kmazarin/klog"
+	"sync/atomic"
+)
 
 // PageAllocType identifies the purpose of a page allocation.
 type PageAllocType uint8
@@ -24,12 +27,12 @@ const (
 
 // PageAllocInfo records metadata about a single page allocation.
 type PageAllocInfo struct {
-	PA       uintptr       // Physical address of the page
-	VA       uintptr       // Virtual address (0 if not mapped to user VA)
-	Type     PageAllocType // Purpose of the allocation
+	PA         uintptr       // Physical address of the page
+	VA         uintptr       // Virtual address (0 if not mapped to user VA)
+	Type       PageAllocType // Purpose of the allocation
 	ShepherdID int16         // Process ID (-1 = kernel)
-	ThreadID int16         // Thread that allocated
-	Order    uint8         // Buddy order (0 = single page)
+	ThreadID   int16         // Thread that allocated
+	Order      uint8         // Buddy order (0 = single page)
 }
 
 // MaxTrackedPages is the capacity of the page tracker array.
@@ -37,9 +40,16 @@ type PageAllocInfo struct {
 const MaxTrackedPages = 32768
 
 var (
-	pageTracker [MaxTrackedPages]PageAllocInfo
+	pageTracker  [MaxTrackedPages]PageAllocInfo
 	trackerCount int
 	trackerLock  Spinlock
+
+	// trackerFullWarnings counts how many times TrackPage has hit the
+	// tracker-full branch below. Read via GetTrackerFullWarnings(); used by
+	// the page_tracker_selftest (MAZ-163) to assert saturation produces zero
+	// warnings. Accessed with atomics since GetTrackerFullWarnings() reads
+	// it without taking trackerLock.
+	trackerFullWarnings uint64
 )
 
 // TrackPage records a page allocation. Called from the bottom-half only
@@ -49,12 +59,38 @@ func TrackPage(info PageAllocInfo) {
 	if trackerCount < MaxTrackedPages {
 		pageTracker[trackerCount] = info
 		trackerCount++
-	} else {
 		trackerLock.Unlock()
-		klog.Errf("[kmem] WARN: page tracker full (%d entries)\n", MaxTrackedPages)
 		return
 	}
 	trackerLock.Unlock()
+
+	// Latch: log the "tracker full" warning once (on the first overflow),
+	// not on every subsequent drop. Before this fix, a saturated tracker
+	// meant a klog.Errf on EVERY allocation from then on — under sustained
+	// allocation pressure (e.g. the MAZ-163 page_tracker_selftest cycle B),
+	// that live-locks the boot by pegging the CPU writing serial output.
+	// GetTrackerFullWarnings() is still incremented every time so callers
+	// (the selftest, a future diagnostic) can observe how many records were
+	// actually dropped, even though only the first drop gets logged.
+	if atomic.AddUint64(&trackerFullWarnings, 1) == 1 {
+		klog.Errf("[kmem] WARN: page tracker full (%d entries)\n", MaxTrackedPages)
+	}
+}
+
+// TrackedPageCount returns the number of live tracker records. Called from
+// the bottom-half / normal Go context (e.g. the page_tracker_selftest,
+// MAZ-163) to observe the tracker shedding records on free.
+func TrackedPageCount() int {
+	trackerLock.Lock()
+	n := trackerCount
+	trackerLock.Unlock()
+	return n
+}
+
+// GetTrackerFullWarnings returns the cumulative count of "page tracker full"
+// warnings emitted by TrackPage since boot.
+func GetTrackerFullWarnings() uint64 {
+	return atomic.LoadUint64(&trackerFullWarnings)
 }
 
 // UntrackPage removes the record for a given PA. Called from bottom-half.
@@ -122,4 +158,3 @@ func GetMemoryStats() MemoryStats {
 	trackerLock.Unlock()
 	return stats
 }
-

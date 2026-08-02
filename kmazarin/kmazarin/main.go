@@ -1,6 +1,7 @@
 package main
 
 import (
+	toml "github.com/pelletier/go-toml/v2"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/block"
@@ -9,18 +10,17 @@ import (
 	"mazzy/kmazarin/device/virtio/net"
 	"mazzy/kmazarin/device/virtio/rng"
 	"mazzy/kmazarin/dtb"
-	"mazzy/kmazarin/klog"
-	"mazzy/shared/constants"
-	"mazzy/shared/hid"
-	toml "github.com/pelletier/go-toml/v2"
 	"mazzy/kmazarin/kirq"
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/ktimer"
 	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/uart"
-	_ "os"     // Keep to maintain BSS size
+	"mazzy/shared/constants"
+	"mazzy/shared/hid"
+	_ "os" // Keep to maintain BSS size
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -33,6 +33,7 @@ import (
 //
 // Called from exception handler - nosplit required because SP may be on a foreign
 // stack (e.g., clone child stack) where Go's stack check would fail.
+//
 //go:nosplit
 //go:noinline
 func syscallDispatchInternal(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
@@ -44,6 +45,7 @@ func syscallDispatchInternal(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint
 //
 // Called from exception handler - nosplit required because SP may be on a foreign
 // stack (e.g., clone child stack) where Go's stack check would fail.
+//
 //go:nosplit
 //go:noinline
 func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
@@ -52,6 +54,7 @@ func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (ne
 }
 
 // timerIRQHandlerInternal is called directly from exception handler for timer IRQs
+//
 //go:nosplit
 //go:noinline
 func timerIRQHandlerInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
@@ -439,7 +442,6 @@ func initTimerFrequency() {
 
 }
 
-
 // dtbTimerFreqCallback is the DTB walk callback for timer frequency discovery.
 // Looks for the /cpus node and reads its timebase-frequency property.
 func dtbTimerFreqCallback(node *dtb.DTBNode) {
@@ -520,8 +522,6 @@ func initVirtIOInputDevices() {
 
 }
 
-
-
 // kernelBootTick is the hardware counter value when kmazarin's main() starts.
 // Used to compute true kernel uptime (excluding UEFI boot).
 var kernelBootTick uint64
@@ -544,7 +544,7 @@ func simpleMain() {
 		// NOTE: GOGC is NOT set here — kernel uses Go default (100%).
 		// Userspace programs also get GOGC=100 via their envp in launch.go.
 		// GOMEMLIMIT is set via diplomat envp (64MiB).
-		debug.SetMemoryLimit(64 * 1024 * 1024)     // 64MB soft heap cap (matches diplomat envp)
+		debug.SetMemoryLimit(64 * 1024 * 1024) // 64MB soft heap cap (matches diplomat envp)
 		InitDeadlineQueue()
 		InitSoftIRQDispatcher()
 	} else {
@@ -716,6 +716,14 @@ func simpleMain() {
 	if kernelCfg.KmemLeakTest {
 		savedDAIF := SaveAndDisableIRQs()
 		runKmemLeakSelfTest()
+		RestoreIRQs(savedDAIF)
+	}
+
+	// MAZ-163 page tracker shed-on-free self-test. Gated by config; OFF by
+	// default. Same quiescent-window rationale as the kmem leak test above.
+	if kernelCfg.PageTrackerTest {
+		savedDAIF := SaveAndDisableIRQs()
+		runPageTrackerSelfTest()
 		RestoreIRQs(savedDAIF)
 	}
 
