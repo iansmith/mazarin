@@ -39,6 +39,24 @@ import (
 //	   kmem.GetTrackerFullWarnings() doesn't advance and the tracked count
 //	   returns to baseline. RED today: the warning fires once the tracker
 //	   hits its cap and never lets go.
+//	C. interleaved track/untrack ordering — alloc, free, and realloc the
+//	   SAME VA (hence, via the buddy allocator's LIFO free-list reuse,
+//	   almost certainly the same PA) itersC times with NO drain between
+//	   iterations, then drain once at the end. This is the shape real boot
+//	   traffic actually has (the buddy allocator recycles freed pages
+//	   immediately; nothing guarantees a drain between a free and the next
+//	   alloc of the same PA) — cycles A and B both drain after every op, so
+//	   neither can catch an ordering bug in how deferred track/untrack
+//	   records for the same PA get processed relative to each other.
+//	   Asserts the User+UserPT-page delta is 0 after the single end-of-cycle
+//	   drain — scoped to those two types (not raw TrackedPageCount(),
+//	   which cycle A/B use) because this cycle runs after cycle B's 66k+
+//	   iterations, and an ordinary Go-runtime kernel-heap growth/GC event
+//	   landing inside the measurement window is a real, expected, one-time
+//	   PageAllocKernelHeap track with no matching free — observed directly
+//	   during development (kernelHeap 253->254 pages, User/UserPT 0->0 both
+//	   before and after) and unrelated to the track/untrack ordering this
+//	   cycle exists to test.
 func runPageTrackerSelfTest() {
 	const (
 		itersA        = 64
@@ -47,6 +65,9 @@ func runPageTrackerSelfTest() {
 
 		itersB  = 2*kmem.MaxTrackedPages + 512 // > 2*MaxTrackedPages
 		leafVAB = uintptr(0x2000_0000)
+
+		itersC  = 300
+		leafVAC = uintptr(0x2100_0000)
 	)
 
 	klog.Criticalf("[PT]", "[page-tracker-test] start itersA=%d pagesPerProcA=%d itersB=%d\n",
@@ -54,10 +75,9 @@ func runPageTrackerSelfTest() {
 
 	preDrainCount := kmem.TrackedPageCount()
 	preDrainOverflows := kmem.GetDeferredOverflows()
-	preDrainUntrackOverflows := kmem.GetDeferredUntrackOverflows()
 	kmem.ProcessDeferredRecords()
-	klog.Criticalf("[PT]", "[page-tracker-test] initial drain: pre-count=%d post-count=%d overflows=%d untrackOverflows=%d\n",
-		preDrainCount, kmem.TrackedPageCount(), preDrainOverflows, preDrainUntrackOverflows)
+	klog.Criticalf("[PT]", "[page-tracker-test] initial drain: pre-count=%d post-count=%d overflows=%d\n",
+		preDrainCount, kmem.TrackedPageCount(), preDrainOverflows)
 
 	// --- Cycle A: alloc/free balance ---
 	beforeA := kmem.TrackedPageCount()
@@ -100,6 +120,7 @@ func runPageTrackerSelfTest() {
 	// (correctly still-live) PT-page records counted as part of "after".
 	beforeB := kmem.TrackedPageCount()
 	warningsBeforeB := kmem.GetTrackerFullWarnings()
+	overflowsBeforeB := kmem.GetDeferredOverflows()
 
 	l0B := kmem.CreateProcessPageTable()
 	if l0B == 0 {
@@ -135,15 +156,63 @@ func runPageTrackerSelfTest() {
 	deltaB := int64(afterB) - int64(beforeB)
 	warningsAfterB := kmem.GetTrackerFullWarnings()
 	warningsDeltaB := warningsAfterB - warningsBeforeB
-	untrackOverflows := kmem.GetDeferredUntrackOverflows()
+	overflowsDeltaB := kmem.GetDeferredOverflows() - overflowsBeforeB
 
-	klog.Criticalf("[PT]", "[page-tracker-test] B saturate : before=%d after=%d delta=%d completed=%d/%d warnings=%d untrackOverflows=%d\n",
-		beforeB, afterB, deltaB, completed, itersB, warningsDeltaB, untrackOverflows)
+	klog.Criticalf("[PT]", "[page-tracker-test] B saturate : before=%d after=%d delta=%d completed=%d/%d warnings=%d overflows=%d\n",
+		beforeB, afterB, deltaB, completed, itersB, warningsDeltaB, overflowsDeltaB)
 
-	if deltaA == 0 && deltaB == 0 && warningsDeltaB == 0 && completed == itersB && untrackOverflows == 0 {
+	// --- Cycle C: interleaved track/untrack ordering (no drain between ops) ---
+	// Bracket the whole cycle (before L0 exists through after it's freed),
+	// same shape as cycle B — L0's own track (CreateProcessPageTable) and
+	// untrack (FreeProcessPageTable's teardown) both fall inside the
+	// window, so a clean cycle's User+UserPT delta nets exactly 0.
+	beforeC := kmem.TrackedPageCount()
+	statsBeforeC := kmem.GetMemoryStats()
+
+	l0C := kmem.CreateProcessPageTable()
+	if l0C == 0 {
+		klog.Errf("[page-tracker-test] C: CreateProcessPageTable failed (out of frames?) — aborting\n")
+		return
+	}
+	kmem.ProcessDeferredRecords()
+
+	completedC := 0
+	for i := 0; i < itersC; i++ {
+		fpa := kmem.DemandMapUserPage(leafVAC, l0C)
+		if fpa == 0 {
+			klog.Errf("[page-tracker-test] C: DemandMapUserPage failed i=%d — aborting\n", i)
+			break
+		}
+		freedPA := kmem.UnmapUserPageWithL0(leafVAC, l0C)
+		if freedPA != fpa {
+			klog.Errf("[page-tracker-test] C: UnmapUserPageWithL0 mismatch i=%d got=%x want=%x — aborting\n",
+				i, uint64(freedPA), uint64(fpa))
+			break
+		}
+		kmem.ReleasePageByPA(freedPA)
+		// Deliberately NO ProcessDeferredRecords() here — the next iteration's
+		// DemandMapUserPage almost always gets the same PA back from the
+		// buddy allocator's LIFO free list before this PA's track/untrack
+		// pair has been drained. That's the ordering this cycle exists to
+		// exercise.
+		completedC++
+	}
+	kmem.FreeProcessPageTable(l0C)
+	kmem.ProcessDeferredRecords() // single drain at the very end
+
+	afterC := kmem.TrackedPageCount()
+	deltaC := int64(afterC) - int64(beforeC) // raw total, logged for visibility only
+	statsAfterC := kmem.GetMemoryStats()
+	userDeltaC := int64(statsAfterC.UserPages+statsAfterC.UserPTPages) -
+		int64(statsBeforeC.UserPages+statsBeforeC.UserPTPages)
+	klog.Criticalf("[PT]", "[page-tracker-test] C ordering  : before=%d after=%d delta=%d userDelta=%d completed=%d/%d\n",
+		beforeC, afterC, deltaC, userDeltaC, completedC, itersC)
+
+	if deltaA == 0 && deltaB == 0 && warningsDeltaB == 0 && completed == itersB && overflowsDeltaB == 0 &&
+		userDeltaC == 0 && completedC == itersC {
 		klog.Criticalf("[PT]", "[page-tracker-test] PASS — tracker sheds records on free; no saturation warnings\n")
 	} else {
-		klog.Criticalf("[PT]", "[page-tracker-test] LEAK/FAIL — deltaA=%d deltaB=%d warnings=%d completed=%d/%d untrackOverflows=%d\n",
-			deltaA, deltaB, warningsDeltaB, completed, itersB, untrackOverflows)
+		klog.Criticalf("[PT]", "[page-tracker-test] LEAK/FAIL — deltaA=%d deltaB=%d warnings=%d completed=%d/%d overflows=%d userDeltaC=%d completedC=%d/%d\n",
+			deltaA, deltaB, warningsDeltaB, completed, itersB, overflowsDeltaB, userDeltaC, completedC, itersC)
 	}
 }

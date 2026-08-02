@@ -243,12 +243,11 @@ func shepherdIndex(pid int16) int {
 func LogMemoryStats() {
 	stats := GetMemoryStats()
 	overflows := GetDeferredOverflows()
-	untrackOverflows := GetDeferredUntrackOverflows()
 	warnings := GetTrackerFullWarnings()
-	klog.Logf("[kmem] tracker: total=%d kernelHeap=%d kernelPT=%d user=%d userPT=%d fileBuf=%d deferredOverflows=%d deferredUntrackOverflows=%d fullWarnings=%d\n",
+	klog.Logf("[kmem] tracker: total=%d kernelHeap=%d kernelPT=%d user=%d userPT=%d fileBuf=%d deferredOverflows=%d fullWarnings=%d\n",
 		stats.TotalTracked, stats.KernelHeapPages, stats.KernelPTPages,
 		stats.UserPages, stats.UserPTPages, stats.FileBufferPages,
-		overflows, untrackOverflows, warnings)
+		overflows, warnings)
 }
 
 // GetMemoryStats scans the tracker and returns per-type and per-shepherd counts.

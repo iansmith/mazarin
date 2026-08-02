@@ -540,10 +540,14 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 	// //go:nosplit on the SyscallMunmap -> munmapClump -> BuddyFreeTyped
 	// IRQ-off chain, so it must NOT call UntrackPage directly (splittable,
 	// O(n) scan under trackerLock — see page_tracker.go's doc comment).
-	// QueueDeferredUntrack is nosplit and lock-free, and uses its own ring
-	// (separate from QueueDeferredRecord's) so this call — made on every
-	// free, tracked or not — can't starve pending track records.
-	QueueDeferredUntrack(originalPA)
+	// QueueDeferredRecord is nosplit and lock-free; the SAME ring as every
+	// TrackPage enqueue, deliberately — FIFO ordering across one ring is
+	// what keeps a PA's track/untrack/re-track sequence correctly ordered
+	// (see deferred.go's header comment for why a separate ring broke this).
+	QueueDeferredRecord(DeferredPageRecord{
+		Op: DeferredOpUntrack,
+		PA: originalPA,
+	})
 }
 
 // buddyRemoveSpecific removes a specific PA from a free list.
