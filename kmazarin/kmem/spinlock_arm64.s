@@ -31,6 +31,6 @@ TEXT ·saveAndDisableIRQsLocal(SB), NOSPLIT|NOFRAME, $0-8
 // func restoreIRQsLocal(saved uint64)
 TEXT ·restoreIRQsLocal(SB), NOSPLIT|NOFRAME, $0-8
 	MOVD	saved+0(FP), R0
-	WORD	$0xD51B4200   // MSR DAIF, X0 — write R0 to DAIF
+	WORD	$0xD51B4220   // MSR DAIF, X0 (op2=1; 0xD51B4200 is NZCV) (MAZ-128/MAZ-166)
 	ISB	$15
 	RET
