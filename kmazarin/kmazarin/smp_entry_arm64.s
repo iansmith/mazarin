@@ -147,7 +147,7 @@ TEXT ·secondaryCPUEntry(SB), NOSPLIT|NOFRAME, $0
 
 secondary_idle_loop:
 	// Wait for interrupt (low power state)
-	HINT	$1			// WFI
+	WFI
 
 	// After waking, loop back
 	B	secondary_idle_loop

@@ -13,14 +13,16 @@
 // - Wakes immediately when an interrupt becomes pending
 // - Is a hint instruction - the processor may also wake spuriously
 //
-// This is encoded as HINT #1 in Go assembler since WFI is not directly
-// supported as an instruction mnemonic.
+// Under QEMU/HVF the guest core never actually halts: Hypervisor.framework
+// always intercepts WFI, and QEMU's handler sleeps the vCPU *host thread* until
+// the next armed CNTV deadline (with a ~2 ms floor below which it returns
+// immediately). The parking is real, it just happens host-side. YIELD, which
+// this used to encode by mistake, does not trap at all — which is why the idle
+// loop used to peg a host core (MAZ-169).
 
 // func WaitForInterrupt()
 TEXT ·WaitForInterrupt(SB), NOSPLIT|NOFRAME, $0-0
-	// WFI - Wait For Interrupt
-	// Encoded as HINT #1 in Go assembler
-	HINT	$1
+	WFI
 	RET
 
 // EnableIRQsAndWait enables IRQs and halts until the next interrupt.
@@ -30,8 +32,7 @@ TEXT ·WaitForInterrupt(SB), NOSPLIT|NOFRAME, $0-0
 TEXT ·EnableIRQsAndWait(SB), NOSPLIT|NOFRAME, $0-0
 	MSR	$2, DAIFClr	// enable IRQs
 	ISB	$15
-	// WFI
-	HINT	$1
+	WFI
 	// DMB OSH — data memory barrier (outer shareable) after WFI wake.
 	// Under HVF, the VirtIO backend runs on a separate host thread. Its DMA
 	// writes (used ring) may not be visible to this vCPU without a barrier
@@ -40,6 +41,6 @@ TEXT ·EnableIRQsAndWait(SB), NOSPLIT|NOFRAME, $0-0
 	// the device's DMA writes are ordered before any subsequent loads
 	// (e.g., reading the used ring in DoBlockIOComplete).
 	// On TCG this is harmless (single-threaded, trivially consistent).
-	WORD	$0xD50333BF
+	DMB	$3
 	MSR	$2, DAIFSet	// re-disable IRQs
 	RET
