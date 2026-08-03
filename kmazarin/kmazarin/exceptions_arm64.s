@@ -2689,17 +2689,15 @@ TEXT ·ReadVBAR(SB), NOSPLIT, $0-8
 
 // ============================================================================
 // EnableIRQs - Enable interrupts by clearing the I bit in DAIF
+//
+// Deliberately unpaired: the obvious partner DisableIRQs had no callers and was
+// deleted with MAZ-167's other redundant DAIF copies. Unconditional unmasking
+// is a boot-time operation (main.go calls this once IRQs are ready); masking is
+// always save-and-restore, so it goes through ksync.SaveAndDisableIRQs instead.
+// Reach for that, not a reinstated DisableIRQs.
 // ============================================================================
 TEXT ·EnableIRQs(SB), NOSPLIT, $0
 	MSR	$2, DAIFClr	// clear I bit = enable IRQs
-	ISB	$15		// Synchronize context
-	RET
-
-// ============================================================================
-// DisableIRQs - Disable interrupts by setting the I bit in DAIF
-// ============================================================================
-TEXT ·DisableIRQs(SB), NOSPLIT, $0
-	MSR	$2, DAIFSet	// set I bit = disable IRQs
 	ISB	$15		// Synchronize context
 	RET
 

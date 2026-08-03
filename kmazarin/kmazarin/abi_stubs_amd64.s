@@ -140,13 +140,13 @@ TEXT ·ReadVBAR(SB), NOSPLIT, $16-8
 	RET
 
 // EnableIRQs enables interrupts (STI).
+//
+// Deliberately unpaired: the obvious partner DisableIRQs had no callers and was
+// deleted with MAZ-167's other redundant DAIF/RFLAGS copies. Unconditional
+// unmasking is a boot-time operation; masking is always save-and-restore, so it
+// goes through ksync.SaveAndDisableIRQs instead.
 TEXT ·EnableIRQs(SB), NOSPLIT|NOFRAME, $0-0
 	STI
-	RET
-
-// DisableIRQs disables interrupts (CLI).
-TEXT ·DisableIRQs(SB), NOSPLIT|NOFRAME, $0-0
-	CLI
 	RET
 
 // SaveAndDisableIRQs / RestoreIRQs moved to ksync (MAZ-167). Go callers go

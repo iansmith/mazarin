@@ -17,11 +17,11 @@ func SetVBAR(addr uintptr)
 //go:nosplit
 func ReadVBAR() uintptr
 
+// EnableIRQs is deliberately unpaired — see the note at its asm definition.
+// To mask, use ksync.SaveAndDisableIRQs via the irq.go wrappers.
+//
 //go:nosplit
 func EnableIRQs()
-
-//go:nosplit
-func DisableIRQs()
 
 // SaveAndDisableIRQs / RestoreIRQs are Go wrappers over the single canonical
 // ksync implementation — see irq.go (MAZ-167).

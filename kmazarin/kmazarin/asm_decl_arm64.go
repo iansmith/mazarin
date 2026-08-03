@@ -13,6 +13,7 @@ func EnableGIC()
 
 // DisableTimerHardware disables the ARM timer hardware (CNTV_CTL_EL0).
 // This stops the timer from generating interrupt requests.
+//
 //go:nosplit
 func DisableTimerHardware()
 
@@ -20,6 +21,7 @@ func DisableTimerHardware()
 func RearmTimerNow()
 
 // Timer register read functions
+//
 //go:nosplit
 func ReadCntvCtlEl0() uint64
 
@@ -31,6 +33,3 @@ func ReadCntvctEl0() uint64
 
 //go:nosplit
 func ReadCntfrqEl0() uint64
-
-//go:nosplit
-func ReadDAIF() uint64
