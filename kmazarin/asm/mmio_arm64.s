@@ -79,14 +79,14 @@ TEXT ·Dsb(SB), NOSPLIT, $0-0
 // DMA write memory barrier - ensures stores are visible to DMA devices
 // Uses DMB OSHST (outer shareable store) like Linux dma_wmb()
 TEXT ·DmaWmb(SB), NOSPLIT, $0-0
-	WORD	$0xD50332BF		// DMB OSHST (verified with gcc as)
+	DMB	$2			// DMB OSHST
 	RET
 
 // DmaRmb()
 // DMA read memory barrier - ensures device writes are visible to CPU
 // Uses DMB OSH (outer shareable) like Linux dma_rmb()
 TEXT ·DmaRmb(SB), NOSPLIT, $0-0
-	WORD	$0xD50333BF		// DMB OSH (verified with gcc as)
+	DMB	$3			// DMB OSH
 	RET
 
 // CleanDCacheRange(start uintptr, size uintptr)
