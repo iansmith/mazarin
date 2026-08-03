@@ -1631,13 +1631,15 @@ func KernelIdleLoop() {
 		// This is the "clock" algorithm reference-bit sweep — foundation for
 		// page replacement.
 		//
-		// scanTimerCount is incremented in ProcessDeadlinesTopHalf (called from
-		// the timer top-half on all 3 archs). The timer fires every ~100ms of
-		// virtual time, but QEMU TCG runs ~30x slower than real time, so each
-		// tick is ~3 seconds of wall-clock time. Threshold of 3 gives a scan
-		// roughly every ~9 seconds wall-clock in QEMU TCG.
+		// scanTimerCount is incremented in ProcessDeadlinesTopHalf (called
+		// from the timer top-half), i.e. once per kernel tick. The sweep
+		// interval is expressed in wall-clock terms and derived from the
+		// tick rate (MAZ-172 discipline — the old literal 300 silently
+		// meant 0.9 s at 330 Hz and 1.8 s at 165 Hz).
+		const scanIntervalMs = 900
+		scanIntervalTicks := kirq.KernelTickRate * scanIntervalMs / 1000
 		currentTick := atomic.LoadUint64(&scanTimerCount)
-		if currentTick-scanLastTick >= 300 {
+		if currentTick-scanLastTick >= scanIntervalTicks {
 			scanLastTick = currentTick
 			proc.Shepherds.ForEach(func(p *proc.Shepherd) bool {
 				kmem.ScanAccessedBits(p.PID)

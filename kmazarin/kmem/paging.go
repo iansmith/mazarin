@@ -1981,6 +1981,20 @@ func WalkUserPageTable(va uintptr) uintptr {
 //
 //go:nosplit
 func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
+	pa, _ := WalkUserPageTableWithNext(va, l0PAParam)
+	return pa
+}
+
+// WalkUserPageTableWithNext is WalkUserPageTableWithL0 plus a scan cursor: it
+// also returns the next VA worth visiting. For a mapped page (or a hole only
+// at L3) that is va+PageSize; when an upper-level table entry is absent it is
+// the start of the next L2/L1/L0 region (2 MB / 1 GB / 512 GB), so a sweep
+// over sparse spans skips unmapped holes at table granularity instead of
+// paying a full walk per 4 KB page (MAZ-171 — the idle-loop A/D scan was
+// burning ~90% of the CPU walking demand-page holes page by page).
+//
+//go:nosplit
+func WalkUserPageTableWithNext(va uintptr, l0PAParam uintptr) (uintptr, uintptr) {
 	// Lazy initialization
 	if !pagingInitialized {
 		InitPaging()
@@ -1988,7 +2002,7 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 
 	// Userspace addresses must have bit 63 = 0
 	if (va>>63)&1 != 0 {
-		return 0
+		return 0, va + PageSize
 	}
 
 	// Extract indices
@@ -2009,51 +2023,51 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 	}
 	l0VA := paToVAOrCache(l0PA)
 	if l0VA == 0 {
-		return 0
+		return 0, va + PageSize
 	}
 
-	// L0 entry
+	// L0 entry — absent means a 512 GB hole
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
 	if !pteIsValid(l0Entry) {
-		return 0
+		return 0, ((va >> L0Shift) + 1) << L0Shift
 	}
 
-	// L1 table
+	// L1 table — absent entry means a 1 GB hole
 	l1PA := pteExtractPA(l0Entry)
 	l1VA := paToVAOrCache(l1PA)
 	if l1VA == 0 {
-		return 0
+		return 0, va + PageSize
 	}
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
 	if !pteIsValid(l1Entry) {
-		return 0
+		return 0, ((va >> L1Shift) + 1) << L1Shift
 	}
 
-	// L2 table
+	// L2 table — absent entry means a 2 MB hole
 	l2PA := pteExtractPA(l1Entry)
 	l2VA := paToVAOrCache(l2PA)
 	if l2VA == 0 {
-		return 0
+		return 0, va + PageSize
 	}
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
 	if !pteIsValid(l2Entry) {
-		return 0
+		return 0, ((va >> L2Shift) + 1) << L2Shift
 	}
 
 	// L3 table
 	l3PA := pteExtractPA(l2Entry)
 	l3VA := paToVAOrCache(l3PA)
 	if l3VA == 0 {
-		return 0
+		return 0, va + PageSize
 	}
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 	if !pteIsValid(l3Entry) {
-		return 0
+		return 0, va + PageSize
 	}
 
 	// Extract PA from L3 entry and add page offset
 	pa := pteExtractPA(l3Entry)
-	return pa | (va & (PageSize - 1))
+	return pa | (va & (PageSize - 1)), va + PageSize
 }
 
 // WalkUserPTLean translates a userspace VA to PA using an explicit L0 page table.

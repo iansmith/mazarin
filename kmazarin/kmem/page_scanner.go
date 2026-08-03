@@ -88,40 +88,50 @@ func ScanAccessedBits(shepherdID proc.ShepherdId) (accessedCount int, totalCount
 
 	p.Spans.ForEach(func(start, length uint64) {
 		end := start + length
-		for va := uintptr(start); va < uintptr(end); va += PageSize {
+		for va := uintptr(start); va < uintptr(end); {
 			// Look up PA using the shepherd's page table (explicit l0PA).
-			// This is correct regardless of which page table is active in the MMU.
-			pa := WalkUserPageTableWithL0(va, l0PA)
-			if pa == 0 {
-				continue // Not mapped yet (demand paging)
+			// This is correct regardless of which page table is active in the
+			// MMU. The hole-aware walk advances the cursor past unmapped
+			// regions at table granularity (MAZ-171): spans are mostly
+			// demand-page holes, and walking them 4 KB at a time saturated
+			// the idle loop.
+			pa, next := WalkUserPageTableWithNext(va, l0PA)
+			if pa != 0 {
+				totalCount++
+				if scanOneMappedPage(va, pa) {
+					accessedCount++
+				}
 			}
-			totalCount++
-
-			// Get descriptor; skip pinned pages (kernel pages, PT pages, MMIO).
-			desc := GetPageDescriptor(pa)
-			if desc != nil && desc.Flags&PD_PINNED != 0 {
-				continue
-			}
-
-			// Clear the Accessed bit and record if it was set.
-			// NOTE: On ARM64, this walks ttbr0L0PA (the platform's cached root).
-			// If the shepherd's page table is not currently active, platformClearAccessed
-			// returns false (no match found) — acceptable for the stub framework.
-			wasAccessed := platformClearAccessed(va)
-			if wasAccessed {
-				accessedCount++
-			}
-
-			// Clear the hardware Dirty bit and propagate to PageDescriptor.
-			// On ARM64 without FEAT_HAFDBS, platformClearDirty is a no-op (returns false).
-			wasDirty := platformClearDirty(va)
-			if wasDirty && desc != nil {
-				SetPageDescriptorFlags(desc, PD_DIRTY)
-			}
+			va = next
 		}
 	})
 
 	return
+}
+
+// scanOneMappedPage clears the A/D bits for one mapped page and returns
+// whether the page had been accessed since the last sweep.
+func scanOneMappedPage(va, pa uintptr) bool {
+	// Get descriptor; skip pinned pages (kernel pages, PT pages, MMIO).
+	desc := GetPageDescriptor(pa)
+	if desc != nil && desc.Flags&PD_PINNED != 0 {
+		return false
+	}
+
+	// Clear the Accessed bit and record if it was set.
+	// NOTE: On ARM64, this walks ttbr0L0PA (the platform's cached root).
+	// If the shepherd's page table is not currently active, platformClearAccessed
+	// returns false (no match found) — acceptable for the stub framework.
+	wasAccessed := platformClearAccessed(va)
+
+	// Clear the hardware Dirty bit and propagate to PageDescriptor.
+	// On ARM64 without FEAT_HAFDBS, platformClearDirty is a no-op (returns false).
+	wasDirty := platformClearDirty(va)
+	if wasDirty && desc != nil {
+		SetPageDescriptorFlags(desc, PD_DIRTY)
+	}
+
+	return wasAccessed
 }
 
 // FindEvictionCandidates returns up to count physical addresses suitable for
