@@ -2713,8 +2713,8 @@ TEXT ·DisableIRQs(SB), NOSPLIT, $0
 // ============================================================================
 TEXT ·SaveAndDisableIRQs(SB), NOSPLIT, $0-8
 	// MRS X0, DAIF - Read current DAIF into R0
-	// Encoded as: 0xD53B4220
-	WORD	$0xD53B4200
+	// op2=1 selects DAIF; op2=0 (0xD53B4200) is NZCV. (MAZ-128/MAZ-166)
+	WORD	$0xD53B4220
 	// MSR DAIFSET, #2 - Set I bit = disable IRQs
 	WORD	$0xD50342DF
 	ISB	$15
@@ -2728,8 +2728,8 @@ TEXT ·SaveAndDisableIRQs(SB), NOSPLIT, $0-8
 TEXT ·RestoreIRQs(SB), NOSPLIT, $0-8
 	MOVD	savedDAIF+0(FP), R0
 	// MSR DAIF, X0 - Write R0 to DAIF
-	// Encoded as: 0xD51B4200
-	WORD	$0xD51B4200
+	// op2=1 selects DAIF; op2=0 (0xD51B4200) is NZCV. (MAZ-128/MAZ-166)
+	WORD	$0xD51B4220
 	ISB	$15
 	RET
 
