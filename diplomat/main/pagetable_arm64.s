@@ -208,8 +208,7 @@ TEXT ·jumpToKmazarinWithStack(SB), NOSPLIT, $0-32
 	// UEFI may have timer interrupts enabled; without masking,
 	// an IRQ fires during kmazarin init and hits our WFI-loop
 	// IRQ handler, permanently stalling the CPU.
-	// MSR DAIFSET, #0xF — mask Debug, SError, IRQ, FIQ
-	WORD	$0xD50343DF
+	MSR	$0xF, DAIFSet	// mask Debug, SError, IRQ, FIQ
 
 	// Enable FP/SIMD: set CPACR_EL1.FPEN (bits 21:20) = 0b11.
 	// UEFI typically sets this, but be explicit so kmazarin can use

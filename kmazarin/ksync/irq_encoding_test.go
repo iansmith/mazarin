@@ -17,13 +17,14 @@ import (
 // mistake unwritable: the assembler validates the register name.
 //
 //	D53B42.. = MRS Xn, {NZCV|DAIF}    D51B42.. = MSR {NZCV|DAIF}, Xn
-//	D50342.. = MSR DAIFSet/DAIFClr, #imm
+//	D5034... = MSR DAIFSet/DAIFClr, #imm  (the imm4 is the third nibble —
+//	           match all 16, or mask widths other than I-only escape the gate)
 func TestNoWordEncodedDAIFOps(t *testing.T) {
 	root, err := repoRoot()
 	if err != nil {
 		t.Fatalf("locating repo root: %v", err)
 	}
-	daifWord := regexp.MustCompile(`(?i)WORD\s+\$0x(D53B42|D51B42|D50342)`)
+	daifWord := regexp.MustCompile(`(?i)WORD\s+\$0x(D53B42|D51B42|D5034[0-9A-F])`)
 
 	var hits []string
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -32,7 +33,10 @@ func TestNoWordEncodedDAIFOps(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", ".claude", "build", "bin", "salvaged", "runtime-patches", ".slopstop":
+			// bin/ holds a full vendored GOROOT and build/ holds artifacts;
+			// runtime-patches/ is stock Go runtime asm, whose NZCV use is
+			// legitimate. .claude/ holds stale worktree copies of this tree.
+			case ".git", ".claude", "build", "bin", "runtime-patches", ".slopstop":
 				return filepath.SkipDir
 			}
 			return nil
