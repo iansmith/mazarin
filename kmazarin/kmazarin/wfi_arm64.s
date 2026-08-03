@@ -28,8 +28,7 @@ TEXT ·WaitForInterrupt(SB), NOSPLIT|NOFRAME, $0-0
 // Exception return restores the caller's original DAIF state.
 // func EnableIRQsAndWait()
 TEXT ·EnableIRQsAndWait(SB), NOSPLIT|NOFRAME, $0-0
-	// MSR DAIFClr, #2 - enable IRQs
-	WORD	$0xD50342FF
+	MSR	$2, DAIFClr	// enable IRQs
 	ISB	$15
 	// WFI
 	HINT	$1
@@ -42,6 +41,5 @@ TEXT ·EnableIRQsAndWait(SB), NOSPLIT|NOFRAME, $0-0
 	// (e.g., reading the used ring in DoBlockIOComplete).
 	// On TCG this is harmless (single-threaded, trivially consistent).
 	WORD	$0xD50333BF
-	// MSR DAIFSet, #2 - re-disable IRQs
-	WORD	$0xD50342DF
+	MSR	$2, DAIFSet	// re-disable IRQs
 	RET

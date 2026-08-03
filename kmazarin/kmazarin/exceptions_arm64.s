@@ -1337,7 +1337,7 @@ sync_keep_daif:
 	// A nested page fault during the SVC handler's Go code clears DAIF.I
 	// (via sync_return's own BIC above). If a timer fires between MSR and
 	// ERET, it overwrites ELR/SPSR with hardware-set values.
-	WORD	$0xD50342DF  // MSR DAIFSet, #2 — disable IRQs
+	MSR	$2, DAIFSet  // disable IRQs
 	// MSR ELR_EL1, X10 - use WORD to avoid assembler issues
 	WORD	$0xD518402A
 	// MSR SPSR_EL1, X11 - use WORD to avoid assembler issues
@@ -1877,7 +1877,7 @@ irq_elr_ok:
 	// If Go code called during preemption check triggered a page fault,
 	// sync_return's BIC cleared DAIF.I. A timer between MSR and ERET
 	// overwrites ELR/SPSR with hardware-set values → corrupted ERET.
-	WORD	$0xD50342DF  // MSR DAIFSet, #2 — disable IRQs
+	MSR	$2, DAIFSet  // disable IRQs
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
 
@@ -2572,7 +2572,7 @@ el0_elr_ok:
 	// Under TCG this is a no-op (PSTATE.I already 1 or timer granularity
 	// prevents hitting this window). Under HVF the real hardware timer can
 	// fire between any two instructions.
-	WORD	$0xD50342DF  // MSR DAIFSet, #2 — disable IRQs
+	MSR	$2, DAIFSet  // disable IRQs
 
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
@@ -2689,49 +2689,21 @@ TEXT ·ReadVBAR(SB), NOSPLIT, $0-8
 
 // ============================================================================
 // EnableIRQs - Enable interrupts by clearing the I bit in DAIF
+//
+// Deliberately unpaired: the obvious partner DisableIRQs had no callers and was
+// deleted with MAZ-167's other redundant DAIF copies. Unconditional unmasking
+// is a boot-time operation (main.go calls this once IRQs are ready); masking is
+// always save-and-restore, so it goes through ksync.SaveAndDisableIRQs instead.
+// Reach for that, not a reinstated DisableIRQs.
 // ============================================================================
 TEXT ·EnableIRQs(SB), NOSPLIT, $0
-	// MSR DAIFCLR, #2 - Clear I bit (bit 1) = enable IRQs
-	// Encoded as: 0xD50342FF
-	WORD	$0xD50342FF
+	MSR	$2, DAIFClr	// clear I bit = enable IRQs
 	ISB	$15		// Synchronize context
 	RET
 
-// ============================================================================
-// DisableIRQs - Disable interrupts by setting the I bit in DAIF
-// ============================================================================
-TEXT ·DisableIRQs(SB), NOSPLIT, $0
-	// MSR DAIFSET, #2 - Set I bit (bit 1) = disable IRQs
-	// Encoded as: 0xD50342DF
-	WORD	$0xD50342DF
-	ISB	$15		// Synchronize context
-	RET
-
-// ============================================================================
-// SaveAndDisableIRQs - Save DAIF and disable IRQs atomically
-// Returns: saved DAIF value in R0
-// ============================================================================
-TEXT ·SaveAndDisableIRQs(SB), NOSPLIT, $0-8
-	// MRS X0, DAIF - Read current DAIF into R0
-	// op2=1 selects DAIF; op2=0 (0xD53B4200) is NZCV. (MAZ-128/MAZ-166)
-	WORD	$0xD53B4220
-	// MSR DAIFSET, #2 - Set I bit = disable IRQs
-	WORD	$0xD50342DF
-	ISB	$15
-	MOVD	R0, ret+0(FP)
-	RET
-
-// ============================================================================
-// RestoreIRQs - Restore DAIF to a previously saved value
-// Input: savedDAIF in first argument
-// ============================================================================
-TEXT ·RestoreIRQs(SB), NOSPLIT, $0-8
-	MOVD	savedDAIF+0(FP), R0
-	// MSR DAIF, X0 - Write R0 to DAIF
-	// op2=1 selects DAIF; op2=0 (0xD51B4200) is NZCV. (MAZ-128/MAZ-166)
-	WORD	$0xD51B4220
-	ISB	$15
-	RET
+// SaveAndDisableIRQs / RestoreIRQs moved to ksync (MAZ-167) — the former copies
+// here carried the MAZ-128 NZCV-for-DAIF WORD-encoding typo. Go callers go
+// through the wrappers in irq.go.
 
 // mlockRearmFromFrame — MAZ-147 ARM64 m.locks RESTORE (the asm half). ONE physical
 // code path, BL'd from each CTX_RESTORE_TO_FRAME site (copy_context_to_frame /

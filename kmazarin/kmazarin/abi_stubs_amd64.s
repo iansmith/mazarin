@@ -140,29 +140,17 @@ TEXT ·ReadVBAR(SB), NOSPLIT, $16-8
 	RET
 
 // EnableIRQs enables interrupts (STI).
+//
+// Deliberately unpaired: the obvious partner DisableIRQs had no callers and was
+// deleted with MAZ-167's other redundant DAIF/RFLAGS copies. Unconditional
+// unmasking is a boot-time operation; masking is always save-and-restore, so it
+// goes through ksync.SaveAndDisableIRQs instead.
 TEXT ·EnableIRQs(SB), NOSPLIT|NOFRAME, $0-0
 	STI
 	RET
 
-// DisableIRQs disables interrupts (CLI).
-TEXT ·DisableIRQs(SB), NOSPLIT|NOFRAME, $0-0
-	CLI
-	RET
-
-// SaveAndDisableIRQs saves RFLAGS and disables interrupts.
-TEXT ·SaveAndDisableIRQs(SB), NOSPLIT, $0-8
-	PUSHFQ
-	POPQ	AX
-	CLI
-	MOVQ	AX, ret+0(FP)
-	RET
-
-// RestoreIRQs restores RFLAGS from saved value.
-TEXT ·RestoreIRQs(SB), NOSPLIT, $0-8
-	MOVQ	savedDAIF+0(FP), AX
-	PUSHQ	AX
-	POPFQ
-	RET
+// SaveAndDisableIRQs / RestoreIRQs moved to ksync (MAZ-167). Go callers go
+// through the wrappers in irq.go.
 
 // GetGRegister returns R14 (Go's g register on amd64).
 TEXT ·GetGRegister(SB), NOSPLIT|NOFRAME, $0-8

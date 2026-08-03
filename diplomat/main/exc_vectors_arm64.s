@@ -36,8 +36,7 @@ TEXT ·getDiplomatSyncEL1hAddr(SB), NOSPLIT, $0-8
 // hitting our bare-ERET handler (no GIC EOI) loops forever.
 // Go: func setVBAR(addr uint64)
 TEXT ·setVBAR(SB), NOSPLIT, $0-8
-	// MSR DAIFSet, #0xF — mask Debug, SError, IRQ, FIQ
-	WORD	$0xD5034FDF
+	MSR	$0xF, DAIFSet	// mask Debug, SError, IRQ, FIQ
 	ISB	$15
 	// Disable GIC distributor — write 0 to GICD_CTLR at 0x08000000
 	// This prevents any interrupt from reaching the CPU, even if

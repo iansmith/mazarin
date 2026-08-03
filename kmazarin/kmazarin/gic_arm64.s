@@ -77,15 +77,6 @@ TEXT ·ReadCntfrqEl0(SB), NOSPLIT, $0-8
 	MOVD	R0, ret+0(FP)
 	RET
 
-// ReadDAIF reads the DAIF register
-TEXT ·ReadDAIF(SB), NOSPLIT, $0-8
-	// MRS X0, DAIF
-	// DAIF = S3_3_C4_C2_1 (op0=3, op1=3, CRn=4, CRm=2, op2=1)
-	// Encoding: 0xD53B4220 (NOT 0xD53B4200 which reads NZCV with op2=0!)
-	WORD	$0xD53B4220
-	MOVD	R0, ret+0(FP)
-	RET
-
 // RearmTimerNow re-arms the virtual timer to fire after ~10ms
 TEXT ·RearmTimerNow(SB), NOSPLIT, $0
 	// CRITICAL: Disable timer FIRST to clear any pending state from Cardinal
