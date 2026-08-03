@@ -149,20 +149,8 @@ TEXT ·DisableIRQs(SB), NOSPLIT|NOFRAME, $0-0
 	CLI
 	RET
 
-// SaveAndDisableIRQs saves RFLAGS and disables interrupts.
-TEXT ·SaveAndDisableIRQs(SB), NOSPLIT, $0-8
-	PUSHFQ
-	POPQ	AX
-	CLI
-	MOVQ	AX, ret+0(FP)
-	RET
-
-// RestoreIRQs restores RFLAGS from saved value.
-TEXT ·RestoreIRQs(SB), NOSPLIT, $0-8
-	MOVQ	savedDAIF+0(FP), AX
-	PUSHQ	AX
-	POPFQ
-	RET
+// SaveAndDisableIRQs / RestoreIRQs moved to ksync (MAZ-167). Go callers go
+// through the wrappers in irq.go.
 
 // GetGRegister returns R14 (Go's g register on amd64).
 TEXT ·GetGRegister(SB), NOSPLIT|NOFRAME, $0-8

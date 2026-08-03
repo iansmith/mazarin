@@ -1,9 +1,9 @@
-
 package gpu
 
 import (
 	"mazzy/kmazarin/ds"
 	"mazzy/kmazarin/klog"
+	"mazzy/kmazarin/ksync"
 	"unsafe"
 )
 
@@ -138,15 +138,20 @@ func SetScanoutOffset(yOffset uint32) bool {
 	return ok
 }
 
-// saveAndDisableIRQs masks all interrupts and returns the previous DAIF value.
+// saveAndDisableIRQs / restoreIRQs are the canonical ksync primitives
+// (MAZ-167). Note the mask narrowed from all-of-DAIF to I-only — the recorded
+// MAZ-167 decision; IRQs are the only exception source that can preempt into
+// this driver's critical sections.
 //
 //go:nosplit
-func saveAndDisableIRQs() uint64
+func saveAndDisableIRQs() uint64 {
+	return ksync.SaveAndDisableIRQs()
+}
 
-// restoreIRQs restores DAIF to a previously saved value.
-//
 //go:nosplit
-func restoreIRQs(daif uint64)
+func restoreIRQs(daif uint64) {
+	ksync.RestoreIRQs(daif)
+}
 
 // lockGPU spins until the GPU command lock is acquired.
 // No attempt limit — GPU commands always complete (internal timeout).
