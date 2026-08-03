@@ -43,7 +43,7 @@ func TestNoWordEncodedDAIFOps(t *testing.T) {
 // this gate never demands something unwritable. Immediates ≥ 6 are left alone:
 // those encode BTI/PAC/etc. hints that genuinely lack a plain mnemonic here.
 func TestNoBareHintImmediates(t *testing.T) {
-	hits := scanTreeAsm(t, regexp.MustCompile(`(?i)^\s*HINT\s+\$[0-5]\s*(//.*)?$`))
+	hits := scanTreeAsm(t, regexp.MustCompile(`(?i)^\s*HINT\s+\$[0-5]\s*(?://.*)?$`))
 	if len(hits) > 0 {
 		t.Errorf("found %d bare HINT immediate(s); use the mnemonic (NOOP/YIELD/WFE/WFI/SEV/SEVL for $0-$5):\n  %s",
 			len(hits), strings.Join(hits, "\n  "))
