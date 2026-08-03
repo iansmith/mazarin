@@ -138,8 +138,13 @@ func InitPreemptConfig(tickRate, preemptIntervalMs, timeUpdateHz int) {
 	}
 
 	// Derived per-tick interval (integer ms — display/derivation only; the
-	// hardware-exact period is TimerRearmTicks below).
+	// hardware-exact period is TimerRearmTicks below). Floor 1: a tick rate
+	// above 1000 Hz would truncate to 0 and the quantum division below
+	// would fault.
 	TickIntervalMs = 1000 / KernelTickRate
+	if TickIntervalMs < 1 {
+		TickIntervalMs = 1
+	}
 
 	// Preemption quantum in ticks: round up, floor 1, so a coarse tick can
 	// never yield a zero-tick quantum.
