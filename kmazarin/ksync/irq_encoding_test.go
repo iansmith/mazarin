@@ -59,8 +59,27 @@ func TestNoBareHintImmediates(t *testing.T) {
 //
 //	D50320xx = HINT #imm    D5033x9F = DSB    D5033xBF = DMB    D5033xDF = ISB
 //	(x is CRm, the barrier domain: F=SY, B=ISH, 3=OSH, 2=OSHST, ...)
+//
+// The immediate is parsed numerically rather than pattern-matched as a hex
+// literal, so an alternate spelling of the same word (decimal, octal, binary)
+// cannot slip past — the single-spelling weakness CodeRabbit flagged on the
+// HINT gate in PR #97.
 func TestNoWordEncodedHintsOrBarriers(t *testing.T) {
-	hits := scanTreeAsm(t, regexp.MustCompile(`(?i)WORD\s+\$0x(D50320[0-9A-F]{2}|D5033[0-9A-F][9BD]F)`))
+	wordRe := regexp.MustCompile(`(?i)WORD\s+\$([0-9A-Za-z_]+)`)
+	var hits []string
+	for _, hit := range scanTreeAsm(t, wordRe) {
+		v, err := strconv.ParseUint(wordRe.FindStringSubmatch(hit)[1], 0, 64)
+		if err != nil {
+			continue // symbolic operand, not a numeric literal
+		}
+		switch {
+		case v&^uint64(0xFF) == 0xD5032000, // HINT #imm
+			v&0xFFFFF0FF == 0xD503309F, // DSB, any domain
+			v&0xFFFFF0FF == 0xD50330BF, // DMB, any domain
+			v&0xFFFFF0FF == 0xD50330DF: // ISB
+			hits = append(hits, hit)
+		}
+	}
 	if len(hits) > 0 {
 		t.Errorf("found %d WORD-encoded hint/barrier op(s); use mnemonics (DSB/DMB/ISB $imm, or the named hints):\n  %s",
 			len(hits), strings.Join(hits, "\n  "))
