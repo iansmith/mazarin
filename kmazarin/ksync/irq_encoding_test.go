@@ -50,6 +50,14 @@ func TestNoBareHintImmediates(t *testing.T) {
 	}
 }
 
+// A sibling gate for WORD-encoded hint/barrier ops (`D50320xx` for HINT,
+// `D5033x{9,B,D}F` for DSB/DMB/ISB) belongs here too — that space is where both
+// prior bugs in this family lived. It is deliberately NOT added yet: writing it
+// turned up 9 pre-existing sites across kmem, arch/arm64/gic, asm, and
+// mazarin/mem, one of which is a live defect (a DSB SY commented "ISB"). Adding
+// the gate here would mean either fixing all 9 in this ticket or weakening it to
+// pass. Tracked separately as MAZ-174.
+
 // scanTreeAsm returns "path:line: text" for every line of every tracked .s file
 // in the repo matching re.
 func scanTreeAsm(t *testing.T, re *regexp.Regexp) []string {
