@@ -86,6 +86,62 @@ func TestNoWordEncodedHintsOrBarriers(t *testing.T) {
 	}
 }
 
+// TestGPUIRQMaskingJustified is the MAZ-173 gate: the virtio-gpu driver may
+// not mask CPU interrupts around a GPU operation unless the call site carries
+// an explicit justification marker. The driver used to wrap every screen flush
+// in saveAndDisableIRQs and then busy-poll the used ring — an IRQ-masked spin
+// on every repaint (the MAZ-127/146 hazard class). The only legitimate masking
+// left is cursor-queue state shared with the tablet IRQ top-half, where the
+// mask IS the synchronization; such a site must say so with a comment
+// containing "IRQ-MASK-JUSTIFIED(MAZ-" in the contiguous comment block
+// immediately above the call.
+func TestGPUIRQMaskingJustified(t *testing.T) {
+	root, err := repoRoot()
+	if err != nil {
+		t.Fatalf("locating repo root: %v", err)
+	}
+	dir := filepath.Join(root, "kmazarin", "device", "virtio", "gpu")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", dir, err)
+	}
+	var hits []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("reading %s: %v", e.Name(), err)
+		}
+		lines := strings.Split(string(data), "\n")
+		for i, line := range lines {
+			if !strings.Contains(line, "saveAndDisableIRQs()") ||
+				strings.Contains(line, "func saveAndDisableIRQs") {
+				continue
+			}
+			justified := false
+			for j := i - 1; j >= 0; j-- {
+				trimmed := strings.TrimSpace(lines[j])
+				if !strings.HasPrefix(trimmed, "//") {
+					break
+				}
+				if strings.Contains(trimmed, "IRQ-MASK-JUSTIFIED(MAZ-") {
+					justified = true
+					break
+				}
+			}
+			if !justified {
+				hits = append(hits, e.Name()+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
+			}
+		}
+	}
+	if len(hits) > 0 {
+		t.Errorf("found %d unjustified IRQ-masking site(s) in device/virtio/gpu; either remove the mask (gpuLock serializes the control queue) or add an IRQ-MASK-JUSTIFIED(MAZ-nnn) comment explaining which IRQ-context state the mask synchronizes:\n  %s",
+			len(hits), strings.Join(hits, "\n  "))
+	}
+}
+
 // scanTreeAsm returns "path:line: text" for every line of every tracked .s file
 // in the repo matching re.
 func scanTreeAsm(t *testing.T, re *regexp.Regexp) []string {

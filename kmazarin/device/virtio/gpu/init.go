@@ -104,11 +104,9 @@ func Flush(x, y, width, height uint32) {
 //
 //go:nosplit
 func UpdateDisplay(x, y, width, height uint32) {
-	savedDAIF := saveAndDisableIRQs()
 	lockGPU()
 	virtioGPUTransferAndFlush(x, y, width, height)
 	unlockGPU()
-	restoreIRQs(savedDAIF)
 }
 
 // UpdateDisplayUnbatched transfers and flushes separately (original path).
@@ -116,12 +114,10 @@ func UpdateDisplay(x, y, width, height uint32) {
 //
 //go:nosplit
 func UpdateDisplayUnbatched(x, y, width, height uint32) {
-	savedDAIF := saveAndDisableIRQs()
 	lockGPU()
 	virtioGPUTransferToHost(x, y, width, height)
 	virtioGPUFlush(x, y, width, height)
 	unlockGPU()
-	restoreIRQs(savedDAIF)
 }
 
 // SetScanoutOffset changes the visible region's Y offset in the framebuffer.
@@ -130,11 +126,9 @@ func UpdateDisplayUnbatched(x, y, width, height uint32) {
 //
 //go:nosplit
 func SetScanoutOffset(yOffset uint32) bool {
-	savedDAIF := saveAndDisableIRQs()
 	lockGPU()
 	ok := virtioGPUSetScanoutOffset(yOffset)
 	unlockGPU()
-	restoreIRQs(savedDAIF)
 	return ok
 }
 
@@ -155,8 +149,23 @@ func restoreIRQs(daif uint64) {
 
 // lockGPU spins until the GPU command lock is acquired.
 // No attempt limit — GPU commands always complete (internal timeout).
-// REQUIRES: IRQs disabled (caller must call saveAndDisableIRQs first)
-// to prevent timer preemption while holding the lock.
+//
+// MAZ-173: this lock is only ever taken from thread context — the tablet IRQ
+// top-half (TopHalfMoveCursor) drives the cursor queue through its own MMIO
+// state and never takes it — so IRQs stay enabled around it. A holder can be
+// preempted; waiters spin with IRQs on and are themselves preemptible, so
+// that costs latency, never progress. Cursor-queue state shared WITH the IRQ
+// top-half is synchronized by masking at its one call site (SetActiveCursor),
+// not by this lock.
+//
+// INVARIANT: never spin on this lock with IRQs masked. Holders are now
+// preemptible, so a masked spinner waiting on a preempted holder hangs the
+// machine (the MAZ-146 class). A caller that needs a masked section must
+// acquire the lock FIRST, then mask (see SetActiveCursor). For MAZ-148's
+// bare-CAS spinlock audit: this stays a bare CompareAndSwap deliberately —
+// the dual-context analysis above shows no fault/IRQ-context acquirer, and
+// migrating it to the IRQ-atomic ksync.Spinlock would reintroduce the
+// masked-hold-on-every-flush this ticket removes.
 //
 //go:nosplit
 func lockGPU() {
