@@ -95,7 +95,7 @@ barrier:
 	// DMB ISH — Data Memory Barrier, Inner Shareable.
 	// Ensures all preceding stores are visible to any observer in the
 	// inner-shareable domain before this function returns.
-	WORD	$0xD5033BBF		// DMB ISH
+	DMB	$11			// DMB ISH
 
 done:
 	RET

@@ -9,8 +9,7 @@
 // dsbSYAsm - Data Synchronization Barrier (full system)
 // Ensures all memory accesses complete before continuing.
 TEXT ·dsbSYAsm(SB), NOSPLIT, $0
-	// DSB SY = 0xD5033F9F
-	WORD	$0xD5033F9F
+	DSB	$15	// DSB SY
 	RET
 
 // tlbiVAE1ISAsm - Invalidate ALL TLB entries for current VMID at EL1
@@ -50,9 +49,8 @@ TEXT ·tlbiASIDE1ISAsm(SB), NOSPLIT, $0-8
 
 // dsbISH - Data Synchronization Barrier Inner Shareable
 // Ensures all prior memory accesses complete in the inner shareable domain
-// DSB ISH = 0xD5033B9F
 TEXT ·dsbISH(SB), NOSPLIT, $0-0
-	WORD	$0xD5033B9F
+	DSB	$11	// DSB ISH
 	RET
 
 // isbSYAsm - Instruction Synchronization Barrier
@@ -203,7 +201,11 @@ TEXT ·dcCleanInvalidateAll(SB), NOSPLIT, $0-0
 	// For L1 D-cache (level 0), select it via CSSELR_EL1
 	MOVD	$0, R1		// Level 0, Data cache
 	MSR	R1, CSSELR_EL1
-	WORD	$0xD5033F9F	// ISB - ensure CSSELR write takes effect
+	// MAZ-174: this was a hand-encoded DSB SY (0xD5033F9F), one nibble away
+	// from the ISB the comment promised. DSB gives no context
+	// synchronization, so the CSSELR write was not guaranteed visible to the
+	// CCSIDR read below.
+	ISB	$15	// ensure CSSELR write takes effect
 
 	// Read CCSIDR_EL1 for L1 geometry
 	MRS	CCSIDR_EL1, R0
@@ -251,5 +253,5 @@ next_way:
 	B	way_loop
 
 done:
-	WORD	$0xD5033F9F	// DSB SY
+	DSB	$15	// DSB SY
 	RET
