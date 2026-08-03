@@ -31,9 +31,13 @@ gc_percent_kernel = 100
 # Timer tick rate in Hz (330 = ~3ms ticks). Controls deadline processing
 # and signal delivery granularity.
 kernel_tick_rate = 330
-# Thread preemption quantum in ticks (33 x 3ms = ~100ms). Also determines
-# the time attribute update frequency (~10Hz at these settings).
-preempt_after_ticks = 33
+# Thread preemption quantum in wall-clock milliseconds. Tick-rate-independent
+# (MAZ-172): the kernel derives the tick count from kernel_tick_rate, so
+# changing the tick rate alone leaves the quantum unchanged.
+preempt_interval_ms = 100
+# Time-attribute update rate in Hz (clock refresh etc.). Its own policy knob
+# (MAZ-172) - no longer coupled to the preemption quantum.
+time_update_hz = 10
 
 # Serial output
 # When true, userspace stdout/stderr is routed only through the linux shepherd

@@ -438,7 +438,7 @@ func initTimerFrequency() {
 
 	// Compute tick counts from frequency and default policy values.
 	// These may be reconfigured later by TOML boot config (InitPreemptConfig).
-	kirq.InitPreemptConfig(0, 0)
+	kirq.InitPreemptConfig(0, 0, 0)
 
 }
 
@@ -745,9 +745,14 @@ func simpleMain() {
 
 	// Reconfigure timer policy from kernel config.
 	// Must happen before EnableTimerIRQ so the first tick uses correct values.
-	if kernelCfg.KernelTickRate > 0 || kernelCfg.PreemptAfterTicks > 0 {
-		kirq.InitPreemptConfig(kernelCfg.KernelTickRate, kernelCfg.PreemptAfterTicks)
+	// Policy arrives in wall-clock units (ms/Hz); tick counts are derived
+	// inside InitPreemptConfig (MAZ-172).
+	if kernelCfg.KernelTickRate > 0 || kernelCfg.PreemptIntervalMs > 0 || kernelCfg.TimeUpdateHz > 0 {
+		kirq.InitPreemptConfig(kernelCfg.KernelTickRate, kernelCfg.PreemptIntervalMs, kernelCfg.TimeUpdateHz)
 	}
+	klog.Logf("[timing] tick=%dHz quantum=%dms (%d ticks) time-update=%dHz (%d ticks)\n",
+		kirq.KernelTickRate, kirq.PreemptAfterTicks*kirq.TickIntervalMs,
+		kirq.PreemptAfterTicks, kirq.TimeUpdateHz, kirq.TimeUpdateTicks)
 
 	// Re-enable IRQs and timer for ongoing scheduling
 	EnableIRQs()
@@ -791,7 +796,7 @@ func simpleMain() {
 	initKernelWorkers()
 
 	// Start kernel attribute updaters (time update goroutine).
-	// Time updates are driven by kirq.TimerIRQCount + kirq.PreemptAfterTicks.
+	// Time updates are driven by kirq.TimerIRQCount + kirq.TimeUpdateTicks.
 	ksyscall.StartKernelAttrUpdaters()
 	SetupTopHalfTimeUpdate()
 

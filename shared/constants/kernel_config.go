@@ -21,9 +21,12 @@ type KernelConfig struct {
 	GCPercentage    int `toml:"gc_percentage"`
 	GCPercentKernel int `toml:"gc_percent_kernel"`
 
-	// Scheduling
+	// Scheduling. Policy is expressed in wall-clock units, never in ticks
+	// (MAZ-172): tick counts are derived in kirq.InitPreemptConfig, so
+	// changing kernel_tick_rate alone changes no wall-clock behavior.
 	KernelTickRate    int `toml:"kernel_tick_rate"`
-	PreemptAfterTicks int `toml:"preempt_after_ticks"`
+	PreemptIntervalMs int `toml:"preempt_interval_ms"`
+	TimeUpdateHz      int `toml:"time_update_hz"`
 
 	// Serial output
 	SuppressSerialStdioCopy bool `toml:"suppress_serial_stdio_copy"`

@@ -241,12 +241,14 @@ func StartKernelAttrUpdaters() {
 		return
 	}
 	timeUpdateLastTick = atomic.LoadUint64(&kirq.TimerIRQCount)
-	timeUpdateThreshold = kirq.PreemptAfterTicks
+	// MAZ-172: the time-attribute cadence has its own policy knob
+	// (time_update_hz) — it no longer inherits the preemption quantum.
+	timeUpdateThreshold = kirq.TimeUpdateTicks
 
-	// Set the counter-based interval for top-half 10Hz updates.
-	// SystemTimerFrequency / 10 = one update every 100ms of wall-clock time.
+	// Set the counter-based interval for the top-half updates from the same
+	// knob: one update every 1/TimeUpdateHz seconds of wall-clock time.
 	if kirq.SystemTimerFrequency > 0 {
-		topHalfUpdateInterval = kirq.SystemTimerFrequency / 10
+		topHalfUpdateInterval = kirq.SystemTimerFrequency / kirq.TimeUpdateHz
 		topHalfLastCounter = kirq.ReadCounterValue()
 	}
 }
@@ -408,5 +410,3 @@ func PublishBootConfigAttributes(tz string, goMemLimitMB, gcPercentage int) {
 	}
 
 }
-
-

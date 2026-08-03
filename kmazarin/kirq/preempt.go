@@ -1,4 +1,3 @@
-
 // Package kirq provides kernel IRQ handling including timer-based thread preemption.
 //
 // Goroutine-level preemption is handled by the Go runtime in userspace via
@@ -82,8 +81,19 @@ var (
 	KernelTickRate uint64 = 250
 
 	// PreemptAfterTicks is the number of kernel ticks per preemption quantum.
-	// Default 25 (25 × 4ms = 100ms at 250Hz). Set from TOML preempt_after_ticks.
+	// DERIVED (MAZ-172): computed from PreemptIntervalMs and the tick rate in
+	// InitPreemptConfig, never set from config directly — a tick count would
+	// silently rescale with kernel_tick_rate. Default 25 (25 × 4ms = 100ms).
 	PreemptAfterTicks uint64 = 25
+
+	// TimeUpdateHz is the time-attribute update rate (clock refresh etc.).
+	// Set from TOML time_update_hz (MAZ-172); its own policy knob, no longer
+	// coupled to the preemption quantum.
+	TimeUpdateHz uint64 = 10
+
+	// TimeUpdateTicks is the number of kernel ticks between time-attribute
+	// updates. DERIVED: KernelTickRate / TimeUpdateHz, floor 1.
+	TimeUpdateTicks uint64 = 25
 
 	// TickIntervalMs is the kernel timer tick period in milliseconds.
 	// Computed: 1000 / KernelTickRate. Default 4ms.
@@ -111,18 +121,43 @@ var ThreadPreemptTicks uint64 = 6250000 // Default: 100ms at 62.5MHz (ARM64)
 
 // InitPreemptConfig sets the timing policy from TOML config values and
 // computes all derived tick counts. Caller must set SystemTimerFrequency
-// before calling. Pass 0 for either parameter to use defaults.
-func InitPreemptConfig(tickRate, preemptTicks int) {
+// before calling. Pass 0 for any parameter to keep its default.
+//
+// MAZ-172: policy arrives in wall-clock units (ms, Hz) and the tick counts
+// are DERIVED here, so changing kernel_tick_rate alone leaves every
+// wall-clock behavior unchanged.
+func InitPreemptConfig(tickRate, preemptIntervalMs, timeUpdateHz int) {
 	if tickRate > 0 {
 		KernelTickRate = uint64(tickRate)
 	}
-	if preemptTicks > 0 {
-		PreemptAfterTicks = uint64(preemptTicks)
+	if preemptIntervalMs > 0 {
+		PreemptIntervalMs = uint64(preemptIntervalMs)
+	}
+	if timeUpdateHz > 0 {
+		TimeUpdateHz = uint64(timeUpdateHz)
 	}
 
-	// Derived millisecond values.
+	// Derived per-tick interval (integer ms — display/derivation only; the
+	// hardware-exact period is TimerRearmTicks below). Floor 1: a tick rate
+	// above 1000 Hz would truncate to 0 and the quantum division below
+	// would fault.
 	TickIntervalMs = 1000 / KernelTickRate
-	PreemptIntervalMs = TickIntervalMs * PreemptAfterTicks
+	if TickIntervalMs < 1 {
+		TickIntervalMs = 1
+	}
+
+	// Preemption quantum in ticks: round up, floor 1, so a coarse tick can
+	// never yield a zero-tick quantum.
+	PreemptAfterTicks = (PreemptIntervalMs + TickIntervalMs - 1) / TickIntervalMs
+	if PreemptAfterTicks < 1 {
+		PreemptAfterTicks = 1
+	}
+
+	// Time-attribute cadence in ticks, floor 1.
+	TimeUpdateTicks = KernelTickRate / TimeUpdateHz
+	if TimeUpdateTicks < 1 {
+		TimeUpdateTicks = 1
+	}
 
 	// Hardware counter ticks per kernel tick and per preemption quantum.
 	TimerRearmTicks = SystemTimerFrequency / KernelTickRate
@@ -135,15 +170,15 @@ func InitPreemptConfig(tickRate, preemptTicks int) {
 var NeedsThreadPreempt uint32
 
 // Diagnostic counters for timer preemption debugging (written by assembly)
-var DbgTimerReachedCheck uint64  // timer ticks that reached deadline comparison
-var DbgTimerDeadlineHit uint64   // times current >= deadline (preempt signaled)
+var DbgTimerReachedCheck uint64   // timer ticks that reached deadline comparison
+var DbgTimerDeadlineHit uint64    // times current >= deadline (preempt signaled)
 var DbgTimerDeadlineNotHit uint64 // times current < deadline (no preempt)
 
 // Timer interval instrumentation (written by assembly timer handler)
-var DbgTimerPrevCounter uint64    // counter at previous timer fire
-var DbgTimerFirstCounter uint64   // counter at first timer fire
-var DbgTimerLatestCounter uint64  // counter at most recent timer fire
-var DbgTimerMaxDelta uint64       // largest gap between consecutive fires
+var DbgTimerPrevCounter uint64   // counter at previous timer fire
+var DbgTimerFirstCounter uint64  // counter at first timer fire
+var DbgTimerLatestCounter uint64 // counter at most recent timer fire
+var DbgTimerMaxDelta uint64      // largest gap between consecutive fires
 
 // Kernel time accounting - measures time spent in kernel mode
 // All values are in timer ticks (use SystemTimerFrequency to convert to seconds)
@@ -254,5 +289,3 @@ func InitPreemption() {
 func GetTimerTicksFor10ms() uint64 {
 	return (SystemTimerFrequency * 10) / 1000
 }
-
-
