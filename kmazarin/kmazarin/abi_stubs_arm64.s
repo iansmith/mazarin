@@ -135,152 +135,6 @@ TEXT ·TerminateShepherdAsm(SB), NOSPLIT, $0-24
 TEXT ·HandleUnhandledExceptionAsm(SB), $0-32
 	JMP	·handleUnhandledExceptionInternal(SB)
 
-// RunFirstThread starts the first thread from the ready queue.
-// This function never returns - it transitions to userspace via ERET.
-// Go signature: func RunFirstThread()
-// ThreadContext layout: X[31]*8=248 bytes, SP(8), ELR(8), SPSR(8) = 272 bytes
-TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
-	// Call StartFirstThread to get context pointer
-	// Uses Go ABI internally, returns result in R0
-	SUB	$16, RSP  // Allocate space for call (16-byte aligned)
-	CALL	·StartFirstThread(SB)
-	MOVD	8(RSP), R20  // R20 = context pointer (returned in first return slot)
-	ADD	$16, RSP  // Clean up call frame
-
-	// R20 = pointer to ThreadContext
-	// Load ELR_EL1 (offset 256)
-	MOVD	256(R20), R0
-	MSR	R0, ELR_EL1
-
-	// Load SPSR_EL1 (offset 264)
-	MOVD	264(R20), R0
-	MSR	R0, SPSR_EL1
-
-	// Switch to EL1h mode to safely set SP_EL0
-	MOVD	$1, R0
-	MSR	R0, SPSel  // SPSel=1 means use SP_EL1
-
-	// Load SP_EL0 (offset 248)
-	MOVD	248(R20), R0
-	MSR	R0, SP_EL0
-
-	// I-cache and TLB invalidation BEFORE loading GPRs
-	// CRITICAL: Invalidate entire I-cache to ensure no stale instruction fetch
-	// IC IALLU = 0xD508751F (Invalidate All to PoU, Inner Shareable)
-	WORD	$0xD508751F  // IC IALLU
-	DSB	$15  // DSB SY - ensure I-cache invalidation completes
-	// Now invalidate TLB
-	WORD	$0xD508871F  // TLBI VMALLE1
-	DSB	$15  // DSB SY
-	WORD	$0xD508877F  // TLBI VALE1, XZR
-	DSB	$11  // DSB NSH
-	ISB	$15  // ISB
-
-	// DEBUG: Print TTBR0 value before ERET (using R0-R3 as scratch, will reload later)
-	MOVD	$0xFFFFFFFF09000000, R2  // UART base (kernel-mapped VA)
-	MOVD	$'T', R3
-	MOVB	R3, (R2)
-	MOVD	$'0', R3
-	MOVB	R3, (R2)
-	MOVD	$'=', R3
-	MOVB	R3, (R2)
-	// Read TTBR0_EL1
-	MRS	TTBR0_EL1, R1
-	MOVD	$16, R3  // 16 hex digits
-rft_print_ttbr0:
-	LSR	$60, R1, R0
-	AND	$0xF, R0
-	CMP	$10, R0
-	BLT	rft_ttbr0_d
-	ADD	$('A'-10), R0
-	B	rft_ttbr0_c
-rft_ttbr0_d:
-	ADD	$'0', R0
-rft_ttbr0_c:
-	MOVB	R0, (R2)
-	LSL	$4, R1
-	SUB	$1, R3
-	CBNZ	R3, rft_print_ttbr0
-	// Print ELR
-	MOVD	$' ', R3
-	MOVB	R3, (R2)
-	MOVD	$'E', R3
-	MOVB	R3, (R2)
-	MOVD	$'=', R3
-	MOVB	R3, (R2)
-	MRS	ELR_EL1, R1
-	MOVD	$16, R3
-rft_print_elr:
-	LSR	$60, R1, R0
-	AND	$0xF, R0
-	CMP	$10, R0
-	BLT	rft_elr_d
-	ADD	$('A'-10), R0
-	B	rft_elr_c
-rft_elr_d:
-	ADD	$'0', R0
-rft_elr_c:
-	MOVB	R0, (R2)
-	LSL	$4, R1
-	SUB	$1, R3
-	CBNZ	R3, rft_print_elr
-	MOVD	$'\r', R3
-	MOVB	R3, (R2)
-	MOVD	$'\n', R3
-	MOVB	R3, (R2)
-	// END DEBUG
-
-	// Load all general purpose registers from ThreadContext
-	// X[0-30] at offsets 0-240
-	// IMPORTANT: Load X28 first using R0 as temp, then reload R0 at the end
-
-	// Load X28 (g register) using R0 as temporary
-	MOVD	224(R20), R0
-	WORD	$0xAA0003FC  // MOV X28, X0 (can't use R28 directly in Go asm)
-
-	// Load other GPRs (skip R0, R1 for now - will reload after X28 transfer)
-	LDP	16(R20), (R2, R3)
-	LDP	32(R20), (R4, R5)
-	LDP	48(R20), (R6, R7)
-	LDP	64(R20), (R8, R9)
-	LDP	80(R20), (R10, R11)
-	LDP	96(R20), (R12, R13)
-	LDP	112(R20), (R14, R15)
-	LDP	128(R20), (R16, R17)
-	// Skip R18 (platform register) at offset 144
-	// Skip R20 (at offset 160, loaded last since it's our context pointer)
-	// Load X[19] individually from offset 152
-	MOVD	152(R20), R19
-	// Load X[21] individually from offset 168
-	MOVD	168(R20), R21
-	LDP	176(R20), (R22, R23)
-	LDP	192(R20), (R24, R25)
-	LDP	208(R20), (R26, R27)
-	// Load X29 (FP) and X30 (LR)
-	LDP	232(R20), (R29, R30)
-
-	// CRITICAL: Reload R0 and R1 (R0 was corrupted when used as X28 temp)
-	// Must do this while R20 still points to context
-	LDP	0(R20), (R0, R1)
-
-	// Load R20 LAST (we were using it as context pointer)
-	MOVD	160(R20), R20
-
-	// Synchronization barriers before ERET
-	DSB	$15  // Data Synchronization Barrier - ensure all memory ops complete
-	ISB	$15  // Instruction Synchronization Barrier - flush pipeline
-
-	// Transition to userspace - NO DEBUG OUTPUT HERE (would corrupt registers)
-	ERET
-
-	// Speculation barrier after ERET
-	DSB	$15
-	ISB	$15
-
-	// Should never reach here
-run_first_thread_hang:
-	B	run_first_thread_hang
-
 // ============================================================================
 // YieldToReadyThread - Save thread 0 context and ERET to next ready thread
 // ============================================================================
@@ -378,7 +232,9 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	CBZ	R20, yield_restore_return
 
 	// ========================================================
-	// ERET to new thread (same pattern as RunFirstThread)
+	// ERET to new thread. Restore convention: ELR/SPSR/SP_EL0 from the
+	// ThreadContext first, then all GPRs — X28 (g) first via R0 as temp,
+	// R0/R1 reloaded after, and the context base register (R20) last.
 	// ========================================================
 
 	// Load ELR_EL1 (offset 256)

@@ -1516,39 +1516,6 @@ func printEpochStatus() {
 	)
 }
 
-// IdleLoop is called when no threads are ready to run.
-// It processes deadlines and uses WFI to wait for the next interrupt.
-// Returns a pointer to a ready thread when one becomes available.
-//
-// CRITICAL: ProcessDeadlines and findReadyThread are protected by both DAIF
-// and schedulerLock because this loop runs OUTSIDE exception context. The timer
-// handler also calls ProcessDeadlines, so without protection we'd have re-entrant corruption.
-//
-//go:nosplit
-func IdleLoop(sf *SchedulerFunc) *Thread {
-	for {
-		// Disable interrupts and acquire scheduler lock
-		savedDAIF := sf.DisableAndSaveDAIF()
-		schedulerLock.Lock()
-
-		ProcessDeadlines()
-		processStaticDeadlinesSchedLockHeld()
-		ready := findReadyThreadSchedLockHeld()
-
-		if sf.StateCheck != nil {
-			sf.StateCheck("idle-loop-check")
-		}
-
-		schedulerLock.Unlock()
-		sf.EnableAndRestoreDAIF(savedDAIF)
-
-		if ready != nil {
-			return ready
-		}
-		WaitForInterrupt()
-	}
-}
-
 // KernelIdleLoop is the permanent idle loop for kernel thread 0 (m0/g0).
 // Called from main() after all setup is complete and shepherd threads are on the
 // ready queue. This function never returns.
@@ -1895,88 +1862,6 @@ func SaveThread0AndYield() uint64 {
 	}
 
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
-}
-
-// StartFirstThread waits for and starts the first ready thread.
-// This is called from the kernel main when there are threads in the ready queue
-// but no current thread is running. It uses IdleLoop to wait for a ready thread,
-// then sets up CurrentThread and returns the context pointer.
-//
-// Returns pointer to ThreadContext for assembly to load and ERET to.
-// Never returns 0 - blocks until a thread is ready.
-//
-//go:nosplit
-//go:noinline
-func StartFirstThread() uint64 {
-	return startFirstThreadImpl(&NormalSchedulerFunc)
-}
-
-// startFirstThreadImpl is the internal implementation that can use test schedulers.
-//
-//go:nosplit
-//go:noinline
-func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
-	// Wait for a ready thread
-	thread := IdleLoop(sf)
-	if thread == nil {
-		// This should never happen - IdleLoop blocks until a thread is ready
-		return 0
-	}
-
-	// CRITICAL: Skip kernel threads (PID=0) and find a shepherd thread (PID>0)
-	// Kernel goroutines may have been preempted into the ready queue before
-	// timer was disabled. We need to re-queue them and find a shepherd thread.
-	for thread.PID == 0 {
-		// Put kernel thread back at the BACK of the ready queue (not front!)
-		// StartFirstThread needs a shepherd thread to ERET to userspace.
-		// Use direct per-CPU push to avoid priority front-insertion for PID=0.
-		savedDAIF := sf.DisableAndSaveDAIF()
-		schedulerLock.Lock()
-		thread.State = ThreadReady
-		// Enqueue to current CPU's queue at the back
-		perCPU := GetPerCPU()
-		perCPU.LocalReadyQueue.PushNoDuplicate(thread.TID)
-		schedulerLock.Unlock()
-		sf.EnableAndRestoreDAIF(savedDAIF)
-
-		// Try to find another thread
-		thread = IdleLoop(sf)
-		if thread == nil {
-			return 0
-		}
-	}
-	// BEGIN CRITICAL SECTION - protect thread state modifications
-	savedDAIF := sf.DisableAndSaveDAIF()
-	schedulerLock.Lock()
-
-	// Set up current thread (updates both per-CPU and global)
-	SetCurrentThreadGlobal(thread)
-	thread.State = ThreadRunning
-
-	// Initialize preemption tracking
-	currentTime := sf.CurrentTime(0)
-	thread.StartTick = currentTime
-	thread.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
-	thread.PreemptElapsed = 0
-	thread.TicksStartedRunning = currentTime
-
-	// Switch TTBR0 to the thread's page table
-	if thread.PageTableL0PA != 0 {
-		kmem.SwitchTTBR0WithASID(thread.PageTableL0PA, uint16(thread.PID))
-		// Note: TLB flush not needed due to ASID tagging
-	}
-	// END CRITICAL SECTION
-	schedulerLock.Unlock()
-
-	// Don't restore DAIF - the ERET will set SPSR which controls IRQ state
-	_ = savedDAIF
-
-	// Deliver pending signals before ERET to this thread.
-	if thread.PendingSignals != 0 && thread.InSignalHandler == 0 {
-		deliverSignalHook(thread)
-	}
-
-	return uint64(uintptr(unsafe.Pointer(&thread.Context)))
 }
 
 // recordVforkParent records a (parent-TID, reserved-PID) linkage placeholder.
@@ -3841,9 +3726,11 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 
 // ThreadWakeSleeper moves a thread from sleeping to ready by TID
 //
-// NOTE: Currently called from ProcessDeadlines which is already protected
-// by its callers (IdleLoop and timer handler), but we add protection
-// defensively in case this is ever called directly.
+// NOTE: The only live caller is ksyscall's WakeNetpollThread (via the
+// wakeNetpollThreadForKsyscall linkname shim), reached from syscall context
+// with no scheduler protection held — the DAIF mask + schedulerLock acquired
+// below are required, not defensive. (Deadline wakes no longer route here:
+// WakeThreadAction.Run does its own wake inline.)
 //
 //go:nosplit
 func ThreadWakeSleeper(sf *SchedulerFunc, tidParam uintptr) {

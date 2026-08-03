@@ -2290,8 +2290,10 @@ skip_g_switch_el0_nsc:
 	DSB	$15
 	ISB	$15
 
-	// Load all GPRs from new ThreadContext (same pattern as RunFirstThread)
-	// X28 (g register) first using R0 as temp
+	// Load all GPRs from new ThreadContext. Restore convention: X28 (g
+	// register) first using R0 as temp (Go asm can't address R28 directly),
+	// then the other GPRs, reloading R0/R1 afterward and the context base
+	// register (R20) last.
 	MOVD	ThreadContext_X+224(R20), R0
 	WORD	$0xAA0003FC  // MOV X28, X0
 

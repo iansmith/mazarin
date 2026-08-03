@@ -115,14 +115,6 @@ func CheckThreadPreemption(framePtr uint64) uint64
 // Safe because exception stack address > g0.stackguard0, so stack check passes.
 func CheckKernelGoroutinePreempt(framePtr uint64) uint64
 
-// RunFirstThread starts the first thread from the ready queue.
-// Waits for a thread to become ready, then switches to it via ERET/IRET/SRET.
-// This function never returns - it transitions to userspace.
-// Called from kernel main after launching threads.
-//
-//go:nosplit
-func RunFirstThread()
-
 // ThreadExitAsm is the ABI0 entry point for killing the current thread.
 // Called from exception handler when an unrecoverable user-mode fault occurs.
 // Returns pointer to next ThreadContext (or 0 if no threads remain).
