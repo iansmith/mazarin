@@ -9,16 +9,18 @@ package main
 // - Any other interrupt becomes pending
 // - Spuriously (WFI is a hint, not a guarantee)
 //
-// Implemented in wfi_arm64.s / wfi_amd64.s / wfi_riscv64.s
+// Implemented in wfi_arm64.s / wfi_amd64.s
 func WaitForInterrupt()
 
-// EnableIRQsAndWait atomically enables interrupts and halts the CPU until
-// the next interrupt fires. On x86_64 this exploits the STI shadow (the
-// instruction after STI executes with IRQs still masked) to make STI+HLT
-// an atomic pair — the first interrupt that can fire does so during HLT.
-// On ARM64/RISC-V, enables IRQs then executes WFI.
-// After the interrupt handler returns, IRQs are disabled again (CLI on
-// AMD64; ARM64/RISC-V exception return restores the pre-WFI IRQ state).
+// EnableIRQsAndWait halts the CPU until the next interrupt fires, then returns
+// with IRQs masked — unconditionally, regardless of the caller's entry state.
 //
-// Implemented in wfi_arm64.s / wfi_amd64.s / wfi_riscv64.s
+// Each arch closes the unmask/halt race differently, and neither is a plain
+// "enable then halt": x86_64 exploits the STI shadow, where the instruction
+// after STI still executes masked, making STI+HLT atomic. ARM64 has no such
+// shadow, so it inverts the order — WFI first, then unmask — relying on WFI
+// waking for a pending interrupt even with PSTATE.I set. Unmasking first on
+// ARM64 would drop a wake whose interrupt landed before the WFI (MAZ-169).
+//
+// Implemented in wfi_arm64.s / wfi_amd64.s
 func EnableIRQsAndWait()
