@@ -1,4 +1,3 @@
-
 package gpu
 
 import (
@@ -279,12 +278,63 @@ func virtioGPUInit() bool {
 	return true
 }
 
+// Fire-and-forget flush state (MAZ-173). All of it is guarded by gpuLock.
+// The transfer/flush command and response buffers must be static, not stack
+// locals: the device DMA-reads the commands and DMA-writes the responses
+// after virtioGPUTransferAndFlush has returned.
+var (
+	flushTransferCmd  VirtIOGPUTransferToHost2D
+	flushFlushCmd     VirtIOGPUResourceFlush
+	flushTransferResp VirtIOGPUCtrlHdr
+	flushFlushResp    VirtIOGPUCtrlHdr
+	// flushOutstanding counts used-ring entries the previous flush has not
+	// yet reclaimed (0 or 2). Guarded by gpuLock.
+	flushOutstanding int
+)
+
+// reclaimFlushCompletions frees control-queue used-ring entries left behind
+// by previous fire-and-forget flushes. Returns true when none remain.
+// REQUIRES gpuLock held. Runs with IRQs enabled — the whole point of MAZ-173.
+//
+// It must run before anything reuses the static flush buffers above, and
+// before any response-checked command (virtioGPUSendCommand) pops the used
+// ring — otherwise that command would mistake a stale flush completion for
+// its own. The bounded spin only engages when the device has not yet consumed
+// the previous flush, which at repaint cadence is effectively never; if the
+// bound is exhausted the caller drops its command rather than wedging.
+//
+//go:nosplit
+func reclaimFlushCompletions() bool {
+	vq := &virtioGPUDevice.ControlQueue
+	maxWait := 1000000
+	for waited := 0; flushOutstanding > 0 && waited < maxWait; waited++ {
+		if virtio.VirtqueueHasUsed(vq) {
+			asm.DmaRmb()
+			usedIdx, _ := virtio.VirtqueueGetUsed(vq)
+			if usedIdx != 0xFFFF {
+				virtio.VirtqueueFreeDescChain(vq, uint16(usedIdx))
+				flushOutstanding--
+			}
+			continue
+		}
+		for delay := 0; delay < 100; delay++ {
+		}
+	}
+	return flushOutstanding == 0
+}
+
 // virtioGPUSendCommand sends a GPU command via the control queue
 // Returns response type, or 0xFFFF on error
 //
 //go:nosplit
 func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.Pointer, respSize uint32) uint32 {
 	vq := &virtioGPUDevice.ControlQueue
+
+	// Drain any fire-and-forget flush completions first, so the used entry
+	// we pop below is guaranteed to be our own (MAZ-173).
+	if !reclaimFlushCompletions() {
+		return 0xFFFF
+	}
 
 	// Allocate descriptors for command and response
 	cmdPhys := virtio.VirtqueueGetPhysicalAddr(cmdBuf)
@@ -409,7 +459,6 @@ func virtioGPUGetDisplayInfo() (uint32, uint32, bool) {
 // displayWidth/displayHeight: the visible display dimensions
 // resourceHeight: total height of the GPU resource (>= displayHeight for scrolling)
 // Returns true on success, false on failure
-//
 func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint32) bool {
 	// Resource can be taller than display to enable hardware scrolling. Compute in
 	// 64-bit so a buggy hypervisor reporting absurd dimensions cannot wrap uint32
@@ -600,8 +649,16 @@ func virtioGPUTransferAndFlush(x, y, width, height uint32) {
 	asm.CleanDCacheRange(fbBase+startOffset, regionSize)
 	asm.DmaWmb()
 
-	// Build transfer command
-	var transferCmd VirtIOGPUTransferToHost2D
+	// Reclaim the previous flush's used entries before reusing the static
+	// command/response buffers (MAZ-173). If the device still hasn't
+	// consumed them after the bound, drop this flush — the next repaint
+	// retries.
+	if !reclaimFlushCompletions() {
+		return
+	}
+
+	// Build transfer command (static buffer — device reads it after we return)
+	transferCmd := &flushTransferCmd
 	transferCmd.Hdr.Type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D
 	transferCmd.Rect.X = x
 	transferCmd.Rect.Y = y
@@ -610,8 +667,8 @@ func virtioGPUTransferAndFlush(x, y, width, height uint32) {
 	transferCmd.Offset = uint64(y)*uint64(pitch) + uint64(x)*4
 	transferCmd.ResourceID = virtioGPUDevice.ResourceID
 
-	// Build flush command
-	var flushCmd VirtIOGPUResourceFlush
+	// Build flush command (static buffer)
+	flushCmd := &flushFlushCmd
 	flushCmd.Hdr.Type = VIRTIO_GPU_CMD_RESOURCE_FLUSH
 	flushCmd.Rect.X = x
 	flushCmd.Rect.Y = y
@@ -619,19 +676,19 @@ func virtioGPUTransferAndFlush(x, y, width, height uint32) {
 	flushCmd.Rect.Height = height
 	flushCmd.ResourceID = virtioGPUDevice.ResourceID
 
-	var transferResp VirtIOGPUCtrlHdr
-	var flushResp VirtIOGPUCtrlHdr
+	transferResp := &flushTransferResp
+	flushResp := &flushFlushResp
 
 	vq := &virtioGPUDevice.ControlQueue
 
 	// --- Set up transfer descriptor chain (cmd → resp) ---
-	tCmdPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&transferCmd))
-	tCmdIdx := virtio.VirtqueueAddDesc(vq, tCmdPhys, uint32(unsafe.Sizeof(transferCmd)), 0, 0xFFFF)
+	tCmdPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(transferCmd))
+	tCmdIdx := virtio.VirtqueueAddDesc(vq, tCmdPhys, uint32(unsafe.Sizeof(*transferCmd)), 0, 0xFFFF)
 	if tCmdIdx == 0xFFFF {
 		return
 	}
-	tRespPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&transferResp))
-	tRespIdx := virtio.VirtqueueAddDesc(vq, tRespPhys, uint32(unsafe.Sizeof(transferResp)), virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
+	tRespPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(transferResp))
+	tRespIdx := virtio.VirtqueueAddDesc(vq, tRespPhys, uint32(unsafe.Sizeof(*transferResp)), virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
 	if tRespIdx == 0xFFFF {
 		virtio.VirtqueueFreeDescChain(vq, tCmdIdx)
 		return
@@ -643,14 +700,14 @@ func virtioGPUTransferAndFlush(x, y, width, height uint32) {
 	tCmdPtr.Next = tRespIdx
 
 	// --- Set up flush descriptor chain (cmd → resp) ---
-	fCmdPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&flushCmd))
-	fCmdIdx := virtio.VirtqueueAddDesc(vq, fCmdPhys, uint32(unsafe.Sizeof(flushCmd)), 0, 0xFFFF)
+	fCmdPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(flushCmd))
+	fCmdIdx := virtio.VirtqueueAddDesc(vq, fCmdPhys, uint32(unsafe.Sizeof(*flushCmd)), 0, 0xFFFF)
 	if fCmdIdx == 0xFFFF {
 		virtio.VirtqueueFreeDescChain(vq, tCmdIdx)
 		return
 	}
-	fRespPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&flushResp))
-	fRespIdx := virtio.VirtqueueAddDesc(vq, fRespPhys, uint32(unsafe.Sizeof(flushResp)), virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
+	fRespPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(flushResp))
+	fRespIdx := virtio.VirtqueueAddDesc(vq, fRespPhys, uint32(unsafe.Sizeof(*flushResp)), virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
 	if fRespIdx == 0xFFFF {
 		virtio.VirtqueueFreeDescChain(vq, tCmdIdx)
 		virtio.VirtqueueFreeDescChain(vq, fCmdIdx)
@@ -673,36 +730,17 @@ func virtioGPUTransferAndFlush(x, y, width, height uint32) {
 	asm.CleanDCacheRange(virtio.PointerToUintptr(unsafe.Pointer(vq.Available)), availSize)
 	asm.DmaWmb()
 
-	// Single notify for both commands
+	// Single notify for both commands, then return without waiting
+	// (MAZ-173). Neither command carries VIRTIO_GPU_FLAG_FENCE, so the used
+	// entries signal only descriptor consumption — a guarantee nothing here
+	// needs. TRANSFER_TO_HOST_2D copies the pixels into the host-side shadow
+	// (a pixman image in QEMU) for this classic 2D resource, so the guest is
+	// free to keep drawing; Linux likewise attaches no fence to non-blob
+	// scanout flushes. The used entries are reclaimed by
+	// reclaimFlushCompletions at the next control-queue submission.
 	queueNotifyAddr := virtioGPUDevice.NotifyBase +
 		uintptr(virtioGPUDevice.ControlQueueNotifyOff)*uintptr(virtioGPUDevice.NotifyConfig.NotifyOffMultiplier)
 	virtio.VirtqueueNotify(vq, queueNotifyAddr, 0)
 
-	// Poll until both completions arrive (2 used entries)
-	maxWait := 1000000
-	completions := 0
-	waited := 0
-	for completions < 2 && waited < maxWait {
-		if virtio.VirtqueueHasUsed(vq) {
-			asm.DmaRmb()
-			usedIdx, _ := virtio.VirtqueueGetUsed(vq)
-			if usedIdx != 0xFFFF {
-				virtio.VirtqueueFreeDescChain(vq, uint16(usedIdx))
-				completions++
-			}
-		}
-		if completions < 2 {
-			for delay := 0; delay < 100; delay++ {
-			}
-			waited++
-		}
-	}
-	if waited >= maxWait {
-		// timeout — silently drop
-	}
-
-	// Invalidate response buffers and check results
-	asm.InvalidateDCacheRange(uintptr(unsafe.Pointer(&transferResp)), uintptr(unsafe.Sizeof(transferResp)))
-	asm.InvalidateDCacheRange(uintptr(unsafe.Pointer(&flushResp)), uintptr(unsafe.Sizeof(flushResp)))
-	asm.DmaRmb()
+	flushOutstanding = 2
 }

@@ -93,7 +93,8 @@ func TestNoWordEncodedHintsOrBarriers(t *testing.T) {
 // on every repaint (the MAZ-127/146 hazard class). The only legitimate masking
 // left is cursor-queue state shared with the tablet IRQ top-half, where the
 // mask IS the synchronization; such a site must say so with a comment
-// containing "IRQ-MASK-JUSTIFIED(MAZ-" within the three lines above the call.
+// containing "IRQ-MASK-JUSTIFIED(MAZ-" in the contiguous comment block
+// immediately above the call.
 func TestGPUIRQMaskingJustified(t *testing.T) {
 	root, err := repoRoot()
 	if err != nil {
@@ -120,9 +121,14 @@ func TestGPUIRQMaskingJustified(t *testing.T) {
 				continue
 			}
 			justified := false
-			for j := i - 3; j < i; j++ {
-				if j >= 0 && strings.Contains(lines[j], "IRQ-MASK-JUSTIFIED(MAZ-") {
+			for j := i - 1; j >= 0; j-- {
+				trimmed := strings.TrimSpace(lines[j])
+				if !strings.HasPrefix(trimmed, "//") {
+					break
+				}
+				if strings.Contains(trimmed, "IRQ-MASK-JUSTIFIED(MAZ-") {
 					justified = true
+					break
 				}
 			}
 			if !justified {

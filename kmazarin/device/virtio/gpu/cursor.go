@@ -98,10 +98,10 @@ func generateCursorImage() {
 			off := (y*CursorWidth + x) * 4
 			switch cursorBitmap[y][x] {
 			case 0: // transparent
-				cursorImageBGRA[off+0] = 0   // B
-				cursorImageBGRA[off+1] = 0   // G
-				cursorImageBGRA[off+2] = 0   // R
-				cursorImageBGRA[off+3] = 0   // A
+				cursorImageBGRA[off+0] = 0 // B
+				cursorImageBGRA[off+1] = 0 // G
+				cursorImageBGRA[off+2] = 0 // R
+				cursorImageBGRA[off+3] = 0 // A
 			case 1: // white outline
 				cursorImageBGRA[off+0] = 255 // B
 				cursorImageBGRA[off+1] = 255 // G
@@ -250,12 +250,12 @@ func RegisterCursorImage(pixelData []byte, hotX, hotY uint32) int32 {
 		dst[dstOff+3] = a // A
 	}
 
-	// GPU operations must be serialized.
-	savedDAIF := saveAndDisableIRQs()
+	// GPU operations must be serialized. registerCursorGPU uses only the
+	// control queue, which no IRQ context touches, so gpuLock alone is the
+	// right synchronization (MAZ-173) — no IRQ masking.
 	lockGPU()
 	ok := registerCursorGPU(id, resID, hotX, hotY)
 	unlockGPU()
-	restoreIRQs(savedDAIF)
 
 	if !ok {
 		return -1
@@ -359,6 +359,12 @@ func SetActiveCursor(cursorID int32) bool {
 		return false
 	}
 
+	// IRQ-MASK-JUSTIFIED(MAZ-173): this section rewrites topHalfCursor* state
+	// (the shared DMA command buffer, avail ring, and index cursors) that the
+	// tablet IRQ top-half (topHalfTabletHandler → TopHalfMoveCursor) also
+	// drives. The top-half takes no lock — masking IRQs is the only thing
+	// keeping it from submitting through this state mid-rewrite. The masked
+	// poll below is bounded and runs only on the rare cursor-shape change.
 	savedDAIF := saveAndDisableIRQs()
 	lockGPU()
 
@@ -509,19 +515,19 @@ func InitCursorTopHalf() bool {
 
 	// Initialize the command buffer on the DMA page with MOVE_CURSOR template
 	asm.MmioWrite32(topHalfCursorCmdVA+0, VIRTIO_GPU_CMD_MOVE_CURSOR) // hdr.type
-	asm.MmioWrite32(topHalfCursorCmdVA+4, 0)   // hdr.flags
-	asm.MmioWrite32(topHalfCursorCmdVA+8, 0)   // hdr.fence_id low
-	asm.MmioWrite32(topHalfCursorCmdVA+12, 0)  // hdr.fence_id high
-	asm.MmioWrite32(topHalfCursorCmdVA+16, 0)  // hdr.ctx_id
-	asm.MmioWrite32(topHalfCursorCmdVA+20, 0)  // hdr.padding
-	asm.MmioWrite32(topHalfCursorCmdVA+24, 0)  // pos.scanout_id
-	asm.MmioWrite32(topHalfCursorCmdVA+28, DisplayWidth/2)  // pos.x
-	asm.MmioWrite32(topHalfCursorCmdVA+32, DisplayHeight/2) // pos.y
-	asm.MmioWrite32(topHalfCursorCmdVA+36, 0)  // pos.padding
-	asm.MmioWrite32(topHalfCursorCmdVA+40, cursorResourceID) // resource_id
-	asm.MmioWrite32(topHalfCursorCmdVA+44, CursorHotX) // hot_x
-	asm.MmioWrite32(topHalfCursorCmdVA+48, CursorHotY) // hot_y
-	asm.MmioWrite32(topHalfCursorCmdVA+52, 0)  // padding
+	asm.MmioWrite32(topHalfCursorCmdVA+4, 0)                          // hdr.flags
+	asm.MmioWrite32(topHalfCursorCmdVA+8, 0)                          // hdr.fence_id low
+	asm.MmioWrite32(topHalfCursorCmdVA+12, 0)                         // hdr.fence_id high
+	asm.MmioWrite32(topHalfCursorCmdVA+16, 0)                         // hdr.ctx_id
+	asm.MmioWrite32(topHalfCursorCmdVA+20, 0)                         // hdr.padding
+	asm.MmioWrite32(topHalfCursorCmdVA+24, 0)                         // pos.scanout_id
+	asm.MmioWrite32(topHalfCursorCmdVA+28, DisplayWidth/2)            // pos.x
+	asm.MmioWrite32(topHalfCursorCmdVA+32, DisplayHeight/2)           // pos.y
+	asm.MmioWrite32(topHalfCursorCmdVA+36, 0)                         // pos.padding
+	asm.MmioWrite32(topHalfCursorCmdVA+40, cursorResourceID)          // resource_id
+	asm.MmioWrite32(topHalfCursorCmdVA+44, CursorHotX)                // hot_x
+	asm.MmioWrite32(topHalfCursorCmdVA+48, CursorHotY)                // hot_y
+	asm.MmioWrite32(topHalfCursorCmdVA+52, 0)                         // padding
 
 	topHalfCursorDescVA = uintptr(vq.DescTable)
 	topHalfCursorAvailVA = uintptr(unsafe.Pointer(vq.Available))
@@ -565,9 +571,9 @@ func TopHalfMoveCursor(x, y uint32) {
 	descVA := topHalfCursorDescVA
 	asm.MmioWrite32(descVA+0, uint32(topHalfCursorCmdPA))     // addr low
 	asm.MmioWrite32(descVA+4, uint32(topHalfCursorCmdPA>>32)) // addr high
-	asm.MmioWrite32(descVA+8, 56)                              // len = sizeof(UpdateCursor)
-	asm.MmioWrite16(descVA+12, 0)                              // flags: no chain
-	asm.MmioWrite16(descVA+14, 0xFFFF)                         // no next
+	asm.MmioWrite32(descVA+8, 56)                             // len = sizeof(UpdateCursor)
+	asm.MmioWrite16(descVA+12, 0)                             // flags: no chain
+	asm.MmioWrite16(descVA+14, 0xFFFF)                        // no next
 
 	// Add descriptor 0 to available ring
 	availRingIdx := topHalfCursorNextAvailIdx % topHalfCursorQueueSize

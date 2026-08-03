@@ -104,11 +104,9 @@ func Flush(x, y, width, height uint32) {
 //
 //go:nosplit
 func UpdateDisplay(x, y, width, height uint32) {
-	savedDAIF := saveAndDisableIRQs()
 	lockGPU()
 	virtioGPUTransferAndFlush(x, y, width, height)
 	unlockGPU()
-	restoreIRQs(savedDAIF)
 }
 
 // UpdateDisplayUnbatched transfers and flushes separately (original path).
@@ -116,12 +114,10 @@ func UpdateDisplay(x, y, width, height uint32) {
 //
 //go:nosplit
 func UpdateDisplayUnbatched(x, y, width, height uint32) {
-	savedDAIF := saveAndDisableIRQs()
 	lockGPU()
 	virtioGPUTransferToHost(x, y, width, height)
 	virtioGPUFlush(x, y, width, height)
 	unlockGPU()
-	restoreIRQs(savedDAIF)
 }
 
 // SetScanoutOffset changes the visible region's Y offset in the framebuffer.
@@ -130,11 +126,9 @@ func UpdateDisplayUnbatched(x, y, width, height uint32) {
 //
 //go:nosplit
 func SetScanoutOffset(yOffset uint32) bool {
-	savedDAIF := saveAndDisableIRQs()
 	lockGPU()
 	ok := virtioGPUSetScanoutOffset(yOffset)
 	unlockGPU()
-	restoreIRQs(savedDAIF)
 	return ok
 }
 
@@ -155,8 +149,14 @@ func restoreIRQs(daif uint64) {
 
 // lockGPU spins until the GPU command lock is acquired.
 // No attempt limit — GPU commands always complete (internal timeout).
-// REQUIRES: IRQs disabled (caller must call saveAndDisableIRQs first)
-// to prevent timer preemption while holding the lock.
+//
+// MAZ-173: this lock is only ever taken from thread context — the tablet IRQ
+// top-half (TopHalfMoveCursor) drives the cursor queue through its own MMIO
+// state and never takes it — so IRQs stay enabled around it. A holder can be
+// preempted; waiters spin with IRQs on and are themselves preemptible, so
+// that costs latency, never progress. Cursor-queue state shared WITH the IRQ
+// top-half is synchronized by masking at its one call site (SetActiveCursor),
+// not by this lock.
 //
 //go:nosplit
 func lockGPU() {
