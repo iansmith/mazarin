@@ -158,6 +158,15 @@ func restoreIRQs(daif uint64) {
 // top-half is synchronized by masking at its one call site (SetActiveCursor),
 // not by this lock.
 //
+// INVARIANT: never spin on this lock with IRQs masked. Holders are now
+// preemptible, so a masked spinner waiting on a preempted holder hangs the
+// machine (the MAZ-146 class). A caller that needs a masked section must
+// acquire the lock FIRST, then mask (see SetActiveCursor). For MAZ-148's
+// bare-CAS spinlock audit: this stays a bare CompareAndSwap deliberately —
+// the dual-context analysis above shows no fault/IRQ-context acquirer, and
+// migrating it to the IRQ-atomic ksync.Spinlock would reintroduce the
+// masked-hold-on-every-flush this ticket removes.
+//
 //go:nosplit
 func lockGPU() {
 	for {

@@ -290,6 +290,8 @@ var (
 	// flushOutstanding counts used-ring entries the previous flush has not
 	// yet reclaimed (0 or 2). Guarded by gpuLock.
 	flushOutstanding int
+	// flushReclaimTimeouts counts reclaim bound exhaustions (diagnostics).
+	flushReclaimTimeouts uint64
 )
 
 // reclaimFlushCompletions frees control-queue used-ring entries left behind
@@ -302,6 +304,13 @@ var (
 // its own. The bounded spin only engages when the device has not yet consumed
 // the previous flush, which at repaint cadence is effectively never; if the
 // bound is exhausted the caller drops its command rather than wedging.
+//
+// Recovery story for an overdue completion: flushOutstanding stays >0 and
+// this call fails (logged below), but a completion that arrives LATE is
+// drained by the next caller's reclaim and the queue recovers fully — unlike
+// the old per-call wait, where a late completion was popped by the next
+// submission and mistaken for its own. Completions that never arrive mean a
+// dead device; every path failed under the old code too, just less visibly.
 //
 //go:nosplit
 func reclaimFlushCompletions() bool {
@@ -320,7 +329,13 @@ func reclaimFlushCompletions() bool {
 		for delay := 0; delay < 100; delay++ {
 		}
 	}
-	return flushOutstanding == 0
+	if flushOutstanding > 0 {
+		flushReclaimTimeouts++
+		klog.Errf("[VirtIO GPU] flush completions overdue (%d outstanding, timeout #%d) — dropping command; will retry reclaim on next submission\n",
+			flushOutstanding, flushReclaimTimeouts)
+		return false
+	}
+	return true
 }
 
 // virtioGPUSendCommand sends a GPU command via the control queue

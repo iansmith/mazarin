@@ -273,7 +273,9 @@ func RegisterCursorImage(pixelData []byte, hotX, hotY uint32) int32 {
 }
 
 // registerCursorGPU creates the GPU resource, attaches backing, and transfers
-// pixel data to the host. Caller must hold gpuLock with IRQs disabled.
+// pixel data to the host. Caller must hold gpuLock; no IRQ masking is
+// required — everything here goes through the control queue, which no IRQ
+// context touches (MAZ-173).
 func registerCursorGPU(id int, resID, hotX, hotY uint32) bool {
 	// Step 1: Create 2D resource.
 	var createCmd VirtIOGPUResourceCreate2D
@@ -365,8 +367,21 @@ func SetActiveCursor(cursorID int32) bool {
 	// drives. The top-half takes no lock — masking IRQs is the only thing
 	// keeping it from submitting through this state mid-rewrite. The masked
 	// poll below is bounded and runs only on the rare cursor-shape change.
-	savedDAIF := saveAndDisableIRQs()
+	//
+	// ORDERING: the lock is acquired BEFORE masking. Other gpuLock holders
+	// now hold it preemptible (IRQs on), so spinning on the lock with IRQs
+	// masked would hang forever if the holder was preempted — the MAZ-146
+	// hazard class. Lock first (preemptible spin), mask after; restore
+	// before release (LIFO).
+	//
+	// SMP CAVEAT (MAZ-142): masking DAIF silences only THIS core. The sync
+	// holds today because the machine runs one CPU and the tablet SPI is
+	// GIC-targeted to CPU 0. SMP bring-up that rebalances IRQ affinity must
+	// replace this mask with a real lock shared with the top-half.
 	lockGPU()
+	// IRQ-MASK-JUSTIFIED(MAZ-173): see the block above — masks out the
+	// tablet IRQ top-half that shares topHalfCursor* state.
+	savedDAIF := saveAndDisableIRQs()
 
 	// Drain any in-flight top-half commands before we reuse the DMA buffer.
 	usedIdx := asm.MmioRead16(topHalfCursorUsedVA + 2)
@@ -422,8 +437,8 @@ func SetActiveCursor(cursorID int32) bool {
 		activeCursorID = cursorID
 	}
 
-	unlockGPU()
 	restoreIRQs(savedDAIF)
+	unlockGPU()
 
 	return ok
 }
