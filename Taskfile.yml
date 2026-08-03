@@ -971,7 +971,7 @@ tasks:
     deps: [check-env]
     cmds:
       - '{{.GO}} tool go-echo "Running tests..."'
-      - '{{.GO}} test -v ./shared/... ./mazarin/transfer/... ./mazarin/httpclient/... ./maz/protocol-http/internal/... ./kmazarin/proc/... ./kmazarin/ksyscall/replygate/... ./maz/linux/internal/...'
+      - '{{.GO}} test -v ./shared/... ./mazarin/transfer/... ./mazarin/httpclient/... ./maz/protocol-http/internal/... ./kmazarin/proc/... ./kmazarin/ksync/... ./kmazarin/ksyscall/replygate/... ./maz/linux/internal/...'
 
   clean:
     desc: Remove build artifacts
