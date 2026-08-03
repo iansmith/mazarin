@@ -365,9 +365,9 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	//                                   their reservations ....... (balanced)
 	//   diagnostic halt (KX / !F: / BADIRETQ / BADCTX / ISTOVF /
 	//                    RSPOVF / RSPOVR) ...................... (moot)
-	// YieldToReadyThread / RunFirstThread deliberately touch NOTHING: they
-	// are not exceptions, no chain dies there, and the global cursor already
-	// accounts for the suspended chains of every context they switch
+	// YieldToReadyThread deliberately touches NOTHING: it is not an
+	// exception, no chain dies there, and the global cursor already
+	// accounts for the suspended chains of every context it switches
 	// between. If you add a NEW exit path you MUST give it one of these
 	// treatments, or the arithmetic drifts one stride per traversal until
 	// ISTOVF halts.
@@ -2316,7 +2316,7 @@ mlock_restore_done:
 	FLD(R12, ThreadContext_TLSG, DX)	// DX = saved TLS-g (ctx.TLSG, the faithful dual-home restore)
 	TESTQ	DX, DX
 	JZ	skip_fsbase_and_tls	// g==0 → skip TLS write (user TLS page may not be faulted in yet),
-					// matching RunFirstThread / YieldToReadyThread (CodeRabbit, PR #70)
+					// matching YieldToReadyThread (CodeRabbit, PR #70)
 	MOVQ	DX, -8(AX)		// Write saved TLS-g to TLS slot
 skip_fsbase_and_tls:
 
@@ -2640,8 +2640,8 @@ bad_iq_halt:
 
 // bad_ctx_dump — a kernel-CS ThreadContext's RIP is outside kernel .text.
 // In: R12 = &ThreadContext. Never returns. Shared by load_context_and_iretq
-// and the context restores in abi_stubs_amd64.s (RunFirstThread,
-// YieldToReadyThread). Uses the caller's SP (valid in all three).
+// and the context restore in abi_stubs_amd64.s (YieldToReadyThread).
+// Uses the caller's SP (valid in both).
 TEXT bad_ctx_dump(SB), NOSPLIT|NOFRAME, $0
 	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
