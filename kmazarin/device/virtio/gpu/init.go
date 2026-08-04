@@ -194,40 +194,20 @@ func unlockGPU() {
 //
 //go:nosplit
 func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
-	if imageAddr == 0 || imageSize < 8 {
+	imgWidth, imgHeight, ok := validateBootImage(imageAddr, imageSize)
+	if !ok {
 		return false
 	}
 
-	// Read image dimensions from header (little-endian)
-	imgWidth := *(*uint32)(unsafe.Pointer(imageAddr))
-	imgHeight := *(*uint32)(unsafe.Pointer(imageAddr + 4))
-
-	// Validate dimensions are non-zero
-	if imgWidth == 0 || imgHeight == 0 {
-		return false
-	}
-
-	// Calculate expected size using 64-bit math to avoid overflow
-	// imgWidth * imgHeight * 4 could overflow uint32 for large images
-	expectedSize := uint64(8) + uint64(imgWidth)*uint64(imgHeight)*4
-	if imageSize < expectedSize {
-		return false
-	}
-
-	// Get framebuffer info
+	// Re-reading the framebuffer fields validateBootImage just checked is
+	// safe: they are write-once (virtioGPUSetupFramebuffer, during
+	// gpu.Init) and this function's only caller runs single-threaded
+	// strictly after Init — the fields cannot change between the helper's
+	// nil/bounds checks and these reads.
 	fbWidth := virtioGPUDevice.Width
 	fbHeight := virtioGPUDevice.Height
 	fbPitch := virtioGPUDevice.Pitch
 	fb := virtioGPUDevice.Framebuffer
-
-	if fb == nil {
-		return false
-	}
-
-	// Validate image fits in framebuffer
-	if imgWidth > fbWidth || imgHeight > fbHeight {
-		return false
-	}
 
 	// Calculate centered position (safe now that we've validated dimensions)
 	startX := (fbWidth - imgWidth) / 2
@@ -242,10 +222,6 @@ func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
 	centerY := float32(imgHeight) / 2.0
 	radiusX := float32(imgWidth) / 2.0
 	radiusY := float32(imgHeight) / 2.0
-
-	// Fade parameters - start fading at 70% of the radius, fully transparent at 100%
-	fadeStart := float32(0.70)
-	fadeEnd := float32(1.0)
 
 	// Background color: must match mancini.DefaultPalette().Surface
 	// Surface = NRGBA{232, 230, 244, 255} → BGRA uint32 = 0xFFE8E6F4
@@ -275,41 +251,97 @@ func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
 			dy := (float32(y) - centerY) / radiusY
 			dist := sqrt32(dx*dx + dy*dy)
 
-			// Calculate alpha multiplier based on distance
-			var alphaMult float32
-			if dist <= fadeStart {
-				alphaMult = 1.0
-			} else if dist >= fadeEnd {
-				alphaMult = 0.0
-			} else {
-				// Smooth fade using cosine interpolation
-				t := (dist - fadeStart) / (fadeEnd - fadeStart)
-				alphaMult = (1.0 + cos32(t*3.14159)) / 2.0
-			}
-
-			// Read source pixel (BGRA from boot-image.bin)
+			// Read source pixel (BGRA from boot-image.bin), blend against the
+			// surface background by the vignette alpha, write back.
 			srcPixel := *(*uint32)(unsafe.Pointer(srcRow + uintptr(x)*4))
-
-			// Extract source components (BGRA byte order in source file)
-			srcB := uint8(srcPixel & 0xFF)
-			srcG := uint8((srcPixel >> 8) & 0xFF)
-			srcR := uint8((srcPixel >> 16) & 0xFF)
-
-			// Blend source with background based on alpha
-			// result = src * alpha + bg * (1 - alpha)
-			outB := uint8(float32(srcB)*alphaMult + float32(bgB)*(1.0-alphaMult))
-			outG := uint8(float32(srcG)*alphaMult + float32(bgG)*(1.0-alphaMult))
-			outR := uint8(float32(srcR)*alphaMult + float32(bgR)*(1.0-alphaMult))
-
-			// Reassemble pixel in BGRA format (framebuffer byte order)
-			dstPixel := uint32(outB) | (uint32(outG) << 8) | (uint32(outR) << 16) | 0xFF000000
-
-			// Write to framebuffer
+			dstPixel := blendBGRA(srcPixel, vignetteAlpha(dist), bgB, bgG, bgR)
 			*(*uint32)(unsafe.Pointer(dstRow + uintptr(x)*4)) = dstPixel
 		}
 	}
 
 	return true
+}
+
+// validateBootImage checks the boot-image header and framebuffer preconditions
+// for RenderBootImage. Returns the image dimensions and whether rendering may
+// proceed.
+//
+//go:nosplit
+func validateBootImage(imageAddr uintptr, imageSize uint64) (imgWidth, imgHeight uint32, ok bool) {
+	if imageAddr == 0 || imageSize < 8 {
+		return 0, 0, false
+	}
+
+	// Read image dimensions from header (little-endian)
+	imgWidth = *(*uint32)(unsafe.Pointer(imageAddr))
+	imgHeight = *(*uint32)(unsafe.Pointer(imageAddr + 4))
+
+	// Validate dimensions are non-zero
+	if imgWidth == 0 || imgHeight == 0 {
+		return 0, 0, false
+	}
+
+	// Calculate expected size using 64-bit math to avoid overflow
+	// imgWidth * imgHeight * 4 could overflow uint32 for large images
+	expectedSize := uint64(8) + uint64(imgWidth)*uint64(imgHeight)*4
+	if imageSize < expectedSize {
+		return 0, 0, false
+	}
+
+	if virtioGPUDevice.Framebuffer == nil {
+		return 0, 0, false
+	}
+
+	// Validate image fits in framebuffer
+	if imgWidth > virtioGPUDevice.Width || imgHeight > virtioGPUDevice.Height {
+		return 0, 0, false
+	}
+
+	return imgWidth, imgHeight, true
+}
+
+// vignetteAlpha converts a normalized elliptical distance from the image
+// centre (0 at centre, 1 at edge) into an alpha multiplier: opaque inside 70%
+// of the radius, transparent past 100%, cosine-smoothed between. The 70%/100%
+// band and the cosine ramp are the splash's fixed visual parameters — do not
+// change them here (MAZ-170 out-of-scope).
+//
+//go:nosplit
+func vignetteAlpha(dist float32) float32 {
+	// Fade parameters - start fading at 70% of the radius, fully transparent at 100%
+	fadeStart := float32(0.70)
+	fadeEnd := float32(1.0)
+
+	if dist <= fadeStart {
+		return 1.0
+	}
+	if dist >= fadeEnd {
+		return 0.0
+	}
+	// Smooth fade using cosine interpolation
+	t := (dist - fadeStart) / (fadeEnd - fadeStart)
+	return (1.0 + cos32(t*3.14159)) / 2.0
+}
+
+// blendBGRA alpha-blends a BGRA source pixel against the background colour
+// channels (result = src*alpha + bg*(1-alpha)) and repacks it as an opaque
+// BGRA framebuffer pixel. Straight-line, no branches.
+//
+//go:nosplit
+func blendBGRA(src uint32, alpha float32, bgB, bgG, bgR uint8) uint32 {
+	// Extract source components (BGRA byte order in source file)
+	srcB := uint8(src & 0xFF)
+	srcG := uint8((src >> 8) & 0xFF)
+	srcR := uint8((src >> 16) & 0xFF)
+
+	// Blend source with background based on alpha
+	// result = src * alpha + bg * (1 - alpha)
+	outB := uint8(float32(srcB)*alpha + float32(bgB)*(1.0-alpha))
+	outG := uint8(float32(srcG)*alpha + float32(bgG)*(1.0-alpha))
+	outR := uint8(float32(srcR)*alpha + float32(bgR)*(1.0-alpha))
+
+	// Reassemble pixel in BGRA format (framebuffer byte order)
+	return uint32(outB) | (uint32(outG) << 8) | (uint32(outR) << 16) | 0xFF000000
 }
 
 // sqrt32 computes approximate square root using Newton-Raphson
