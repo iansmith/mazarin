@@ -187,7 +187,8 @@ func unlockGPU() {
 }
 
 // RenderBootImage renders the boot image to the framebuffer
-// imageAddr: physical address of the image data
+// imageAddr: kernel-mapped virtual address of the image data (the caller maps
+// the physical pages via the TTBR1 linear map, phys + KernelVAOffset)
 // imageSize: size of the image data in bytes
 // The image format is: [4 bytes width][4 bytes height][width*height*4 bytes BGRA]
 //

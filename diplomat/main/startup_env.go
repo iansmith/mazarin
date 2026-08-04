@@ -21,7 +21,10 @@ import (
 //	[32]   envp[1] → "GOMEMLIMIT=NNMiB" (from kernel_mem_limit config)
 //	[40]   envp[2] → "GOGC=NNNNN" (from gc_percent_kernel config)
 //	[48]   envp[3] = NULL
-//	[56+]  auxv entries (key, value pairs) — up to 20 entries (320 bytes)
+//	[56+]  auxv entries (key, value pairs) — must terminate below [384];
+//	       worst case is 21 entries incl. terminator (336 bytes), one word
+//	       past the limit, so the optional splash pair yields when room is
+//	       short and a FATAL guard protects the terminator (MAZ-178)
 //	...
 //	[384]  "kmazarin\0"
 //	[400]  16 random bytes
@@ -266,8 +269,14 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	}
 
 	// AT_BOOT_IMAGE_PHYS/SIZE - splash image loaded by LoadBootImage (MAZ-178).
-	// Omitted entirely when the ESP carries no image.
-	if bootImagePhys != 0 && bootImageSize != 0 {
+	// Omitted entirely when the ESP carries no image — and also when the
+	// auxv vector is short on room: the vector must terminate below byte
+	// 384 (the progName string), and in the worst case (GOGC + budget +
+	// DTB all present) these two pairs would push the terminator onto
+	// progName by one word. The splash is the one purely cosmetic entry,
+	// so it yields first. Room check: these 4 words + a possible DTB pair
+	// (2) + the terminator (2) must fit below index 48 (byte 384).
+	if bootImagePhys != 0 && bootImageSize != 0 && i+8 <= 48 {
 		data[i] = 0x1015 // AT_BOOT_IMAGE_PHYS
 		data[i+1] = bootImagePhys
 		i += 2
@@ -286,6 +295,15 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 		data[i] = 0x1000 // AT_DTB_PHYS
 		data[i+1] = dtbAddr
 		i += 2
+	}
+
+	// Layout guard: the terminator's two words must stay below byte 384,
+	// where the progName string lives — overflowing would silently zero
+	// argv[0]. Loud failure beats silent corruption.
+	if i+1 >= 48 {
+		printString("FATAL: auxv vector overflows the string area at offset 384\r\n")
+		for {
+		}
 	}
 
 	// AT_NULL terminator
