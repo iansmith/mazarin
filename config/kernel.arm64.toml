@@ -38,6 +38,10 @@ preempt_interval_ms = 100
 # Time-attribute update rate in Hz (clock refresh etc.). Its own policy knob
 # (MAZ-172) - no longer coupled to the preemption quantum.
 time_update_hz = 10
+# Stage-5 A/D-bit sweep (clock-algorithm reference scan). OFF until page
+# replacement lands (MAZ-171): with swap stubs-only it had no consumer and
+# burned ~49 points of a host core keeping the kernel from ever idling.
+ad_scan_enabled = false
 
 # Serial output
 # When true, userspace stdout/stderr is routed only through the linux shepherd

@@ -28,6 +28,13 @@ type KernelConfig struct {
 	PreemptIntervalMs int `toml:"preempt_interval_ms"`
 	TimeUpdateHz      int `toml:"time_update_hz"`
 
+	// ADScanEnabled turns on the periodic A/D-bit sweep (the Stage-5 "clock"
+	// reference-bit scan in KernelIdleLoop). OFF by default (MAZ-171): with
+	// swap I/O stubs-only the sweep has no consumer, and it was burning ~49
+	// points of a host core walking page tables. Flip on when Stage-5 page
+	// replacement actually lands.
+	ADScanEnabled bool `toml:"ad_scan_enabled"`
+
 	// Serial output
 	SuppressSerialStdioCopy bool `toml:"suppress_serial_stdio_copy"`
 	SuppressKernelSerial    bool `toml:"suppress_kernel_serial"`

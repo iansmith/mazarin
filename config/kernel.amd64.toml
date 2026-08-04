@@ -27,6 +27,8 @@ kernel_tick_rate = 330
 preempt_interval_ms = 100
 # Time-attribute update rate in Hz, decoupled from the quantum (MAZ-172)
 time_update_hz = 10
+# Stage-5 A/D-bit sweep - OFF until page replacement lands (MAZ-171)
+ad_scan_enabled = false
 
 # Serial output
 suppress_serial_stdio_copy = false

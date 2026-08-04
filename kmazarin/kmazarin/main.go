@@ -781,6 +781,9 @@ func simpleMain() {
 		kmem.SetKernelBudgetMB(kernelCfg.KernelBudgetMB)
 	}
 
+	// A/D-bit sweep gate (MAZ-171): off unless config asks for it.
+	adScanEnabled = kernelCfg.ADScanEnabled
+
 	// Suppress serial echo of userspace stdout/stderr if configured.
 	if kernelCfg.SuppressSerialStdioCopy {
 		atomic.StoreUint32(&suppressSerial, 1)

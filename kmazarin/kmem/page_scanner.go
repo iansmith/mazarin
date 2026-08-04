@@ -11,7 +11,10 @@
 //   2. Clean + accessed   (recently used, but clean — cheap to evict)
 //   3. Dirty + unaccessed (not recently used, but needs write-back)
 //
-// Called from the timer bottom-half goroutine every ~1000 ticks.
+// Called from KernelIdleLoop (thread 0's synchronous main loop) on a
+// wall-clock-derived cadence, and only when the kernel config enables it
+// (ad_scan_enabled, default false — MAZ-171: with swap stubs-only the sweep
+// has no consumer).
 //
 // ARCHITECTURE NOTE: platformClearAccessed/platformClearDirty walk the page
 // table via the platform's cached root pointer (ttbr0L0PA on ARM64). For
@@ -36,8 +39,10 @@ import (
 	"sync/atomic"
 )
 
-// A/D scan counters — updated by ScanAccessedBits, read by [E] event dump.
-// Use atomic access: scanner runs from idle loop, dump runs from timer IRQ.
+// A/D scan counters — updated by ScanAccessedBits. Their reader (the old [E]
+// event dump) was deleted in 629f9cd4; ReadAndResetScanDeltas below currently
+// has no caller and is kept only as the accessor for whatever diagnostics
+// Stage-5 revives. Atomic access retained for any future IRQ-context reader.
 var scanRunCount uint64
 var scanTotalAccessed uint64
 var scanTotalPages uint64
@@ -48,7 +53,10 @@ var scanPrevTotalAccessed uint64
 var scanPrevTotalPages uint64
 
 // ReadAndResetScanDeltas returns delta values since last call and resets the
-// snapshot. Called from the [E] event dump in timer IRQ context.
+// snapshot. NO CURRENT CALLER (the [E] event dump that read it was deleted in
+// 629f9cd4). Note when reviving: with ad_scan_enabled=false the deltas are
+// all-zero — indistinguishable from "nothing accessed" — so a reader should
+// also surface the gate state.
 //
 //go:nosplit
 func ReadAndResetScanDeltas() (runs, accessed, total uint64) {
@@ -68,8 +76,9 @@ func ReadAndResetScanDeltas() (runs, accessed, total uint64) {
 // Accessed bit on each, and returns (accessedCount, totalCount).
 // Also propagates the hardware Dirty bit into the PageDescriptor's PD_DIRTY flag.
 //
-// Called from the timer bottom-half goroutine (KernelIdleLoop) every ~1000
-// timer ticks. NOT nosplit — uses spans.ForEach and page table walking.
+// Called from KernelIdleLoop (thread 0's synchronous main loop) on a
+// wall-clock-derived cadence when ad_scan_enabled is set (default off).
+// NOT nosplit — uses spans.ForEach and page table walking.
 func ScanAccessedBits(shepherdID proc.ShepherdId) (accessedCount int, totalCount int) {
 	p := proc.FindShepherdBySID(shepherdID)
 	if p == nil {
@@ -88,40 +97,50 @@ func ScanAccessedBits(shepherdID proc.ShepherdId) (accessedCount int, totalCount
 
 	p.Spans.ForEach(func(start, length uint64) {
 		end := start + length
-		for va := uintptr(start); va < uintptr(end); va += PageSize {
+		for va := uintptr(start); va < uintptr(end); {
 			// Look up PA using the shepherd's page table (explicit l0PA).
-			// This is correct regardless of which page table is active in the MMU.
-			pa := WalkUserPageTableWithL0(va, l0PA)
-			if pa == 0 {
-				continue // Not mapped yet (demand paging)
+			// This is correct regardless of which page table is active in the
+			// MMU. The hole-aware walk advances the cursor past unmapped
+			// regions at table granularity (MAZ-171): spans are mostly
+			// demand-page holes, and walking them 4 KB at a time saturated
+			// the idle loop.
+			pa, next := WalkUserPageTableWithNext(va, l0PA)
+			if pa != 0 {
+				totalCount++
+				if scanOneMappedPage(va, pa) {
+					accessedCount++
+				}
 			}
-			totalCount++
-
-			// Get descriptor; skip pinned pages (kernel pages, PT pages, MMIO).
-			desc := GetPageDescriptor(pa)
-			if desc != nil && desc.Flags&PD_PINNED != 0 {
-				continue
-			}
-
-			// Clear the Accessed bit and record if it was set.
-			// NOTE: On ARM64, this walks ttbr0L0PA (the platform's cached root).
-			// If the shepherd's page table is not currently active, platformClearAccessed
-			// returns false (no match found) — acceptable for the stub framework.
-			wasAccessed := platformClearAccessed(va)
-			if wasAccessed {
-				accessedCount++
-			}
-
-			// Clear the hardware Dirty bit and propagate to PageDescriptor.
-			// On ARM64 without FEAT_HAFDBS, platformClearDirty is a no-op (returns false).
-			wasDirty := platformClearDirty(va)
-			if wasDirty && desc != nil {
-				SetPageDescriptorFlags(desc, PD_DIRTY)
-			}
+			va = next
 		}
 	})
 
 	return
+}
+
+// scanOneMappedPage clears the A/D bits for one mapped page and returns
+// whether the page had been accessed since the last sweep.
+func scanOneMappedPage(va, pa uintptr) bool {
+	// Get descriptor; skip pinned pages (kernel pages, PT pages, MMIO).
+	desc := GetPageDescriptor(pa)
+	if desc != nil && desc.Flags&PD_PINNED != 0 {
+		return false
+	}
+
+	// Clear the Accessed bit and record if it was set.
+	// NOTE: On ARM64, this walks ttbr0L0PA (the platform's cached root).
+	// If the shepherd's page table is not currently active, platformClearAccessed
+	// returns false (no match found) — acceptable for the stub framework.
+	wasAccessed := platformClearAccessed(va)
+
+	// Clear the hardware Dirty bit and propagate to PageDescriptor.
+	// On ARM64 without FEAT_HAFDBS, platformClearDirty is a no-op (returns false).
+	wasDirty := platformClearDirty(va)
+	if wasDirty && desc != nil {
+		SetPageDescriptorFlags(desc, PD_DIRTY)
+	}
+
+	return wasAccessed
 }
 
 // FindEvictionCandidates returns up to count physical addresses suitable for

@@ -178,15 +178,20 @@ var timerNoSwitchCount uint64
 var timerHandlerDoneCount uint64
 
 // scanTimerCount is incremented by ProcessDeadlinesTopHalf on every timer IRQ.
-// ProcessDeadlinesTopHalf is called from the timer top-half on all 3 architectures
-// (ARM64 line 975, x86_64 line 770, RISC-V line 761 in their exceptions_*.s files).
-// kirq.TimerIRQCount is only incremented by kirq.TimerIRQHandlerAsm which is NOT
-// called on x86_64, so this counter is arch-universal.
+// ProcessDeadlinesTopHalf is called from the timer top-half on both
+// architectures (exceptions_arm64.s, exceptions_amd64.s — grep for the CALL;
+// line numbers drift). kirq.TimerIRQCount is only incremented by
+// kirq.TimerIRQHandlerAsm which is NOT called on x86_64, so this counter is
+// arch-universal.
 var scanTimerCount uint64
 
 // scanLastTick records the scanTimerCount value at the last A/D bit scan.
-// The scan runs every ~1000 timer IRQ ticks (~10 seconds at 10ms/tick).
 var scanLastTick uint64
+
+// adScanEnabled gates the periodic A/D-bit sweep in KernelIdleLoop. Set once
+// from kernel config (ad_scan_enabled, default false — MAZ-171) in simpleMain
+// before the idle loop starts; read-only after that.
+var adScanEnabled bool
 
 // syscallDiagCount counts total syscalls from user threads.
 var syscallDiagCount uint64
@@ -1631,18 +1636,37 @@ func KernelIdleLoop() {
 		// This is the "clock" algorithm reference-bit sweep — foundation for
 		// page replacement.
 		//
-		// scanTimerCount is incremented in ProcessDeadlinesTopHalf (called from
-		// the timer top-half on all 3 archs). The timer fires every ~100ms of
-		// virtual time, but QEMU TCG runs ~30x slower than real time, so each
-		// tick is ~3 seconds of wall-clock time. Threshold of 3 gives a scan
-		// roughly every ~9 seconds wall-clock in QEMU TCG.
-		currentTick := atomic.LoadUint64(&scanTimerCount)
-		if currentTick-scanLastTick >= 300 {
-			scanLastTick = currentTick
-			proc.Shepherds.ForEach(func(p *proc.Shepherd) bool {
-				kmem.ScanAccessedBits(p.PID)
-				return true
-			})
+		// GATED OFF by default (MAZ-171, config ad_scan_enabled): with swap
+		// I/O stubs-only the sweep has no consumer, and measurement showed it
+		// consuming ~49 points of a host core (96.7% -> 48.0% steady state
+		// with the sweep off) while keeping thread 0 perpetually runnable so
+		// the machine never idled. Flip the config on when Stage-5 page
+		// replacement lands — and make the sweep table-direct first (walk
+		// each L3 table once, clear A bits through the PTE pointer in hand)
+		// rather than re-enabling this per-VA form.
+		//
+		// scanTimerCount is incremented in ProcessDeadlinesTopHalf (called
+		// from the timer top-half), i.e. once per kernel tick. The sweep
+		// interval is expressed in wall-clock terms and derived from the
+		// tick rate (MAZ-172 discipline — the old literal 300 silently
+		// meant 0.9 s at 330 Hz and 1.8 s at 165 Hz).
+		if adScanEnabled {
+			const scanIntervalMs = 900
+			// Floor 1 (the same guard every derived tick count in
+			// kirq.InitPreemptConfig carries): a tick rate below ~2 Hz would
+			// truncate to 0 and make the sweep fire on every iteration.
+			scanIntervalTicks := kirq.KernelTickRate * scanIntervalMs / 1000
+			if scanIntervalTicks < 1 {
+				scanIntervalTicks = 1
+			}
+			currentTick := atomic.LoadUint64(&scanTimerCount)
+			if currentTick-scanLastTick >= scanIntervalTicks {
+				scanLastTick = currentTick
+				proc.Shepherds.ForEach(func(p *proc.Shepherd) bool {
+					kmem.ScanAccessedBits(p.PID)
+					return true
+				})
+			}
 		}
 
 		// Process deadlines with IRQs disabled (critical section)
