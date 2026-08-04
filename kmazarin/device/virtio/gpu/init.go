@@ -199,6 +199,11 @@ func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
 		return false
 	}
 
+	// Re-reading the framebuffer fields validateBootImage just checked is
+	// safe: they are write-once (virtioGPUSetupFramebuffer, during
+	// gpu.Init) and this function's only caller runs single-threaded
+	// strictly after Init — the fields cannot change between the helper's
+	// nil/bounds checks and these reads.
 	fbWidth := virtioGPUDevice.Width
 	fbHeight := virtioGPUDevice.Height
 	fbPitch := virtioGPUDevice.Pitch
