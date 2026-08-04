@@ -461,6 +461,22 @@ func initVirtIOGPU() {
 		return
 	}
 
+	// Boot splash (MAZ-178): diplomat loads /EFI/Linux/bootimg.bin into
+	// UEFI-allocated pages and passes it via AT_BOOT_IMAGE_PHYS/SIZE; both
+	// are zero when the ESP carries no image. The pages sit in the
+	// identity-mapped low-RAM region (same access pattern as the DTB), so
+	// the physical address is directly readable here.
+	fc := getFullConfig()
+	if fc.BootImagePhysAddr != 0 && fc.BootImageSize != 0 {
+		if gpu.RenderBootImage(uintptr(fc.BootImagePhysAddr), fc.BootImageSize) {
+			gpu.UpdateDisplay(0, 0, gpu.GetWidth(), gpu.GetHeight())
+			klog.Logf("[VirtIO GPU] boot splash rendered (%d bytes @ %#x)\n",
+				fc.BootImageSize, fc.BootImagePhysAddr)
+		} else {
+			klog.Errf("[VirtIO GPU] boot splash render failed (size=%d @ %#x)\n",
+				fc.BootImageSize, fc.BootImagePhysAddr)
+		}
+	}
 }
 
 // initVirtIOInputDevices discovers VirtIO input devices and wires their

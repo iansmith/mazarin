@@ -78,11 +78,12 @@ tasks:
       - '{{.DIPLOMAT_EFI}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
       - kmazarin.toml
+      - assets/boot-mazarin.bin
     generates:
       - '{{.BUILD_DIR}}/esp-kmazarin.img'
     cmds:
       - '{{.GO}} tool go-echo "Creating x86_64 ESP image with kmazarin..."'
-      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.KMAZARIN_AMD64_ELF}} -config kmazarin.toml -o {{.BUILD_DIR}}/esp-kmazarin.img -size 260'
+      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.KMAZARIN_AMD64_ELF}} -config kmazarin.toml -bootimage assets/boot-mazarin.bin -o {{.BUILD_DIR}}/esp-kmazarin.img -size 260'
       - '{{.GO}} tool go-echo "ESP (x86_64 + kmazarin) created at {{.BUILD_DIR}}/esp-kmazarin.img"'
 
   esp-arm64:
@@ -93,9 +94,10 @@ tasks:
       - '{{.DIPLOMAT_ARM64_EFI}}'
       - '{{.KMAZARIN_ELF}}'
       - kmazarin.toml
+      - assets/boot-mazarin.bin
     generates:
       - '{{.ESP_ARM64_IMAGE}}'
     cmds:
       - '{{.GO}} tool go-echo "Creating ARM64 ESP image..."'
-      - '{{.BUILD_DIR}}/mkesp -arch aa64 -bootloader {{.DIPLOMAT_ARM64_EFI}} -kernel {{.KMAZARIN_ELF}} -config kmazarin.toml -o {{.ESP_ARM64_IMAGE}} -size 260'
+      - '{{.BUILD_DIR}}/mkesp -arch aa64 -bootloader {{.DIPLOMAT_ARM64_EFI}} -kernel {{.KMAZARIN_ELF}} -config kmazarin.toml -bootimage assets/boot-mazarin.bin -o {{.ESP_ARM64_IMAGE}} -size 260'
       - '{{.GO}} tool go-echo "ESP (ARM64) created at {{.ESP_ARM64_IMAGE}}"'

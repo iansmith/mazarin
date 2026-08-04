@@ -35,7 +35,7 @@ const (
 	AT_RAM_BASE           = 0x100D // Physical RAM base address
 	AT_RAM_SIZE           = 0x100E // Total RAM size
 	AT_UNIFIED_POOL_START = 0x100F // Unified pool start PA
-	AT_TTBR0_L0_PHYS     = 0x1013 // TTBR0 L0 physical address
+	AT_TTBR0_L0_PHYS      = 0x1013 // TTBR0 L0 physical address
 
 	// Kernel heap bounds - parsed by runtime overlay before first mmap
 	AT_KMAZARIN_HEAP_START = 0x1010 // Start of kernel heap VA space
@@ -44,4 +44,10 @@ const (
 
 	// Configuration overrides from kmazarin.toml (Stage 3)
 	AT_KERNEL_BUDGET_MB = 0x1014 // Kernel memory budget warning threshold in MB
+
+	// Boot splash image (MAZ-178): loaded by diplomat from /EFI/Linux/bootimg.bin
+	// into UEFI-allocated pages; rendered once by the kernel's GPU init. Absent
+	// (both zero) when the ESP carries no image.
+	AT_BOOT_IMAGE_PHYS = 0x1015 // Physical address of boot image data
+	AT_BOOT_IMAGE_SIZE = 0x1016 // Size of boot image in bytes
 )

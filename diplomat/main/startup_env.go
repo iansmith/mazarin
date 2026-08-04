@@ -13,20 +13,21 @@ import (
 // Returns the stack pointer (pointing to argc) for setting SP_EL0.
 //
 // Memory layout on g0 stack (768 bytes below stack top):
-//   [0]    argc = 1
-//   [8]    argv[0] → "kmazarin" string
-//   [16]   argv[1] = NULL
-//   [24]   envp[0] → "GODEBUG=gctrace=0"
-//   [32]   envp[1] → "GOMEMLIMIT=NNMiB" (from kernel_mem_limit config)
-//   [40]   envp[2] → "GOGC=NNNNN" (from gc_percent_kernel config)
-//   [48]   envp[3] = NULL
-//   [56+]  auxv entries (key, value pairs) — up to 20 entries (320 bytes)
-//   ...
-//   [384]  "kmazarin\0"
-//   [400]  16 random bytes
-//   [416]  "GODEBUG=gctrace=0\0"
-//   [464]  "GOMEMLIMIT=NNMiB\0"
-//   [496]  "GOGC=NNNNN\0"
+//
+//	[0]    argc = 1
+//	[8]    argv[0] → "kmazarin" string
+//	[16]   argv[1] = NULL
+//	[24]   envp[0] → "GODEBUG=gctrace=0"
+//	[32]   envp[1] → "GOMEMLIMIT=NNMiB" (from kernel_mem_limit config)
+//	[40]   envp[2] → "GOGC=NNNNN" (from gc_percent_kernel config)
+//	[48]   envp[3] = NULL
+//	[56+]  auxv entries (key, value pairs) — up to 20 entries (320 bytes)
+//	...
+//	[384]  "kmazarin\0"
+//	[400]  16 random bytes
+//	[416]  "GODEBUG=gctrace=0\0"
+//	[464]  "GOMEMLIMIT=NNMiB\0"
+//	[496]  "GOGC=NNNNN\0"
 //
 // GOGC is set from gc_percent_kernel in kmazarin.toml (default not set = Go default 100%).
 // GOMEMLIMIT is set from kernel_mem_limit in kmazarin.toml (default 24MB).
@@ -261,6 +262,17 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	if cfg != nil && cfg.KernelBudgetMB > 0 {
 		data[i] = 0x1014 // AT_KERNEL_BUDGET_MB
 		data[i+1] = cfg.KernelBudgetMB
+		i += 2
+	}
+
+	// AT_BOOT_IMAGE_PHYS/SIZE - splash image loaded by LoadBootImage (MAZ-178).
+	// Omitted entirely when the ESP carries no image.
+	if bootImagePhys != 0 && bootImageSize != 0 {
+		data[i] = 0x1015 // AT_BOOT_IMAGE_PHYS
+		data[i+1] = bootImagePhys
+		i += 2
+		data[i] = 0x1016 // AT_BOOT_IMAGE_SIZE
+		data[i+1] = bootImageSize
 		i += 2
 	}
 

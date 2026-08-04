@@ -79,88 +79,88 @@ type EFI_BOOT_SERVICES struct {
 	Hdr EFI_TABLE_HEADER
 
 	// Task Priority Services (4 functions)
-	RaiseTPL  uintptr
+	RaiseTPL   uintptr
 	RestoreTPL uintptr
 
 	// Memory Services (9 functions)
-	AllocatePages   uintptr
-	FreePages       uintptr
-	GetMemoryMap    uintptr
-	AllocatePool    uintptr
-	FreePool        uintptr
+	AllocatePages uintptr
+	FreePages     uintptr
+	GetMemoryMap  uintptr
+	AllocatePool  uintptr
+	FreePool      uintptr
 
 	// Event & Timer Services (6 functions)
-	CreateEvent          uintptr
-	SetTimer             uintptr
-	WaitForEvent         uintptr
-	SignalEvent          uintptr
-	CloseEvent           uintptr
-	CheckEvent           uintptr
+	CreateEvent  uintptr
+	SetTimer     uintptr
+	WaitForEvent uintptr
+	SignalEvent  uintptr
+	CloseEvent   uintptr
+	CheckEvent   uintptr
 
 	// Protocol Handler Services (9 functions)
-	InstallProtocolInterface    uintptr
-	ReinstallProtocolInterface  uintptr
-	UninstallProtocolInterface  uintptr
-	HandleProtocol              uintptr
-	Reserved                    uintptr
-	RegisterProtocolNotify      uintptr
-	LocateHandle                uintptr
-	LocateDevicePath            uintptr
-	InstallConfigurationTable   uintptr
+	InstallProtocolInterface   uintptr
+	ReinstallProtocolInterface uintptr
+	UninstallProtocolInterface uintptr
+	HandleProtocol             uintptr
+	Reserved                   uintptr
+	RegisterProtocolNotify     uintptr
+	LocateHandle               uintptr
+	LocateDevicePath           uintptr
+	InstallConfigurationTable  uintptr
 
 	// Image Services (5 functions)
-	LoadImage                   uintptr
-	StartImage                  uintptr
-	Exit                        uintptr
-	UnloadImage                 uintptr
-	ExitBootServices            uintptr
+	LoadImage        uintptr
+	StartImage       uintptr
+	Exit             uintptr
+	UnloadImage      uintptr
+	ExitBootServices uintptr
 
 	// Miscellaneous Services (10 functions)
-	GetNextMonotonicCount       uintptr
-	Stall                       uintptr
-	SetWatchdogTimer            uintptr
+	GetNextMonotonicCount uintptr
+	Stall                 uintptr
+	SetWatchdogTimer      uintptr
 
 	// DriverSupport Services (3 functions)
-	ConnectController           uintptr
-	DisconnectController        uintptr
+	ConnectController    uintptr
+	DisconnectController uintptr
 
 	// Open and Close Protocol Services (5 functions)
-	OpenProtocol                uintptr
-	CloseProtocol               uintptr
-	OpenProtocolInformation     uintptr
+	OpenProtocol            uintptr
+	CloseProtocol           uintptr
+	OpenProtocolInformation uintptr
 
 	// Library Services (4 functions)
-	ProtocolsPerHandle          uintptr
-	LocateHandleBuffer          uintptr
-	LocateProtocol              uintptr
+	ProtocolsPerHandle                  uintptr
+	LocateHandleBuffer                  uintptr
+	LocateProtocol                      uintptr
 	InstallMultipleProtocolInterfaces   uintptr
 	UninstallMultipleProtocolInterfaces uintptr
 
 	// 32-bit CRC Services
-	CalculateCrc32              uintptr
+	CalculateCrc32 uintptr
 
 	// Miscellaneous Services (continuation)
-	CopyMem                     uintptr
-	SetMem                      uintptr
-	CreateEventEx               uintptr
+	CopyMem       uintptr
+	SetMem        uintptr
+	CreateEventEx uintptr
 }
 
 // EFI_SYSTEM_TABLE - Main system table passed to bootloader
 type EFI_SYSTEM_TABLE struct {
-	Hdr                  EFI_TABLE_HEADER  // +0 (24 bytes)
-	FirmwareVendor       *uint16            // +24 (8 bytes)
-	FirmwareRevision     uint32             // +32 (4 bytes)
-	_                    uint32             // +36 (4 bytes padding for alignment)
-	ConsoleInHandle      EFI_HANDLE         // +40 (8 bytes)
-	ConIn                uintptr            // +48 (8 bytes)
-	ConsoleOutHandle     EFI_HANDLE         // +56 (8 bytes)
-	ConOut               *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  // +64 (8 bytes)
-	StandardErrorHandle  EFI_HANDLE         // +72 (8 bytes)
-	StdErr               *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  // +80 (8 bytes)
-	RuntimeServices      uintptr            // +88 (8 bytes)
-	BootServices         *EFI_BOOT_SERVICES // +96 (8 bytes)
-	NumberOfTableEntries uintptr            // +104 (8 bytes)
-	ConfigurationTable   uintptr            // +112 (8 bytes)
+	Hdr                  EFI_TABLE_HEADER                 // +0 (24 bytes)
+	FirmwareVendor       *uint16                          // +24 (8 bytes)
+	FirmwareRevision     uint32                           // +32 (4 bytes)
+	_                    uint32                           // +36 (4 bytes padding for alignment)
+	ConsoleInHandle      EFI_HANDLE                       // +40 (8 bytes)
+	ConIn                uintptr                          // +48 (8 bytes)
+	ConsoleOutHandle     EFI_HANDLE                       // +56 (8 bytes)
+	ConOut               *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL // +64 (8 bytes)
+	StandardErrorHandle  EFI_HANDLE                       // +72 (8 bytes)
+	StdErr               *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL // +80 (8 bytes)
+	RuntimeServices      uintptr                          // +88 (8 bytes)
+	BootServices         *EFI_BOOT_SERVICES               // +96 (8 bytes)
+	NumberOfTableEntries uintptr                          // +104 (8 bytes)
+	ConfigurationTable   uintptr                          // +112 (8 bytes)
 }
 
 // EFI Memory Types
@@ -224,7 +224,8 @@ func main() {
 	// (implemented in main_amd64.go / main_arm64.go)
 	keepAlive()
 
-	for {}
+	for {
+	}
 }
 
 // DiplomatEntry is called by assembly efi_main() after g0/m0 initialization.
@@ -277,6 +278,10 @@ func DiplomatEntry() {
 	printString(" entry=")
 	printHex(kernel.Entry)
 	printString("\r\n")
+
+	// Boot splash image (MAZ-178) — optional; a missing file just skips the
+	// splash. Loaded before ExitBootServices so UEFI page allocation works.
+	LoadBootImage(fs)
 
 	// Phase 4: Read configuration
 	config, err := boot.ReadConfig(fs)

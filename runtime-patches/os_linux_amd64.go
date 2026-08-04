@@ -30,6 +30,8 @@ const (
 	_AT_UNIFIED_POOL_END    = 0x1012
 	_AT_TTBR0_L0_PHYS       = 0x1013 // CR3 phys on x86_64
 	_AT_KERNEL_BUDGET_MB    = 0x1014
+	_AT_BOOT_IMAGE_PHYS     = 0x1015
+	_AT_BOOT_IMAGE_SIZE     = 0x1016
 )
 
 // Kernel configuration values - set by archauxv before Go runtime init completes.
@@ -49,6 +51,8 @@ var kmazarinCPUCount uintptr
 var kmazarinRAMBase uintptr
 var kmazarinRAMSize uintptr
 var kmazarinKernelBudgetMB uintptr
+var kmazarinBootImagePhys uintptr
+var kmazarinBootImageSize uintptr
 
 // kmazarinUART writes a byte to COM1 (0x3F8) for early boot diagnostics.
 // Implemented in sys_linux_amd64.s using port I/O (OUTB).
@@ -93,6 +97,10 @@ func archauxv(tag, val uintptr) {
 		kmazarinRAMSize = val
 	case _AT_KERNEL_BUDGET_MB:
 		kmazarinKernelBudgetMB = val
+	case _AT_BOOT_IMAGE_PHYS:
+		kmazarinBootImagePhys = val
+	case _AT_BOOT_IMAGE_SIZE:
+		kmazarinBootImageSize = val
 	}
 }
 
