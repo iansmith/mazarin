@@ -3,8 +3,9 @@
 // Usage: mkesp -o esp.img -bootloader diplomat.efi [-kernel kmazarin.elf] [-arch x64|aa64]
 //
 // Creates a FAT32 image with:
-//   /EFI/BOOT/BOOTxx.EFI   (bootloader - arch selects BOOTX64.EFI or BOOTAA64.EFI)
-//   /EFI/Linux/kmazarin.elf (optional kernel)
+//
+//	/EFI/BOOT/BOOTxx.EFI   (bootloader - arch selects BOOTX64.EFI or BOOTAA64.EFI)
+//	/EFI/Linux/kmazarin.elf (optional kernel)
 //
 // This tool shares FAT32 creation logic with mkfat32 but adds directory support.
 package main
@@ -59,6 +60,7 @@ func main() {
 	bootloader := flag.String("bootloader", "", "Path to bootloader EFI binary")
 	kernel := flag.String("kernel", "", "Path to kernel (optional, will be kmazarin.elf)")
 	config := flag.String("config", "", "Path to config file (optional, will be kmazarin.toml)")
+	bootimage := flag.String("bootimage", "", "Path to boot splash image (optional, will be bootimg.bin)")
 	arch := flag.String("arch", "x64", "EFI architecture: x64 (BOOTX64.EFI) or aa64 (BOOTAA64.EFI)")
 	sizeMB := flag.Int("size", 100, "Image size in MB")
 	flag.Parse()
@@ -106,6 +108,16 @@ func main() {
 		}
 	}
 
+	// Read boot image if provided (8.3-safe name: bootimg.bin)
+	var bootImageData []byte
+	if *bootimage != "" {
+		bootImageData, err = os.ReadFile(*bootimage)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading boot image: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Create directory structure
 	root := &dirEntry{name: "/", isDirectory: true}
 	efiDir := &dirEntry{name: "EFI", isDirectory: true}
@@ -117,7 +129,7 @@ func main() {
 
 	efiDir.children = append(efiDir.children, bootDir)
 
-	if len(kernelData) > 0 || len(configData) > 0 {
+	if len(kernelData) > 0 || len(configData) > 0 || len(bootImageData) > 0 {
 		if len(kernelData) > 0 {
 			kernelFile := &dirEntry{name: "kmazarin.elf", data: kernelData}
 			linuxDir.children = append(linuxDir.children, kernelFile)
@@ -125,6 +137,10 @@ func main() {
 		if len(configData) > 0 {
 			configFile := &dirEntry{name: "KMAZARIN.TOM", data: configData}
 			linuxDir.children = append(linuxDir.children, configFile)
+		}
+		if len(bootImageData) > 0 {
+			bootImageFile := &dirEntry{name: "bootimg.bin", data: bootImageData}
+			linuxDir.children = append(linuxDir.children, bootImageFile)
 		}
 		efiDir.children = append(efiDir.children, linuxDir)
 	}
@@ -153,6 +169,9 @@ func main() {
 	}
 	if len(configData) > 0 {
 		fmt.Printf("  /EFI/Linux/kmazarin.toml (%d bytes)\n", len(configData))
+	}
+	if len(bootImageData) > 0 {
+		fmt.Printf("  /EFI/Linux/bootimg.bin (%d bytes)\n", len(bootImageData))
 	}
 }
 

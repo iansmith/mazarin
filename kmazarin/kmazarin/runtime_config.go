@@ -33,6 +33,12 @@ var kmazarinRAMSize uintptr
 //go:linkname kmazarinKernelBudgetMB runtime.kmazarinKernelBudgetMB
 var kmazarinKernelBudgetMB uintptr
 
+//go:linkname kmazarinBootImagePhys runtime.kmazarinBootImagePhys
+var kmazarinBootImagePhys uintptr
+
+//go:linkname kmazarinBootImageSize runtime.kmazarinBootImageSize
+var kmazarinBootImageSize uintptr
+
 //go:linkname kmazarinUnifiedPoolStart runtime.kmazarinUnifiedPoolStart
 var kmazarinUnifiedPoolStart uintptr
 
@@ -365,6 +371,8 @@ func populateFullConfig() {
 	cachedFullConfig.UserspacePTPoolStart = derivedUserspacePTPoolStart
 	cachedFullConfig.UserspacePTPoolEnd = derivedUserspacePTPoolEnd
 	cachedFullConfig.DtbPhysAddr = uint64(kmazarinDtbPhysAddr)
+	cachedFullConfig.BootImagePhysAddr = uint64(kmazarinBootImagePhys)
+	cachedFullConfig.BootImageSize = uint64(kmazarinBootImageSize)
 
 	fullConfigInitialized = true
 }

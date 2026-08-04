@@ -22,15 +22,17 @@ const (
 	_AT_FRAME_POOL_START    = 0x1004
 	_AT_FRAME_POOL_END      = 0x1005
 	_AT_TTBR1_L0_PHYS       = 0x1008
-	_AT_CPU_COUNT            = 0x100C
-	_AT_RAM_BASE             = 0x100D
-	_AT_RAM_SIZE             = 0x100E
-	_AT_UNIFIED_POOL_START   = 0x100F
-	_AT_KMAZARIN_HEAP_START  = 0x1010
-	_AT_KMAZARIN_HEAP_END    = 0x1011
-	_AT_UNIFIED_POOL_END     = 0x1012
+	_AT_CPU_COUNT           = 0x100C
+	_AT_RAM_BASE            = 0x100D
+	_AT_RAM_SIZE            = 0x100E
+	_AT_UNIFIED_POOL_START  = 0x100F
+	_AT_KMAZARIN_HEAP_START = 0x1010
+	_AT_KMAZARIN_HEAP_END   = 0x1011
+	_AT_UNIFIED_POOL_END    = 0x1012
 	_AT_TTBR0_L0_PHYS       = 0x1013
-	_AT_KERNEL_BUDGET_MB     = 0x1014
+	_AT_KERNEL_BUDGET_MB    = 0x1014
+	_AT_BOOT_IMAGE_PHYS     = 0x1015
+	_AT_BOOT_IMAGE_SIZE     = 0x1016
 )
 
 // Kernel configuration values - set by archauxv before Go runtime init completes.
@@ -50,6 +52,8 @@ var kmazarinCPUCount uintptr
 var kmazarinRAMBase uintptr
 var kmazarinRAMSize uintptr
 var kmazarinKernelBudgetMB uintptr
+var kmazarinBootImagePhys uintptr
+var kmazarinBootImageSize uintptr
 
 // suppressSerial is set to 1 by kmazarin when the SoftIRQ console activates.
 // When set, write1 skips UART output (serial copy is redundant once linux
@@ -100,6 +104,10 @@ func archauxv(tag, val uintptr) {
 		kmazarinRAMSize = val
 	case _AT_KERNEL_BUDGET_MB:
 		kmazarinKernelBudgetMB = val
+	case _AT_BOOT_IMAGE_PHYS:
+		kmazarinBootImagePhys = val
+	case _AT_BOOT_IMAGE_SIZE:
+		kmazarinBootImageSize = val
 	}
 }
 
