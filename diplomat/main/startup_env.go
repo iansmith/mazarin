@@ -276,13 +276,17 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	// progName by one word. The splash is the one purely cosmetic entry,
 	// so it yields first. Room check: these 4 words + a possible DTB pair
 	// (2) + the terminator (2) must fit below index 48 (byte 384).
-	if bootImagePhys != 0 && bootImageSize != 0 && i+8 <= 48 {
-		data[i] = 0x1015 // AT_BOOT_IMAGE_PHYS
-		data[i+1] = bootImagePhys
-		i += 2
-		data[i] = 0x1016 // AT_BOOT_IMAGE_SIZE
-		data[i+1] = bootImageSize
-		i += 2
+	if bootImagePhys != 0 && bootImageSize != 0 {
+		if i+8 <= 48 {
+			data[i] = 0x1015 // AT_BOOT_IMAGE_PHYS
+			data[i+1] = bootImagePhys
+			i += 2
+			data[i] = 0x1016 // AT_BOOT_IMAGE_SIZE
+			data[i+1] = bootImageSize
+			i += 2
+		} else {
+			printString("Boot image: auxv vector full, splash skipped\r\n")
+		}
 	}
 
 	// AT_DTB_PHYS - Device Tree Blob physical address
