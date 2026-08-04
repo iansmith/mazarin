@@ -83,8 +83,14 @@ TEXT ·DmaWmb(SB), NOSPLIT, $0-0
 	RET
 
 // DmaRmb()
-// DMA read memory barrier - ensures device writes are visible to CPU
-// Uses DMB OSH (outer shareable) like Linux dma_rmb()
+// DMA read memory barrier - ensures device writes are visible to CPU.
+// DELIBERATELY STRONGER than Linux's dma_rmb(), which is DMB OSHLD (orders
+// only earlier loads against later accesses). OSH additionally orders earlier
+// stores — margin we keep on purpose (MAZ-177, Ian 2026-08-04): our call
+// sites run at hundreds–thousands of ops/sec where the LD variant's saving
+// (store buffer keeps draining) is noise, and one shared helper is safer
+// full-strength. Revisit per-call-site only if a profile shows a hot DmaRmb
+// (e.g. line-rate net RX) — then DMB $1 (OSHLD, 0xD50331BF) with reasoning.
 TEXT ·DmaRmb(SB), NOSPLIT, $0-0
 	DMB	$3			// DMB OSH
 	RET
