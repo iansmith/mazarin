@@ -178,10 +178,11 @@ var timerNoSwitchCount uint64
 var timerHandlerDoneCount uint64
 
 // scanTimerCount is incremented by ProcessDeadlinesTopHalf on every timer IRQ.
-// ProcessDeadlinesTopHalf is called from the timer top-half on all 3 architectures
-// (ARM64 line 975, x86_64 line 770, RISC-V line 761 in their exceptions_*.s files).
-// kirq.TimerIRQCount is only incremented by kirq.TimerIRQHandlerAsm which is NOT
-// called on x86_64, so this counter is arch-universal.
+// ProcessDeadlinesTopHalf is called from the timer top-half on both
+// architectures (exceptions_arm64.s, exceptions_amd64.s — grep for the CALL;
+// line numbers drift). kirq.TimerIRQCount is only incremented by
+// kirq.TimerIRQHandlerAsm which is NOT called on x86_64, so this counter is
+// arch-universal.
 var scanTimerCount uint64
 
 // scanLastTick records the scanTimerCount value at the last A/D bit scan.
@@ -1651,7 +1652,13 @@ func KernelIdleLoop() {
 		// meant 0.9 s at 330 Hz and 1.8 s at 165 Hz).
 		if adScanEnabled {
 			const scanIntervalMs = 900
+			// Floor 1 (the same guard every derived tick count in
+			// kirq.InitPreemptConfig carries): a tick rate below ~2 Hz would
+			// truncate to 0 and make the sweep fire on every iteration.
 			scanIntervalTicks := kirq.KernelTickRate * scanIntervalMs / 1000
+			if scanIntervalTicks < 1 {
+				scanIntervalTicks = 1
+			}
 			currentTick := atomic.LoadUint64(&scanTimerCount)
 			if currentTick-scanLastTick >= scanIntervalTicks {
 				scanLastTick = currentTick

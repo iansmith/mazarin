@@ -1979,6 +1979,13 @@ func WalkUserPageTable(va uintptr) uintptr {
 // If l0PA is 0, reads the current process's page table from TTBR0_EL1.
 // Returns the physical address, or 0 if not mapped.
 //
+// nosplit-budget note (MAZ-171): this used to be a self-contained leaf; it is
+// now one hop deeper (→ WalkUserPageTableWithNext), spending a small frame on
+// nosplit chains such as HandleUserPageFault → WalkUserPageTable → here. The
+// build's mazlink nosplit-chain check verifies the budget; the chains known to
+// be tightest (signal-frame building) already use WalkUserPTLean instead, and
+// the two-line wrapper is inlineable.
+//
 //go:nosplit
 func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 	pa, _ := WalkUserPageTableWithNext(va, l0PAParam)

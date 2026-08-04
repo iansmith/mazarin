@@ -11,7 +11,10 @@
 //   2. Clean + accessed   (recently used, but clean — cheap to evict)
 //   3. Dirty + unaccessed (not recently used, but needs write-back)
 //
-// Called from the timer bottom-half goroutine every ~1000 ticks.
+// Called from KernelIdleLoop (thread 0's synchronous main loop) on a
+// wall-clock-derived cadence, and only when the kernel config enables it
+// (ad_scan_enabled, default false — MAZ-171: with swap stubs-only the sweep
+// has no consumer).
 //
 // ARCHITECTURE NOTE: platformClearAccessed/platformClearDirty walk the page
 // table via the platform's cached root pointer (ttbr0L0PA on ARM64). For
@@ -36,8 +39,10 @@ import (
 	"sync/atomic"
 )
 
-// A/D scan counters — updated by ScanAccessedBits, read by [E] event dump.
-// Use atomic access: scanner runs from idle loop, dump runs from timer IRQ.
+// A/D scan counters — updated by ScanAccessedBits. Their reader (the old [E]
+// event dump) was deleted in 629f9cd4; ReadAndResetScanDeltas below currently
+// has no caller and is kept only as the accessor for whatever diagnostics
+// Stage-5 revives. Atomic access retained for any future IRQ-context reader.
 var scanRunCount uint64
 var scanTotalAccessed uint64
 var scanTotalPages uint64
@@ -48,7 +53,10 @@ var scanPrevTotalAccessed uint64
 var scanPrevTotalPages uint64
 
 // ReadAndResetScanDeltas returns delta values since last call and resets the
-// snapshot. Called from the [E] event dump in timer IRQ context.
+// snapshot. NO CURRENT CALLER (the [E] event dump that read it was deleted in
+// 629f9cd4). Note when reviving: with ad_scan_enabled=false the deltas are
+// all-zero — indistinguishable from "nothing accessed" — so a reader should
+// also surface the gate state.
 //
 //go:nosplit
 func ReadAndResetScanDeltas() (runs, accessed, total uint64) {
@@ -68,8 +76,9 @@ func ReadAndResetScanDeltas() (runs, accessed, total uint64) {
 // Accessed bit on each, and returns (accessedCount, totalCount).
 // Also propagates the hardware Dirty bit into the PageDescriptor's PD_DIRTY flag.
 //
-// Called from the timer bottom-half goroutine (KernelIdleLoop) every ~1000
-// timer ticks. NOT nosplit — uses spans.ForEach and page table walking.
+// Called from KernelIdleLoop (thread 0's synchronous main loop) on a
+// wall-clock-derived cadence when ad_scan_enabled is set (default off).
+// NOT nosplit — uses spans.ForEach and page table walking.
 func ScanAccessedBits(shepherdID proc.ShepherdId) (accessedCount int, totalCount int) {
 	p := proc.FindShepherdBySID(shepherdID)
 	if p == nil {
