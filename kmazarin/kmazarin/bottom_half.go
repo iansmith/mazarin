@@ -8,7 +8,6 @@ import (
 	"mazzy/shared/hid"
 	"mazzy/shared/iouring"
 	"sync/atomic"
-	"unsafe"
 )
 
 // buddyFreeHook calls kmem.BuddyFreeTyped via an indirect function pointer
@@ -153,7 +152,6 @@ var dbgBlockAsyncEvents uint32 // total async completion events pushed to ring
 // Additional instrumentation counters (set by nosplit top-half, read by SVC path)
 var dbgBlockTotalDrained uint32     // total completions drained across all IRQs
 var dbgBlockEmptyIRQ uint32         // IRQs where HasUsed() was false (drained=0)
-var dbgBlockRingFull uint32         // completion ring push failures (ring full)
 var dbgBlockEmptyRawUsedIdx uint32  // raw Used.Idx on first empty-drain IRQ
 var dbgBlockEmptyLastUsedIdx uint32 // LastUsedIdx at first empty-drain
 var dbgBlockEmptyUsedPtr uint64     // VQ.Used pointer at first empty-drain
@@ -253,9 +251,6 @@ func GetBlockTotalDrained() uint32 { return atomic.LoadUint32(&dbgBlockTotalDrai
 // GetBlockEmptyIRQ returns the count of IRQs with no used entries.
 func GetBlockEmptyIRQ() uint32 { return atomic.LoadUint32(&dbgBlockEmptyIRQ) }
 
-// GetBlockRingFull returns the count of completion ring push failures.
-func GetBlockRingFull() uint32 { return atomic.LoadUint32(&dbgBlockRingFull) }
-
 // GetBlockLastNumFree returns the last snapshot of VQ.NumFree.
 func GetBlockLastNumFree() uint32 { return atomic.LoadUint32(&dbgBlockLastNumFree) }
 
@@ -319,32 +314,6 @@ func ringPush(r *softIRQRing, ev hid.HIDEvent) bool {
 	}
 	r.events[tail&(softIRQRingSize-1)] = ev
 	atomic.StoreUint32(&r.tail, tail+1)
-	return true
-}
-
-// completionRingPush writes an event to the shared completion ring page.
-// Acquires a spinlock for multi-core safety. If the ring is full, the event
-// is dropped and an overflow counter is incremented.
-//
-//go:nosplit
-//go:noinline
-func completionRingPush(kva uintptr, ev hid.HIDEvent) bool {
-	ring := (*hid.CompletionRing)(unsafe.Pointer(kva))
-	// CAS spinlock acquire
-	for !atomic.CompareAndSwapUint32(&ring.Lock, 0, 1) {
-		asm.Wfe()
-	}
-	tail := atomic.LoadUint32(&ring.Tail)
-	head := atomic.LoadUint32(&ring.Head)
-	if tail-head >= hid.CompletionRingSize {
-		atomic.AddUint32(&ring.Flags, 1) // overflow counter
-		atomic.StoreUint32(&ring.Lock, 0)
-		return false
-	}
-	ring.Events[tail%ring.Capacity] = ev
-	asm.Dsb() // ensure event data visible before tail update
-	atomic.StoreUint32(&ring.Tail, tail+1)
-	atomic.StoreUint32(&ring.Lock, 0)
 	return true
 }
 

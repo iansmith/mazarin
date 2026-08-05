@@ -65,9 +65,6 @@ func getBlockTotalDrained() uint32
 //go:linkname getBlockEmptyIRQ main.GetBlockEmptyIRQ
 func getBlockEmptyIRQ() uint32
 
-//go:linkname getBlockRingFull main.GetBlockRingFull
-func getBlockRingFull() uint32
-
 //go:linkname getBlockLastNumFree main.GetBlockLastNumFree
 func getBlockLastNumFree() uint32
 
@@ -82,4 +79,3 @@ func getBlockEmptyUsedPtr() uint64
 
 //go:linkname getBlockEmptySnapped main.GetBlockEmptySnapped
 func getBlockEmptySnapped() uint32
-

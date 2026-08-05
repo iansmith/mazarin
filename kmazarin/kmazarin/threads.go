@@ -2549,8 +2549,6 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	if !isLinuxShepherd(pid) {
 		ksyscall.WriteBackSharedMmapOnDeath(int16(pid))
 	}
-	CleanupBlockCompletionRing(int16(pid))
-	CleanupInputCompletionRing(int16(pid))
 	CleanupSoftIRQSlotsForShepherd(int16(pid))
 	CleanupInputFocusForShepherd(int16(pid))
 	CleanupPageSharingForShepherd(int16(pid))

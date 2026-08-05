@@ -8,16 +8,16 @@ package mazzy
 const MazzySyscallBase = 0x1000
 
 const (
-	SysGetTime         = MazzySyscallBase + 0  // 0x1000 - Get current time
-	SysSubscribeDeaths = MazzySyscallBase + 1  // 0x1001 - Subscribe to global shepherd death notifications
-	SysFreePages       = MazzySyscallBase + 2  // 0x1002 - Free previously allocated pages
-	SysAllocPages      = MazzySyscallBase + 3  // 0x1003 - Allocate pages for userspace
-	SysExit            = MazzySyscallBase + 4  // 0x1004 - Exit program
-	SysReap            = MazzySyscallBase + 5  // 0x1005 - Reap terminated program
-	SysDebugPrint      = MazzySyscallBase + 6  // 0x1006 - Debug print arguments
-	SysGetFramebuffer  = MazzySyscallBase + 7  // 0x1007 - Get framebuffer info
-	SysWaitKernelAsync = MazzySyscallBase + 8  // 0x1008 - Wait for kernel async message
-	SysUringSetup            = MazzySyscallBase + 9  // 0x1009 - Create additional uring ring (ring 1 or 2)
+	SysGetTime           = MazzySyscallBase + 0  // 0x1000 - Get current time
+	SysSubscribeDeaths   = MazzySyscallBase + 1  // 0x1001 - Subscribe to global shepherd death notifications
+	SysFreePages         = MazzySyscallBase + 2  // 0x1002 - Free previously allocated pages
+	SysAllocPages        = MazzySyscallBase + 3  // 0x1003 - Allocate pages for userspace
+	SysExit              = MazzySyscallBase + 4  // 0x1004 - Exit program
+	SysReap              = MazzySyscallBase + 5  // 0x1005 - Reap terminated program
+	SysDebugPrint        = MazzySyscallBase + 6  // 0x1006 - Debug print arguments
+	SysGetFramebuffer    = MazzySyscallBase + 7  // 0x1007 - Get framebuffer info
+	SysWaitKernelAsync   = MazzySyscallBase + 8  // 0x1008 - Wait for kernel async message
+	SysUringSetup        = MazzySyscallBase + 9  // 0x1009 - Create additional uring ring (ring 1 or 2)
 	SysWaitSoftIRQ       = MazzySyscallBase + 10 // 0x100A - Wait for soft IRQ events on a slot
 	SysRegisterSoftIRQ   = MazzySyscallBase + 11 // 0x100B - Register an IRQ on a soft IRQ slot
 	SysQueryInputDevices = MazzySyscallBase + 12 // 0x100C - Query available input devices
@@ -27,43 +27,43 @@ const (
 	SysTransferPages     = MazzySyscallBase + 16 // 0x1010 - Transfer pages between shepherds
 	SysMapSharedPage     = MazzySyscallBase + 17 // 0x1011 - Map shared page from another shepherd
 	// slot 18 freed (was SysLoadMaz — retired with mazdl/Phase 5)
-	SysUringConnect      = MazzySyscallBase + 19 // 0x1013 - Connect to target shepherd's IPC uring
-	SysUringSend         = MazzySyscallBase + 20 // 0x1014 - Send 128-byte message to target's ring
-	SysUringRecv         = MazzySyscallBase + 21 // 0x1015 - Block until message arrives on own ring
-	SysUringRelease      = MazzySyscallBase + 22 // 0x1016 - Release connection (decrement refcount)
+	SysUringConnect           = MazzySyscallBase + 19 // 0x1013 - Connect to target shepherd's IPC uring
+	SysUringSend              = MazzySyscallBase + 20 // 0x1014 - Send 128-byte message to target's ring
+	SysUringRecv              = MazzySyscallBase + 21 // 0x1015 - Block until message arrives on own ring
+	SysUringRelease           = MazzySyscallBase + 22 // 0x1016 - Release connection (decrement refcount)
 	SysRegisterSyscallHandler = MazzySyscallBase + 23 // 0x1017 - Register shepherd as handler for a SysID
 	SysDelegatedRecv          = MazzySyscallBase + 24 // 0x1018 - Receive a delegated syscall request
 	SysSyscallReply           = MazzySyscallBase + 25 // 0x1019 - Reply to a delegated syscall
 	SysUartWrite              = MazzySyscallBase + 26 // 0x101A - Write to UART (non-blocking)
 	// slot 27 freed (was SysUartWriteDirect)
-	SysShepherdInfo           = MazzySyscallBase + 28 // 0x101C - Get info about running shepherds
-	SysSetReady               = MazzySyscallBase + 29 // 0x101D - Signal shepherd is ready
+	SysShepherdInfo = MazzySyscallBase + 28 // 0x101C - Get info about running shepherds
+	SysSetReady     = MazzySyscallBase + 29 // 0x101D - Signal shepherd is ready
 	// slot 30 freed (was SysLoadFile — retired 2026-05-09, all file I/O now via fsclient IPC)
 	// slot 31 freed (was SysRunMaz — retired with mazdl/Phase 5)
-	SysRunShepherd            = MazzySyscallBase + 32 // 0x1020 - Create new shepherd from caller's pages
-	SysAttrCreate             = MazzySyscallBase + 33 // 0x1021 - Create attribute with URI
-	SysAttrWrite              = MazzySyscallBase + 34 // 0x1022 - Write value by slot index
-	SysAttrWriteURI           = MazzySyscallBase + 35 // 0x1023 - Write value by URI string
-	SysAttrAddDep             = MazzySyscallBase + 36 // 0x1024 - Add single dependency edge
-	SysAttrUpdateDeps         = MazzySyscallBase + 37 // 0x1025 - Replace full dependency set
-	SysAttrRegisterQuery      = MazzySyscallBase + 38 // 0x1026 - Register find pattern, get query result slot
-	SysAttrWriteResult        = MazzySyscallBase + 39 // 0x1027 - Write constraint evaluation result
-	SysAttrWriteString        = MazzySyscallBase + 40 // 0x1028 - Write string value
-	SysAttrSetEager           = MazzySyscallBase + 41 // 0x1029 - Set/clear eager notification
-	SysAttrWaitDirty          = MazzySyscallBase + 42 // 0x102A - Wait for dirty notifications
-	SysAttrIncrementI64       = MazzySyscallBase + 43 // 0x102B - Atomically increment int64 attribute
-	SysRequestWindowManager   = MazzySyscallBase + 44 // 0x102C - Claim window manager role
-	SysAttrWriteCollI64       = MazzySyscallBase + 45 // 0x102D - Write int64 collection to value attribute
-	// slot 46 freed (was WaitInputEvent — rachel uses completion ring now)
-	SysSharePages             = MazzySyscallBase + 47 // 0x102F - Map caller's page into target shepherd's space
+	SysRunShepherd          = MazzySyscallBase + 32 // 0x1020 - Create new shepherd from caller's pages
+	SysAttrCreate           = MazzySyscallBase + 33 // 0x1021 - Create attribute with URI
+	SysAttrWrite            = MazzySyscallBase + 34 // 0x1022 - Write value by slot index
+	SysAttrWriteURI         = MazzySyscallBase + 35 // 0x1023 - Write value by URI string
+	SysAttrAddDep           = MazzySyscallBase + 36 // 0x1024 - Add single dependency edge
+	SysAttrUpdateDeps       = MazzySyscallBase + 37 // 0x1025 - Replace full dependency set
+	SysAttrRegisterQuery    = MazzySyscallBase + 38 // 0x1026 - Register find pattern, get query result slot
+	SysAttrWriteResult      = MazzySyscallBase + 39 // 0x1027 - Write constraint evaluation result
+	SysAttrWriteString      = MazzySyscallBase + 40 // 0x1028 - Write string value
+	SysAttrSetEager         = MazzySyscallBase + 41 // 0x1029 - Set/clear eager notification
+	SysAttrWaitDirty        = MazzySyscallBase + 42 // 0x102A - Wait for dirty notifications
+	SysAttrIncrementI64     = MazzySyscallBase + 43 // 0x102B - Atomically increment int64 attribute
+	SysRequestWindowManager = MazzySyscallBase + 44 // 0x102C - Claim window manager role
+	SysAttrWriteCollI64     = MazzySyscallBase + 45 // 0x102D - Write int64 collection to value attribute
+	// slot 46 freed (was WaitInputEvent — retired; input goes through WaitSoftIRQ slots)
+	SysSharePages = MazzySyscallBase + 47 // 0x102F - Map caller's page into target shepherd's space
 	// slots 48-49 freed (were SysMailboxSend/SysMailboxRecv — all IPC uses uring now)
-	SysRegisterCursor         = MazzySyscallBase + 50 // 0x1032 - Register cursor image
-	SysSetCursor              = MazzySyscallBase + 51 // 0x1033 - Switch active cursor by ID
-	SysGetReady               = MazzySyscallBase + 52 // 0x1034 - Check if named shepherd is ready
+	SysRegisterCursor = MazzySyscallBase + 50 // 0x1032 - Register cursor image
+	SysSetCursor      = MazzySyscallBase + 51 // 0x1033 - Switch active cursor by ID
+	SysGetReady       = MazzySyscallBase + 52 // 0x1034 - Check if named shepherd is ready
 	// slots 53-54 freed (were RegisterDMAPool/UnregisterDMAPool)
-	SysBlockSubmit     = MazzySyscallBase + 55 // 0x1037 - Async block I/O submit (returns IOTag)
+	SysBlockSubmit = MazzySyscallBase + 55 // 0x1037 - Async block I/O submit (returns IOTag)
 	// slot 56 freed (was SysReadFilePages — retired 2026-05-09, all file I/O now via fsclient IPC)
-	SysRegisterCompletionRing = MazzySyscallBase + 57 // 0x1039 - Register shared completion ring page
+	// slot 57 freed (was RegisterCompletionRing — legacy completion-ring machinery removed, MAZ-180)
 	SysIOUringSetup           = MazzySyscallBase + 58 // 0x103A - Create io_uring instance (pin ring page)
 	SysIOUringEnter           = MazzySyscallBase + 59 // 0x103B - Submit SQEs + wait for CQEs
 	SysSharePagesWithTarget   = MazzySyscallBase + 60 // 0x103C - Share caller's pages into target shepherd
@@ -73,13 +73,13 @@ const (
 	SysGetOwnExports          = MazzySyscallBase + 64 // 0x1040 - Serialize caller's ELF symbol table into user buffer (mazdl.RegisterHost)
 	SysReleaseDelegatePage    = MazzySyscallBase + 65 // 0x1041 - Release data page from pipe-buffered Write delegate (handler → kernel)
 	SysRegisterStdioWriteRing = MazzySyscallBase + 66 // 0x1042 - Set ring index for pipe-buffered Write delegation (Write fd<=2)
-	SysNetReadRxLatencyUs        = MazzySyscallBase + 67 // 0x1043 - Read kernel→net latency for an RX descIdx (MAZ-28 step 2)
-	SysTransferDMAClump          = MazzySyscallBase + 68 // 0x1044 - Transfer one whole DMA clump to a target shepherd (MAZ-29 page handoff)
-	SysShareNetPageWithClient    = MazzySyscallBase + 69 // 0x1045 - Map caller's page into a client shepherd (MAZ-29 per-stream send ring)
-	SysUnshareFromTarget         = MazzySyscallBase + 70 // 0x1046 - Revoke caller's shared mapping from target shepherd (MAZ-53 Mode 2 Release)
-	SysCloneExec                 = MazzySyscallBase + 71 // 0x1047 - Combined clone+execve: load staged ELF into a fresh child with faithful argv[0]/envp + buffered intent (MAZ-120)
-	SysReapVforkTransient        = MazzySyscallBase + 72 // 0x1048 - Reap transient vfork thread after successful execve (MAZ-63)
-	SysGetVforkReservedPID       = MazzySyscallBase + 73 // 0x1049 - Look up the reserved child PID for a vfork transient TID (MAZ-63)
+	SysNetReadRxLatencyUs     = MazzySyscallBase + 67 // 0x1043 - Read kernel→net latency for an RX descIdx (MAZ-28 step 2)
+	SysTransferDMAClump       = MazzySyscallBase + 68 // 0x1044 - Transfer one whole DMA clump to a target shepherd (MAZ-29 page handoff)
+	SysShareNetPageWithClient = MazzySyscallBase + 69 // 0x1045 - Map caller's page into a client shepherd (MAZ-29 per-stream send ring)
+	SysUnshareFromTarget      = MazzySyscallBase + 70 // 0x1046 - Revoke caller's shared mapping from target shepherd (MAZ-53 Mode 2 Release)
+	SysCloneExec              = MazzySyscallBase + 71 // 0x1047 - Combined clone+execve: load staged ELF into a fresh child with faithful argv[0]/envp + buffered intent (MAZ-120)
+	SysReapVforkTransient     = MazzySyscallBase + 72 // 0x1048 - Reap transient vfork thread after successful execve (MAZ-63)
+	SysGetVforkReservedPID    = MazzySyscallBase + 73 // 0x1049 - Look up the reserved child PID for a vfork transient TID (MAZ-63)
 )
 
 // IOUringEnterPReleased is an arg3 (flags) bit for SysIOUringEnter signaling

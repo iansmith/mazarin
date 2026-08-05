@@ -52,54 +52,29 @@ const MaxHIDEvents = 32
 // The first field is InterruptType so callers can discriminate multi-source slots.
 // Total size: 8 + 4 + 4 + 32*8 = 272 bytes.
 type KeyboardInterruptReturn struct {
-	Interrupt InterruptType            // KeyboardInterrupt (with optional payload)
-	Length    uint32                   // Number of valid events in Events array
-	_         uint32                   // Padding for 8-byte alignment
-	Events   [MaxHIDEvents]HIDEvent   // Events array
+	Interrupt InterruptType          // KeyboardInterrupt (with optional payload)
+	Length    uint32                 // Number of valid events in Events array
+	_         uint32                 // Padding for 8-byte alignment
+	Events    [MaxHIDEvents]HIDEvent // Events array
 }
 
 // MouseInterruptReturn is returned by WaitSoftIRQ for mouse interrupt slots.
 // Total size: 8 + 4 + 4 + 32*8 = 272 bytes.
 type MouseInterruptReturn struct {
-	Interrupt InterruptType            // MouseInterrupt (with optional payload)
-	Length    uint32                   // Number of valid events in Events array
-	_         uint32                   // Padding for 8-byte alignment
-	Events   [MaxHIDEvents]HIDEvent   // Events array
+	Interrupt InterruptType          // MouseInterrupt (with optional payload)
+	Length    uint32                 // Number of valid events in Events array
+	_         uint32                 // Padding for 8-byte alignment
+	Events    [MaxHIDEvents]HIDEvent // Events array
 }
 
 // SoftIRQReturn is a generic return structure used by WaitSoftIRQ.
 // The InterruptType field allows callers to determine the source and cast accordingly.
 // Total size: 8 + 4 + 4 + 32*8 = 272 bytes.
 type SoftIRQReturn struct {
-	Interrupt InterruptType            // Discriminator (KeyboardInterrupt, MouseInterrupt, etc.)
-	Length    uint32                   // Number of valid events in Events array
-	_         uint32                   // Padding for 8-byte alignment
-	Events   [MaxHIDEvents]HIDEvent   // Events array
-}
-
-// CompletionRingSize is the number of event slots in a CompletionRing.
-// (4096 - 32 header) / 8 bytes per HIDEvent = 508. Fills one 4KB page exactly.
-const CompletionRingSize = 508
-
-// CompletionRing is a shared-memory MPSC ring buffer for IRQ completion
-// delivery. The kernel IRQ top-half writes events directly to this page;
-// userspace polls it without any syscall.
-//
-// Producer (kernel top-half): acquires Lock, writes event, advances Tail.
-// Consumer (userspace): reads events, advances Head (no lock needed).
-//
-// The page is allocated by userspace and pinned by the kernel via
-// SysRegisterCompletionRing. It must not contain Go pointers.
-//
-// Total size: 32 + 508*8 = 4096 bytes (exactly one 4KB page).
-type CompletionRing struct {
-	Head     uint32                        // atomic: consumer index (userspace)
-	Tail     uint32                        // atomic: producer index (kernel top-half)
-	Capacity uint32                        // ring size (256), set by kernel
-	Flags    uint32                        // overflow counter (low bits)
-	Lock     uint32                        // CAS spinlock for multi-core producers
-	_        [3]uint32                     // pad header to 32 bytes
-	Events   [CompletionRingSize]HIDEvent  // event slots
+	Interrupt InterruptType          // Discriminator (KeyboardInterrupt, MouseInterrupt, etc.)
+	Length    uint32                 // Number of valid events in Events array
+	_         uint32                 // Padding for 8-byte alignment
+	Events    [MaxHIDEvents]HIDEvent // Events array
 }
 
 // InputDeviceInfo describes an available input device.
@@ -134,8 +109,6 @@ const (
 const AbsMax = 32767
 
 // InputEventCode is the mailbox notification code for HID input events.
-// Sent by the kernel IRQ top-half when events are written to the WM's
-// shared completion ring.
 const InputEventCode int64 = 0x4201
 
 // BlockIOCompleteCode is the mailbox notification code for block I/O completions.
