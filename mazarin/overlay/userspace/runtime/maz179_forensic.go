@@ -210,6 +210,8 @@ func maz179DumpSweep(s *mspan) {
 	maz179TLBCheck("mspan", uintptr(unsafe.Pointer(s)))
 	if gm := uintptr(unsafe.Pointer(s.gcmarkBits)); maz179plausible(gm) {
 		maz179TLBCheck("gcmarkBits", gm)
+		// [tier-15b] which epoch list owns these bits right now?
+		maz179GCBWhichList(gm)
 	}
 	print("[MAZ179DUMP] mspan s=", hex(uintptr(unsafe.Pointer(s))),
 		" base=", hex(s.startAddr), " npages=", s.npages,
@@ -313,4 +315,29 @@ func maz179GCBCheckZero(p *gcBits, bytes uintptr) {
 			return
 		}
 	}
+}
+
+// maz179GCBListScan reports which gcBitsArenas list contains addr, walking
+// each chain (bounded). [MAZ-179 tier-15b] At sweep-throw time the span's
+// gcmarkBits MUST lie in the current-epoch arenas; "previous" means the
+// span is sweeping with LAST epoch's bits (epoch raced past it), "free"
+// means the arena was recycled under the span's feet, "none" means the
+// pointer is into memory gcBitsArenas no longer owns at all.
+func maz179GCBWhichList(addr uintptr) {
+	print("[MAZ179GCB] whichlist addr=", hex(addr),
+		" next=", maz179GCBIn(gcBitsArenas.next, addr),
+		" current=", maz179GCBIn(gcBitsArenas.current, addr),
+		" previous=", maz179GCBIn(gcBitsArenas.previous, addr),
+		" free=", maz179GCBIn(gcBitsArenas.free, addr), "\n")
+}
+
+func maz179GCBIn(a *gcBitsArena, addr uintptr) bool {
+	for n := 0; a != nil && n < 64; n++ {
+		base := uintptr(unsafe.Pointer(a))
+		if addr >= base && addr < base+unsafe.Sizeof(*a) {
+			return true
+		}
+		a = a.next
+	}
+	return false
 }
