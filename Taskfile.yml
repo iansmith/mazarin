@@ -972,6 +972,11 @@ tasks:
     cmds:
       - '{{.GO}} tool go-echo "Running tests..."'
       - '{{.GO}} test -v ./shared/... ./mazarin/transfer/... ./mazarin/httpclient/... ./maz/protocol-http/internal/... ./kmazarin/proc/... ./kmazarin/ksync/... ./kmazarin/ksyscall/replygate/... ./maz/linux/internal/...'
+      # kmazarin/ds also holds kernel-timer busy-wait tests (TestNanoWait) that
+      # assume the 62.5MHz kernel tick rate and are meaningless on the host
+      # clock, so the package as a whole is not host-testable. Run just the
+      # pure-logic MonotonicAllocator suite (MAZ-179) so it still gates merges.
+      - '{{.GO}} test -v -run TestMonotonic ./kmazarin/ds/'
 
   clean:
     desc: Remove build artifacts
