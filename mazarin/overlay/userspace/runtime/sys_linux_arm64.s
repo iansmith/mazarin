@@ -742,3 +742,14 @@ restore:
 	MOVD	R1, m_vdsoPC(R21)
 	NOP	R0 // Satisfy go vet, since the return value comes from the vDSO function.
 	RET
+
+// [MAZ-179 tier-14 probe — NOT FOR MERGE] raw Mazzy SVC for the forensic
+// dump's stale-TLB check. num in R8 (kernel syscall-number register),
+// args in R0/R1. Returns R0 verbatim.
+TEXT runtime·maz179RawSVC(SB),NOSPLIT,$0-32
+	MOVD	num+0(FP), R8
+	MOVD	a0+8(FP), R0
+	MOVD	a1+16(FP), R1
+	SVC
+	MOVD	R0, ret+24(FP)
+	RET

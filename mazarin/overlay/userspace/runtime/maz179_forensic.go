@@ -25,6 +25,41 @@ import "unsafe"
 
 const maz179hexdigits = "0123456789abcdef"
 
+// maz179RawSVC issues a raw Mazzy SVC (asm stub in sys_linux_arm64.s).
+// [MAZ-179 tier-14] used only by the stale-TLB check below.
+//
+//go:noescape
+func maz179RawSVC(num, a0, a1 uintptr) uintptr
+
+// maz179TLBCheck compares a word read through the VA (via the TLB) with the
+// same word read by the kernel through the linear map at the freshly-walked
+// PA (SVC 0x104A). A mismatch proves this CPU's load used a stale TLB
+// translation — the one mechanism that makes "same VA, two reads, different
+// plausible contents, no writer" literally true. Runs FIRST in the dump
+// sequence, before print traffic churns the TLB. One-way test: a match does
+// not fully refute (the stale entry may already be evicted); a mismatch is
+// conclusive.
+func maz179TLBCheck(label string, addr uintptr) {
+	if !maz179plausible(addr) {
+		return
+	}
+	a := addr &^ 7
+	viaVA := *(*uint64)(unsafe.Pointer(a))
+	pa := maz179RawSVC(0x104A, a, 0)
+	if pa == 0 {
+		print("[MAZ179TLB] ", label, " va=", hex(a), " UNMAPPED viaVA=", hex(viaVA), "\n")
+		return
+	}
+	viaPA := uint64(maz179RawSVC(0x104A, a, 1))
+	if viaPA != viaVA {
+		print("[MAZ179TLB] ", label, " va=", hex(a), " pa=", hex(uint64(pa)),
+			" viaVA=", hex(viaVA), " viaPA=", hex(viaPA), " *** STALE-TLB MISMATCH ***\n")
+	} else {
+		print("[MAZ179TLB] ", label, " va=", hex(a), " pa=", hex(uint64(pa)),
+			" word=", hex(viaVA), " match\n")
+	}
+}
+
 // maz179plausible reports whether addr is not obviously bogus. It is a cheap
 // sanity gate, not a page-table check: callers only ever pass addresses the
 // runtime already handed them (mspan/gcBits/object interiors), which the
@@ -170,6 +205,12 @@ func maz179DumpSweep(s *mspan) {
 		print("[MAZ179DUMP] s=nil\n")
 		return
 	}
+	// [tier-14] stale-TLB discriminator FIRST, before print traffic
+	// churns the TLB: mspan struct + the popcounted gcmarkBits.
+	maz179TLBCheck("mspan", uintptr(unsafe.Pointer(s)))
+	if gm := uintptr(unsafe.Pointer(s.gcmarkBits)); maz179plausible(gm) {
+		maz179TLBCheck("gcmarkBits", gm)
+	}
 	print("[MAZ179DUMP] mspan s=", hex(uintptr(unsafe.Pointer(s))),
 		" base=", hex(s.startAddr), " npages=", s.npages,
 		" nelems=", s.nelems, " freeindex=", s.freeindex,
@@ -217,6 +258,15 @@ func maz179DumpSweep(s *mspan) {
 func maz179DumpBadPointer(s *mspan, p, refBase, refOff uintptr) {
 	print("[MAZ179DUMP] ===== BAD-POINTER p=", hex(p),
 		" refBase=", hex(refBase), " refOff=", hex(refOff), " =====\n")
+	// [tier-14] stale-TLB discriminator FIRST: the referencing slot (the
+	// word that held the bad pointer), the bad target, and the mspan.
+	if refBase != 0 {
+		maz179TLBCheck("badptr-slot", refBase+refOff)
+	}
+	maz179TLBCheck("badptr-target", p)
+	if s != nil {
+		maz179TLBCheck("mspan", uintptr(unsafe.Pointer(s)))
+	}
 	if s != nil {
 		print("[MAZ179DUMP] span base=", hex(s.base()), " limit=", hex(s.limit),
 			" elemsize=", s.elemsize, " spanclass=", uint8(s.spanclass), "\n")
