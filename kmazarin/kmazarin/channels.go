@@ -22,7 +22,7 @@ import (
 
 // Channel slot indices for each shepherd (8 slots per shepherd)
 const (
-	ChannelSlotAPI      = 0 // API channel for kernel communication
+	ChannelSlotAPI       = 0 // API channel for kernel communication
 	ChannelSlotReserved1 = 1
 	ChannelSlotReserved2 = 2
 	ChannelSlotReserved3 = 3
@@ -33,8 +33,8 @@ const (
 )
 
 const MaxChannelSlotsPerShepherd = 8
-const MaxChannels = MaxChannelSlotsPerShepherd * proc.MaxLiveShepherds // 8 * 16 = 128
-const ReservedKernelChannels = MaxChannelSlotsPerShepherd   // 8 channels for kernel (shepherd 0)
+const MaxChannels = MaxChannelSlotsPerShepherd * proc.MaxLiveShepherds // 8 * 256 = 2048
+const ReservedKernelChannels = MaxChannelSlotsPerShepherd              // 8 channels for kernel (shepherd 0)
 
 // ============================================================================
 // KernelAsyncBundle - Message format for kernel-to-shepherd communication
@@ -64,10 +64,10 @@ type ChannelId int16
 
 // Channel represents a communication endpoint.
 type Channel struct {
-	ChanId      ChannelId // Unique channel ID
-	BundleSize  int       // Size of bundles for this channel
-	OwnerPID    ShepherdId  // Shepherd that owns this channel (-1 = kernel)
-	Counterpart ChannelId // Connected channel (-1 = none)
+	ChanId      ChannelId  // Unique channel ID
+	BundleSize  int        // Size of bundles for this channel
+	OwnerPID    ShepherdId // Shepherd that owns this channel (-1 = kernel)
+	Counterpart ChannelId  // Connected channel (-1 = none)
 }
 
 // Id implements ds.Ider interface
@@ -83,8 +83,11 @@ var channelListData [MaxChannels]Channel
 var channelListInUse [MaxChannels]bool
 var channelList ds.StaticList[*Channel, Channel]
 
-var channelIdStackData [MaxChannels]ChannelId
-var channelIdAllocator ds.StaticAllocator[ChannelId]
+// MAZ-179: channel IDs use the same monotonic strategy as shepherd PIDs and
+// thread IDs (no immediate reissue of a freed ID). channelIdInUse is the
+// raw-ChannelId-indexed in-use bitmap ([0, ReservedKernelChannels) reserved).
+var channelIdInUse [MaxChannels]bool
+var channelIdAllocator ds.MonotonicAllocator[ChannelId]
 
 // ============================================================================
 // Per-Shepherd Async State
@@ -111,7 +114,7 @@ func InitChannels() {
 
 	// Initialize channel ID allocator
 	// Reserve first 8 IDs for kernel channels
-	channelIdAllocator.InitWithReserved(channelIdStackData[:], ReservedKernelChannels)
+	channelIdAllocator.InitWithReserved(channelIdInUse[:], ReservedKernelChannels)
 
 	// Clear pending message state
 	for i := 0; i < proc.MaxLiveShepherds; i++ {

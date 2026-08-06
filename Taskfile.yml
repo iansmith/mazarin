@@ -972,6 +972,12 @@ tasks:
     cmds:
       - '{{.GO}} tool go-echo "Running tests..."'
       - '{{.GO}} test -v ./shared/... ./mazarin/transfer/... ./mazarin/httpclient/... ./maz/protocol-http/internal/... ./kmazarin/proc/... ./kmazarin/ksync/... ./kmazarin/ksyscall/replygate/... ./maz/linux/internal/...'
+      # kmazarin/ds is not host-testable as a package: TestNanoWait assumes the
+      # kernel tick rate and fails on the host clock, and TestSpinlockLose
+      # SIGSEGVs in spinlock_arm64.s's dead-handler (it jumps to a kernel-only
+      # address). Run just the pure-logic MonotonicAllocator suite (MAZ-179) so
+      # it still gates merges; do not drop the -run filter.
+      - '{{.GO}} test -v -run TestMonotonic ./kmazarin/ds/'
 
   clean:
     desc: Remove build artifacts

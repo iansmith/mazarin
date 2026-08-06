@@ -1063,13 +1063,19 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 
 	// Look up the in-flight call info. The reply gate (MAZ-155) validates
 	// the caller INCARNATION, not just the handler: delegateCallInfos is
-	// keyed by caller TID and TIDs recycle LIFO immediately at thread death,
-	// so a late reply from a handler that held the request past its
-	// caller's death would otherwise fulfill an UNRELATED delegate that
-	// reused the TID — corrupting its return value and unmapping the wrong
-	// data page. arg0 (the replier's recorded caller SID) is the
-	// incarnation witness: shepherd PIDs are monotonic (MAZ-150), so a dead
-	// caller's SID can never match a reused slot.
+	// keyed by caller TID, so a late reply from a handler that held the
+	// request past its caller's death could otherwise fulfill an UNRELATED
+	// delegate that reused the TID — corrupting its return value and
+	// unmapping the wrong data page. arg0 (the replier's recorded caller SID)
+	// is the incarnation witness: shepherd PIDs are monotonic (MAZ-150), so a
+	// dead caller's SID can never match a reused slot.
+	//
+	// MAZ-179: TIDs are now monotonic too, so a freed TID is not reissued
+	// until the allocator wraps — the immediate same-SID recycle that this
+	// SID witness could NOT distinguish is closed at the source, and every
+	// dying thread retires its slot (RetireDelegateSlotForThread) before its
+	// TID is freed. This gate remains as defense-in-depth against a late
+	// cross-incarnation reply.
 	isPageFaultReply := false
 	if callerTID < 0 || int(callerTID) >= MaxDelegateThreads {
 		return -22 // EINVAL
@@ -1337,6 +1343,33 @@ func RecordDelegateBlock(sysID uint16)
 
 //go:linkname readThreadRAX main.ReadThreadRAX
 func readThreadRAX(pid int16, tid int32) uint64
+
+// RetireDelegateSlotForThread marks the in-flight delegate call owned by a
+// dying thread (keyed by its TID) as CallerDead — the single-thread analogue of
+// CleanupDelegateForDeadShepherd Part 1. It MUST run before the thread's TID is
+// returned to the allocator.
+//
+// MAZ-179: the delegate slot is TID-indexed, and an in-flight Execve leaves it
+// InUse with the ELF data page attached. If the caller thread is torn down
+// (thread exit, or a vfork child being reaped after exec) without retiring its
+// slot, the slot is left InUse-but-not-CallerDead; a late reply would then act
+// on whatever call next reuses the TID, and the ELF page is mishandled — the
+// concurrent-writer this ticket chased. Marking CallerDead keeps InUse intact so
+// SyscallReply still reclaims the data page and clears the slot, but skips
+// waking the gone thread. (Monotonic TIDs, the primary fix, keep the TID from
+// being reissued in the meantime; this closes the slot/page-leak correctness
+// gap regardless.)
+//
+//go:nosplit
+func RetireDelegateSlotForThread(tid int16) {
+	if tid < 0 || int(tid) >= MaxDelegateThreads {
+		return
+	}
+	info := &delegateCallInfos[tid]
+	if info.InUse {
+		info.CallerDead = true
+	}
+}
 
 // CleanupDelegateForDeadShepherd reclaims resources for a shepherd that is being terminated.
 // Handles both cases:

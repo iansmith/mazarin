@@ -251,7 +251,8 @@ const threadArraySize = constants.ThreadPoolSize
 
 // ReservedKernelThreads is the number of thread slots reserved for kernel threads.
 // These slots (0 to ReservedKernelThreads-1) are for kernel use only.
-// Userspace threads get IDs from ReservedKernelThreads to MaxThreads-1 (shuffled).
+// Userspace threads get IDs from ReservedKernelThreads to threadArraySize-1,
+// issued monotonically (MAZ-179; no immediate reissue of freed TIDs).
 const ReservedKernelThreads = 8
 
 // ReservedKernelShepherds is the number of PIDs reserved for the kernel and
@@ -660,8 +661,10 @@ var staticDeadlineData [threadArraySize]int16
 var staticDeadlineOrderBy [threadArraySize]uint64
 var staticDeadlineQueue ds.StaticOrderedList
 
-// ID allocator backing arrays - statically allocated
-var threadIdStackData [threadArraySize]ThreadId // Backing array for thread ID allocator
+// ID allocator backing arrays - statically allocated.
+// MAZ-179: raw-ThreadId-indexed in-use bitmap for the monotonic allocator
+// (indices 0..threadArraySize-1; [0, ReservedKernelThreads) reserved).
+var threadIdInUse [threadArraySize]bool // Backing bitmap for thread ID allocator
 
 // nextKernelThreadId is a counter for allocating kernel thread IDs (0 to ReservedKernelThreads-1).
 // Kernel threads are identified by PID == 0 (the kernel shepherd) and get IDs from this counter.
@@ -695,8 +698,12 @@ var thread0PendingDeadline uint64
 var pendingYieldBlockState ThreadState
 
 // ID allocators - initialized in InitIdAllocators()
-var threadIdAllocator ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
-var shepherdIdAllocator proc.PIDAllocator          // Monotonic shepherd PID allocator (MAZ-150; [MinPID, MaxPID])
+// MAZ-179: thread IDs use the same monotonic strategy as shepherd PIDs — a
+// freed TID is not reissued until the cursor wraps the range, closing the
+// immediate-reissue window that let a dead thread's TID collide with a live
+// delegate-call slot (delegateCallInfos is TID-indexed).
+var threadIdAllocator ds.MonotonicAllocator[ThreadId] // Manages unique thread IDs ([ReservedKernelThreads, threadArraySize))
+var shepherdIdAllocator proc.PIDAllocator             // Monotonic shepherd PID allocator (MAZ-150; [MinPID, MaxPID])
 
 // ========== Scheduler Lock ==========
 
@@ -901,14 +908,15 @@ func SetSyscallSwitchTarget(target uintptr) {
 // InitIdAllocators initializes the ID allocators for thread IDs and shepherd IDs.
 // Must be called before any threads are created.
 // Kernel thread IDs (0 to ReservedKernelThreads-1) are reserved.
-// Userspace thread IDs (ReservedKernelThreads to MaxThreads-1) are shuffled.
+// Userspace thread IDs (ReservedKernelThreads to threadArraySize-1) are issued
+// monotonically (MAZ-179).
 //
 //go:nosplit
 func InitIdAllocators() {
-	// Initialize thread ID allocator with kernel slots reserved
-	// IDs 0..ReservedKernelThreads-1 are for kernel threads (not in shuffle pool)
-	// IDs ReservedKernelThreads..MaxThreads-1 are shuffled for userspace
-	threadIdAllocator.InitWithReserved(threadIdStackData[:], ReservedKernelThreads)
+	// Initialize thread ID allocator with kernel slots reserved.
+	// IDs 0..ReservedKernelThreads-1 are for kernel threads (reserved, never issued).
+	// IDs ReservedKernelThreads..threadArraySize-1 are issued monotonically to userspace.
+	threadIdAllocator.InitWithReserved(threadIdInUse[:], ReservedKernelThreads)
 
 	// Initialize the monotonic shepherd PID allocator (MAZ-150). PIDAllocator's
 	// MinPID=2 reserves PID 0 (invalid) and PID 1 (kernel sentinel) — exactly the
@@ -918,6 +926,19 @@ func InitIdAllocators() {
 
 	// Reset kernel thread counter (starts at 0, used by AcquireKernelThreadId)
 	nextKernelThreadId = 0
+}
+
+// releaseUserThreadId retires the thread's in-flight delegate slot (if any),
+// then returns its TID to the monotonic allocator. Retiring before release is
+// the MAZ-179 invariant: a dead thread must not leave a live delegate slot
+// behind for a later TID reuse to collide with. Call this for every real
+// userspace thread death (exit, vfork-reap, shepherd termination) — NOT for a
+// rollback of a just-acquired TID that never became a live thread.
+//
+//go:nosplit
+func releaseUserThreadId(tid ThreadId) {
+	ksyscall.RetireDelegateSlotForThread(int16(tid))
+	threadIdAllocator.Release(tid)
 }
 
 // AcquireKernelThreadId allocates the next kernel thread ID.
@@ -2003,7 +2024,7 @@ func ReapVforkTransient(tid int16) bool {
 	t.State = ThreadExited
 	pluckFromAllQueues(t.TID)
 	clearVforkParent(t.TID)
-	threadIdAllocator.Release(t.TID)
+	releaseUserThreadId(t.TID)
 	threadList.Release(int(threadToIdx(t)))
 	// Do NOT touch shepherd thread count — transient shares parent's PID and
 	// CloneVforkThread never incremented the count (mirrors threadExitImpl comment).
@@ -2060,7 +2081,7 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 		}
 		threadList.ReservedSet(int(tid))
 	} else {
-		// Userspace threads use normal allocation (shuffled IDs).
+		// Userspace threads use normal allocation (monotonic IDs).
 		// The Go runtime parks idle Ms via futex_wait; they accumulate but
 		// are reused when work becomes available. We do NOT reap them because
 		// the runtime expects parked M's to stay alive - it doesn't check
@@ -2318,8 +2339,9 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	// Try to pluck from ready queue (may not be there)
 	pluckFromAllQueues(t.TID)
 
-	// Release unique thread ID back to allocator
-	threadIdAllocator.Release(t.TID)
+	// Release unique thread ID back to allocator (retiring any in-flight
+	// delegate slot first — MAZ-179).
+	releaseUserThreadId(t.TID)
 
 	// Release thread slot
 	threadList.Release(int(threadToIdx(t)))
@@ -2658,7 +2680,7 @@ func terminateShepherdImpl(sf *SchedulerFunc, pid ShepherdId, status int64, defe
 		clearSoftIRQSlotForTID(t.TID)
 
 		// Release resources
-		threadIdAllocator.Release(t.TID)
+		releaseUserThreadId(t.TID)
 		threadList.Release(i)
 		killed++
 	}
@@ -2667,7 +2689,7 @@ func terminateShepherdImpl(sf *SchedulerFunc, pid ShepherdId, status int64, defe
 	if current != nil && current.PID == pid {
 		current.State = ThreadExited
 		pluckFromAllQueues(current.TID)
-		threadIdAllocator.Release(current.TID)
+		releaseUserThreadId(current.TID)
 		threadList.Release(int(threadToIdx(current)))
 		killed++
 	}

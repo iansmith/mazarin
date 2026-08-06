@@ -13,11 +13,18 @@
 //   - Wraparound to MinPID when allocator hits MaxPID; skips in-use PIDs on wrap
 //   - Exhaustion returns ErrPIDExhausted (matches Linux EAGAIN semantics)
 //
-// Storage shape: a dense in-use flag array (see the PIDAllocator type below).
+// As of MAZ-179 the monotonic strategy lives once, in ds.MonotonicAllocator;
+// PIDAllocator is a thin typed wrapper over it, sharing the exact allocation
+// discipline used for thread and channel IDs. The wrapper adds only the
+// PID-specific policy: MinPID reservation and ErrPIDExhausted on exhaustion.
 
 package proc
 
-import "errors"
+import (
+	"errors"
+
+	"mazzy/kmazarin/ds"
+)
 
 // PID range constants. See MAZ-68 + MAZ-73 for derivation.
 const (
@@ -52,9 +59,6 @@ const (
 // available. Maps to Linux EAGAIN at the syscall boundary.
 var ErrPIDExhausted = errors.New("proc: all PIDs in use")
 
-// pidRangeSize is the number of allocatable PIDs in [MinPID, MaxPID].
-const pidRangeSize = MaxPID - MinPID + 1
-
 // Compile-time invariant (MAZ-150 Option A): every allocatable PID must be a valid
 // index into the [MaxLiveShepherds]-sized kernel arrays that index by raw ShepherdId
 // (notifyQueues, the uring IPC slots, the channel pending-message arrays), i.e.
@@ -63,29 +67,29 @@ const pidRangeSize = MaxPID - MinPID + 1
 // fails to compile.
 const _ = uint(int(MaxLiveShepherds) - 1 - int(MaxPID))
 
-// PIDAllocator allocates ShepherdId values in [MinPID, MaxPID].
+// PIDAllocator allocates ShepherdId values in [MinPID, MaxPID] using the shared
+// monotonic strategy (ds.MonotonicAllocator). Freed PIDs re-enter the pool only
+// after the cursor wraps the range — never immediately — which is what prevents
+// the "kill(pid) hits a newly spawned process" race.
 //
-// The zero value is NOT ready for use — call NewPIDAllocator. (This may
-// change once the storage shape is settled in MAZ-73.)
+// The zero value is NOT ready for use — call NewPIDAllocator or Init.
 //
-// The allocator is NOT goroutine-safe on its own. Callers in the kernel are
-// expected to hold an appropriate lock; the eventual production allocator
-// will be invoked from contexts where //go:nosplit applies.
+// A PIDAllocator MUST NOT be copied after Init: Init hands inner a slice of this
+// struct's own inUse array, so a by-value copy keeps pointing at the ORIGINAL's
+// bitmap while carrying its own cursor/freeCount. The two would then hand out
+// the same PID or silently mutate each other. Always pass *PIDAllocator (which
+// is what NewPIDAllocator returns), and never embed one in a struct that is
+// copied by value.
 //
-// Storage shape: dense in-use flag array indexed by (pid - MinPID). The
-// allocator scans forward from cursor, wrapping at MaxPID back to MinPID,
-// to find the next free slot. cursor is never moved backward on Free —
-// that is the mechanism that prevents immediate reuse of freed PIDs.
+// Not goroutine-safe on its own; callers hold an appropriate lock. All methods
+// are nosplit-safe.
+//
+// inUse is the raw-ShepherdId-indexed backing bitmap for the embedded allocator
+// (indices 0..MaxPID; [0, MinPID) reserved). It is an inline array so there is
+// no heap allocation.
 type PIDAllocator struct {
-	// cursor is the next PID position the scan will consider on Alloc.
-	cursor ShepherdId
-	// freeCount is the number of free slots in inUse. When zero, the
-	// allocator is exhausted and Alloc returns ErrPIDExhausted without
-	// scanning.
-	freeCount uint16
-	// inUse[i] is true when PID (MinPID + i) is currently allocated.
-	// Fixed-size array — no heap allocation, safe for //go:nosplit callers.
-	inUse [pidRangeSize]bool
+	inner ds.MonotonicAllocator[ShepherdId]
+	inUse [MaxPID + 1]bool
 }
 
 // NewPIDAllocator returns a fresh allocator with no PIDs in use; the first
@@ -103,11 +107,7 @@ func NewPIDAllocator() *PIDAllocator {
 //
 //go:nosplit
 func (a *PIDAllocator) Init() {
-	a.cursor = MinPID
-	a.freeCount = uint16(pidRangeSize)
-	for i := range a.inUse {
-		a.inUse[i] = false
-	}
+	a.inner.InitWithReserved(a.inUse[:], int(MinPID))
 }
 
 // Alloc returns the next available PID in [MinPID, MaxPID], or
@@ -121,48 +121,20 @@ func (a *PIDAllocator) Init() {
 //
 //go:nosplit
 func (a *PIDAllocator) Alloc() (ShepherdId, error) {
-	if a.freeCount == 0 {
-		return 0, ErrPIDExhausted
+	if pid, ok := a.inner.TryAcquire(); ok {
+		return pid, nil
 	}
-	// Scan forward from cursor for the next free slot. freeCount > 0
-	// guarantees the loop terminates within pidRangeSize iterations.
-	for a.inUse[a.cursor-MinPID] {
-		a.cursor++
-		if a.cursor > MaxPID {
-			a.cursor = MinPID
-		}
-	}
-	pid := a.cursor
-	a.inUse[pid-MinPID] = true
-	a.freeCount--
-	// Advance cursor past the just-issued PID so the next Alloc starts
-	// strictly after it. This is what makes allocation monotonic forward.
-	a.cursor++
-	if a.cursor > MaxPID {
-		a.cursor = MinPID
-	}
-	return pid, nil
+	return 0, ErrPIDExhausted
 }
 
 // Free returns a PID to the allocatable pool. Idempotent — calling Free on
-// a PID that is not currently allocated is a no-op (it doesn't panic, and
-// doesn't corrupt allocator state).
-//
-// PIDs outside [MinPID, MaxPID] are silently ignored.
-//
-// Free deliberately does NOT touch cursor; the "no immediate reuse"
-// guarantee depends on cursor's monotonic advance through the PID range.
+// a PID that is not currently allocated is a no-op. PIDs outside
+// [MinPID, MaxPID] are silently ignored. Free does not advance the cursor,
+// so the freed PID is not reissued until wraparound.
 //
 //go:nosplit
 func (a *PIDAllocator) Free(pid ShepherdId) {
-	if pid < MinPID || pid > MaxPID {
-		return
-	}
-	if !a.inUse[pid-MinPID] {
-		return
-	}
-	a.inUse[pid-MinPID] = false
-	a.freeCount++
+	a.inner.Release(pid)
 }
 
 // InUse reports whether the given PID is currently allocated.
@@ -170,8 +142,5 @@ func (a *PIDAllocator) Free(pid ShepherdId) {
 //
 //go:nosplit
 func (a *PIDAllocator) InUse(pid ShepherdId) bool {
-	if pid < MinPID || pid > MaxPID {
-		return false
-	}
-	return a.inUse[pid-MinPID]
+	return a.inner.InUse(pid)
 }

@@ -205,7 +205,7 @@ func reapSelfTestChild(childTID int16, childPID proc.ShepherdId, childL0PA uintp
 	if t := threadLookupByTID(int32(childTID)); t != nil {
 		t.State = ThreadExited
 		pluckFromAllQueues(t.TID)
-		threadIdAllocator.Release(t.TID)
+		releaseUserThreadId(t.TID)
 		threadList.Release(int(threadToIdx(t)))
 	}
 
