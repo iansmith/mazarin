@@ -42,6 +42,9 @@ func SaveContextFromFrame(framePtr uintptr) {
 	t.Context.SP = frame[36]
 	t.Context.ELR = frame[32]
 	t.Context.SPSR = frame[33]
+
+	// [MAZ-179 tier-13a probe] verify the saved g's m matches this thread
+	maz179GIdentityCheck(t, frame[28], frame[33])
 }
 
 // doContextSwitchABI0 is the ABI0 entry point for context switching.

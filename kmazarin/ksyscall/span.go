@@ -1,6 +1,8 @@
 package ksyscall
 
 import (
+	"sync/atomic"
+
 	"mazzy/kmazarin/proc"
 	_ "unsafe" // Required for go:linkname
 )
@@ -25,7 +27,24 @@ func getCurrentSpanGroup() *proc.LockedSpanGroup {
 //
 //go:nosplit
 func addSpan(start, length uint64) bool {
-	return getCurrentSpanGroup().Add(start, length)
+	g := getCurrentSpanGroup()
+	// [MAZ-179 tier-13b probe] a fresh non-FIXED grant overlapping an
+	// existing span is a live-range double-grant — Add would silently
+	// coalesce the evidence away, so witness it first. MAP_FIXED callers
+	// run removeSpan beforehand and never trip this.
+	if ov := g.FindOverlapEnd(start, length); ov != 0 {
+		if atomic.AddUint32(&proc.GrantOverlapTrips, 1) == 1 {
+			sid := int32(-1)
+			if p := proc.CurrentShepherd(); p != nil {
+				sid = int32(p.PID)
+			}
+			atomic.StoreInt32(&proc.GrantOverlapFirstSID, sid)
+			atomic.StoreUint64(&proc.GrantOverlapFirstVA, start)
+			atomic.StoreUint64(&proc.GrantOverlapFirstLen, length)
+			atomic.StoreUint64(&proc.GrantOverlapFirstEnd, ov)
+		}
+	}
+	return g.Add(start, length)
 }
 
 // removeSpan removes/splits spans overlapping the given range.

@@ -111,3 +111,43 @@ var (
 	BlkSubmitTotal  uint32 // async submits attempted (exercised proof)
 	BlkFreeRace     uint32 // clump frees that saw the gauge up with InFlight==0
 )
+
+// [MAZ-179 probe — NOT FOR MERGE, tier 13a] g↔m thread-identity coherence.
+// The tier-12 negative (no external writer across 12 tripwire families)
+// plus dump content (mspan mutated µs-scale with PLAUSIBLE values) points
+// at the shepherd's own runtime racing itself — the ARM64 analogue of
+// MAZ-135's x86 dual-home g lossiness. Invariant checked at every EL0
+// context save: the g in the saved R28 must have g.m == the thread's own
+// recorded M (a g running on an m always has g.m set to that m before
+// gogo). A mismatch means the kernel is saving/restoring a thread whose
+// goroutine identity belongs to a DIFFERENT thread — two threads acting
+// as one goroutine → two sweepers on one span → exactly the observed
+// impossible sweep counts.
+var (
+	GIdentChecks     uint32 // EL0 saves checked (exercised proof)
+	GIdentUnreadable uint32 // g.m read failed (page not resident — no verdict)
+	GIdentMismatch   uint32 // g.m != thread.MPtr — the smoking gun
+	GIdentFirstTID   uint64 // TID of the first mismatch
+	GIdentFirstG     uint64 // R28 (g) of the first mismatch
+	GIdentFirstM     uint64 // g.m read at the first mismatch
+	GIdentFirstWantM uint64 // thread.MPtr expected at the first mismatch
+)
+
+// [MAZ-179 probe — NOT FOR MERGE, tier 13b] VA-grant overlap witness (Ian's
+// arena hypothesis: under peak boot pressure the kernel mis-grants arena
+// VAs to a shepherd's several runtime subsystems). The tier-5 doubleBook
+// probe checked grants against already-MAPPED pages — two overlapping
+// DEMAND-PAGED grants (neither faulted yet) pass it, then both subsystems
+// later fault the same VA and legitimately share frames: plausible-value
+// mutual scribble, invisible to every PTE/refcount tripwire. This witness
+// checks each new grant against the shepherd's SPAN LEDGER instead,
+// before Spans.Add coalesces the evidence away.
+var (
+	GrantOverlapTrips    uint32 // non-FIXED grants overlapping an existing span
+	GrantOverlapFirstSID int32  // shepherd of the first trip
+	GrantOverlapFirstVA  uint64 // granted VA of the first trip
+	GrantOverlapFirstLen uint64 // granted length of the first trip
+	GrantOverlapFirstEnd uint64 // FindOverlapEnd result at the first trip
+	GrantFixedMaps       uint32 // MAP_FIXED user grants (overlap intended; census)
+	GrantHintFallbacks   uint32 // arena hints refused → bump fallback (pressure gauge)
+)

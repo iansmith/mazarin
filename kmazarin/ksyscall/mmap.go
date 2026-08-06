@@ -91,6 +91,8 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	// MAP_FIXED can overwrite existing mappings (dangerous but that's the semantics)
 	if isMapFixed && addr != 0 {
 		if isUserspace && addr >= userMmapStart && addr+alignedLength <= userMmapEnd {
+			// [MAZ-179 tier-13b probe] MAP_FIXED census (overlap is intended here)
+			atomic.AddUint32(&proc.GrantFixedMaps, 1)
 			// Check if this MAP_FIXED overlaps any file mapping
 			checkMapFixedFileOverlap(addr, alignedLength)
 			// Real Linux MAP_FIXED semantics: atomically replace any existing mapping.
@@ -126,6 +128,8 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 			// Try to honor the hint if it doesn't overlap existing spans
 			result = tryReserveHint(addr, alignedLength)
 			if result == 0 {
+				// [MAZ-179 tier-13b probe] arena-hint pressure gauge
+				atomic.AddUint32(&proc.GrantHintFallbacks, 1)
 				// Hint couldn't be honored, fall back to bump allocator
 				result = userBumpAlloc(alignedLength)
 				if result != 0 {
@@ -374,6 +378,18 @@ func bumpAllocForShepherd(p *proc.Shepherd, size uint64) uint64 {
 		}
 
 		if atomic.CompareAndSwapUint64(&p.IPCBumpPointer, currentPtr, nextPtr) {
+			// [MAZ-179 tier-13b probe] a kernel-initiated IPC-VA grant that
+			// overlaps the target's existing spans is a double-grant into a
+			// live range (callers Spans.Add right after, coalescing the
+			// evidence). Same witness as addSpan, target-shepherd side.
+			if ov := p.Spans.FindOverlapEnd(currentPtr, aligned); ov != 0 {
+				if atomic.AddUint32(&proc.GrantOverlapTrips, 1) == 1 {
+					atomic.StoreInt32(&proc.GrantOverlapFirstSID, int32(p.PID))
+					atomic.StoreUint64(&proc.GrantOverlapFirstVA, currentPtr)
+					atomic.StoreUint64(&proc.GrantOverlapFirstLen, aligned)
+					atomic.StoreUint64(&proc.GrantOverlapFirstEnd, ov)
+				}
+			}
 			return currentPtr
 		}
 	}

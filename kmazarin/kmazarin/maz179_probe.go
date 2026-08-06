@@ -44,22 +44,29 @@ func maz179ProbeHeartbeatLine(tag string, sid int64) {
 		up = (kirq.ReadCounterValue() - kernelBootTick) / freq
 	}
 	klog.Criticalf("[MAZ179HB] ",
-		"[MAZ179HB] %s up=%ds sid=%d blk: compl=%d staleinv=%d alias=%d submits=%d dma: frees=%d pages=%d blkhits=%d nethits=%d netpool=%d first_pa=0x%x first_sid=%d race=%d deaths=%d cq: stale=%d\n",
+		"[MAZ179HB] %s up=%ds sid=%d blk: compl=%d submits=%d dma: frees=%d blkhits=%d nethits=%d race=%d deaths=%d cq: stale=%d gid: chk=%d mis=%d unr=%d first_tid=%d g=0x%x m=0x%x want=0x%x grant: ovl=%d first_sid=%d va=0x%x len=0x%x fixed=%d hintfb=%d\n",
 		tag, up, sid,
 		atomic.LoadUint32(&proc.BlkComplTotal),
-		atomic.LoadUint32(&proc.BlkStaleInval),
-		atomic.LoadUint32(&proc.BlkClumpAlias),
 		atomic.LoadUint32(&proc.BlkSubmitTotal),
 		atomic.LoadUint32(&proc.DmaClumpFrees),
-		atomic.LoadUint32(&proc.DmaClumpFreePages),
 		atomic.LoadUint32(&proc.DmaFreeBlkHits),
 		atomic.LoadUint32(&proc.DmaFreeNetHits),
-		atomic.LoadUint32(&proc.NetPoolFrees),
-		atomic.LoadUint64(&proc.DmaFreeFirstPA),
-		atomic.LoadInt32(&proc.DmaFreeFirstSID),
 		atomic.LoadUint32(&proc.BlkFreeRace),
 		atomic.LoadUint32(&proc.ShepherdDeaths),
-		atomic.LoadUint32(&dbgCQStaleTrips))
+		atomic.LoadUint32(&dbgCQStaleTrips),
+		atomic.LoadUint32(&proc.GIdentChecks),
+		atomic.LoadUint32(&proc.GIdentMismatch),
+		atomic.LoadUint32(&proc.GIdentUnreadable),
+		atomic.LoadUint64(&proc.GIdentFirstTID),
+		atomic.LoadUint64(&proc.GIdentFirstG),
+		atomic.LoadUint64(&proc.GIdentFirstM),
+		atomic.LoadUint64(&proc.GIdentFirstWantM),
+		atomic.LoadUint32(&proc.GrantOverlapTrips),
+		atomic.LoadInt32(&proc.GrantOverlapFirstSID),
+		atomic.LoadUint64(&proc.GrantOverlapFirstVA),
+		atomic.LoadUint64(&proc.GrantOverlapFirstLen),
+		atomic.LoadUint32(&proc.GrantFixedMaps),
+		atomic.LoadUint32(&proc.GrantHintFallbacks))
 }
 
 // maz179ProbeHeartbeat is called every KernelIdleLoop iteration; rate-limits
@@ -148,6 +155,35 @@ func sigFrameRecordTrip(thread *Thread, signum int) {
 	atomic.StoreUint64(&dbgSigFrameFirstBase, thread.SignalStackBase)
 	atomic.StoreUint64(&dbgSigFrameFirstSize, thread.SignalStackSize)
 	atomic.StoreUint64(&dbgSigFrameFirstSig, uint64(signum))
+}
+
+// [MAZ-179 probe — NOT FOR MERGE, tier 13a] g↔m coherence check, called
+// from SaveCurrentThreadContext on every full context save. EL0 saves
+// only: kernel-mode (EL1) saves run on kernel g's where thread.MPtr does
+// not apply. See proc/maz179_counters.go (GIdent*) for the invariant.
+//
+//go:nosplit
+func maz179GIdentityCheck(t *Thread, x28, spsr uint64) {
+	if spsr&0xF != 0 {
+		return // not an EL0t save
+	}
+	if t.MPtr == 0 || x28 == 0 || t.PageTableL0PA == 0 {
+		return
+	}
+	atomic.AddUint32(&proc.GIdentChecks, 1)
+	m, ok := kmem.ReadUserUint64WithL0(uintptr(x28)+kirq.PreemptGMOffset, t.PageTableL0PA)
+	if !ok {
+		atomic.AddUint32(&proc.GIdentUnreadable, 1)
+		return
+	}
+	if m != t.MPtr {
+		if atomic.AddUint32(&proc.GIdentMismatch, 1) == 1 {
+			atomic.StoreUint64(&proc.GIdentFirstTID, uint64(t.TID))
+			atomic.StoreUint64(&proc.GIdentFirstG, x28)
+			atomic.StoreUint64(&proc.GIdentFirstM, m)
+			atomic.StoreUint64(&proc.GIdentFirstWantM, t.MPtr)
+		}
+	}
 }
 
 // cqRingLive reports whether the shared ring page still carries the
