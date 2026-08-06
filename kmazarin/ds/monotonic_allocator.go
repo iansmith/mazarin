@@ -2,14 +2,23 @@
 
 package ds
 
+// IDElement is a type constraint for the small integer types used as kernel
+// IDs (thread IDs, channel IDs, shepherd PIDs). It was StaticStack's
+// StackElement until MAZ-189 removed the LIFO stack/allocator pair; the
+// constraint moved here with its sole remaining user.
+type IDElement interface {
+	~byte | ~int8 | ~uint16 | ~int16 | ~uint32 | ~int32
+}
+
 // MonotonicAllocator is a fixed-range ID allocator that issues IDs
 // monotonically forward and never reissues a freed ID until the cursor has
 // wrapped the whole range. It is the shepherd-PID allocation strategy
 // (originally proc.PIDAllocator, MAZ-150) generalized so every kernel ID space
 // — shepherd PIDs, thread IDs, channel IDs — shares one definition.
 //
-// It replaces the LIFO ds.StaticAllocator for ID allocation. StaticAllocator
-// pops the most-recently-freed ID as the very next allocation; that immediate
+// It replaced the LIFO ds.StaticAllocator for ID allocation (the stack and
+// allocator were removed with MAZ-189 once nothing used them). StaticAllocator
+// popped the most-recently-freed ID as the very next allocation; that immediate
 // reissue is the MAZ-179 bug: a thread that dies with an in-flight delegate
 // call frees its TID, which is instantly handed to a new thread that collides
 // on the same TID-indexed slot. Monotonic issue closes that window.
@@ -19,8 +28,8 @@ package ds
 // by raw ID, so there is no heap allocation and every method is nosplit-safe.
 //
 // Not goroutine-safe on its own; callers hold the appropriate lock (the same
-// contract as StaticAllocator and PIDAllocator).
-type MonotonicAllocator[T StackElement] struct {
+// contract as PIDAllocator and the removed StaticAllocator).
+type MonotonicAllocator[T IDElement] struct {
 	inUse     []bool // indexed by raw ID; len defines max
 	cursor    T      // next ID position TryAcquire will consider
 	reserved  T      // IDs in [0, reserved) are never issued
@@ -91,7 +100,7 @@ func (a *MonotonicAllocator[T]) TryAcquire() (T, bool) {
 }
 
 // Acquire returns the next available ID, panicking if the allocator is
-// exhausted. This matches the StaticAllocator.Acquire contract so it is a
+// exhausted. This matches the removed StaticAllocator's Acquire contract so it was a
 // drop-in replacement for ID spaces that treat exhaustion as a fatal invariant
 // violation (thread IDs, channel IDs). ID spaces that must fail gracefully
 // (shepherd PIDs → EAGAIN) call TryAcquire instead.
