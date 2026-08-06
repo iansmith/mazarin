@@ -74,6 +74,13 @@ const _ = uint(int(MaxLiveShepherds) - 1 - int(MaxPID))
 //
 // The zero value is NOT ready for use — call NewPIDAllocator or Init.
 //
+// A PIDAllocator MUST NOT be copied after Init: Init hands inner a slice of this
+// struct's own inUse array, so a by-value copy keeps pointing at the ORIGINAL's
+// bitmap while carrying its own cursor/freeCount. The two would then hand out
+// the same PID or silently mutate each other. Always pass *PIDAllocator (which
+// is what NewPIDAllocator returns), and never embed one in a struct that is
+// copied by value.
+//
 // Not goroutine-safe on its own; callers hold an appropriate lock. All methods
 // are nosplit-safe.
 //
