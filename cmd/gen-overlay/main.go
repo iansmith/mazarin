@@ -257,6 +257,7 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		// throws so the writer can be identified by content offline.
 		"runtime/mgcsweep.go":        "runtime/mgcsweep.go",
 		"runtime/mbitmap.go":         "runtime/mbitmap.go",
+		"runtime/mheap.go":           "runtime/mheap.go",
 		"runtime/maz179_forensic.go": "runtime/maz179_forensic.go",
 	}
 

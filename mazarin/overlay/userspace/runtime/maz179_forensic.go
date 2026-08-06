@@ -289,3 +289,28 @@ func maz179DumpBadPointer(s *mspan, p, refBase, refOff uintptr) {
 	maz179classify("badptr-target", p, 256)
 	print("[MAZ179DUMP] ===== END BAD-POINTER =====\n")
 }
+
+// maz179GCBTrips caps [MAZ179GCB] reporting (approximate — plain counter,
+// races only affect the cap, not correctness).
+var maz179GCBTrips uint32
+
+// maz179GCBCheckZero enforces the newMarkBits zero-at-handout invariant.
+// [MAZ-179 tier-15] A nonzero mark-bits chunk at handout = the gcBits
+// arena was recycled while a live span still points into it (epoch
+// machinery raced) — the corruption caught at the moment of aliasing,
+// with the aliased content in hand. Bounded scan (bytes = ceil(nelems/64)*8).
+func maz179GCBCheckZero(p *gcBits, bytes uintptr) {
+	base := uintptr(unsafe.Pointer(p))
+	for off := uintptr(0); off < bytes; off += 8 {
+		w := *(*uint64)(unsafe.Pointer(base + off))
+		if w != 0 {
+			maz179GCBTrips++
+			if maz179GCBTrips <= 8 {
+				print("[MAZ179GCB] NONZERO-AT-HANDOUT p=", hex(base),
+					" bytes=", bytes, " off=", off, " word=", hex(w), "\n")
+				maz179TLBCheck("gcb-handout", base+off)
+			}
+			return
+		}
+	}
+}
