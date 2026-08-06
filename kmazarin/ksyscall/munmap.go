@@ -130,6 +130,8 @@ func munmapClump(p *proc.Shepherd, idx int32) {
 
 	inflight := atomic.LoadInt32(&c.InFlight)
 	if inflight == 0 {
+		// [MAZ-179 tier-12 probe] witness DMA references before the free
+		maz179DmaFreeProbe(p, c)
 		// Safe to free immediately
 		kmem.BuddyFreeTyped(c.StartPA, c.BuddyOrder, kmem.PageUserDMA)
 		p.LockClumps()
@@ -151,6 +153,8 @@ func CleanupShepherdDMAClumps(p *proc.Shepherd) {
 		c := &p.DMAClumps[i]
 		inflight := atomic.LoadInt32(&c.InFlight)
 		if inflight == 0 {
+			// [MAZ-179 tier-12 probe] witness DMA references before the free
+			maz179DmaFreeProbe(p, c)
 			kmem.BuddyFreeTyped(c.StartPA, c.BuddyOrder, kmem.PageUserDMA)
 			p.LockClumps()
 			p.RemoveClump(i)

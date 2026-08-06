@@ -1751,6 +1751,7 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 	pteValue := makeUserPagePTE(pa, elfFlags)
 
 	*l3Entry = pteValue
+	mapProbeInc(pa)
 
 	// Clean cache and invalidate TLB
 	dcCIVAC(uintptr(unsafe.Pointer(l3Entry)))
@@ -1915,6 +1916,7 @@ func MapUserDevicePageWithL0(va, pa uintptr, l0PAParam uintptr) bool {
 	pteValue := makeUserDevicePTE(pa)
 
 	*l3Entry = pteValue
+	mapProbeInc(pa) // no-op for out-of-pool MMIO (nil descriptor); counts in-pool frames (e.g. framebuffer)
 
 	// Clean cache and invalidate TLB
 	dcCIVAC(uintptr(unsafe.Pointer(l3Entry)))
@@ -2308,6 +2310,7 @@ func UnmapUserPage(va uintptr) uintptr {
 
 	// Clear the L3 entry (unmap the page)
 	*l3EntryPtr = 0
+	mapProbeDec(pa)
 
 	// Ensure PTE write is visible
 	dsbSY()
@@ -2403,6 +2406,7 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 
 	// Clear the L3 entry (unmap the page)
 	*l3EntryPtr = 0
+	mapProbeDec(pa)
 
 	// Ensure PTE write is visible
 	dsbSY()

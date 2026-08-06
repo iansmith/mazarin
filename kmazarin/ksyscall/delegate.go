@@ -206,6 +206,8 @@ func isDelegateReady(pid proc.ShepherdId) bool {
 //
 //go:noinline
 func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
+	// [MAZ-179 tier-12 probe] syscall-driven heartbeat (~20s rate-limited)
+	maz179SyscallHeartbeat()
 	handlerSID := int16(atomic.LoadInt32(&syscallDelegates[id].pid))
 	if handlerSID < 0 {
 		return -38 // ENOSYS

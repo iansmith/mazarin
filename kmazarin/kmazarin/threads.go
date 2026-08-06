@@ -1610,6 +1610,10 @@ func KernelIdleLoop() {
 		// so the deferred ring stays nearly empty.
 		DrainDeferredCleanups()
 
+		// [MAZ-179 tier-12 probe] starvation-proof heartbeat (~20s) from
+		// thread 0's never-yielding loop; serial-visible via Criticalf.
+		maz179ProbeHeartbeat()
+
 		// NOTE: runtime.Gosched() was removed here. When Gosched runs Go's
 		// internal goroutine scheduler, goroutines doing SVC sched_yield cause
 		// OS-level context switches that save thread 0 inside a random goroutine.
@@ -2550,6 +2554,13 @@ func FlushAllDeferredCleanups() {
 // NOT nosplit — breaks the nosplit chain from SyscallExitGroup/SyscallMazzyExit
 // to allow delegate cleanup functions to run stack checks.
 func TerminateShepherd(pid ShepherdId, status int64) uintptr {
+	// [MAZ-179 tier-12 probe] death census + serial marker. The wm
+	// "cleaning up dead shepherd" line only covers windowed shepherds;
+	// this counts every death (execve teardown included) and timestamps
+	// it against the corruption window. Pre-lock SVC context — safe to
+	// emit serial here (tier-4c precedent).
+	atomic.AddUint32(&proc.ShepherdDeaths, 1)
+	maz179ProbeHeartbeatLine("death", int64(pid))
 	// Clean up delegation resources BEFORE acquiring the scheduler lock.
 	// NOT nosplit, which breaks the nosplit chain and avoids exceeding
 	// the 792-byte stack limit. Safe because the delegate data structures are

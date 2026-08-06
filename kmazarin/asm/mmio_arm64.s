@@ -101,6 +101,11 @@ TEXT ·CleanDCacheRange(SB), NOSPLIT, $0-16
 	MOVD	start+0(FP), R0		// Start address
 	MOVD	size+8(FP), R1		// Size in bytes
 	ADD	R0, R1, R1		// R1 = end address
+	// [MAZ-179] align start DOWN to the cache line. The old loop began at
+	// the unaligned start and strode 64, so an unaligned range SKIPPED its
+	// final line(s) — a clean that misses the tail leaves the device
+	// reading stale descriptor/data bytes.
+	AND	$~63, R0		// R0 = line-aligned start
 	MOVD	$64, R2			// Cache line size (64 bytes on most ARM64)
 
 loop_clean:
@@ -118,6 +123,12 @@ TEXT ·InvalidateDCacheRange(SB), NOSPLIT, $0-16
 	MOVD	start+0(FP), R0		// Start address
 	MOVD	size+8(FP), R1		// Size in bytes
 	ADD	R0, R1, R1		// R1 = end address
+	// [MAZ-179] align start DOWN (same missed-tail bug as CleanDCacheRange).
+	// NOTE: DC IVAC on the head/tail lines still discards any neighbor
+	// bytes sharing those lines — callers must keep DMA buffers
+	// line-isolated; this fix only guarantees the REQUESTED range is
+	// actually covered.
+	AND	$~63, R0		// R0 = line-aligned start
 	MOVD	$64, R2			// Cache line size
 
 loop_inval:

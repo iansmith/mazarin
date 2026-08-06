@@ -286,7 +286,14 @@ func AllocContiguousPages(pages uintptr, pageType PageType, owner int16) uintptr
 
 // GetBumpAllocatedPages returns the number of pages allocated by the bump allocator.
 //
+// PoolBounds returns the unified pool's physical [start, end). Debug aid for
+// attributing physical addresses seen in corruption signatures (MAZ-15).
+//
 //go:nosplit
+func PoolBounds() (start, end uintptr) {
+	return globalPool.initialNext, globalPool.end
+}
+
 func GetBumpAllocatedPages() uint64 {
 	if atomic.LoadUint32(&globalPool.initialized) == 0 {
 		return 0

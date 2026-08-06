@@ -164,16 +164,16 @@ func getGOROOT() (string, error) {
 func buildKmazarinOverlay(overlay *Overlay, goroot, patchesDir string) error {
 	// Kmazarin patches for runtime
 	runtimePatches := map[string]string{
-		"runtime/cgo_mmap.go":        "cgo_mmap.go",
-		"runtime/fds_unix.go":        "fds_unix.go",
-		"runtime/malloc.go":          "malloc.go",
-		"runtime/mcache.go":          "mcache.go",
-		"runtime/mcentral.go":        "mcentral.go",
-		"runtime/os_linux_arm64.go":  "os_linux_arm64.go",
-		"runtime/preempt.go":         "preempt.go",
-		"runtime/sys_linux_arm64.s":  "sys_linux_arm64.s",
-		"runtime/tagptr_64bit.go":    "tagptr_64bit.go",
-		"runtime/traceback.go":        "traceback.go",
+		"runtime/cgo_mmap.go":       "cgo_mmap.go",
+		"runtime/fds_unix.go":       "fds_unix.go",
+		"runtime/malloc.go":         "malloc.go",
+		"runtime/mcache.go":         "mcache.go",
+		"runtime/mcentral.go":       "mcentral.go",
+		"runtime/os_linux_arm64.go": "os_linux_arm64.go",
+		"runtime/preempt.go":        "preempt.go",
+		"runtime/sys_linux_arm64.s": "sys_linux_arm64.s",
+		"runtime/tagptr_64bit.go":   "tagptr_64bit.go",
+		"runtime/traceback.go":      "traceback.go",
 	}
 
 	for goFile, patchFile := range runtimePatches {
@@ -200,16 +200,16 @@ func buildKmazarinAMD64Overlay(overlay *Overlay, goroot, patchesDir string) erro
 	// Kmazarin patches for x86_64 runtime — same arch-independent patches as ARM64,
 	// but with amd64-specific os_linux and sys_linux files.
 	runtimePatches := map[string]string{
-		"runtime/cgo_mmap.go":                          "cgo_mmap.go",
-		"runtime/fds_unix.go":                          "fds_unix.go",
-		"runtime/malloc.go":                            "malloc.go",
-		"runtime/mcache.go":                            "mcache.go",
-		"runtime/mcentral.go":                            "mcentral.go",
-		"runtime/os_linux_noauxv.go":                   "os_linux_noauxv.go",
-		"runtime/preempt.go":                           "preempt.go",
-		"runtime/sys_linux_amd64.s":                    "sys_linux_amd64.s",
-		"runtime/tagptr_64bit.go":                      "tagptr_64bit.go",
-		"runtime/traceback.go":                         "traceback.go",
+		"runtime/cgo_mmap.go":                              "cgo_mmap.go",
+		"runtime/fds_unix.go":                              "fds_unix.go",
+		"runtime/malloc.go":                                "malloc.go",
+		"runtime/mcache.go":                                "mcache.go",
+		"runtime/mcentral.go":                              "mcentral.go",
+		"runtime/os_linux_noauxv.go":                       "os_linux_noauxv.go",
+		"runtime/preempt.go":                               "preempt.go",
+		"runtime/sys_linux_amd64.s":                        "sys_linux_amd64.s",
+		"runtime/tagptr_64bit.go":                          "tagptr_64bit.go",
+		"runtime/traceback.go":                             "traceback.go",
 		"internal/runtime/syscall/linux/asm_linux_amd64.s": "asm_linux_amd64.s",
 	}
 
@@ -252,6 +252,12 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/sys_linux_arm64.s":   "runtime/sys_linux_arm64.s",
 		"runtime/timestub2.go":        "runtime/timestub2.go",
 		"runtime/netpoll_maz_init.go": "runtime/netpoll_maz_init.go",
+		// MAZ-179 forensic dump-at-fatal (NOT FOR MERGE): hexdump the
+		// corrupted region at the shepherd runtime's corruption-detecting
+		// throws so the writer can be identified by content offline.
+		"runtime/mgcsweep.go":        "runtime/mgcsweep.go",
+		"runtime/mbitmap.go":         "runtime/mbitmap.go",
+		"runtime/maz179_forensic.go": "runtime/maz179_forensic.go",
 	}
 
 	for goFile, patchFile := range patches {
@@ -288,9 +294,9 @@ func buildCardinalLinuxOverlay(overlay *Overlay, goroot, patchesDir string) erro
 	// Cardinal patches for Linux ARM64 runtime to make it bare-metal compatible.
 	// We're building with GOOS=linux GOARCH=arm64, so we patch the Linux syscall/runtime.
 	patches := map[string]string{
-		"syscall/syscall_linux.go":    "syscall_linux.go",
-		"runtime/sys_linux_arm64.s":   "sys_linux_arm64.s",
-		"runtime/mbitmap.go":          "mbitmap.go",
+		"syscall/syscall_linux.go":  "syscall_linux.go",
+		"runtime/sys_linux_arm64.s": "sys_linux_arm64.s",
+		"runtime/mbitmap.go":        "mbitmap.go",
 	}
 
 	for goFile, patchFile := range patches {
@@ -309,10 +315,10 @@ func buildDiplomatOverlay(overlay *Overlay, goroot, patchesDir string) error {
 	// Diplomat patches for Windows runtime to make it UEFI-compatible
 	// These replace Windows-specific runtime files with UEFI stubs
 	patches := map[string]string{
-		"runtime/os_windows.go":         "os_windows.go",
-		"runtime/syscall_windows.go":    "syscall_windows.go",
-		"runtime/sys_windows_amd64.s":   "sys_windows_amd64.s",
-		"runtime/mem_windows.go":        "mem_windows.go",
+		"runtime/os_windows.go":       "os_windows.go",
+		"runtime/syscall_windows.go":  "syscall_windows.go",
+		"runtime/sys_windows_amd64.s": "sys_windows_amd64.s",
+		"runtime/mem_windows.go":      "mem_windows.go",
 	}
 
 	for goFile, patchFile := range patches {
@@ -418,11 +424,11 @@ func buildDiplomatLinuxOverlay(overlay *Overlay, goroot, patchesDir string) erro
 	// - syscall_linux.go: Centralize syscall routing
 	// - sys_linux_amd64.s: Stub out all syscall instructions (write1, exit, futex, etc.) for x86_64
 	patches := map[string]string{
-		"syscall/syscall_linux.go":     "syscall_linux.go",
-		"runtime/sys_linux_amd64.s":    "sys_linux_amd64.s",
-		"runtime/sys_linux_arm64.s":    "sys_linux_arm64.s",
-		"debug/elf/file.go":            "elf_file.go",
-		"debug/elf/reader.go":          "elf_reader.go",
+		"syscall/syscall_linux.go":  "syscall_linux.go",
+		"runtime/sys_linux_amd64.s": "sys_linux_amd64.s",
+		"runtime/sys_linux_arm64.s": "sys_linux_arm64.s",
+		"debug/elf/file.go":         "elf_file.go",
+		"debug/elf/reader.go":       "elf_reader.go",
 	}
 
 	for goFile, patchFile := range patches {

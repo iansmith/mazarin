@@ -26,7 +26,6 @@ import (
 // Set to 1 on first SysBlockSubmit call.
 var blockAsyncEnabled uint32
 
-
 // SyscallBlockSubmit submits an async block I/O request.
 //
 // arg0 = requestType  (0 = read, 1 = write)
@@ -114,11 +113,17 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	// flight and defers the free rather than freeing pages out from under us
 	// (Bug-B/MAZ-5 TOCTOU).
 	atomic.AddInt32(&clump.InFlight, 1)
+	// [MAZ-179 tier-12 witness] gauge up for the unlock→LookupPA→submit→
+	// Notify span; a clump free seeing InFlight==0 with this gauge up
+	// proves the free-vs-submit TOCTOU window is reachable.
+	atomic.AddInt32(&proc.BlkSubmitWindow, 1)
+	atomic.AddUint32(&proc.BlkSubmitTotal, 1)
 	clumpOwner.UnlockClumps()
 	pa := clump.LookupPA(bufVA)
 	endPA := clump.LookupPA(bufVA + uintptr(totalBytes) - 1)
 	if pa == 0 || endPA == 0 {
 		atomic.AddInt32(&clump.InFlight, -1)
+		atomic.AddInt32(&proc.BlkSubmitWindow, -1)
 		klog.Errf("[BlockSubmit] EFAULT: buffer extends beyond clump\n")
 		return -14 // EFAULT
 	}
@@ -141,6 +146,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	tag, err := dev.DoBlockIOSubmit(requestType, startLBA, nil, 0, pa, uint32(totalBytes))
 	if err != nil {
 		atomic.AddInt32(&clump.InFlight, -1)
+		atomic.AddInt32(&proc.BlkSubmitWindow, -1)
 		klog.Errf("[BlockSubmit] submit failed: %v\n", err)
 		return -5 // EIO
 	}
@@ -157,6 +163,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	// Notify device
 	asm.Dsb()
 	dev.Eng.Notify()
+	atomic.AddInt32(&proc.BlkSubmitWindow, -1)
 
 	return int64(tag)
 }

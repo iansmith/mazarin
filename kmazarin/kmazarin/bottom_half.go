@@ -341,7 +341,21 @@ func completionRingPush(kva uintptr, ev hid.HIDEvent) bool {
 		atomic.StoreUint32(&ring.Lock, 0)
 		return false
 	}
-	ring.Events[tail%ring.Capacity] = ev
+	// [MAZ-179 probe — NOT FOR MERGE] Capacity tripwire: the index below
+	// trusts the user-page Capacity field while the bounds check above uses
+	// the constant. If the shared page's Capacity is ever not 508, this
+	// 8-byte store lands outside the ring page through a computed VA — the
+	// word-shaped corruption profile. Detect, record first occurrence, and
+	// clamp so the stray store is also neutralized.
+	capv := atomic.LoadUint32(&ring.Capacity)
+	if capv != hid.CompletionRingSize {
+		if atomic.AddUint32(&dbgCRPTrips, 1) == 1 {
+			atomic.StoreUint32(&dbgCRPFirstCap, capv)
+			atomic.StoreUint64(&dbgCRPFirstKVA, uint64(kva))
+		}
+		capv = hid.CompletionRingSize
+	}
+	ring.Events[tail%capv] = ev
 	asm.Dsb() // ensure event data visible before tail update
 	atomic.StoreUint32(&ring.Tail, tail+1)
 	atomic.StoreUint32(&ring.Lock, 0)
@@ -361,6 +375,13 @@ var dbgPWakeSVC uint32      // blocked by svcDepth != 0
 var dbgPWakeNoG0 uint32     // g0 not ready
 var dbgPWakeNoCtx uint32    // CheckThreadPreemption returned 0
 var dbgPWakeSwitched uint32 // successfully switched to priority thread
+
+// [MAZ-179 probe — NOT FOR MERGE] completionRingPush Capacity tripwire
+// counters. Written from the IRQ top-half (nosplit, no klog allowed there);
+// drained by the thread-0 status printer in threads.go.
+var dbgCRPTrips uint32    // pushes where ring.Capacity != hid.CompletionRingSize
+var dbgCRPFirstCap uint32 // Capacity value seen on the first trip
+var dbgCRPFirstKVA uint64 // ring KVA of the first trip
 
 // RingDrain copies up to max events from the ring into buf.
 // Returns the number of events drained.
@@ -490,7 +511,7 @@ func NonTimerIRQTopHalf() {
 			evtValue := evtValueLo | (evtValueHi << 16)
 
 			// Write HID event as io_uring CQE: type<<48 | code<<32 | value.
-			if inputRing != nil {
+			if inputRing != nil && cqRingLive(inputRing) { // [MAZ-179 probe]
 				cqTail := inputRing.CQTail
 				cqHead := atomic.LoadUint32(&inputRing.CQHead)
 				if cqTail-cqHead < iouring.CQCapacity {
@@ -596,7 +617,7 @@ func topHalfTabletHandler() {
 			}
 
 			// Write HID event as io_uring CQE: type<<48 | code<<32 | value.
-			if inputRing != nil {
+			if inputRing != nil && cqRingLive(inputRing) { // [MAZ-179 probe]
 				cqTail := inputRing.CQTail
 				cqHead := atomic.LoadUint32(&inputRing.CQHead)
 				if cqTail-cqHead < iouring.CQCapacity {

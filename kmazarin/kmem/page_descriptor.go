@@ -16,12 +16,14 @@ package kmem
 import (
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/serial"
+	"mazzy/shared/constants"
 	"sync/atomic"
 	"unsafe"
 )
 
 // PageDescriptor tracks the ownership and state of a single physical page.
-// 16 bytes per entry. For a 512MB pool with 4KB pages = 131072 entries = 2MB.
+// 24 bytes per entry (18 rounded up to pointer alignment). For a 512MB pool
+// with 4KB pages = 131072 entries = 3MB.
 type PageDescriptor struct {
 	PA       uintptr  // Physical address of this page
 	Type     PageType // What the page is used for
@@ -29,6 +31,7 @@ type PageDescriptor struct {
 	RefCount int16    // >1 for shared pages (IPC, framebuffer)
 	Order    uint8    // Buddy order (0 = single page)
 	Flags    uint8    // PD_PINNED, PD_DIRTY, etc.
+	MapCount int16    // MAZ-15 probe: live user leaf PTEs referencing this page. MAINTAINED ONLY under constants.Maz15Debug (mapProbeInc/Dec); deliberately NOT zeroed by ClearPageDescriptor so the free-time [MAP_LEAK] assert sees it — reset at realloc in SetPageDescriptor.
 }
 
 // PageDescriptor flag bits
@@ -46,7 +49,13 @@ const PageShift = 12
 
 // pdEntrySize is the size of a single PageDescriptor in bytes.
 // Using a const avoids calling unsafe.Sizeof in nosplit paths.
-const pdEntrySize = 16 // Must match unsafe.Sizeof(PageDescriptor{})
+const pdEntrySize = 24 // Must match unsafe.Sizeof(PageDescriptor{})
+
+// Compile-time assertion that pdEntrySize matches the real struct size.
+const _pdRealSize = unsafe.Sizeof(PageDescriptor{})
+
+var _ [pdEntrySize - _pdRealSize]byte
+var _ [_pdRealSize - pdEntrySize]byte
 
 // Descriptor array state — NO Go slice, just raw uintptr + length.
 // This avoids GC write barriers that blow the nosplit stack budget.
@@ -129,6 +138,14 @@ func SetPageDescriptor(pa uintptr, pageType PageType, owner int16, order uint8) 
 	}
 	desc := pdAt(idx)
 	pageDescLock.Lock()
+	if constants.Maz15Debug && desc.MapCount != 0 {
+		// A freshly allocated page still shows live user PTEs from a prior
+		// life: the free side either missed the accounting or genuinely freed
+		// a mapped page and the [MAP_LEAK] assert was bypassed.
+		klog.Criticalf("[MAP_STALE]", " pa=%x mapcount=%d newtype=%d newowner=%d\n",
+			uint64(pa), int(desc.MapCount), int(pageType), int(owner))
+		desc.MapCount = 0
+	}
 	desc.PA = pa
 	desc.Type = pageType
 	desc.Owner = owner
@@ -180,6 +197,7 @@ func ClearPageDescriptor(pa uintptr) {
 	desc.RefCount = 0
 	desc.Order = 0
 	desc.Flags = 0
+	// MapCount deliberately NOT cleared — probe-maintained; see its field doc.
 	pageDescLock.Unlock()
 }
 
@@ -244,6 +262,58 @@ func RestorePageShareState(desc *PageDescriptor, refCount int16, flags uint8) {
 	pageDescLock.Lock()
 	desc.RefCount = refCount
 	desc.Flags = flags
+	pageDescLock.Unlock()
+}
+
+// ============================================================================
+// MAZ-15 freed-while-mapped probe (gated by constants.Maz15Debug)
+// ============================================================================
+//
+// MapCount counts live user leaf PTEs per physical page. The invariant: a
+// page must have MapCount == 0 when it returns to the buddy pool. Increment
+// happens at the ONLY two leaf-PTE install sites (mapUserPageWithL0,
+// MapUserDevicePageWithL0 — new-entry path only, not the already-mapped
+// early return). Decrement happens at the ONLY ways a live leaf PTE dies:
+// UnmapUserPage / UnmapUserPageWithL0 (explicit clear), and the
+// walkAndFreePageTablePages freeLeaves walk (L3 table destroyed wholesale).
+// The kernel linear map is deliberately NOT counted — it maps the whole pool
+// permanently; the probe tracks user-visible mappings only.
+//
+// Violations report at free time ([MAP_LEAK], releasePageByPA/BuddyFreeTyped)
+// and at realloc time ([MAP_STALE], SetPageDescriptor). Known-benign source:
+// CleanupShepherdDMAClumps buddy-frees a dead shepherd's clump pages before
+// the deferred table teardown clears its PTEs — reports with
+// type=PageUserDMA + dead owner; recognize and discount in triage.
+
+// mapProbeInc records a new live user leaf PTE for pa.
+//
+//go:nosplit
+func mapProbeInc(pa uintptr) {
+	if !constants.Maz15Debug {
+		return
+	}
+	desc := GetPageDescriptor(pa)
+	if desc == nil {
+		return
+	}
+	pageDescLock.Lock()
+	desc.MapCount++
+	pageDescLock.Unlock()
+}
+
+// mapProbeDec records the death of a live user leaf PTE for pa.
+//
+//go:nosplit
+func mapProbeDec(pa uintptr) {
+	if !constants.Maz15Debug {
+		return
+	}
+	desc := GetPageDescriptor(pa)
+	if desc == nil {
+		return
+	}
+	pageDescLock.Lock()
+	desc.MapCount--
 	pageDescLock.Unlock()
 }
 

@@ -23,6 +23,7 @@ package kmem
 import (
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/proc"
+	"mazzy/shared/constants"
 	"unsafe"
 )
 
@@ -68,6 +69,13 @@ func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGrou
 			if desc := GetPageDescriptor(pa); desc != nil && (desc.Flags&PD_FILE_BACKED) != 0 {
 				continue // Handler still holds a live PTE; defer to handleFlushReply
 			}
+			// Clear the PTE BEFORE releasing (MAZ-15 probe): the old order
+			// left the dying shepherd's PTE live until Phase 2 destroyed the
+			// L3 table — a real freed-while-mapped window (benign only
+			// because the owner is dead), and a guaranteed false [MAP_LEAK].
+			// Unmapping first also keeps MapCount accounting exact: Phase 2's
+			// walk no longer sees this PTE, so no double-decrement.
+			UnmapUserPageWithL0(va, l0PA)
 			releasePageByPA(pa)
 		}
 	})
@@ -175,9 +183,21 @@ func releasePageByPA(pa uintptr) bool {
 		return false // Still referenced (shared IPC page, etc.)
 	}
 
+	// MAZ-15 probe: the page is about to return to the buddy pool. If any
+	// user leaf PTE still references it, whoever owns that PTE will scribble
+	// the page's next owner. Owner/type/refcount in the message name the
+	// guilty free path.
+	if constants.Maz15Debug && desc.MapCount != 0 {
+		klog.Criticalf("[MAP_LEAK]", " releasePageByPA pa=%x mapcount=%d owner=%d type=%d flags=%x\n",
+			uint64(pa), int(desc.MapCount), int(desc.Owner), int(desc.Type), uint64(desc.Flags))
+	}
+
 	// RefCount reached zero — capture type/order, clear the descriptor inline
 	// (NOT via ClearPageDescriptor, which takes pageDescLock itself — the
 	// spinlock is not reentrant), then release the lock before the buddy free.
+	// MapCount is deliberately NOT cleared: it is probe-maintained state, and
+	// zeroing it here would blind BuddyFreeTyped's catch-all assert; it is
+	// reset at realloc in SetPageDescriptor.
 	pageType := desc.Type
 	order := int(desc.Order)
 	desc.PA = 0
@@ -278,6 +298,12 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool, teardown bool) int
 							l3e := *(*uint64)(unsafe.Pointer(l3VA + uintptr(l)*8))
 							if pteIsValid(l3e) {
 								leafPA := pteExtractPA(l3e)
+								// Every valid leaf PTE dies here — the L3
+								// table itself is freed below — including
+								// the shared/pinned/FILE_BACKED entries the
+								// free logic skips. Account the PTE death
+								// unconditionally (MAZ-15 probe).
+								mapProbeDec(leafPA)
 								desc := GetPageDescriptor(leafPA)
 								if desc != nil && (desc.Flags&PD_FILE_BACKED) != 0 {
 									continue // Handler still holds PTE; defer to handleFlushReply

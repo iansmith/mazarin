@@ -205,6 +205,9 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 				return -19 // ENODEV
 			}
 
+			// [MAZ-179 tier-12 witness] gauge up for the whole batch's
+			// find→LookupPA→submit→Notify span (see block_submit.go note).
+			atomic.AddInt32(&proc.BlkSubmitWindow, 1)
 			for i := uint32(0); i < toSubmit; i++ {
 				idx := (sqHead + i) & iouring.SQMask
 				sqe := &ring.SQEntries[idx]
@@ -213,6 +216,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 					continue
 				}
 				if sqe.Opcode != iouring.IOUringOpRead && sqe.Opcode != iouring.IOUringOpWrite {
+					atomic.AddInt32(&proc.BlkSubmitWindow, -1)
 					return -22 // EINVAL — unknown opcode
 				}
 
@@ -220,6 +224,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 				bufVA := uintptr(sqe.Addr)
 				clump := shepherd.FindClumpByVA(bufVA)
 				if clump == nil {
+					atomic.AddInt32(&proc.BlkSubmitWindow, -1)
 					klog.Errf("[IOUring] EFAULT: VA not in clump\n")
 					return -14 // EFAULT
 				}
@@ -227,9 +232,11 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 				pa := clump.LookupPA(bufVA)
 				endPA := clump.LookupPA(bufVA + uintptr(totalBytes) - 1)
 				if pa == 0 || endPA == 0 {
+					atomic.AddInt32(&proc.BlkSubmitWindow, -1)
 					return -14 // EFAULT
 				}
 				atomic.AddInt32(&clump.InFlight, 1)
+				atomic.AddUint32(&proc.BlkSubmitTotal, 1)
 
 				// Cache management: writes need clean (push dirty lines to RAM),
 				// reads need pre-invalidate (discard dirty lines so DMA'd data
@@ -248,6 +255,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 				// Submit to VirtIO engine.
 				tag, err := dev.DoBlockIOSubmit(uint32(requestType), sqe.Off, nil, 0, pa, uint32(totalBytes))
 				if err != nil {
+					atomic.AddInt32(&proc.BlkSubmitWindow, -1)
 					klog.Errf("[IOUring] submit failed\n")
 					return -5 // EIO
 				}
@@ -286,6 +294,7 @@ func SyscallIOUringEnter(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 				asm.Dsb()
 				dev.Eng.Notify()
 			}
+			atomic.AddInt32(&proc.BlkSubmitWindow, -1)
 
 			// Advance SQ head.
 			atomic.StoreUint32(&ring.SQHead, sqHead+toSubmit)

@@ -38,6 +38,7 @@ import (
 	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
+	"mazzy/shared/constants"
 	"mazzy/shared/hid"
 	"mazzy/shared/iouring"
 	"sync/atomic"
@@ -80,8 +81,33 @@ func blockTopHalf() {
 				status = uint16(*(*uint8)(unsafe.Pointer(meta.sidecarStatusVA)))
 			}
 
-			// Invalidate cache on data page so userspace sees device-written data
-			if meta.dataKernelVA != 0 && meta.dataLen > 0 {
+			// [MAZ-179 probe — NOT FOR MERGE, v2] clump-head staleness check.
+			// v1 checked the INTERIOR data page's descriptor — but
+			// SetPageDescriptor stamps only the buddy-block HEAD, so v1
+			// false-tripped on ~88% of completions and its skipped
+			// invalidates CAUSED corruption (stale reads). v2: validate the
+			// clump head only (live clump = PageUserDMA + matching order);
+			// freed-and-reused blocks get restamped by the next allocator
+			// and become detectable. Non-clump completions are unchecked
+			// (coverage gap, no false positives).
+			atomic.AddUint32(&proc.BlkComplTotal, 1)
+			staleClump := false
+			if meta.clumpAddr != 0 {
+				c := (*proc.DMAClump)(unsafe.Pointer(meta.clumpAddr))
+				desc := kmem.GetPageDescriptor(c.StartPA)
+				if desc == nil || desc.Type != kmem.PageUserDMA || desc.Order != uint8(c.BuddyOrder) {
+					staleClump = true
+					if atomic.AddUint32(&proc.BlkStaleInval, 1) == 1 {
+						atomic.StoreUint64(&proc.BlkStaleFirstPA, uint64(c.StartPA))
+					}
+				}
+			}
+
+			// Invalidate cache on data page so userspace sees device-written data.
+			// On a stale clump the device has already DMA'd into reused frames —
+			// the additional invalidate would also discard the new owner's dirty
+			// lines, so skip it (the trip is the smoking gun either way).
+			if meta.dataKernelVA != 0 && meta.dataLen > 0 && !staleClump {
 				asm.InvalidateDCacheRange(meta.dataKernelVA, uintptr(meta.dataLen))
 			}
 
@@ -94,15 +120,25 @@ func blockTopHalf() {
 			// If the clump is pending release and InFlight hits 0,
 			// free the contiguous pages. This handles the case where
 			// munmap was called while I/O was in flight.
-			if meta.clumpAddr != 0 {
+			if meta.clumpAddr != 0 && !staleClump {
 				clump := (*proc.DMAClump)(unsafe.Pointer(meta.clumpAddr))
-				remaining := atomic.AddInt32(&clump.InFlight, -1)
-				if remaining == 0 && (clump.ShepherdDead || clump.PendingRelease) {
-					// Called via indirect pointer to break the nosplit chain.
-					// BuddyFreeTyped has large stack frames (buddyRemoveSpecific →
-					// buddyRemoveFree → duffzero) that exceed the 792-byte limit
-					// when called from the ExceptionVectorTable chain.
-					buddyFreeHook(clump.StartPA, clump.BuddyOrder, kmem.PageUserDMA)
+				// [MAZ-179 probe] the slot RemoveClump swap-compacts can
+				// re-alias: the data page must lie inside the clump this
+				// pointer NOW describes, else skip the InFlight/free ops.
+				clumpBase := clump.StartPA + constants.KernelVAOffset
+				clumpLen := uintptr(4096) << uint(clump.BuddyOrder)
+				if meta.dataKernelVA != 0 &&
+					(meta.dataKernelVA < clumpBase || meta.dataKernelVA >= clumpBase+clumpLen) {
+					atomic.AddUint32(&proc.BlkClumpAlias, 1)
+				} else {
+					remaining := atomic.AddInt32(&clump.InFlight, -1)
+					if remaining == 0 && (clump.ShepherdDead || clump.PendingRelease) {
+						// Called via indirect pointer to break the nosplit chain.
+						// BuddyFreeTyped has large stack frames (buddyRemoveSpecific →
+						// buddyRemoveFree → duffzero) that exceed the 792-byte limit
+						// when called from the ExceptionVectorTable chain.
+						buddyFreeHook(clump.StartPA, clump.BuddyOrder, kmem.PageUserDMA)
+					}
 				}
 			}
 
@@ -110,7 +146,7 @@ func blockTopHalf() {
 
 			// Write completion: io_uring CQ if active and not full, else legacy path.
 			cqWritten := false
-			if ioRing != nil {
+			if ioRing != nil && cqRingLive(ioRing) { // [MAZ-179 probe]
 				cqTail := ioRing.CQTail
 				cqHead := atomic.LoadUint32(&ioRing.CQHead)
 				if cqTail-cqHead < iouring.CQCapacity {
