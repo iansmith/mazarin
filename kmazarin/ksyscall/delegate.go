@@ -1344,15 +1344,6 @@ func RecordDelegateBlock(sysID uint16)
 //go:linkname readThreadRAX main.ReadThreadRAX
 func readThreadRAX(pid int16, tid int32) uint64
 
-// CleanupDelegateForDeadShepherd reclaims resources for a shepherd that is being terminated.
-// Handles both cases:
-//   - Dying shepherd was a CALLER: reclaim data pages from in-flight and queued delegations.
-//   - Dying shepherd was a HANDLER: unregister SysIDs, clear recv state.
-//
-// Called from terminateShepherdImpl with schedulerLock held and IRQs disabled.
-// Returns the number of in-flight delegations where the dying shepherd was the
-// HANDLER — the caller (terminateShepherdImpl) must wake those blocked caller
-// threads. The TIDs are written to DelegateOrphanedCallerTIDs.
 // RetireDelegateSlotForThread marks the in-flight delegate call owned by a
 // dying thread (keyed by its TID) as CallerDead — the single-thread analogue of
 // CleanupDelegateForDeadShepherd Part 1. It MUST run before the thread's TID is
@@ -1380,6 +1371,15 @@ func RetireDelegateSlotForThread(tid int16) {
 	}
 }
 
+// CleanupDelegateForDeadShepherd reclaims resources for a shepherd that is being terminated.
+// Handles both cases:
+//   - Dying shepherd was a CALLER: reclaim data pages from in-flight and queued delegations.
+//   - Dying shepherd was a HANDLER: unregister SysIDs, clear recv state.
+//
+// Called from terminateShepherdImpl with schedulerLock held and IRQs disabled.
+// Returns the number of in-flight delegations where the dying shepherd was the
+// HANDLER — the caller (terminateShepherdImpl) must wake those blocked caller
+// threads. The TIDs are written to DelegateOrphanedCallerTIDs.
 func CleanupDelegateForDeadShepherd(pid int16) int {
 	orphanCount := 0
 
