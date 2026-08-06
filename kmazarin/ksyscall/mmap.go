@@ -99,7 +99,10 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 			// Unmap existing PTEs so demand-faulting the range yields fresh zeroed pages.
 			// Without this, stale physical pages (e.g. from a previous GC arena) can
 			// corrupt new allocations at the same VA.
-			unmapFixedRange(addr, alignedLength)
+			resident := unmapFixedRange(addr, alignedLength)
+			if resident > 0 {
+				maz179MFixWitness(addr, alignedLength, resident)
+			}
 			// Remove any existing spans that overlap, then add new span
 			removeSpan(addr, alignedLength)
 			if !addSpan(addr, alignedLength) {
@@ -217,26 +220,59 @@ func scanForStalePTEs(va, length, fd uint64) {
 // stored L0PA rather than the hardware TTBR0 register.
 //
 //go:noinline
-func unmapFixedRange(addr, length uint64) {
+func unmapFixedRange(addr, length uint64) int {
 	shepherd := proc.CurrentShepherd()
 	if shepherd == nil {
-		return
+		return 0
 	}
 	l0PA := shepherd.PageTableL0PA
 	if l0PA == 0 {
-		return
+		return 0
 	}
 	pageSize := uint64(4096)
 	alignedAddr := addr & ^(pageSize - 1)
 	alignedEnd := (addr + length + pageSize - 1) & ^(pageSize - 1)
+	resident := 0
 	savedDAIF := saveAndDisableIRQs()
 	for va := alignedAddr; va < alignedEnd; va += pageSize {
 		pa := kmem.UnmapUserPageWithL0(uintptr(va), l0PA)
 		if pa != 0 {
+			resident++
 			kmem.ReleasePageByPA(pa)
 		}
 	}
 	restoreIRQs(savedDAIF)
+	return resident
+}
+
+// maz179MFixWitness records a MAP_FIXED grant that destroyed resident pages.
+// [MAZ-179 tier-13c probe] MAP_FIXED is the one overlap channel every prior
+// witness exempted, and unmapFixedRange DESTROYS resident pages (refault =
+// fresh zeros — the dumps' all-zero-bitmap signature). Go heap-arena sysMaps
+// live in [0x2040_0000_0000, 0x2080_0000_0000); a resident-destroying
+// MAP_FIXED outside that band is replacing another subsystem's live memory.
+// Separated to avoid nosplit growth (klog frame), like its neighbor below.
+//
+//go:noinline
+func maz179MFixWitness(addr, alignedLength uint64, resident int) {
+	atomic.AddUint32(&proc.MFixResidentTrips, 1)
+	atomic.AddUint32(&proc.MFixResidentPages, uint32(resident))
+	if addr < 0x204000000000 || addr >= 0x208000000000 {
+		if atomic.AddUint32(&proc.MFixOffBandResident, 1) <= 8 {
+			sid := int32(-1)
+			if p := proc.CurrentShepherd(); p != nil {
+				sid = int32(p.PID)
+			}
+			// Rare by construction (≤8 prints) — safe to emit.
+			klog.Criticalf("[MFIX_OFFBAND] ",
+				"[MFIX_OFFBAND] sid=%d va=0x%x len=0x%x resident=%d\n",
+				sid, addr, alignedLength, uint64(resident))
+		}
+	}
+	if atomic.CompareAndSwapUint64(&proc.MFixFirstVA, 0, addr) {
+		atomic.StoreUint64(&proc.MFixFirstLen, alignedLength)
+		atomic.StoreUint32(&proc.MFixFirstResident, uint32(resident))
+	}
 }
 
 // checkMapFixedFileOverlap checks if a MAP_FIXED call would overlap with any

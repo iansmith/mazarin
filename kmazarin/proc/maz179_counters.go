@@ -151,3 +151,22 @@ var (
 	GrantFixedMaps       uint32 // MAP_FIXED user grants (overlap intended; census)
 	GrantHintFallbacks   uint32 // arena hints refused → bump fallback (pressure gauge)
 )
+
+// [MAZ-179 probe — NOT FOR MERGE, tier 13c] MAP_FIXED resident-page
+// destruction witness. MAP_FIXED is exempted by every other overlap
+// tripwire (removeSpan runs first; scanForStalePTEs is file-backed-only),
+// yet unmapFixedRange destroys resident pages — the next fault serves
+// fresh zeros, which IS the dump signature (all-zero gcmarkBits, bolt
+// page self-id 0, "plausible-value" refills after the zeroing). Go heap
+// arena sysMaps live in [0x2040_0000_0000, 0x2080_0000_0000); a resident-
+// destroying MAP_FIXED OUTSIDE that band ([MFIX_OFFBAND] serial marker)
+// is replacing another subsystem's live memory (persistentalloc / gcbits
+// band 0x2000xx) — the sharpened form of the arena-misgrant hypothesis.
+var (
+	MFixResidentTrips   uint32 // MAP_FIXED grants that destroyed resident pages
+	MFixResidentPages   uint32 // total resident pages destroyed across those
+	MFixOffBandResident uint32 // ...where the range lies outside the heap-arena band
+	MFixFirstVA         uint64 // VA of the first resident-destroying MAP_FIXED
+	MFixFirstLen        uint64 // length of that grant
+	MFixFirstResident   uint32 // resident pages it destroyed
+)

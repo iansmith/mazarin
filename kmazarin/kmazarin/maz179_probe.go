@@ -44,7 +44,7 @@ func maz179ProbeHeartbeatLine(tag string, sid int64) {
 		up = (kirq.ReadCounterValue() - kernelBootTick) / freq
 	}
 	klog.Criticalf("[MAZ179HB] ",
-		"[MAZ179HB] %s up=%ds sid=%d blk: compl=%d submits=%d dma: frees=%d blkhits=%d nethits=%d race=%d deaths=%d cq: stale=%d gid: chk=%d mis=%d unr=%d first_tid=%d g=0x%x m=0x%x want=0x%x grant: ovl=%d first_sid=%d va=0x%x len=0x%x fixed=%d hintfb=%d\n",
+		"[MAZ179HB] %s up=%ds sid=%d blk: compl=%d submits=%d dma: frees=%d blkhits=%d nethits=%d race=%d deaths=%d cq: stale=%d gid: chk=%d mis=%d unr=%d first_tid=%d g=0x%x m=0x%x want=0x%x grant: ovl=%d first_sid=%d va=0x%x len=0x%x fixed=%d hintfb=%d mfix: res=%d pages=%d offband=%d first_va=0x%x first_res=%d\n",
 		tag, up, sid,
 		atomic.LoadUint32(&proc.BlkComplTotal),
 		atomic.LoadUint32(&proc.BlkSubmitTotal),
@@ -66,7 +66,12 @@ func maz179ProbeHeartbeatLine(tag string, sid int64) {
 		atomic.LoadUint64(&proc.GrantOverlapFirstVA),
 		atomic.LoadUint64(&proc.GrantOverlapFirstLen),
 		atomic.LoadUint32(&proc.GrantFixedMaps),
-		atomic.LoadUint32(&proc.GrantHintFallbacks))
+		atomic.LoadUint32(&proc.GrantHintFallbacks),
+		atomic.LoadUint32(&proc.MFixResidentTrips),
+		atomic.LoadUint32(&proc.MFixResidentPages),
+		atomic.LoadUint32(&proc.MFixOffBandResident),
+		atomic.LoadUint64(&proc.MFixFirstVA),
+		atomic.LoadUint32(&proc.MFixFirstResident))
 }
 
 // maz179ProbeHeartbeat is called every KernelIdleLoop iteration; rate-limits
@@ -78,7 +83,7 @@ func maz179ProbeHeartbeat() {
 		return
 	}
 	now := kirq.ReadCounterValue()
-	if maz179LastBeatTick != 0 && now-maz179LastBeatTick < 20*freq {
+	if maz179LastBeatTick != 0 && now-maz179LastBeatTick < 10*freq {
 		return
 	}
 	maz179LastBeatTick = now

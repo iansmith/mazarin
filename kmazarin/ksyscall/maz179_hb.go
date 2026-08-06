@@ -31,14 +31,14 @@ func maz179SyscallHeartbeat() {
 	}
 	now := kirq.ReadCounterValue()
 	last := atomic.LoadUint64(&maz179HBLastTick)
-	if last != 0 && now-last < 20*freq {
+	if last != 0 && now-last < 10*freq {
 		return
 	}
 	if !atomic.CompareAndSwapUint64(&maz179HBLastTick, last, now) {
 		return // another thread claimed this interval
 	}
 	klog.Criticalf("[MAZ179HB] ",
-		"[MAZ179HB] svc t=%ds blk: compl=%d submits=%d dma: frees=%d blkhits=%d nethits=%d race=%d deaths=%d gid: chk=%d mis=%d unr=%d first_tid=%d g=0x%x m=0x%x want=0x%x grant: ovl=%d first_sid=%d va=0x%x len=0x%x fixed=%d hintfb=%d\n",
+		"[MAZ179HB] svc t=%ds blk: compl=%d submits=%d dma: frees=%d blkhits=%d nethits=%d race=%d deaths=%d gid: chk=%d mis=%d unr=%d first_tid=%d g=0x%x m=0x%x want=0x%x grant: ovl=%d first_sid=%d va=0x%x len=0x%x fixed=%d hintfb=%d mfix: res=%d pages=%d offband=%d first_va=0x%x first_res=%d\n",
 		now/freq,
 		atomic.LoadUint32(&proc.BlkComplTotal),
 		atomic.LoadUint32(&proc.BlkSubmitTotal),
@@ -59,5 +59,10 @@ func maz179SyscallHeartbeat() {
 		atomic.LoadUint64(&proc.GrantOverlapFirstVA),
 		atomic.LoadUint64(&proc.GrantOverlapFirstLen),
 		atomic.LoadUint32(&proc.GrantFixedMaps),
-		atomic.LoadUint32(&proc.GrantHintFallbacks))
+		atomic.LoadUint32(&proc.GrantHintFallbacks),
+		atomic.LoadUint32(&proc.MFixResidentTrips),
+		atomic.LoadUint32(&proc.MFixResidentPages),
+		atomic.LoadUint32(&proc.MFixOffBandResident),
+		atomic.LoadUint64(&proc.MFixFirstVA),
+		atomic.LoadUint32(&proc.MFixFirstResident))
 }
