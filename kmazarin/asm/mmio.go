@@ -73,11 +73,23 @@ func DmaRmb()
 // CleanDCacheRange is implemented in mmio_arm64.s
 // Clean (write back) data cache for address range - required before DMA read
 //
+// Operates on every 64-byte cache line intersecting [start, start+size); the
+// range need not be line-aligned. No-op on x86_64 (cache-coherent DMA).
+//
 //go:nosplit
 func CleanDCacheRange(start uintptr, size uintptr)
 
 // InvalidateDCacheRange is implemented in mmio_arm64.s
 // Invalidate (discard) data cache for address range - required after DMA write
+//
+// Operates on every 64-byte cache line intersecting [start, start+size); the
+// range need not be line-aligned. No-op on x86_64 (cache-coherent DMA).
+//
+// CALLER CONTRACT: invalidation discards WHOLE lines, so a range whose start
+// or end is not 64-aligned also discards whatever else shares those head/tail
+// lines. Any bytes sharing a line with this range must be device-written (or
+// dead) — never CPU-written data the CPU still needs, which would silently
+// revert to its last written-back value. Keep DMA buffers line-isolated.
 //
 //go:nosplit
 func InvalidateDCacheRange(start uintptr, size uintptr)
