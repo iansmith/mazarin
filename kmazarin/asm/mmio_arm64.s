@@ -100,7 +100,14 @@ TEXT ·DmaRmb(SB), NOSPLIT, $0-0
 TEXT ·CleanDCacheRange(SB), NOSPLIT, $0-16
 	MOVD	start+0(FP), R0		// Start address
 	MOVD	size+8(FP), R1		// Size in bytes
-	ADD	R0, R1, R1		// R1 = end address
+	ADD	R0, R1, R1		// R1 = end address (computed BEFORE aligning start)
+	// Align the start DOWN to its cache line. DC operates on whole lines, so
+	// a loop that begins at an unaligned start and strides 64 lands past the
+	// final line's base and exits early — the last line of the range is never
+	// cleaned. A clean that misses its tail leaves the device reading stale
+	// descriptor/data bytes. Aligning down makes every line spanning
+	// [start, start+size) get exactly one DC op.
+	AND	$~63, R0		// R0 = line-aligned start
 	MOVD	$64, R2			// Cache line size (64 bytes on most ARM64)
 
 loop_clean:
@@ -117,7 +124,12 @@ loop_clean:
 TEXT ·InvalidateDCacheRange(SB), NOSPLIT, $0-16
 	MOVD	start+0(FP), R0		// Start address
 	MOVD	size+8(FP), R1		// Size in bytes
-	ADD	R0, R1, R1		// R1 = end address
+	ADD	R0, R1, R1		// R1 = end address (computed BEFORE aligning start)
+	// Align the start DOWN — same missed-tail bug as CleanDCacheRange above.
+	// This only guarantees the REQUESTED range is covered; it does not narrow
+	// the whole-line discard. See the caller contract on the Go declaration
+	// in mmio.go.
+	AND	$~63, R0		// R0 = line-aligned start
 	MOVD	$64, R2			// Cache line size
 
 loop_inval:
