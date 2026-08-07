@@ -1,6 +1,21 @@
 package proc
 
-import "mazzy/kmazarin/ksync"
+import (
+	"sync/atomic"
+
+	"mazzy/kmazarin/ksync"
+)
+
+// spanRecordLoss records a silent tracking loss. [MAZ-183 detection probe —
+// NOT FOR MERGE] Counters live in maz179_counters.go (same package).
+//
+//go:nosplit
+func spanRecordLoss(counter *uint64, start, length uint64) {
+	if atomic.AddUint64(counter, 1) == 1 && atomic.LoadUint64(&SpanLossFirstVA) == 0 {
+		atomic.StoreUint64(&SpanLossFirstVA, start)
+		atomic.StoreUint64(&SpanLossFirstLen, length)
+	}
+}
 
 // ============================================================================
 // Span - represents a single VA reservation
@@ -84,6 +99,7 @@ func (g *LockedSpanGroup) TryReserve(start, length uint64) uint64 {
 		}
 	}
 
+	spanRecordLoss(&SpanReserveFull, start, length)
 	g.releaseLock()
 	return 0
 }
@@ -104,16 +120,27 @@ func (g *LockedSpanGroup) Add(start, length uint64) bool {
 	rightIdx := -1
 
 	// Find adjacent spans to coalesce with.
+	// [MAZ-183 probe] occupancy is counted in this existing scan (free).
+	occ := uint64(0)
 	for i := 0; i < SpansPerProcess; i++ {
 		if g.spans[i].inUse == 0 {
 			continue
 		}
+		occ++
 		spanEnd := g.spans[i].start + g.spans[i].length
 		if spanEnd == start {
 			leftIdx = i
 		}
 		if g.spans[i].start == end {
 			rightIdx = i
+		}
+	}
+
+	// [MAZ-183 probe] publish the occupancy high-water mark (max 1024).
+	for {
+		hw := atomic.LoadUint64(&SpanOccHigh)
+		if occ <= hw || atomic.CompareAndSwapUint64(&SpanOccHigh, hw, occ) {
+			break
 		}
 	}
 
@@ -148,6 +175,8 @@ func (g *LockedSpanGroup) Add(start, length uint64) bool {
 		}
 	}
 
+	// [MAZ-183 probe] Table full: this range is live but now UNTRACKED.
+	spanRecordLoss(&SpanAddFull, start, length)
 	g.releaseLock()
 	return false
 }
@@ -189,11 +218,17 @@ func (g *LockedSpanGroup) Remove(start, length uint64) {
 
 		// Split: munmap in the middle of a span
 		g.spans[i].length = start - spanStart
+		placed := false
 		for j := 0; j < SpansPerProcess; j++ {
 			if g.spans[j].inUse == 0 {
 				g.spans[j].set(end, spanEnd-end)
+				placed = true
 				break
 			}
+		}
+		if !placed {
+			// [MAZ-183 probe] Tail remnant dropped — silently untracked.
+			spanRecordLoss(&SpanSplitDrop, end, spanEnd-end)
 		}
 	}
 

@@ -2,20 +2,32 @@
 
 package main
 
-// badResumeRIP preserves the prior RIP==0 guard on ARM64.
+// badResumeRIP preserves the prior RIP==0 guard on ARM64, plus the
+// [MAZ-179 tier-17] mislabeled-continuation check.
 //
-// ARM64 keeps g in a single home (X28), saved and restored verbatim in the trap
-// frame, so it has no dual-home save gap and has never exhibited the MAZ-136
-// kernel-mode resume corruption. The stronger kernel-.text bound lives in the
-// amd64 build (resume_guard_amd64.go); here the original cheap check is enough.
+// (The old comment here claimed ARM64 "has never exhibited the MAZ-136
+// kernel-mode resume corruption" — refuted 2026-08-07: tier-16 E:00 dumps
+// proved a resumed context pairing an EL1t SPSR with a PC inside the
+// exception-handler blob. Handler code only executes at EL1h, so that pair
+// is poisoned by definition; halting here stops the ERET before it fires.)
 //
 //go:nosplit
 func badResumeRIP(next *Thread) bool {
-	return next.Context.GetPC() == 0
+	if next.Context.GetPC() == 0 {
+		return true
+	}
+	if maz179CtxInVT(next.Context.ELR) && next.Context.SPSR&0xF != 5 {
+		maz179CtxCheck(next.Context.ELR, next.Context.SPSR, 3, int64(next.TID))
+		return true
+	}
+	return false
 }
 
-// initResumeGuardBounds is a no-op on ARM64: the asm-level IRETQ guards that
-// consume the published bounds are amd64-only (see resume_guard_amd64.go).
+// initResumeGuardBounds publishes the exception-vector blob bounds for the
+// tier-17 witness (the asm-level IRETQ guards remain amd64-only).
 //
 //go:nosplit
-func initResumeGuardBounds() {}
+func initResumeGuardBounds() {
+	lo, hi := maz179VTBounds()
+	maz179VTLo, maz179VTHi = uint64(lo), uint64(hi)
+}

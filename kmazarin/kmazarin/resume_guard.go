@@ -13,8 +13,9 @@ import "mazzy/kmazarin/klog"
 //
 //go:noinline
 func badResumeHalt(next *Thread, site string) {
-	klog.Criticalf("[BUG] ", "BAD RESUME RIP=%#x TID=%d SP=%#x g=%#x (%s)\n",
-		next.Context.GetPC(), next.TID, next.Context.GetSP(), next.Context.GetGRegister(), site)
+	klog.Criticalf("[BUG] ", "BAD RESUME RIP=%#x TID=%d SP=%#x g=%#x PS=%#x (%s)\n",
+		next.Context.GetPC(), next.TID, next.Context.GetSP(), next.Context.GetGRegister(),
+		next.Context.GetProcessorState(), site)
 	for {
 		WaitForInterrupt()
 	}

@@ -382,6 +382,9 @@ el1_skip_clear_clone_setup:
 	// Store return value back to X0 in exception frame
 	MOVD	R0, EXC_FRAME_X0(RSP)
 
+	// [MAZ-179 tier-20] IRQ-leak witness at dispatch return
+	BL	maz179DispatchLeakCheck<>(SB)
+
 	// Check if rt_sigreturn was called (SigreturnPending flag).
 	// If set, the thread's Context has been restored from the signal frame
 	// and we need to load it into the exception frame for ERET.
@@ -430,6 +433,8 @@ copy_context_to_frame:
 	// here (R27 = the subroutine's ADRP scratch) — the return path reloads all GPRs
 	// from the frame before ERET.
 	BL	mlockRearmFromFrame<>(SB)
+	// [MAZ-179 tier-18] waist guard: frame now holds the restored context
+	BL	maz179FrameGuard<>(SB)
 
 	B	svc_return
 
@@ -714,6 +719,114 @@ print_fault_far_char:
 	LSL	$4, R14
 	SUB	$1, R15
 	CBNZ	R15, print_fault_far_loop
+
+	// [MAZ-179 tier-16] " SPSR=0x" + frame SPSR — the faulting context's full
+	// PSTATE. Bit 0 of M[3:0] answers the SPSel question directly: the E:00
+	// signature is `msr sp_el0` UNDEF, which only traps when SPSel=0 (EL1t).
+	// DAIF and M here tell us what mode the handler tail was really in.
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'S', R11; MOVB	R11, (R12)
+	MOVD	$'P', R11; MOVB	R11, (R12)
+	MOVD	$'S', R11; MOVB	R11, (R12)
+	MOVD	$'R', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+	MOVD	(EXC_FRAME_ELR_SPSR+8)(RSP), R14
+	MOVD	$16, R15
+print_fault_spsr_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_spsr_digit
+	ADD	$('A'-10), R11
+	B	print_fault_spsr_char
+print_fault_spsr_digit:
+	ADD	$'0', R11
+print_fault_spsr_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_spsr_loop
+
+	// [MAZ-179 tier-16] " SP1=0x" + current RSP — the nested handler's own
+	// stack pointer (SP_EL1). Locates the outer exception frame and shows
+	// whether SP_EL1 was still inside the exception stack when the fault hit.
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'S', R11; MOVB	R11, (R12)
+	MOVD	$'P', R11; MOVB	R11, (R12)
+	MOVD	$'1', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+	MOVD	RSP, R14
+	MOVD	$16, R15
+print_fault_sp1_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_sp1_digit
+	ADD	$('A'-10), R11
+	B	print_fault_sp1_char
+print_fault_sp1_digit:
+	ADD	$'0', R11
+print_fault_sp1_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_sp1_loop
+
+	// [MAZ-179 tier-16] " SVD=0x" + svcDepth — nonzero means the faulting
+	// context was (still) accounted inside an SVC handler, which gates timer
+	// preemption. The suspect race is preemption near the el0_return window.
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'S', R11; MOVB	R11, (R12)
+	MOVD	$'V', R11; MOVB	R11, (R12)
+	MOVD	$'D', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+	MOVW	·svcDepth(SB), R14
+	MOVD	$16, R15
+print_fault_svd_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_svd_digit
+	ADD	$('A'-10), R11
+	B	print_fault_svd_char
+print_fault_svd_digit:
+	ADD	$'0', R11
+print_fault_svd_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_svd_loop
+
+	// [MAZ-179 tier-16] " CT=0x" + CurrentThread pointer — names which
+	// thread the kernel believed was current at the fault.
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'C', R11; MOVB	R11, (R12)
+	MOVD	$'T', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+	MOVD	main·CurrentThread(SB), R14
+	MOVD	$16, R15
+print_fault_ct_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_ct_digit
+	ADD	$('A'-10), R11
+	B	print_fault_ct_char
+print_fault_ct_digit:
+	ADD	$'0', R11
+print_fault_ct_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_ct_loop
 
 	// Print newline, then try to dump stack words from SP_EL0
 	MOVD	$'\r', R11; MOVB	R11, (R12)
@@ -1342,6 +1455,9 @@ sync_keep_daif:
 	WORD	$0xD518402A
 	// MSR SPSR_EL1, X11 - use WORD to avoid assembler issues
 	WORD	$0xD518400B
+	// [MAZ-179 tier-19] pre-ERET witness (IRQs masked above; R0-R3 scratch)
+	MOVD	$'S', R0
+	BL	maz179EretGuard<>(SB)
 
 	// DEBUG: Check if ELR_EL1 is 0 before ERET (would crash at PC=0)
 	// Done here BEFORE register restore so we don't corrupt any GPRs.
@@ -1660,6 +1776,8 @@ timer_switch_ok:
 
 	// MAZ-147: re-arm g0's checkpointed m.locks if this load resumes g0 (shared path).
 	BL	mlockRearmFromFrame<>(SB)
+	// [MAZ-179 tier-18] waist guard: frame now holds the restored context
+	BL	maz179FrameGuard<>(SB)
 
 	// Skip async preemption - we already switched threads
 	B	timer_no_preempt
@@ -1880,6 +1998,10 @@ irq_elr_ok:
 	MSR	$2, DAIFSet  // disable IRQs
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
+
+	// [MAZ-179 tier-19] pre-ERET witness (IRQs masked above; R0-R3 scratch)
+	MOVD	$'I', R0
+	BL	maz179EretGuard<>(SB)
 
 	// DEBUG: Check if ELR_EL1 is 0 before ERET (would crash at PC=0)
 	// Done here BEFORE register restore so we don't corrupt any GPRs.
@@ -2119,6 +2241,9 @@ el0_skip_clear_clone_setup:
 	// Store return value back to X0 in exception frame
 	MOVD	R0, EXC_FRAME_X0(RSP)
 
+	// [MAZ-179 tier-20] IRQ-leak witness at dispatch return
+	BL	maz179DispatchLeakCheck<>(SB)
+
 	// Check if rt_sigreturn was called (SigreturnPending flag).
 	// If set, the thread's Context has been restored from the signal frame
 	// and we need to load it into the exception frame for ERET.
@@ -2164,6 +2289,8 @@ el0_copy_context_to_frame:
 	// MAZ-147: re-arm g0's checkpointed m.locks if this EL0-SVC switch resumes g0
 	// (shared path; harmless no-op when the switched-to thread isn't g0).
 	BL	mlockRearmFromFrame<>(SB)
+	// [MAZ-179 tier-18] waist guard: frame now holds the restored context
+	BL	maz179FrameGuard<>(SB)
 
 	B	el0_return
 
@@ -2266,6 +2393,9 @@ skip_g_switch_el0_nsc:
 	// Load context and ERET to next thread
 	MOVD	R0, R20  // R20 = context pointer
 
+	// [MAZ-179 tier-18] waist guard: validate the context before loading it
+	BL	maz179CtxGuard<>(SB)
+
 	// FRAME-RESTORE-BEGIN ctx-to-regs-eret
 	// Load ELR_EL1
 	MOVD	ThreadContext_ELR(R20), R0
@@ -2274,6 +2404,10 @@ skip_g_switch_el0_nsc:
 	// Load SPSR_EL1
 	MOVD	ThreadContext_SPSR(R20), R0
 	MSR	R0, SPSR_EL1
+
+	// [MAZ-179 tier-19] pre-ERET witness (R0-R3 scratch; R20 preserved)
+	MOVD	$'C', R0
+	BL	maz179EretGuard<>(SB)
 
 	// Switch to EL1h mode to safely set SP_EL0
 	MOVD	$1, R0
@@ -2579,6 +2713,10 @@ el0_elr_ok:
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
 
+	// [MAZ-179 tier-19] pre-ERET witness (IRQs masked above; R0-R3 scratch)
+	MOVD	$'E', R0
+	BL	maz179EretGuard<>(SB)
+
 	// Clear svcDepth HERE — as late as possible before ERET.
 	// R10/R11 are dead (will be overwritten by frame restore below).
 	// svcDepth stayed 1 through the entire el0_return path until now,
@@ -2756,4 +2894,329 @@ dblflt_hex_char:
 	LSL	$4, R14
 	SUB	$1, R15
 	CBNZ	R15, dblflt_hex_loop
+	RET
+
+// ============================================================================
+// [MAZ-179 tier-18 — NOT FOR MERGE] Poisoned-continuation waist guards.
+//
+// Tier-17 proved the poisoned (handler-ELR, non-EL1h SPSR) pair never
+// passes the producer-side guards (SaveContextFromFrame witness + the four
+// badResumeRIP sites all stayed silent while E:00 kept firing). So the
+// check moves to the CONSUMPTION waist: every path that turns a
+// ThreadContext back into machine state. maz179FrameGuard runs after each
+// CTX_RESTORE_TO_FRAME (frame slots hold the context now); maz179CtxGuard
+// runs at ctx-to-regs-eret entry (R20 = context). On a trip: record to the
+// proc counters, print "!FG<site> ELR SPSR", and HANG — the poisoned ERET
+// never executes. Site '9' = frame waist, '7' = ctx-to-regs-eret.
+//
+// OK-path register use is limited to R1-R3 (the registers
+// mlockRearmFromFrame already documents as dead at these call sites);
+// the trip path clobbers freely because it never returns.
+// ============================================================================
+
+TEXT maz179FrameGuard<>(SB), NOSPLIT|NOFRAME, $0-0
+	MOVD	·maz179VTLo(SB), R1
+	CBZ	R1, fg_ok			// bounds not yet published
+	MOVD	(EXC_FRAME_ELR_SPSR)(RSP), R2	// frame ELR
+	CMP	R1, R2				// NOTE swapped CMP: computes R2 - R1
+	BLO	fg_ok				// ELR < lo
+	MOVD	·maz179VTHi(SB), R1
+	CMP	R1, R2
+	BHS	fg_ok				// ELR >= hi
+	MOVD	(EXC_FRAME_ELR_SPSR+8)(RSP), R3	// frame SPSR
+	AND	$0xF, R3, R1
+	CMP	$5, R1
+	BEQ	fg_ok				// M[3:0] == EL1h — legal
+	MOVD	$'9', R0
+	B	maz179GuardTrip<>(SB)
+fg_ok:
+	RET
+
+TEXT maz179CtxGuard<>(SB), NOSPLIT|NOFRAME, $0-0
+	MOVD	·maz179VTLo(SB), R1
+	CBZ	R1, cg_ok
+	MOVD	ThreadContext_ELR(R20), R2
+	CMP	R1, R2
+	BLO	cg_ok
+	MOVD	·maz179VTHi(SB), R1
+	CMP	R1, R2
+	BHS	cg_ok
+	MOVD	ThreadContext_SPSR(R20), R3
+	AND	$0xF, R3, R1
+	CMP	$5, R1
+	BEQ	cg_ok
+	MOVD	$'7', R0
+	B	maz179GuardTrip<>(SB)
+cg_ok:
+	RET
+
+// maz179GuardTrip: R0 = site char, R2 = ELR, R3 = SPSR. Records, prints,
+// hangs. Direct UART writes follow this file's fatal-dump convention —
+// the machine is provably about to execute a poisoned ERET and never
+// returns from here.
+TEXT maz179GuardTrip<>(SB), NOSPLIT|NOFRAME, $0-0
+	MOVD	R2, mazzy∕kmazarin∕proc·CtxBadFirstELR(SB)
+	MOVD	R3, mazzy∕kmazarin∕proc·CtxBadFirstSPSR(SB)
+	SUB	$'0', R0, R1
+	MOVW	R1, mazzy∕kmazarin∕proc·CtxBadFirstSite(SB)
+	MOVD	mazzy∕kmazarin∕proc·CtxBadResumes(SB), R1
+	ADD	$1, R1
+	MOVD	R1, mazzy∕kmazarin∕proc·CtxBadResumes(SB)
+	MOVD	$UART_BASE, R12
+	MOVD	$'!', R11; MOVB	R11, (R12)
+	MOVD	$'F', R11; MOVB	R11, (R12)
+	MOVD	$'G', R11; MOVB	R11, (R12)
+	MOVB	R0, (R12)
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	R2, R14
+	MOVD	$16, R15
+mgt_elr:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	mgt_elr_d
+	ADD	$('A'-10), R11
+	B	mgt_elr_c
+mgt_elr_d:
+	ADD	$'0', R11
+mgt_elr_c:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, mgt_elr
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	R3, R14
+	MOVD	$16, R15
+mgt_spsr:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	mgt_spsr_d
+	ADD	$('A'-10), R11
+	B	mgt_spsr_c
+mgt_spsr_d:
+	ADD	$'0', R11
+mgt_spsr_c:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, mgt_spsr
+	MOVD	$'\r', R11; MOVB	R11, (R12)
+	MOVD	$'\n', R11; MOVB	R11, (R12)
+mgt_hang:
+	B	mgt_hang
+
+// [MAZ-179 tier-19 — NOT FOR MERGE] Pre-ERET witness. Runs after each
+// return path's MSR ELR/SPSR (R0-R3 + LR are scratch there: the GPR
+// restore from frame/context happens after this point). No legitimate
+// ERET ever targets the handler blob — returns go to user code or kernel
+// Go code — so ELR_EL1 inside [maz179VTLo, maz179VTHi) at ERET time is
+// poisoned no matter which mode or producer made it. Site char arrives
+// in R0: 'S'=sync_return 'E'=el0_return 'I'=irq_return 'C'=ctx-to-regs.
+TEXT maz179EretGuard<>(SB), NOSPLIT|NOFRAME, $0-0
+	MOVD	·maz179VTLo(SB), R1
+	CBZ	R1, eg_ok
+	MRS	ELR_EL1, R2
+	CMP	R1, R2
+	BLO	eg_ok
+	MOVD	·maz179VTHi(SB), R1
+	CMP	R1, R2
+	BHS	eg_ok
+	MRS	SPSR_EL1, R3
+	// [tier-20] blob ELR + EL1h = legit nested resume (IRQ/fault over an
+	// IRQs-enabled handler section): count + first-record, let it proceed
+	// so the downstream fabrication reaches a poisoned-shape guard.
+	AND	$0xF, R3, R1
+	CMP	$5, R1
+	BNE	eg_poisoned
+	MOVD	mazzy∕kmazarin∕proc·EretNestedResumes(SB), R1
+	ADD	$1, R1
+	MOVD	R1, mazzy∕kmazarin∕proc·EretNestedResumes(SB)
+	MOVW	mazzy∕kmazarin∕proc·EretNestedFirstSite(SB), R1
+	CBNZ	R1, eg_ok
+	MOVW	R0, mazzy∕kmazarin∕proc·EretNestedFirstSite(SB)
+	MOVD	R2, mazzy∕kmazarin∕proc·EretNestedFirstELR(SB)
+	B	eg_ok
+eg_poisoned:
+	B	maz179GuardTrip<>(SB)
+eg_ok:
+	RET
+
+// [MAZ-179 tier-20 — NOT FOR MERGE] IRQ-leak witness at SyscallDispatch
+// return. SVC entry masks DAIF.I; if I is unmasked when the dispatcher
+// returns, the syscall body leaked it — the precondition for tier-19's
+// nested-IRQ-over-handler events. Records the leaking syscall number
+// (frame X8). Call sites: right after the retval store at both dispatch
+// sites; R0 dead (retval stored), R1-R3 scratch, LR reloaded from frame.
+TEXT maz179DispatchLeakCheck<>(SB), NOSPLIT|NOFRAME, $0-0
+	MRS	DAIF, R1
+	AND	$0x80, R1, R1
+	CBNZ	R1, dlc_ok			// I masked — normal
+	MOVD	mazzy∕kmazarin∕proc·DispatchIrqLeaks(SB), R1
+	ADD	$1, R1
+	MOVD	R1, mazzy∕kmazarin∕proc·DispatchIrqLeaks(SB)
+	MOVD	EXC_FRAME_X8(RSP), R2		// syscall nr saved at entry
+	MOVD	R2, mazzy∕kmazarin∕proc·DispatchLeakLastNr(SB)
+	MOVD	mazzy∕kmazarin∕proc·DispatchLeakFirstNr(SB), R3
+	CBNZ	R3, dlc_ok
+	MOVD	R2, mazzy∕kmazarin∕proc·DispatchLeakFirstNr(SB)
+dlc_ok:
+	RET
+
+// [MAZ-179 tier-21 — NOT FOR MERGE] Handler-context yield witness.
+//
+// Lives here rather than in abi_stubs_arm64.s because UART_BASE is defined in
+// this file and universal §5 forbids a second copy of the constant.
+//
+// Called from YieldToReadyThread AFTER its `MOVD R30, R19` LR stash and after
+// the whole register file has been written to the ThreadContext, so every GPR
+// except R19 (the LR stash) and R20 (the context pointer) is dead and free to
+// clobber. Arg: R0 = the yielding caller's LR, i.e. the continuation ELR that
+// YieldToReadyThread just paired with its hardcoded SPSR=0x4.
+//
+// Does NOT halt: the fatal must be allowed to proceed so a "!Y21" marker and
+// the E:00 wedge can be correlated inside one boot. Prints the first four
+// trips immediately — the wedge routinely beats the 10 s heartbeat, so
+// counters alone would miss a late event.
+TEXT ·maz179YieldProbe(SB), NOSPLIT|NOFRAME, $0-0
+	MOVD	R30, R7				// own return address — the BLs below clobber LR
+	MOVD	mazzy∕kmazarin∕proc·YieldCalls(SB), R2
+	ADD	$1, R2
+	MOVD	R2, mazzy∕kmazarin∕proc·YieldCalls(SB)
+
+	MRS	SPSel, R2
+	CBZ	R2, y21_ret			// SPSel=0 → EL1t: the assumed-and-legal case
+
+	MOVD	mazzy∕kmazarin∕proc·YieldFromHandler(SB), R2
+	ADD	$1, R2
+	MOVD	R2, mazzy∕kmazarin∕proc·YieldFromHandler(SB)
+
+	// [MAZ-179 tier-22] Arm the SP_EL1 enforcement check and track chain
+	// depth. We are at EL1h here (SPSel=1), so RSP *is* SP_EL1 — the value
+	// the resume must land back on for the suspended frame to still be ours.
+	MOVD	RSP, R3
+	MOVD	R3, mazzy∕kmazarin∕proc·YieldSPEL1Expected(SB)
+	MOVD	$1, R3
+	MOVD	R3, mazzy∕kmazarin∕proc·YieldSPEL1Armed(SB)
+	MOVD	mazzy∕kmazarin∕proc·YieldChainDepth(SB), R3
+	CBZ	R3, y21_depth_store		// depth 0 → this is the only chain
+	// Depth >= 1 already: a SECOND suspended handler chain now exists —
+	// the non-LIFO state the structural fix would rule out.
+	MOVD	mazzy∕kmazarin∕proc·YieldChainConcurrent(SB), R4
+	ADD	$1, R4
+	MOVD	R4, mazzy∕kmazarin∕proc·YieldChainConcurrent(SB)
+y21_depth_store:
+	ADD	$1, R3
+	MOVD	R3, mazzy∕kmazarin∕proc·YieldChainDepth(SB)
+	MOVD	mazzy∕kmazarin∕proc·YieldChainMax(SB), R4
+	CMP	R4, R3
+	BLS	y21_depth_done			// R3 <= R4: no new high-water mark
+	MOVD	R3, mazzy∕kmazarin∕proc·YieldChainMax(SB)
+y21_depth_done:
+
+	CMP	$1, R2
+	BNE	y21_print_check
+	// First trip: record the identifying detail.
+	MOVD	R0, mazzy∕kmazarin∕proc·YieldHandlerFirstLR(SB)
+	MOVD	RSP, R3
+	MOVD	R3, mazzy∕kmazarin∕proc·YieldHandlerFirstSP(SB)
+	MRS	DAIF, R3
+	MOVD	R3, mazzy∕kmazarin∕proc·YieldHandlerFirstDAIF(SB)
+
+y21_print_check:
+	CMP	$4, R2
+	BHI	y21_ret				// cap the serial traffic
+
+	// "!Y21 <callerLR> <RSP> <DAIF>"
+	MOVD	$UART_BASE, R12
+	MOVD	$'!', R3; MOVB	R3, (R12)
+	MOVD	$'Y', R3; MOVB	R3, (R12)
+	MOVD	$'2', R3; MOVB	R3, (R12)
+	MOVD	$'1', R3; MOVB	R3, (R12)
+
+	MOVD	R0, R4				// value 1: caller LR
+	BL	y21PutHex<>(SB)
+	MOVD	RSP, R4				// value 2: RSP saved as the thread SP
+	BL	y21PutHex<>(SB)
+	MRS	DAIF, R4			// value 3: the real DAIF
+	BL	y21PutHex<>(SB)
+
+	MOVD	$'\r', R3; MOVB	R3, (R12)
+	MOVD	$'\n', R3; MOVB	R3, (R12)
+
+y21_ret:
+	MOVD	R7, R30				// restore own return address
+	RET
+
+// y21PutHex prints " " + R4 as 16 hex digits to the UART at R12.
+// Leaf: clobbers R3, R4, R5 and returns through LR, which the caller has
+// already stashed in R7. Preserves R19/R20 (live in YieldToReadyThread).
+TEXT y21PutHex<>(SB), NOSPLIT|NOFRAME, $0-0
+	MOVD	$' ', R3; MOVB	R3, (R12)
+	MOVD	$16, R5
+y21_hex_loop:
+	LSR	$60, R4, R3
+	AND	$0xF, R3
+	CMP	$10, R3
+	BLT	y21_hex_digit
+	ADD	$('A'-10), R3
+	B	y21_hex_emit
+y21_hex_digit:
+	ADD	$'0', R3
+y21_hex_emit:
+	MOVB	R3, (R12)
+	LSL	$4, R4
+	SUB	$1, R5
+	CBNZ	R5, y21_hex_loop
+	RET
+
+// [MAZ-179 tier-22] Resume-side enforcement, called from Go immediately after
+// YieldToReadyThread() returns. If the yield was taken from handler context,
+// the continuation must resume with SP_EL1 exactly where it was suspended —
+// otherwise this thread's handler frame is not where it thinks it is and its
+// eventual `ADD $EXC_FRAME_SIZE, RSP` / frame reads would touch another
+// chain's frame. Cheap: one compare on a path that runs only after a park.
+//
+// Runs at EL1h when the fixed save/restore did its job (so RSP == SP_EL1);
+// gated on YieldSPEL1Armed so the legal EL1t yields — where RSP is SP_EL0 and
+// the comparison is meaningless — are skipped.
+TEXT ·maz179YieldResumeCheck(SB), NOSPLIT|NOFRAME, $0-0
+	MOVD	mazzy∕kmazarin∕proc·YieldSPEL1Armed(SB), R1
+	CBZ	R1, yrc_ret
+	MOVD	ZR, mazzy∕kmazarin∕proc·YieldSPEL1Armed(SB)
+
+	MOVD	mazzy∕kmazarin∕proc·YieldChainDepth(SB), R1
+	CBZ	R1, yrc_check			// defensive: never wrap below zero
+	SUB	$1, R1
+	MOVD	R1, mazzy∕kmazarin∕proc·YieldChainDepth(SB)
+
+yrc_check:
+	MOVD	mazzy∕kmazarin∕proc·YieldSPEL1Expected(SB), R1
+	MOVD	RSP, R2
+	CMP	R1, R2
+	BEQ	yrc_ret				// landed exactly where we suspended
+
+	MOVD	mazzy∕kmazarin∕proc·YieldSPEL1Mismatch(SB), R3
+	ADD	$1, R3
+	MOVD	R3, mazzy∕kmazarin∕proc·YieldSPEL1Mismatch(SB)
+
+	// Loud and terminal: the suspended frame is not ours any more, so every
+	// subsequent frame read in this handler chain is another thread's state.
+	MOVD	$UART_BASE, R12
+	MOVD	$'!', R3; MOVB	R3, (R12)
+	MOVD	$'Y', R3; MOVB	R3, (R12)
+	MOVD	$'S', R3; MOVB	R3, (R12)
+	MOVD	$'P', R3; MOVB	R3, (R12)
+	MOVD	R30, R7				// y21PutHex returns through LR
+	MOVD	R1, R4
+	BL	y21PutHex<>(SB)			// expected SP_EL1
+	MOVD	R2, R4
+	BL	y21PutHex<>(SB)			// actual SP_EL1
+	MOVD	R7, R30
+	MOVD	$'\r', R3; MOVB	R3, (R12)
+	MOVD	$'\n', R3; MOVB	R3, (R12)
+yrc_halt:
+	B	yrc_halt
+
+yrc_ret:
 	RET

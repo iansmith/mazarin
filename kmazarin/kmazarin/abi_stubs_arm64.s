@@ -202,21 +202,52 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	// Save X29 (FP) and X30 (LR)
 	STP	(R29, R30), 232(R20)
 
-	// Save SP (current stack pointer = SP_EL0 since we're in EL1t)
+	// [MAZ-179] Capture the REAL processor state. This block previously
+	// assumed the caller always runs at EL1t and hardcoded both values:
+	//   MOVD RSP, R0        // "current SP = SP_EL0 since we're in EL1t"
+	//   MOVD $0x4, R0       // "EL1t mode, all exceptions unmasked"
+	// Both are false when the caller yields from HANDLER context (EL1h) —
+	// which pushStringFull does on console backpressure, confirmed by the
+	// tier-21 soak (4/4 fatal boots, LR inside pushStringFull, RSP inside
+	// the exception stack, real DAIF = 0x3C0 = everything masked). The
+	// hardcode then wrote an exception-stack address into the thread's SP
+	// and mislabelled the mode as EL1t with interrupts unmasked; the later
+	// ERET resumed handler code on the SP_EL0 alias with IRQs on.
+	//
+	// SPSel selects which SP is live: 0 = SP_EL0 (EL1t), 1 = SP_EL1 (EL1h).
+	MRS	SPSel, R1
+	CBZ	R1, yield_sp_el0_is_rsp
+	// EL1h: RSP is SP_EL1 (the shared exception stack), NOT this thread's
+	// stack. Read the thread's real SP_EL0 instead.
+	MRS	SP_EL0, R0
+	B	yield_sp_saved
+yield_sp_el0_is_rsp:
 	MOVD	RSP, R0
+yield_sp_saved:
 	MOVD	R0, 248(R20)
 
 	// Save ELR = LR (return address — where to resume when scheduled back)
 	MOVD	R30, 256(R20)
 
-	// Save SPSR = 0x4 (EL1t mode, all exceptions unmasked)
-	// When thread 0 is scheduled back, ERET restores this SPSR, returning to EL1t
-	MOVD	$0x4, R0
+	// SPSR = real DAIF (bits 9:6, identical layout in DAIF and SPSR_EL1)
+	// OR the real mode M[3:0]: 4 = EL1t, 5 = EL1h. R1 still holds SPSel.
+	MRS	DAIF, R0
+	ADD	$4, R1, R1
+	ORR	R1, R0, R0
 	MOVD	R0, 264(R20)
 
 	// Save LR in R19 before CALL clobbers it (R30).
 	// Original R19 is already saved to ThreadContext at offset 152 above.
 	MOVD	R30, R19
+
+	// [MAZ-179 tier-21 — NOT FOR MERGE] Handler-context yield witness.
+	// Placed HERE, after the R19 stash and after the full register file has
+	// been written to the ThreadContext above, so R30 is dead and the probe
+	// may clobber every GPR except R19 (LR stash) and R20 (context pointer).
+	// R0 carries the continuation ELR this function just paired with the
+	// hardcoded SPSR=0x4 two instructions ago.
+	MOVD	R19, R0
+	BL	·maz179YieldProbe(SB)
 
 	// Call SaveThread0AndYield() which returns context pointer in R0
 	// func SaveThread0AndYield() uint64

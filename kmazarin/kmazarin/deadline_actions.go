@@ -1,7 +1,11 @@
-
 package main
 
-import "mazzy/kmazarin/util"
+import (
+	"sync/atomic"
+
+	"mazzy/kmazarin/proc"
+	"mazzy/kmazarin/util"
+)
 
 // WakeThreadAction is an Action that wakes a sleeping thread.
 // It stores the thread ID (TID) for stable identification.
@@ -41,6 +45,7 @@ func (a *WakeThreadAction) Run() {
 		t.FutexAddr = 0
 		blockedQueue.Pluck(a.tid)
 		GetPerCPU().LocalReadyQueue.PushNoDuplicate(a.tid)
+		atomic.AddUint64(&proc.FtxDeadlineWakes, 1)
 	}
 
 	RestoreIRQs(savedDAIF)

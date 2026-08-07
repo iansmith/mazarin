@@ -20,9 +20,11 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/iouring"
 )
@@ -43,8 +45,9 @@ func maz179ProbeHeartbeatLine(tag string, sid int64) {
 	if freq := uint64(kirq.GetTimerFrequency()); freq > 0 && kernelBootTick > 0 {
 		up = (kirq.ReadCounterValue() - kernelBootTick) / freq
 	}
+	ftxWait, ftxBlk, ftxEag, ftxWake := ksyscall.PrintFutexStats()
 	klog.Criticalf("[MAZ179HB] ",
-		"[MAZ179HB] %s up=%ds sid=%d blk: compl=%d submits=%d dma: frees=%d blkhits=%d nethits=%d race=%d deaths=%d cq: stale=%d gid: chk=%d mis=%d unr=%d first_tid=%d g=0x%x m=0x%x want=0x%x grant: ovl=%d first_sid=%d va=0x%x len=0x%x fixed=%d hintfb=%d mfix: res=%d pages=%d offband=%d first_va=0x%x first_res=%d\n",
+		"[MAZ179HB] %s up=%ds sid=%d blk: compl=%d submits=%d dma: frees=%d blkhits=%d nethits=%d race=%d deaths=%d cq: stale=%d gid: chk=%d mis=%d unr=%d first_tid=%d g=0x%x m=0x%x want=0x%x grant: ovl=%d first_sid=%d va=0x%x len=0x%x fixed=%d hintfb=%d mfix: res=%d pages=%d offband=%d first_va=0x%x first_res=%d ftx: wait=%d blk=%d eag=%d wake=%d woken=%d w0=%d lost=%d lta=0x%x ltid=%d dlw=%d pidmis=%d ctx: sav=%d res=%d s=%d elr=0x%x spsr=0x%x tid=%d pw: chk=%d sw=%d el1h=%d svc=%d noctx=%d tmr: sw=%d skl1h=%d sksvc=%d eret: nest=%d nelr=0x%x nsite=%d leak=%d nr1=%d nrL=%d yld: n=%d hnd=%d lr=0x%x sp=0x%x daif=0x%x chain: d=%d max=%d conc=%d spmis=%d span: full=%d drop=%d resv=%d occhw=%d va=0x%x len=0x%x dlg: fail=%d sys=%d sid=%d ring=%d dci: tot=%d unal=%d va=0x%x len=%d\n",
 		tag, up, sid,
 		atomic.LoadUint32(&proc.BlkComplTotal),
 		atomic.LoadUint32(&proc.BlkSubmitTotal),
@@ -71,7 +74,58 @@ func maz179ProbeHeartbeatLine(tag string, sid int64) {
 		atomic.LoadUint32(&proc.MFixResidentPages),
 		atomic.LoadUint32(&proc.MFixOffBandResident),
 		atomic.LoadUint64(&proc.MFixFirstVA),
-		atomic.LoadUint32(&proc.MFixFirstResident))
+		atomic.LoadUint32(&proc.MFixFirstResident),
+		ftxWait, ftxBlk, ftxEag, ftxWake,
+		atomic.LoadUint64(&proc.FtxWokenTotal),
+		atomic.LoadUint64(&proc.FtxWakeZero),
+		atomic.LoadUint64(&proc.FtxLostWake),
+		atomic.LoadUint64(&proc.FtxLostWakeAddr),
+		atomic.LoadUint64(&proc.FtxLostWakeTID),
+		atomic.LoadUint64(&proc.FtxDeadlineWakes),
+		atomic.LoadUint64(&DbgFutexPIDMismatch),
+		atomic.LoadUint64(&proc.CtxBadSaves),
+		atomic.LoadUint64(&proc.CtxBadResumes),
+		atomic.LoadUint32(&proc.CtxBadFirstSite),
+		atomic.LoadUint64(&proc.CtxBadFirstELR),
+		atomic.LoadUint64(&proc.CtxBadFirstSPSR),
+		atomic.LoadUint64(&proc.CtxBadFirstTID),
+		atomic.LoadUint32(&dbgPWakeChecked),
+		atomic.LoadUint32(&dbgPWakeSwitched),
+		atomic.LoadUint32(&dbgPWakeEL1h),
+		atomic.LoadUint32(&dbgPWakeSVC),
+		atomic.LoadUint32(&dbgPWakeNoCtx),
+		atomic.LoadUint64(&timerCtxSwitchCount),
+		atomic.LoadUint64(&dbgTimerSkipEL1h),
+		atomic.LoadUint64(&dbgTimerSkipSVC),
+		atomic.LoadUint64(&proc.EretNestedResumes),
+		atomic.LoadUint64(&proc.EretNestedFirstELR),
+		atomic.LoadUint32(&proc.EretNestedFirstSite),
+		atomic.LoadUint64(&proc.DispatchIrqLeaks),
+		atomic.LoadUint64(&proc.DispatchLeakFirstNr),
+		atomic.LoadUint64(&proc.DispatchLeakLastNr),
+		atomic.LoadUint64(&proc.YieldCalls),
+		atomic.LoadUint64(&proc.YieldFromHandler),
+		atomic.LoadUint64(&proc.YieldHandlerFirstLR),
+		atomic.LoadUint64(&proc.YieldHandlerFirstSP),
+		atomic.LoadUint64(&proc.YieldHandlerFirstDAIF),
+		atomic.LoadUint64(&proc.YieldChainDepth),
+		atomic.LoadUint64(&proc.YieldChainMax),
+		atomic.LoadUint64(&proc.YieldChainConcurrent),
+		atomic.LoadUint64(&proc.YieldSPEL1Mismatch),
+		atomic.LoadUint64(&proc.SpanAddFull),
+		atomic.LoadUint64(&proc.SpanSplitDrop),
+		atomic.LoadUint64(&proc.SpanReserveFull),
+		atomic.LoadUint64(&proc.SpanOccHigh),
+		atomic.LoadUint64(&proc.SpanLossFirstVA),
+		atomic.LoadUint64(&proc.SpanLossFirstLen),
+		atomic.LoadUint64(&proc.DlgSendFail),
+		atomic.LoadUint64(&proc.DlgFailFirstSys),
+		atomic.LoadUint64(&proc.DlgFailFirstSID),
+		atomic.LoadUint64(&proc.DlgFailFirstRing),
+		atomic.LoadUint64(&asm.DCacheInvTotal),
+		atomic.LoadUint64(&asm.DCacheInvUnaligned),
+		atomic.LoadUint64(&asm.DCacheInvFirstVA),
+		atomic.LoadUint64(&asm.DCacheInvFirstLen))
 }
 
 // maz179ProbeHeartbeat is called every KernelIdleLoop iteration; rate-limits
@@ -187,6 +241,40 @@ func maz179GIdentityCheck(t *Thread, x28, spsr uint64) {
 			atomic.StoreUint64(&proc.GIdentFirstG, x28)
 			atomic.StoreUint64(&proc.GIdentFirstM, m)
 			atomic.StoreUint64(&proc.GIdentFirstWantM, t.MPtr)
+		}
+	}
+}
+
+// [MAZ-179 probe — NOT FOR MERGE, tier 16] Futex wake-side contract
+// witness. Called from both wake paths (ThreadWakeFutexWithSwitch,
+// threadWakeFutexImpl) with schedulerLock HELD, right after the
+// blockedQueue scan. A wake that found nothing while a thread still sits
+// in ThreadBlockedFutex on exactly this (uaddr, shepherd) is a LOST WAKE:
+// the waiter is stranded (only a timeout can save it) and the waker's
+// runtime.unlock believes the handoff happened — the silent two-in-a-
+// critical-section shape that scribbles in place. See proc.Ftx* counters.
+//
+//go:nosplit
+func maz179FtxWakeAccount(woken int32, maxWake int32, futexAddr uint64, callerSID ShepherdId) {
+	if woken > 0 {
+		atomic.AddUint64(&proc.FtxWokenTotal, uint64(woken))
+		return
+	}
+	atomic.AddUint64(&proc.FtxWakeZero, 1)
+	if maxWake == 0 {
+		return // wake(0) wakes nothing by definition — not a violation
+	}
+	for i := int32(0); i < MaxThreads; i++ {
+		if !threadListInUse[i] {
+			continue
+		}
+		t := &threadListData[i]
+		if t.State == ThreadBlockedFutex && t.FutexAddr == futexAddr && t.PID == callerSID {
+			if atomic.AddUint64(&proc.FtxLostWake, 1) == 1 {
+				atomic.StoreUint64(&proc.FtxLostWakeAddr, futexAddr)
+				atomic.StoreUint64(&proc.FtxLostWakeTID, uint64(t.TID))
+			}
+			return
 		}
 	}
 }

@@ -211,7 +211,12 @@ func maz179DumpSweep(s *mspan) {
 	if gm := uintptr(unsafe.Pointer(s.gcmarkBits)); maz179plausible(gm) {
 		maz179TLBCheck("gcmarkBits", gm)
 		// [tier-15b] which epoch list owns these bits right now?
+		// Breadcrumbs bracket the call: boot9 printed the TLB line above and
+		// the mspan line below but this call emitted NOTHING — the crumbs
+		// localize whether the call runs and where its output is lost.
+		maz179Crumb('A')
 		maz179GCBWhichList(gm)
+		maz179Crumb('Z')
 	}
 	print("[MAZ179DUMP] mspan s=", hex(uintptr(unsafe.Pointer(s))),
 		" base=", hex(s.startAddr), " npages=", s.npages,
@@ -324,16 +329,45 @@ func maz179GCBCheckZero(p *gcBits, bytes uintptr) {
 // means the arena was recycled under the span's feet, "none" means the
 // pointer is into memory gcBitsArenas no longer owns at all.
 func maz179GCBWhichList(addr uintptr) {
+	maz179Crumb('B')
+	inNext := maz179GCBIn(gcBitsArenas.next, addr)
+	maz179Crumb('1')
+	inCur := maz179GCBIn(gcBitsArenas.current, addr)
+	maz179Crumb('2')
+	inPrev := maz179GCBIn(gcBitsArenas.previous, addr)
+	maz179Crumb('3')
+	inFree := maz179GCBIn(gcBitsArenas.free, addr)
+	maz179Crumb('4')
 	print("[MAZ179GCB] whichlist addr=", hex(addr),
-		" next=", maz179GCBIn(gcBitsArenas.next, addr),
-		" current=", maz179GCBIn(gcBitsArenas.current, addr),
-		" previous=", maz179GCBIn(gcBitsArenas.previous, addr),
-		" free=", maz179GCBIn(gcBitsArenas.free, addr), "\n")
+		" next=", inNext,
+		" current=", inCur,
+		" previous=", inPrev,
+		" free=", inFree, "\n")
+	maz179Crumb('Y')
+}
+
+// maz179Crumb emits a 4-byte `~Gc~` breadcrumb by direct gwrite — no printlock,
+// no arg evaluation, nothing that can silently swallow output. The expected
+// healthy sequence around a sweep-throw whichlist is ~GA~~GB~~G1~~G2~~G3~~G4~
+// <whichlist line> ~GY~~GZ~; the last crumb present names the point of loss.
+func maz179Crumb(c byte) {
+	var b [4]byte
+	b[0] = '~'
+	b[1] = 'G'
+	b[2] = c
+	b[3] = '~'
+	gwrite(b[:])
 }
 
 func maz179GCBIn(a *gcBitsArena, addr uintptr) bool {
 	for n := 0; a != nil && n < 64; n++ {
 		base := uintptr(unsafe.Pointer(a))
+		// Bounds guard: a corrupt chain link would fault on the a.next
+		// deref below. Stop on an implausible or misaligned link instead —
+		// this walk runs at throw time inside already-corrupt state.
+		if !maz179plausible(base) || base&7 != 0 {
+			return false
+		}
 		if addr >= base && addr < base+unsafe.Sizeof(*a) {
 			return true
 		}

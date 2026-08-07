@@ -282,6 +282,8 @@ func pushStringFull(c *SoftIRQConsole, fd byte, s string) {
 		pendingYieldBlockState = ThreadBlockedKernelRingPush
 		thread0PendingDeadline = startTick + budgetTicks
 		YieldToReadyThread()
+		// [MAZ-179] Verify the suspended handler frame is still ours.
+		maz179YieldResumeCheck()
 
 		// Resumed. If the deadline expiry handler beat the drain wake,
 		// drop the rest — the consumer is genuinely wedged.

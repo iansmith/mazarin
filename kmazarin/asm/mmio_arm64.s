@@ -123,6 +123,28 @@ TEXT ·InvalidateDCacheRange(SB), NOSPLIT, $0-16
 	MOVD	start+0(FP), R0		// Start address
 	MOVD	size+8(FP), R1		// Size in bytes
 	ADD	R0, R1, R1		// R1 = end address
+
+	// [MAZ-179 tier-24 / MAZ-187 — NOT FOR MERGE] neighbor-discard witness.
+	// Counts the caller's TRUE request, before the alignment below. A start
+	// or end that is not 64-aligned means DC IVAC will discard whatever
+	// else shares that head/tail line. R3-R5 are scratch (leaf, NOSPLIT).
+	MOVD	·DCacheInvTotal(SB), R3
+	ADD	$1, R3
+	MOVD	R3, ·DCacheInvTotal(SB)
+	AND	$63, R0, R4		// start misalignment
+	AND	$63, R1, R5		// end misalignment
+	ORR	R5, R4, R4
+	CBZ	R4, dcinv_aligned
+	MOVD	·DCacheInvUnaligned(SB), R3
+	ADD	$1, R3
+	MOVD	R3, ·DCacheInvUnaligned(SB)
+	MOVD	·DCacheInvFirstVA(SB), R4
+	CBNZ	R4, dcinv_aligned	// already recorded the first
+	MOVD	R0, ·DCacheInvFirstVA(SB)
+	SUB	R0, R1, R4		// length = end - start
+	MOVD	R4, ·DCacheInvFirstLen(SB)
+dcinv_aligned:
+
 	// [MAZ-179] align start DOWN (same missed-tail bug as CleanDCacheRange).
 	// NOTE: DC IVAC on the head/tail lines still discards any neighbor
 	// bytes sharing those lines — callers must keep DMA buffers

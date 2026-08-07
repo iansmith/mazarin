@@ -1181,6 +1181,7 @@ func processStaticDeadlinesSchedLockHeld() {
 			t.FutexAddr = 0
 			blockedQueue.Pluck(ThreadId(tid))
 			enqueueReadySchedLockHeld(t)
+			atomic.AddUint64(&proc.FtxDeadlineWakes, 1)
 		} else if t.State == ThreadSleeping {
 			t.State = ThreadReady
 			sleepingQueue.Pluck(ThreadId(tid))
@@ -3635,6 +3636,8 @@ func ThreadWakeFutexWithSwitch(futexAddr uint64, maxWake int32) (int32, uintptr)
 		}
 	}
 
+	maz179FtxWakeAccount(woken, maxWake, futexAddr, callerSID)
+
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
@@ -3692,6 +3695,8 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 			blockedQueue.PushNoDuplicate(tid)
 		}
 	}
+
+	maz179FtxWakeAccount(woken, int32(maxWake), futexAddr, callerSID)
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("futex-wake-complete")

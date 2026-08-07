@@ -135,9 +135,12 @@ const (
 //
 //go:nosplit
 func (ctx *ThreadContext) SetupForCloneChild(stack, returnAddr, gReg, parentState uint64) {
-	ctx.X[0] = 0                          // Child returns with TID = 0
-	ctx.SP = stack                        // New stack
-	ctx.ELR = returnAddr                  // Return INTO clone.abi0
+	ctx.X[0] = 0                           // Child returns with TID = 0
+	ctx.SP = stack                         // New stack
+	ctx.ELR = returnAddr                   // Return INTO clone.abi0
 	ctx.SPSR = parentState & ^uint64(0x80) // Same state but with IRQs enabled (clear DAIF.I)
-	ctx.X[28] = gReg                      // g register
+	ctx.X[28] = gReg                       // g register
+
+	// [MAZ-179 tier-18] poisoned-pair witness, writer site 5 (clone child)
+	maz179CtxCheck(ctx.ELR, ctx.SPSR, 5, -1)
 }

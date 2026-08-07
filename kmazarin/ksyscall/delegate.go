@@ -602,6 +602,13 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			delegateCallInfos[callerTID].InUse = false
 		}
 		reclaimDataPage(dataPagePA, handlerDataVA, handlerSID, handlerShepherd)
+		// [MAZ-179 tier-24] serial-visible witness — the klog.Errf below goes
+		// to the console ring only, so it never reaches a soak log.
+		if atomic.AddUint64(&proc.DlgSendFail, 1) == 1 {
+			atomic.StoreUint64(&proc.DlgFailFirstSys, uint64(id))
+			atomic.StoreUint64(&proc.DlgFailFirstSID, uint64(uint16(handlerSID)))
+			atomic.StoreUint64(&proc.DlgFailFirstRing, uint64(handlerRingIdx))
+		}
 		klog.Errf("[DLG] uring send failed sysid=%d handler=%d ring=%d\n",
 			uint32(id), int32(handlerSID), uint32(handlerRingIdx))
 		return -11 // EAGAIN

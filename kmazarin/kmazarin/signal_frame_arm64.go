@@ -10,18 +10,18 @@ import (
 // ARM64 signal frame layout constants.
 // These match the Go runtime's ucontext/sigcontext structs in defs_linux_arm64.go.
 const (
-	arm64UcontextSize   = 4560 // sizeof(ucontext)
-	arm64SiginfoSize    = 128  // sizeof(siginfo)
+	arm64UcontextSize    = 4560                                      // sizeof(ucontext)
+	arm64SiginfoSize     = 128                                       // sizeof(siginfo)
 	arm64SignalFrameSize = arm64UcontextSize + arm64SiginfoSize + 16 // +16 for alignment
 
 	// Offsets within ucontext_t
-	ucFlags        = 0   // uc_flags
-	ucLink         = 8   // uc_link
-	ucStack        = 16  // uc_stack.ss_sp
-	ucStackFlags   = 24  // uc_stack.ss_flags
-	ucStackSize    = 32  // uc_stack.ss_size
-	ucSigmask      = 40  // uc_sigmask
-	ucMcontext     = 176 // uc_mcontext (sigcontext starts here)
+	ucFlags      = 0   // uc_flags
+	ucLink       = 8   // uc_link
+	ucStack      = 16  // uc_stack.ss_sp
+	ucStackFlags = 24  // uc_stack.ss_flags
+	ucStackSize  = 32  // uc_stack.ss_size
+	ucSigmask    = 40  // uc_sigmask
+	ucMcontext   = 176 // uc_mcontext (sigcontext starts here)
 
 	// Offsets within sigcontext (relative to uc_mcontext)
 	scFaultAddr = 0   // fault_address
@@ -75,9 +75,9 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 
 	// --- Populate siginfo ---
 	siPtr := uintptr(siginfoAddr)
-	kmem.WriteUserInt32WithL0(siPtr, int32(signum), l0PA)   // si_signo
-	kmem.WriteUserInt32WithL0(siPtr+4, 0, l0PA)             // si_errno
-	kmem.WriteUserInt32WithL0(siPtr+8, thread.SignalSiCode, l0PA)        // si_code (e.g., SEGV_MAPERR)
+	kmem.WriteUserInt32WithL0(siPtr, int32(signum), l0PA)         // si_signo
+	kmem.WriteUserInt32WithL0(siPtr+4, 0, l0PA)                   // si_errno
+	kmem.WriteUserInt32WithL0(siPtr+8, thread.SignalSiCode, l0PA) // si_code (e.g., SEGV_MAPERR)
 	// si_addr at offset 16 (after 4 bytes padding for alignment)
 	kmem.WriteUserUint64WithL0(siPtr+16, thread.SignalFaultAddr, l0PA) // si_addr (fault address)
 
@@ -96,9 +96,9 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 	kmem.WriteUserUint64WithL0(ucPtr+ucMcontextPstate, thread.Context.SPSR, l0PA)
 
 	// uc_stack: record the signal stack info
-	kmem.WriteUserUint64WithL0(ucPtr+ucStack, thread.SignalStackBase, l0PA)      // ss_sp
-	kmem.WriteUserInt32WithL0(ucPtr+ucStackFlags, _SS_ONSTACK, l0PA)             // ss_flags
-	kmem.WriteUserUint64WithL0(ucPtr+ucStackSize, thread.SignalStackSize, l0PA)  // ss_size
+	kmem.WriteUserUint64WithL0(ucPtr+ucStack, thread.SignalStackBase, l0PA)     // ss_sp
+	kmem.WriteUserInt32WithL0(ucPtr+ucStackFlags, _SS_ONSTACK, l0PA)            // ss_flags
+	kmem.WriteUserUint64WithL0(ucPtr+ucStackSize, thread.SignalStackSize, l0PA) // ss_size
 
 	// Store ucontext address for rt_sigreturn to find later
 	thread.SignalUctxAddr = uctxAddr
@@ -127,6 +127,9 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 	// R29 (FP) = 0 for clean frame
 	thread.Context.X[29] = 0
 	// SPSR remains unchanged (same EL, same interrupt state)
+
+	// [MAZ-179 tier-18] poisoned-pair witness, writer site 6 (signal delivery)
+	maz179CtxCheck(thread.Context.ELR, thread.Context.SPSR, 6, int64(thread.TID))
 }
 
 // RestoreFromSignalFrame reads the ucontext from the signal frame and
@@ -157,6 +160,10 @@ func RestoreFromSignalFrame(t *Thread) {
 	if val, ok := kmem.ReadUserUint64WithL0(ucPtr+ucMcontextPstate, l0PA); ok {
 		t.Context.SPSR = val
 	}
+
+	// [MAZ-179 tier-18] poisoned-pair witness, writer site 4 (sigreturn —
+	// ELR and SPSR here come VERBATIM from user memory, unsanitized)
+	maz179CtxCheck(t.Context.ELR, t.Context.SPSR, 4, int64(t.TID))
 
 	t.SignalUctxAddr = 0 // Consumed
 }
