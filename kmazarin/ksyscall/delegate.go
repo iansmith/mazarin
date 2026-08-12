@@ -602,6 +602,16 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			delegateCallInfos[callerTID].InUse = false
 		}
 		reclaimDataPage(dataPagePA, handlerDataVA, handlerSID, handlerShepherd)
+		// [MAZ-179 tier-25] cause-or-consequence split: is the handler still
+		// there? Gone ⇒ these failures are wreckage from its death. Alive ⇒ it
+		// is simply not draining ring %d, i.e. a wedged consumer — and console
+		// backpressure is what drives pushStringFull into the handler-context
+		// yield (tier-21). Same discriminator, opposite conclusions.
+		if handlerShepherd == nil || proc.FindShepherdBySID(proc.ShepherdId(handlerSID)) == nil {
+			atomic.AddUint64(&proc.DlgFailShepGone, 1)
+		} else {
+			atomic.AddUint64(&proc.DlgFailRingFull, 1)
+		}
 		// [MAZ-179 tier-24] serial-visible witness — the klog.Errf below goes
 		// to the console ring only, so it never reaches a soak log.
 		if atomic.AddUint64(&proc.DlgSendFail, 1) == 1 {

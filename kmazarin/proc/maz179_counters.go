@@ -322,3 +322,50 @@ var (
 	DlgFailFirstSID  uint64 // handler shepherd SID of the first
 	DlgFailFirstRing uint64 // ring index of the first
 )
+
+// [MAZ-179 tier-25 / MAZ-186 detection — NOT FOR MERGE] isKernelAddr bypass census.
+//
+// isKernelAddr(va) == (va & 0xFFFF000000000000 != 0) short-circuits all 17
+// WriteUser*/ReadUser*/CopyToUser*/ZeroUserMemory* sites in kmem/paging.go into
+// a RAW unchecked load/store at that VA. Legitimate kernel callers exist
+// (kernel threads passing kernel-stack pointers), so the question is not
+// whether the bypass fires but WHERE it lands.
+//
+// Bands, given KernelVAOffset = 0xFFFFFFFF00000000:
+//
+//	Kern  — 0xFFFFFFFF________ : kernel image, stacks, and the sub-4GB linear
+//	        map. Expected and legitimate.
+//	Other — any other top-16-set prefix (e.g. the 0xFFFF0001________ high-PA
+//	        mapping seen in the dcache and !YSP data). A "write user memory"
+//	        primitive handed a pointer in this band writes straight through a
+//	        physical alias, which is how a kernel-range VA could reach a
+//	        SHEPHERD heap page — the one route by which MAZ-186 could produce
+//	        MAZ-179's corruption, since shepherd heap VAs (0x2000/0x2040) have
+//	        the top bits CLEAR and so never trip the bypass directly.
+//
+// LIMITATION: counted inside isKernelAddr, so reads and writes are pooled.
+// That is deliberate — one edit covers every site, and a total of zero (or an
+// all-Kern distribution) refutes MAZ-186 for this workload outright. Splitting
+// reads from writes is only worth doing if Other is nonzero.
+var (
+	KwBypassTotal      uint64 // every bypass taken (reads + writes)
+	KwBypassKern       uint64 // ...landing in the 0xFFFFFFFF band (expected)
+	KwBypassOther      uint64 // ...landing anywhere else (suspicious)
+	KwBypassFirstOther uint64 // VA of the first Other-band bypass
+)
+
+// [MAZ-179 tier-25] Delegate send failure: cause or consequence?
+//
+// Tier-24 found DLG send failures in 6/6 corrupting boots and 1/4 clean ones —
+// the sharpest correlate in this investigation — but could not say which way
+// the arrow points. This splits the failures by whether the handler shepherd
+// still EXISTS at the moment of failure:
+//
+//	ShepGone — the target died; the failures are downstream wreckage.
+//	RingFull — the target is alive and simply not draining its ring. That is a
+//	           wedged consumer, and console backpressure is what drives
+//	           pushStringFull into the handler-context yield (tier-21).
+var (
+	DlgFailShepGone uint64 // failures where the handler shepherd was not found
+	DlgFailRingFull uint64 // failures where it was alive (ring not draining)
+)

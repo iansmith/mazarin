@@ -2682,7 +2682,27 @@ func ReadUserUint64(va uintptr) (uint64, bool) {
 //
 //go:nosplit
 func isKernelAddr(va uintptr) bool {
-	return va&0xFFFF000000000000 != 0
+	if va&0xFFFF000000000000 == 0 {
+		return false
+	}
+	maz179NoteBypass(va) // [MAZ-179 tier-25 / MAZ-186] census — NOT FOR MERGE
+	return true
+}
+
+// maz179NoteBypass buckets every taken bypass by address band. See the
+// proc.KwBypass* comment for why Other is the band that matters.
+// [MAZ-179 tier-25 probe — NOT FOR MERGE]
+//
+//go:nosplit
+func maz179NoteBypass(va uintptr) {
+	atomic.AddUint64(&proc.KwBypassTotal, 1)
+	if uint64(va)&0xFFFFFFFF00000000 == 0xFFFFFFFF00000000 {
+		atomic.AddUint64(&proc.KwBypassKern, 1)
+		return
+	}
+	if atomic.AddUint64(&proc.KwBypassOther, 1) == 1 {
+		atomic.StoreUint64(&proc.KwBypassFirstOther, uint64(va))
+	}
 }
 
 // ReadUserUint32 reads a 32-bit value from a virtual address.

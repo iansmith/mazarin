@@ -39,7 +39,7 @@ func maz179SyscallHeartbeat() {
 		return // another thread claimed this interval
 	}
 	klog.Criticalf("[MAZ179HB] ",
-		"[MAZ179HB] svc t=%ds blk: compl=%d submits=%d dma: frees=%d blkhits=%d nethits=%d race=%d deaths=%d gid: chk=%d mis=%d unr=%d first_tid=%d g=0x%x m=0x%x want=0x%x grant: ovl=%d first_sid=%d va=0x%x len=0x%x fixed=%d hintfb=%d mfix: res=%d pages=%d offband=%d first_va=0x%x first_res=%d ftx: wait=%d blk=%d eag=%d wake=%d woken=%d w0=%d lost=%d lta=0x%x ltid=%d dlw=%d ctx: sav=%d res=%d s=%d elr=0x%x spsr=0x%x tid=%d eret: nest=%d nelr=0x%x nsite=%d leak=%d nr1=%d nrL=%d yld: n=%d hnd=%d lr=0x%x sp=0x%x daif=0x%x chain: d=%d max=%d conc=%d spmis=%d span: full=%d drop=%d resv=%d occhw=%d va=0x%x len=0x%x dlg: fail=%d sys=%d sid=%d ring=%d dci: tot=%d unal=%d va=0x%x len=%d\n",
+		"[MAZ179HB] svc t=%ds blk: compl=%d submits=%d dma: frees=%d blkhits=%d nethits=%d race=%d deaths=%d gid: chk=%d mis=%d unr=%d first_tid=%d g=0x%x m=0x%x want=0x%x grant: ovl=%d first_sid=%d va=0x%x len=0x%x fixed=%d hintfb=%d mfix: res=%d pages=%d offband=%d first_va=0x%x first_res=%d ftx: wait=%d blk=%d eag=%d wake=%d woken=%d w0=%d lost=%d lta=0x%x ltid=%d dlw=%d ctx: sav=%d res=%d s=%d elr=0x%x spsr=0x%x tid=%d eret: nest=%d nelr=0x%x nsite=%d leak=%d nr1=%d nrL=%d yld: n=%d hnd=%d lr=0x%x sp=0x%x daif=0x%x chain: d=%d max=%d conc=%d spmis=%d span: full=%d drop=%d resv=%d occhw=%d va=0x%x len=0x%x dlg: fail=%d sys=%d sid=%d ring=%d dci: tot=%d unal=%d va=0x%x len=%d kw: tot=%d kern=%d other=%d ova=0x%x dlgw: gone=%d ringfull=%d\n",
 		now/freq,
 		atomic.LoadUint32(&proc.BlkComplTotal),
 		atomic.LoadUint32(&proc.BlkSubmitTotal),
@@ -110,5 +110,11 @@ func maz179SyscallHeartbeat() {
 		atomic.LoadUint64(&asm.DCacheInvTotal),
 		atomic.LoadUint64(&asm.DCacheInvUnaligned),
 		atomic.LoadUint64(&asm.DCacheInvFirstVA),
-		atomic.LoadUint64(&asm.DCacheInvFirstLen))
+		atomic.LoadUint64(&asm.DCacheInvFirstLen),
+		atomic.LoadUint64(&proc.KwBypassTotal),
+		atomic.LoadUint64(&proc.KwBypassKern),
+		atomic.LoadUint64(&proc.KwBypassOther),
+		atomic.LoadUint64(&proc.KwBypassFirstOther),
+		atomic.LoadUint64(&proc.DlgFailShepGone),
+		atomic.LoadUint64(&proc.DlgFailRingFull))
 }
