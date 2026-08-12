@@ -174,6 +174,18 @@ var pushBlockerDeadlineExpired uint32
 // boot, surfaced on the [status] line.
 var softIRQDroppedBytes uint64
 
+// kernelRingPushParkCount counts ring-full parks in pushStringFull (one
+// per YieldToReadyThread entry). Companion to softIRQDroppedBytes.
+// Exposed via ksyscall.RingPushParkCountFn so xfertest's
+// console-backpressure stage (MAZ-193) can assert the park path it
+// floods was actually entered, instead of inferring it from volume.
+var kernelRingPushParkCount uint64
+
+// GetKernelRingPushParkCount returns the cumulative ring-full park count.
+func GetKernelRingPushParkCount() uint64 {
+	return atomic.LoadUint64(&kernelRingPushParkCount)
+}
+
 // EnableSoftIRQConsole switches the kernel console from direct MMIO
 // to the soft IRQ ring. Must be called after SetupUartSoftIRQ and
 // after a userspace shepherd has registered on the UART slot.
@@ -281,6 +293,7 @@ func pushStringFull(c *SoftIRQConsole, fd byte, s string) {
 		atomic.StoreUint32(&pushBlockerDeadlineExpired, 0)
 		pendingYieldBlockState = ThreadBlockedKernelRingPush
 		thread0PendingDeadline = startTick + budgetTicks
+		atomic.AddUint64(&kernelRingPushParkCount, 1)
 		YieldToReadyThread()
 
 		// Resumed. If the deadline expiry handler beat the drain wake,

@@ -1,7 +1,7 @@
-
 package ksyscall
 
 import (
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/serial"
 )
@@ -9,78 +9,78 @@ import (
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
 // Indexed by (syscallNum - mazzy.MazzySyscallBase).
 var mazzySyscallTable = [74]SyscallHandler{
-	0: SyscallGetTime,              // GetTime = 0x1000
-	1: SyscallSubscribeDeaths,      // SubscribeDeaths = 0x1001
-	2: SyscallFreePages,            // FreePages = 0x1002
-	3: SyscallAllocPages,           // AllocPages = 0x1003
-	4: SyscallMazzyExit,            // Exit = 0x1004
-	5: nil,                         // Reap = 0x1005 (not yet implemented)
-	6: SyscallDebugPrint,           // DebugPrint = 0x1006
-	7: SyscallGetFramebuffer,       // GetFramebuffer = 0x1007
-	8: SyscallWaitKernelAsync,      // WaitKernelAsync = 0x1008
-	9: SyscallUringSetup,            // UringSetup = 0x1009
-	10: SyscallWaitSoftIRQ,          // WaitSoftIRQ = 0x100A
-	11: SyscallRegisterSoftIRQ,      // RegisterSoftIRQ = 0x100B
-	12: SyscallQueryInputDevices,    // QueryInputDevices = 0x100C
-	13: SyscallFlushFramebuffer,    // FlushFramebuffer = 0x100D
-	14: SyscallSetTimerDeadline,    // SetTimerDeadline = 0x100E
-	15: SyscallSetScanoutOffset,    // SetScanoutOffset = 0x100F
-	16: SyscallTransferPages,      // TransferPages = 0x1010
-	17: SyscallMapSharedPage,      // MapSharedPage = 0x1011
+	0:  SyscallGetTime,           // GetTime = 0x1000
+	1:  SyscallSubscribeDeaths,   // SubscribeDeaths = 0x1001
+	2:  SyscallFreePages,         // FreePages = 0x1002
+	3:  SyscallAllocPages,        // AllocPages = 0x1003
+	4:  SyscallMazzyExit,         // Exit = 0x1004
+	5:  nil,                      // Reap = 0x1005 (not yet implemented)
+	6:  SyscallDebugPrint,        // DebugPrint = 0x1006
+	7:  SyscallGetFramebuffer,    // GetFramebuffer = 0x1007
+	8:  SyscallWaitKernelAsync,   // WaitKernelAsync = 0x1008
+	9:  SyscallUringSetup,        // UringSetup = 0x1009
+	10: SyscallWaitSoftIRQ,       // WaitSoftIRQ = 0x100A
+	11: SyscallRegisterSoftIRQ,   // RegisterSoftIRQ = 0x100B
+	12: SyscallQueryInputDevices, // QueryInputDevices = 0x100C
+	13: SyscallFlushFramebuffer,  // FlushFramebuffer = 0x100D
+	14: SyscallSetTimerDeadline,  // SetTimerDeadline = 0x100E
+	15: SyscallSetScanoutOffset,  // SetScanoutOffset = 0x100F
+	16: SyscallTransferPages,     // TransferPages = 0x1010
+	17: SyscallMapSharedPage,     // MapSharedPage = 0x1011
 	// slot 18 freed (was SyscallLoadMaz = 0x1012 — retired with mazdl/Phase 5)
-	19: SyscallUringConnect,  // UringConnect = 0x1013
-	20: SyscallUringSend,     // UringSend = 0x1014
-	21: SyscallUringRecv,     // UringRecv = 0x1015
-	22: SyscallUringRelease,  // UringRelease = 0x1016
-	23: SyscallRegisterSyscallHandler,    // RegisterSyscallHandler = 0x1017
+	19: SyscallUringConnect,           // UringConnect = 0x1013
+	20: SyscallUringSend,              // UringSend = 0x1014
+	21: SyscallUringRecv,              // UringRecv = 0x1015
+	22: SyscallUringRelease,           // UringRelease = 0x1016
+	23: SyscallRegisterSyscallHandler, // RegisterSyscallHandler = 0x1017
 	// slot 24 freed (was SyscallDelegatedRecv = 0x1018, handlers now use SysUringRecv)
-	25: SyscallReply,                      // SyscallReply = 0x1019
-	26: SyscallUartWrite,                 // UartWrite = 0x101A
+	25: SyscallReply,     // SyscallReply = 0x1019
+	26: SyscallUartWrite, // UartWrite = 0x101A
 	// slot 27 freed (was SyscallUartWriteDirect)
-	28: SyscallShepherdInfo,                // ShepherdInfo = 0x101C
-	29: SyscallSetReady,                  // SetReady = 0x101D
+	28: SyscallShepherdInfo, // ShepherdInfo = 0x101C
+	29: SyscallSetReady,     // SetReady = 0x101D
 	// slot 30 freed (was SyscallLoadFile — retired 2026-05-09, all file I/O now via fsclient IPC)
 	// slot 31 freed (was SyscallRunMaz — retired with mazdl/Phase 5)
-	32: SyscallRunShepherd,                 // RunShepherd = 0x1020
-	33: SyscallAttrCreate,                // AttrCreate = 0x1021
-	34: SyscallAttrWrite,                 // AttrWrite = 0x1022
-	35: SyscallAttrWriteURI,              // AttrWriteURI = 0x1023
-	36: SyscallAttrAddDep,                // AttrAddDep = 0x1024
-	37: SyscallAttrUpdateDeps,            // AttrUpdateDeps = 0x1025
-	38: SyscallAttrRegisterQuery,         // AttrRegisterQuery = 0x1026
-	39: SyscallAttrWriteResult,           // AttrWriteResult = 0x1027
-	40: SyscallAttrWriteString,           // AttrWriteString = 0x1028
-	41: SyscallAttrSetEager,              // AttrSetEager = 0x1029
-	42: SyscallAttrWaitDirty,             // AttrWaitDirty = 0x102A
-	43: SyscallAttrIncrementI64,          // AttrIncrementI64 = 0x102B
-	44: SyscallRequestWindowManager,     // RequestWindowManager = 0x102C
-	45: SyscallAttrWriteCollI64,         // AttrWriteCollI64 = 0x102D
+	32: SyscallRunShepherd,          // RunShepherd = 0x1020
+	33: SyscallAttrCreate,           // AttrCreate = 0x1021
+	34: SyscallAttrWrite,            // AttrWrite = 0x1022
+	35: SyscallAttrWriteURI,         // AttrWriteURI = 0x1023
+	36: SyscallAttrAddDep,           // AttrAddDep = 0x1024
+	37: SyscallAttrUpdateDeps,       // AttrUpdateDeps = 0x1025
+	38: SyscallAttrRegisterQuery,    // AttrRegisterQuery = 0x1026
+	39: SyscallAttrWriteResult,      // AttrWriteResult = 0x1027
+	40: SyscallAttrWriteString,      // AttrWriteString = 0x1028
+	41: SyscallAttrSetEager,         // AttrSetEager = 0x1029
+	42: SyscallAttrWaitDirty,        // AttrWaitDirty = 0x102A
+	43: SyscallAttrIncrementI64,     // AttrIncrementI64 = 0x102B
+	44: SyscallRequestWindowManager, // RequestWindowManager = 0x102C
+	45: SyscallAttrWriteCollI64,     // AttrWriteCollI64 = 0x102D
 	// slot 46 freed (was WaitInputEvent — rachel uses completion ring now)
-	47: SyscallSharePages,               // SharePages = 0x102F
+	47: SyscallSharePages, // SharePages = 0x102F
 	// slots 48-49 freed (were MailboxSend/MailboxRecv — all IPC uses uring now)
-	50: SyscallRegisterCursor,          // RegisterCursor = 0x1032
-	51: SyscallSetCursor,               // SetCursor = 0x1033
-	52: SyscallGetReady,               // GetReady = 0x1034
+	50: SyscallRegisterCursor, // RegisterCursor = 0x1032
+	51: SyscallSetCursor,      // SetCursor = 0x1033
+	52: SyscallGetReady,       // GetReady = 0x1034
 	// slots 53-54 freed (were RegisterDMAPool/UnregisterDMAPool)
-	55: SyscallBlockSubmit,            // BlockSubmit = 0x1037
+	55: SyscallBlockSubmit, // BlockSubmit = 0x1037
 	// slot 56 freed (was SyscallReadFilePages — retired 2026-05-09, all file I/O now via fsclient IPC)
 	57: SyscallRegisterCompletionRing, // RegisterCompletionRing = 0x1039
 	58: SyscallIOUringSetup,           // IOUringSetup = 0x103A
 	59: SyscallIOUringEnter,           // IOUringEnter = 0x103B
-	60: SyscallSharePagesWithTarget,  // SharePagesWithTarget = 0x103C
-	61: SyscallAttrSwap,              // AttrSwap = 0x103D
-	62: SyscallAttrDelete,            // AttrDelete = 0x103E
-	63: SyscallDeathAck,              // DeathAck = 0x103F
-	64: SyscallGetOwnExports,        // GetOwnExports = 0x1040
-	65: SyscallReleaseDelegatePage, // ReleaseDelegatePage = 0x1041 (pipe-buffered Write cleanup)
+	60: SyscallSharePagesWithTarget,   // SharePagesWithTarget = 0x103C
+	61: SyscallAttrSwap,               // AttrSwap = 0x103D
+	62: SyscallAttrDelete,             // AttrDelete = 0x103E
+	63: SyscallDeathAck,               // DeathAck = 0x103F
+	64: SyscallGetOwnExports,          // GetOwnExports = 0x1040
+	65: SyscallReleaseDelegatePage,    // ReleaseDelegatePage = 0x1041 (pipe-buffered Write cleanup)
 	66: SyscallRegisterStdioWriteRing, // RegisterStdioWriteRing = 0x1042 (split stdio onto its own ring)
-	67: SyscallNetReadRxLatencyUs,    // NetReadRxLatencyUs = 0x1043 (MAZ-28 step 2)
-	68: SyscallTransferDMAClump,     // TransferDMAClump = 0x1044 (MAZ-29 client→net.elf page handoff)
+	67: SyscallNetReadRxLatencyUs,     // NetReadRxLatencyUs = 0x1043 (MAZ-28 step 2)
+	68: SyscallTransferDMAClump,       // TransferDMAClump = 0x1044 (MAZ-29 client→net.elf page handoff)
 	69: SyscallShareNetPageWithClient, // ShareNetPageWithClient = 0x1045 (MAZ-29 net.elf→client per-stream send ring)
-	70: SyscallUnshareFromTarget,    // UnshareFromTarget = 0x1046 (MAZ-53 Mode 2 Release: revoke a previously-shared mapping)
-	71: SyscallCloneExec,           // CloneExec = 0x1047 (MAZ-120: combined clone+execve from a staged ELF + buffered intent)
-	72: SyscallReapVforkTransient,  // ReapVforkTransient = 0x1048 (MAZ-63: reap transient after successful vfork execve)
-	73: SyscallGetVforkReservedPID, // GetVforkReservedPID = 0x1049 (MAZ-63: query reserved child PID for a vfork transient TID)
+	70: SyscallUnshareFromTarget,      // UnshareFromTarget = 0x1046 (MAZ-53 Mode 2 Release: revoke a previously-shared mapping)
+	71: SyscallCloneExec,              // CloneExec = 0x1047 (MAZ-120: combined clone+execve from a staged ELF + buffered intent)
+	72: SyscallReapVforkTransient,     // ReapVforkTransient = 0x1048 (MAZ-63: reap transient after successful vfork execve)
+	73: SyscallGetVforkReservedPID,    // GetVforkReservedPID = 0x1049 (MAZ-63: query reserved child PID for a vfork transient TID)
 }
 
 // EpochStatusDumpFn, if non-nil, is invoked when userspace sends a
@@ -118,6 +118,43 @@ const DebugMarkerSetMapFailAfter = 0xDB9
 // (MAZ-39). Userspace wrapper: mazarin/sys.GetPTEFlags.
 const DebugMarkerGetPTEFlags = 0xDBA
 
+// DebugMarkerConsoleFlood emits v1 (clamped to 64) filler lines through
+// klog.Errf from this syscall handler's context — exercising the
+// EXISTING klog-from-handler path under sustained load. Test-only, like
+// the 0xDB8-0xDBA knobs above; returns the number of lines emitted. See
+// xfertest's testConsoleBackpressure for the full MAZ-193 rationale.
+// Userspace wrapper: mazarin/sys.ConsoleFloodTest.
+const DebugMarkerConsoleFlood = 0xDBB
+
+// DebugMarkerRingPushParks returns the kernel's cumulative
+// pushStringFull ring-full park count (see RingPushParkCountFn) via the
+// syscall's int64 return value. Test-only companion to
+// DebugMarkerConsoleFlood: xfertest asserts the flood actually drove
+// the park path, rather than inferring it from output volume.
+// Userspace wrapper: mazarin/sys.RingPushParkCount.
+const DebugMarkerRingPushParks = 0xDBC
+
+// RingPushParkCountFn, if non-nil, returns the kernel console's
+// cumulative ring-full park count. Wired by kmazarin main at boot
+// (same pattern as EpochStatusDumpFn).
+var RingPushParkCountFn func() uint64
+
+// consoleFloodTest is the DebugMarkerConsoleFlood implementation. Split
+// out of the nosplit SyscallDebugPrint dispatcher because klog.Errf
+// formats and allocates — same reason other klog-using syscall handlers
+// are ordinary splittable functions.
+//
+//go:noinline
+func consoleFloodTest(n uint64) int64 {
+	if n > 64 {
+		n = 64
+	}
+	for i := uint64(0); i < n; i++ {
+		klog.Errf("[confl] %d console-backpressure filler ------------------------------------------------------------\n", i)
+	}
+	return int64(n)
+}
+
 // SyscallDebugPrint prints debug arguments from userspace.
 // arg0 = marker/id, arg1-arg5 = values to print
 // Special case: if v1-v5 are all 0 and marker < 256, print marker as a character
@@ -144,6 +181,15 @@ func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
 		// negative arguments are explicit disarms — same as 0.
 		kmem.MapPageInProcessFailAfter.Store(int32(uint32(v1)))
 		return 0
+	}
+	if marker == DebugMarkerConsoleFlood {
+		return consoleFloodTest(v1)
+	}
+	if marker == DebugMarkerRingPushParks {
+		if RingPushParkCountFn == nil {
+			return 0
+		}
+		return int64(RingPushParkCountFn())
 	}
 	if marker == DebugMarkerGetPTEFlags {
 		// v1 = userspace VA. Walk the active page table (the caller's,

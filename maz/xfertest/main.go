@@ -370,10 +370,69 @@ func runSmokeTests() bool {
 	sys.UartWriteString(tag + "PASS TransferPages rollback preserves caller PTE flags (flags=0x" +
 		sys.Hex64(uint64(fpFlagsBefore)) + ")\n")
 
+	// --- Final stage: console-backpressure survival (MAZ-193) ---
+	// Runs LAST so a machine wedge here cannot mask the stages above.
+	// Non-blocking by nature (nothing follows it), but its FAIL mode is
+	// machine death — graded by marker absence plus E:00 in serial.
+	testConsoleBackpressure()
+
 	return true
 }
 
 func main() { MazarinMain() }
+
+// consTag is the marker prefix for the console-backpressure stage.
+const consTag = "[constest] "
+
+// floodCalls × floodPerCall sizes the console flood: each call makes the
+// kernel klog.Errf ~800 bytes from inside the SVC handler — more than
+// topHalfUartRing holds (508 one-byte events) — so once the linux
+// shepherd's drain lags, pushStringFull hits ring-full IN HANDLER CONTEXT
+// and parks via YieldToReadyThread. 150 calls × up to 10ms park budget
+// bounds the stage at ~1.5s worst case.
+const (
+	floodCalls   = 150
+	floodPerCall = 8
+)
+
+// testConsoleBackpressure forces the kernel console into sustained
+// backpressure from syscall-handler context (MAZ-193 red test).
+//
+// On a kernel that saves yielded continuations with a hardcoded SPSR/SP
+// (the pre-MAZ-193 defect), each ring-full park taken from handler
+// context is a loaded gun: the mislabeled resume lands handler code at
+// EL1t on an SP_EL0 alias of the exception stack and the machine dies
+// with `E:00 EL=1` in serial, so the PASS marker below never prints. On
+// a fixed kernel every park resumes correctly and the stage passes.
+//
+// PASS requires the park path to have actually been ENTERED (park-count
+// delta > 0, sampled via sys.RingPushParkCount) — survival alone is not
+// proof the path under test ran (the drain could outpace the flood).
+func testConsoleBackpressure() {
+	sys.UartWriteString(consTag + "start\n")
+	parks0 := sys.RingPushParkCount()
+	lines := int64(0)
+	for i := 0; i < floodCalls; i++ {
+		lines += sys.ConsoleFloodTest(floodPerCall)
+	}
+	if lines != floodCalls*floodPerCall {
+		sys.UartWriteString(consTag + "FAIL: flood short-circuited: lines=" +
+			sys.Itoa(lines) + " want=" + sys.Itoa(floodCalls*floodPerCall) + "\n")
+		return
+	}
+	parks := sys.RingPushParkCount() - parks0
+	if parks == 0 {
+		sys.UartWriteString(consTag + "FAIL: park path never exercised (ring drained faster than flood)\n")
+		return
+	}
+	// Liveness probe: a syscall that must round-trip if the kernel is sane.
+	if _, err := sys.GetShepherdByName(targetSym); err != nil {
+		sys.UartWriteString(consTag + "FAIL: post-flood liveness: " + err.Error() + "\n")
+		return
+	}
+	sys.UartWriteString(consTag + "PASS survived console backpressure (parks=" +
+		sys.Itoa(int64(parks)) + ")\n")
+}
 
 // pipeTag is the deterministic marker prefix the pipe2 guest stage prints.
 // One [pipe2test] PASS line on success; [pipe2test] FAIL <reason> otherwise.
