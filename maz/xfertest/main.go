@@ -398,19 +398,27 @@ const (
 // testConsoleBackpressure forces the kernel console into sustained
 // backpressure from syscall-handler context (MAZ-193 red test).
 //
-// On a kernel that saves yielded continuations with a hardcoded SPSR/SP
-// (the pre-MAZ-193 defect), each ring-full park taken from handler
-// context is a loaded gun: the mislabeled resume lands handler code at
-// EL1t on an SP_EL0 alias of the exception stack and the machine dies
-// with `E:00 EL=1` in serial, so the PASS marker below never prints. On
-// a fixed kernel every park resumes correctly and the stage passes.
+// Pre-MAZ-193, a ring-full push from handler context PARKED via
+// YieldToReadyThread with a hardcoded SPSR/SP: the mislabeled resume
+// landed handler code at EL1t on an SP_EL0 alias of the exception stack
+// and the machine died with `E:00 EL=1` (so this stage's PASS never
+// printed — 3/3 boots in the red run). With only the truthful-PSTATE
+// half of the fix, the park instead strands the calling thread forever
+// (this stage hangs after "start" — observed 3/3 in the first green
+// attempt), because a suspended mid-handler frame on the shared
+// exception stack cannot be legally resumed. The complete fix refuses
+// to park from handler context and DROPS instead, so a fixed kernel
+// survives the flood with a nonzero handler-context drop count.
 //
-// PASS requires the park path to have actually been ENTERED (park-count
-// delta > 0, sampled via sys.RingPushParkCount) — survival alone is not
-// proof the path under test ran (the drain could outpace the flood).
+// PASS therefore requires the drop path to have actually been ENTERED
+// (handler-drop delta > 0, via sys.HandlerCtxDropCount) — survival alone
+// is not proof the path under test ran (the drain could outpace the
+// flood). Park count is reported for visibility but not asserted:
+// legitimate thread-0 (EL1t) parks may or may not occur during the run.
 func testConsoleBackpressure() {
 	sys.UartWriteString(consTag + "start\n")
 	parks0 := sys.RingPushParkCount()
+	hdrops0 := sys.HandlerCtxDropCount()
 	lines := int64(0)
 	for i := 0; i < floodCalls; i++ {
 		lines += sys.ConsoleFloodTest(floodPerCall)
@@ -420,9 +428,9 @@ func testConsoleBackpressure() {
 			sys.Itoa(lines) + " want=" + sys.Itoa(floodCalls*floodPerCall) + "\n")
 		return
 	}
-	parks := sys.RingPushParkCount() - parks0
-	if parks == 0 {
-		sys.UartWriteString(consTag + "FAIL: park path never exercised (ring drained faster than flood)\n")
+	hdrops := sys.HandlerCtxDropCount() - hdrops0
+	if hdrops == 0 {
+		sys.UartWriteString(consTag + "FAIL: handler-context backpressure path never exercised\n")
 		return
 	}
 	// Liveness probe: a syscall that must round-trip if the kernel is sane.
@@ -430,8 +438,9 @@ func testConsoleBackpressure() {
 		sys.UartWriteString(consTag + "FAIL: post-flood liveness: " + err.Error() + "\n")
 		return
 	}
-	sys.UartWriteString(consTag + "PASS survived console backpressure (parks=" +
-		sys.Itoa(int64(parks)) + ")\n")
+	parks := sys.RingPushParkCount() - parks0
+	sys.UartWriteString(consTag + "PASS survived console backpressure (hdrops=" +
+		sys.Itoa(int64(hdrops)) + " parks=" + sys.Itoa(int64(parks)) + ")\n")
 }
 
 // pipeTag is the deterministic marker prefix the pipe2 guest stage prints.

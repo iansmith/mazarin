@@ -139,6 +139,18 @@ const DebugMarkerRingPushParks = 0xDBC
 // (same pattern as EpochStatusDumpFn).
 var RingPushParkCountFn func() uint64
 
+// DebugMarkerHandlerCtxDrops returns the cumulative count of
+// pushStringFull ring-full drops taken in handler context (the MAZ-193
+// refuse-to-park branch) via the syscall's int64 return value.
+// Test-only: this is the "exercised" signal xfertest's
+// console-backpressure stage asserts on. Userspace wrapper:
+// mazarin/sys.HandlerCtxDropCount.
+const DebugMarkerHandlerCtxDrops = 0xDBD
+
+// HandlerCtxDropsFn, if non-nil, returns the kernel console's cumulative
+// handler-context drop count. Wired by kmazarin main at boot.
+var HandlerCtxDropsFn func() uint64
+
 // consoleFloodTest is the DebugMarkerConsoleFlood implementation. Split
 // out of the nosplit SyscallDebugPrint dispatcher because klog.Errf
 // formats and allocates — same reason other klog-using syscall handlers
@@ -190,6 +202,12 @@ func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
 			return 0
 		}
 		return int64(RingPushParkCountFn())
+	}
+	if marker == DebugMarkerHandlerCtxDrops {
+		if HandlerCtxDropsFn == nil {
+			return 0
+		}
+		return int64(HandlerCtxDropsFn())
 	}
 	if marker == DebugMarkerGetPTEFlags {
 		// v1 = userspace VA. Walk the active page table (the caller's,

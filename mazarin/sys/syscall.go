@@ -88,6 +88,19 @@ func RingPushParkCount() uint64 {
 	return uint64(r1)
 }
 
+// HandlerCtxDropCount returns the kernel console's cumulative count of
+// ring-full drops taken in handler context (pushStringFull's MAZ-193
+// refuse-to-park branch). Test-only companion to ConsoleFloodTest: on a
+// fixed kernel the flood must drive this counter, proving the
+// backpressure path under test actually ran. Marker 0xDBD is reserved
+// by ksyscall.DebugMarkerHandlerCtxDrops.
+//
+//go:nosplit
+func HandlerCtxDropCount() uint64 {
+	r1, _, _ := RawSyscall(mazzy.SysDebugPrint, 0xDBD, 0, 0, 0, 0, 0)
+	return uint64(r1)
+}
+
 // GetPTEFlags returns the caller's L3 PTE permission flags for va as ELF
 // permission bits: bit 0 = ELF_PF_X (execute), bit 1 = ELF_PF_W (write),
 // bit 2 = ELF_PF_R (read — always set for a valid mapping). Returns 0 if
