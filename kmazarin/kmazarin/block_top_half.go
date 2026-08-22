@@ -126,21 +126,14 @@ func blockTopHalf() {
 				}
 			}
 			if !cqWritten {
-				// No active CQ, or CQ full: fall back to the legacy completion ring.
+				// No active CQ, or CQ full: fall back to the internal soft-IRQ ring.
 				atomic.AddUint32(&dbgBlockCQEMissed, 1)
 				ev := hid.HIDEvent{
 					Type:  tag,
 					Code:  status,
 					Value: info.UsedLen,
 				}
-				crKVA := blockCompletionRingKVA
-				if crKVA != 0 {
-					if !completionRingPush(crKVA, ev) {
-						atomic.AddUint32(&dbgBlockRingFull, 1)
-					}
-				} else {
-					ringPush(&topHalfBlockRing, ev)
-				}
+				ringPush(&topHalfBlockRing, ev)
 			}
 
 			// Clear metadata slot

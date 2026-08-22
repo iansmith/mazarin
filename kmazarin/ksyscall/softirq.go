@@ -129,32 +129,6 @@ func SyscallRegisterSoftIRQ(irqNum, slotNum, _, _, _, _ uint64) int64 {
 	return RegisterSoftIRQSlotKsyscall(uint32(irqNum), int32(slotNum), int16(pid))
 }
 
-// SyscallRegisterCompletionRing registers a userspace-owned shared completion
-// ring page with the kernel. The kernel pins the page and the IRQ top-half
-// writes completions directly to it.
-// arg0 = completion ring page VA (userspace-allocated, page-aligned)
-// arg1 = device type (0 = block device, 1 = HID input)
-// Returns: 0 on success, negative errno on error.
-//
-//go:noinline
-func SyscallRegisterCompletionRing(ringVA, deviceType, _, _, _, _ uint64) int64 {
-	if ringVA == 0 {
-		return -14 // EFAULT
-	}
-	if ringVA&0xFFF != 0 {
-		return -22 // EINVAL — must be page-aligned
-	}
-	pid := getCurrentThreadSID()
-	switch deviceType {
-	case 0:
-		return RegisterBlockCompletionRing(uintptr(ringVA), int16(pid))
-	case 1:
-		return RegisterInputCompletionRing(uintptr(ringVA), int16(pid))
-	default:
-		return -22 // EINVAL
-	}
-}
-
 // SyscallQueryInputDevices fills a userspace array with available input device info.
 // arg0 = pointer to InputDeviceInfo array in userspace (max 8 entries)
 // Returns: number of devices found, or negative errno.

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"mazzy/shared/hid"
 	"mazzy/shared/mazzy"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -40,39 +39,6 @@ func RegisterSoftIRQ(irqNum uint32, slot int) error {
 		return errors.New("RegisterSoftIRQ failed")
 	}
 	return nil
-}
-
-// RegisterCompletionRing registers a userspace-owned shared completion ring
-// page with the kernel. The kernel pins the page and the IRQ top-half writes
-// block I/O completions directly to it.
-// deviceType: 0 = block device.
-func RegisterCompletionRing(ringVA uintptr, deviceType int) error {
-	r1, _, errno := RawSyscall(mazzy.SysRegisterCompletionRing,
-		ringVA,
-		uintptr(deviceType),
-		0, 0, 0, 0)
-
-	if errno != 0 || int64(r1) < 0 {
-		return errors.New("RegisterCompletionRing failed")
-	}
-	return nil
-}
-
-// PollCompletionRing drains up to max events from a shared completion ring.
-// Returns the number of events read. Does not block — returns 0 if empty.
-func PollCompletionRing(ring *hid.CompletionRing, events []hid.HIDEvent, max int) int {
-	n := 0
-	for n < max {
-		head := atomic.LoadUint32(&ring.Head)
-		tail := atomic.LoadUint32(&ring.Tail)
-		if head == tail {
-			break
-		}
-		events[n] = ring.Events[head%ring.Capacity]
-		atomic.StoreUint32(&ring.Head, head+1)
-		n++
-	}
-	return n
 }
 
 // QueryInputDevices returns information about available input devices.
