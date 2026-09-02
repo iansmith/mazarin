@@ -313,36 +313,40 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool, teardown bool) int
 					}
 				}
 
-				// [MAZ-195] Zero the parent entry before releasing the child
-				// table, so no freed table page is ever reachable through a
-				// live PTE (same invariant as the leaf zeroing above; applies
-				// even when releasePTPage declines to free — the parent table
-				// is itself torn down moments later).
-				*(*uint64)(unsafe.Pointer(l2VA + uintptr(k)*8)) = 0
 				// Free the L3 page table page itself.
-				if releasePTPage(l3PA, teardown) {
+				if zeroParentAndRelease(l2VA, k, l3PA, teardown) {
 					freed++
 				}
 			}
 			dsbSY()
-			// Free the L2 page table page itself ([MAZ-195] parent entry first).
-			*(*uint64)(unsafe.Pointer(l1VA + uintptr(j)*8)) = 0
-			if releasePTPage(l2PA, teardown) {
+			// Free the L2 page table page itself.
+			if zeroParentAndRelease(l1VA, j, l2PA, teardown) {
 				freed++
 			}
 		}
 		dsbSY()
-		// Free the L1 page table page itself ([MAZ-195] parent entry first).
-		*(*uint64)(unsafe.Pointer(l0VA + uintptr(i)*8)) = 0
-		if releasePTPage(l1PA, teardown) {
+		// Free the L1 page table page itself.
+		if zeroParentAndRelease(l0VA, i, l1PA, teardown) {
 			freed++
 		}
 	}
 	dsbSY()
-	// Free the L0 root page itself.
+	// Free the L0 root page itself (no parent entry to clear).
 	if releasePTPage(l0PA, teardown) {
 		freed++
 	}
 
 	return freed
+}
+
+// zeroParentAndRelease clears the parent PTE at parentVA[idx] and then
+// releases the child page-table page it pointed to, reporting whether the
+// page was freed. [MAZ-195] The zero comes first so no freed table page is
+// ever reachable through a live PTE — the same invariant as the leaf
+// zeroing in the walk above, and it applies even when releasePTPage
+// declines to free (the parent table is itself torn down moments later).
+// Callers batch visibility with one dsbSY per table.
+func zeroParentAndRelease(parentVA uintptr, idx int, childPA uintptr, teardown bool) bool {
+	*(*uint64)(unsafe.Pointer(parentVA + uintptr(idx)*8)) = 0
+	return releasePTPage(childPA, teardown)
 }
