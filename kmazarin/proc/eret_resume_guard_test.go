@@ -39,12 +39,24 @@ import (
 // inline ERET, el0_return — and one in main.YieldToReadyThread.abi0), and
 // asserts that in the instructions immediately preceding each one, the code
 // computes the addresses of BOTH main.vectorBlobLo and main.vectorBlobHi
-// (the ADRP+LDR/STR/ADD idiom Go asm uses to reference a global). On
-// current (unguarded) code this is false for all five sites — that is the
-// red this phase establishes. It does not, and cannot, prove the SPSR mask
-// comparison or the halt routing are wired correctly; that part of the DoD
-// (no false halt on any legitimate resume) is signed off by the 10x180s
-// soak called for in the ticket, not by this structural probe.
+// (the ADRP+LDR/STR/ADD idiom Go asm uses to reference a global) AND that a
+// conditional branch (b.cond/cbz/cbnz/tbz/tbnz) follows the first such
+// reference — so a guard that loads the bounds but never actually compares
+// and branches on them does not get credit. On current (unguarded) code
+// this is false for all five sites — that is the red this phase
+// establishes. It does not, and cannot, prove the SPSR mask comparison or
+// the halt routing are wired correctly; that part of the DoD (no false halt
+// on any legitimate resume) is signed off by the 10x180s soak called for in
+// the ticket, not by this structural probe, and the true-positive property
+// (the guard actually firing on a real poisoned pair) is unverified by
+// anything in this DoD — there is no poison-producer knob to drive it.
+//
+// ERET census: kmazarin's ARM64 asm contains SIX ERET instructions. The
+// sixth, ksyscall/launch_arm64.s jumpToUserspace, is deliberately excluded
+// from this test (and from the guard): its SPSR is the hardcoded immediate
+// 0 (fresh EL0t entry) and its ELR is the caller-supplied entry point —
+// neither is restored from a saved ThreadContext/exception frame, so it
+// cannot carry the poisoned-context corruption this ticket targets.
 //
 // Environment dependency, documented rather than hidden: this test shells
 // out to the project's prebuilt ARM64 cross-toolchain (bin/target-objdump,
@@ -104,8 +116,12 @@ var (
 	labelLineRe = regexp.MustCompile(`^([0-9a-fA-F]+)\s+<([^>]+)>:\s*$`)
 	nmLineRe    = regexp.MustCompile(`^([0-9a-fA-F]+)\s+\S\s+(\S+)\s*$`)
 	adrpRe      = regexp.MustCompile(`^(x[0-9]+|sp)\s*,\s*([0-9a-fA-F]+)\b`)
-	baseOffRe   = regexp.MustCompile(`\[(x[0-9]+|sp)\s*,\s*#(-?\d+)\]`)
-	addImmRe    = regexp.MustCompile(`^(x[0-9]+|sp)\s*,\s*(x[0-9]+|sp)\s*,\s*#(-?\d+)`)
+	// Immediates accept both decimal and hex: this objdump prints LDR/STR
+	// offsets in decimal but ADD immediates in hex (#0xf28), so a
+	// decimal-only pattern silently mis-parses ADRP+ADD address
+	// materialization as offset 0 — a false negative with no error.
+	baseOffRe = regexp.MustCompile(`\[(x[0-9]+|sp)\s*,\s*#(-?(?:0x[0-9a-fA-F]+|\d+))\]`)
+	addImmRe  = regexp.MustCompile(`^(x[0-9]+|sp)\s*,\s*(x[0-9]+|sp)\s*,\s*#(-?(?:0x[0-9a-fA-F]+|\d+))`)
 )
 
 // resolveSymbolAddr runs bin/target-nm over the ELF and returns the address
@@ -196,11 +212,19 @@ func findErets(lines []asmLine) []eretSite {
 }
 
 // guardRefs records whether, within a site's search window, the code
-// computed the address of vectorBlobLo and/or vectorBlobHi.
+// computed the address of vectorBlobLo and/or vectorBlobHi, and whether a
+// conditional branch follows the first such reference (i.e. the loaded
+// bounds are actually acted on, not merely materialized).
 type guardRefs struct {
-	sawLo bool
-	sawHi bool
+	sawLo         bool
+	sawHi         bool
+	branchAfter   bool
+	firstRefIndex int // stream index of the first blob reference, -1 if none
 }
+
+// condBranchMnemonics matches the ARM64 conditional-branch family a guard's
+// compare must end in: b.<cond>, cbz/cbnz, tbz/tbnz.
+var condBranchRe = regexp.MustCompile(`^(b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$`)
 
 // findGuardRefsBeforeErets checks, for each ERET site, whether the
 // instructions immediately preceding it (bounded by guardWindowInstrs, the
@@ -231,13 +255,22 @@ func findGuardRefsBeforeErets(lines []asmLine, erets []eretSite, blobLo, blobHi 
 		}
 
 		regPage := map[string]uint64{}
-		var refs guardRefs
+		refs := guardRefs{firstRefIndex: -1}
+		noteRef := func(i int) {
+			if refs.firstRefIndex < 0 {
+				refs.firstRefIndex = i
+			}
+		}
 		for i := lowerBound; i < e.idx; i++ {
 			l := lines[i]
 			if l.isLabel {
 				continue
 			}
-			switch strings.ToLower(l.mnemonic) {
+			mn := strings.ToLower(l.mnemonic)
+			if refs.firstRefIndex >= 0 && condBranchRe.MatchString(mn) {
+				refs.branchAfter = true
+			}
+			switch mn {
 			case "adrp":
 				if m := adrpRe.FindStringSubmatch(l.operands); m != nil {
 					page, err := strconv.ParseUint(m[2], 16, 64)
@@ -249,14 +282,16 @@ func findGuardRefsBeforeErets(lines []asmLine, erets []eretSite, blobLo, blobHi 
 				if m := baseOffRe.FindStringSubmatch(l.operands); m != nil {
 					base, off := m[1], m[2]
 					if page, ok := regPage[base]; ok {
-						offVal, err := strconv.ParseInt(off, 10, 64)
+						offVal, err := strconv.ParseInt(off, 0, 64)
 						if err == nil {
 							addr := uint64(int64(page) + offVal)
 							if addr == blobLo {
 								refs.sawLo = true
+								noteRef(i)
 							}
 							if addr == blobHi {
 								refs.sawHi = true
+								noteRef(i)
 							}
 						}
 					}
@@ -265,14 +300,16 @@ func findGuardRefsBeforeErets(lines []asmLine, erets []eretSite, blobLo, blobHi 
 				if m := addImmRe.FindStringSubmatch(l.operands); m != nil {
 					src, off := m[2], m[3]
 					if page, ok := regPage[src]; ok {
-						offVal, err := strconv.ParseInt(off, 10, 64)
+						offVal, err := strconv.ParseInt(off, 0, 64)
 						if err == nil {
 							addr := uint64(int64(page) + offVal)
 							if addr == blobLo {
 								refs.sawLo = true
+								noteRef(i)
 							}
 							if addr == blobHi {
 								refs.sawHi = true
+								noteRef(i)
 							}
 							// Propagate so a chained ADRP+ADD+LDR (address
 							// materialized in a second register) is still
@@ -306,6 +343,29 @@ func TestEretSitesGuardedByVectorBlobBounds(t *testing.T) {
 		}
 	}
 
+	// Staleness guard: this test's verdict is only as fresh as the ELF it
+	// disassembles. A kmazarin.elf older than the asm sources it was built
+	// from would silently grade yesterday's kernel (this repo has shipped
+	// exactly that failure before — see feedback_runtime_overlay_verify).
+	// Fail loudly, don't skip: a stale ELF mid-development is an actionable
+	// error, not a missing environment.
+	elfInfo, err := os.Stat(elf)
+	if err != nil {
+		t.Fatalf("os.Stat(%s): %v", elf, err)
+	}
+	for _, src := range []string{
+		filepath.Join(root, "kmazarin", "kmazarin", "exceptions_arm64.s"),
+		filepath.Join(root, "kmazarin", "kmazarin", "abi_stubs_arm64.s"),
+	} {
+		srcInfo, err := os.Stat(src)
+		if err != nil {
+			t.Fatalf("os.Stat(%s): %v", src, err)
+		}
+		if elfInfo.ModTime().Before(srcInfo.ModTime()) {
+			t.Fatalf("MAZ-197: build/kmazarin.elf (%s) is OLDER than %s (%s) — the disassembly would grade a stale kernel. Rebuild with `$GO tool task` and re-run", elfInfo.ModTime().Format("2006-01-02 15:04:05"), src, srcInfo.ModTime().Format("2006-01-02 15:04:05"))
+		}
+	}
+
 	blobLo := resolveSymbolAddr(t, nmBin, elf, vectorBlobLoSym)
 	blobHi := resolveSymbolAddr(t, nmBin, elf, vectorBlobHiSym)
 	if blobLo == 0 || blobHi == 0 || blobHi <= blobLo {
@@ -329,6 +389,11 @@ func TestEretSitesGuardedByVectorBlobBounds(t *testing.T) {
 		if !refs.sawLo || !refs.sawHi {
 			t.Errorf("MAZ-197: ERET at %#x (in %s) is not preceded by a guard sequence referencing both %s (%#x, seen=%v) and %s (%#x, seen=%v) — the asm pre-ERET resume guard is missing at this site",
 				e.addr, e.fn, vectorBlobLoSym, blobLo, refs.sawLo, vectorBlobHiSym, blobHi, refs.sawHi)
+			continue
+		}
+		if !refs.branchAfter {
+			t.Errorf("MAZ-197: ERET at %#x (in %s) loads %s/%s but no conditional branch (b.cond/cbz/cbnz/tbz/tbnz) follows the first reference — the bounds are materialized but never compared and acted on; a guard that cannot fire is not a guard",
+				e.addr, e.fn, vectorBlobLoSym, vectorBlobHiSym)
 		}
 	}
 }
