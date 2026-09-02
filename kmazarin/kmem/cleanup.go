@@ -325,7 +325,12 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool, teardown bool) int
 			}
 		}
 		dsbSY()
-		// Free the L1 page table page itself.
+		// Free the L1 page table page itself. LOAD-BEARING precondition:
+		// the caller must have switched TTBR0/CR3 off this table first
+		// (both callers do — cleanup.go:49-53, teardown.go:54-58). On
+		// x86_64 zeroing a live L0 entry here would otherwise be an
+		// instant triple fault on the next TLB miss; a future caller
+		// that skips the switch is the hazard.
 		if zeroParentAndRelease(l0VA, i, l1PA, teardown) {
 			freed++
 		}
