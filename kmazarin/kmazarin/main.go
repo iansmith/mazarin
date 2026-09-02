@@ -145,6 +145,11 @@ func init() {
 	// sys.DumpKernelStatus() when they observe interesting events.
 	ksyscall.EpochStatusDumpFn = RequestEpochStatusDump
 
+	// Wire the ring-full park + handler-context drop counter reads for
+	// xfertest's console-backpressure stage (MAZ-193).
+	ksyscall.RingPushParkCountFn = GetKernelRingPushParkCount
+	ksyscall.HandlerCtxDropsFn = GetSoftIRQHandlerCtxDrops
+
 	// Initialize soft IRQ subsystem (static allocation, no heap needed)
 	InitSoftIRQ()
 

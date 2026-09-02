@@ -177,6 +177,16 @@ TEXT ·readELR_EL1(SB), NOSPLIT|NOFRAME, $0-8
 	MOVQ	AX, ret+0(FP)
 	RET
 
+// inHandlerContextASM: ARM64 reads SPSel so pushStringFull can refuse to
+// park from handler context, where a suspended frame on the shared
+// exception stack cannot be legally resumed (MAZ-193). amd64 handler
+// chains ARE resumable by design — the MAZ-136 global IST/RSP0 rotation
+// cursors retire abandoned levels — so parking from handler context is
+// legal here and this deliberately always reports "not handler context".
+TEXT ·inHandlerContextASM(SB), NOSPLIT|NOFRAME, $0-8
+	MOVQ	$0, ret+0(FP)
+	RET
+
 // ============================================================================
 // YieldToReadyThread - Save thread 0 context and switch to next thread
 // ============================================================================

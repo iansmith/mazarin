@@ -174,6 +174,30 @@ var pushBlockerDeadlineExpired uint32
 // boot, surfaced on the [status] line.
 var softIRQDroppedBytes uint64
 
+// kernelRingPushParkCount counts ring-full parks in pushStringFull (one
+// per YieldToReadyThread entry). Companion to softIRQDroppedBytes.
+// Exposed via ksyscall.RingPushParkCountFn so xfertest's
+// console-backpressure stage (MAZ-193) can assert the park path it
+// floods was actually entered, instead of inferring it from volume.
+var kernelRingPushParkCount uint64
+
+// softIRQHandlerCtxDrops counts pushStringFull calls that hit ring-full
+// in handler context and dropped the remainder instead of parking
+// (MAZ-193). Bytes are also counted in softIRQDroppedBytes; this counts
+// occurrences, and is the "exercised" signal for xfertest's
+// console-backpressure stage (ksyscall marker 0xDBD).
+var softIRQHandlerCtxDrops uint64
+
+// GetSoftIRQHandlerCtxDrops returns the cumulative handler-context drop count.
+func GetSoftIRQHandlerCtxDrops() uint64 {
+	return atomic.LoadUint64(&softIRQHandlerCtxDrops)
+}
+
+// GetKernelRingPushParkCount returns the cumulative ring-full park count.
+func GetKernelRingPushParkCount() uint64 {
+	return atomic.LoadUint64(&kernelRingPushParkCount)
+}
+
 // EnableSoftIRQConsole switches the kernel console from direct MMIO
 // to the soft IRQ ring. Must be called after SetupUartSoftIRQ and
 // after a userspace shepherd has registered on the UART slot.
@@ -264,6 +288,22 @@ func pushStringFull(c *SoftIRQConsole, fd byte, s string) {
 		// Ring full mid-string. Make sure the consumer is awake, then park.
 		c.wake()
 
+		// [MAZ-193] NEVER park from handler context. A park here suspends a
+		// mid-handler continuation on the shared exception stack; that frame
+		// has a non-stack lifetime and cannot be legally resumed — SP_EL1 is
+		// one global stack, never restored per-thread. (Pre-fix this ERETed
+		// to a poisoned EL1t context — the E:00 wedge; with the truthful
+		// PSTATE capture it strands the parked caller instead.) Dropping is
+		// established policy: this is the fourth drop condition alongside
+		// blocker-busy, budget-exhausted, and deadline-expired. amd64 never
+		// takes this branch — its handler chains are resumable (MAZ-136
+		// rotation cursors), and inHandlerContextASM returns 0 there.
+		if inHandlerContextASM() != 0 {
+			atomic.AddUint64(&softIRQHandlerCtxDrops, 1)
+			atomic.AddUint64(&softIRQDroppedBytes, uint64(len(s)))
+			return
+		}
+
 		now := kirq.ReadCounterValue()
 		elapsed := now - startTick
 		if elapsed >= budgetTicks {
@@ -281,6 +321,7 @@ func pushStringFull(c *SoftIRQConsole, fd byte, s string) {
 		atomic.StoreUint32(&pushBlockerDeadlineExpired, 0)
 		pendingYieldBlockState = ThreadBlockedKernelRingPush
 		thread0PendingDeadline = startTick + budgetTicks
+		atomic.AddUint64(&kernelRingPushParkCount, 1)
 		YieldToReadyThread()
 
 		// Resumed. If the deadline expiry handler beat the drain wake,

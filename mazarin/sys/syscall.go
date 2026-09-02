@@ -1,4 +1,3 @@
-
 // Package sys provides the client-side API for Mazzy-specific syscalls.
 package sys
 
@@ -61,6 +60,45 @@ func SetMapFailInjection(arm bool) {
 //go:nosplit
 func SetMapFailAfter(n int32) {
 	RawSyscall(mazzy.SysDebugPrint, 0xDB9, uintptr(uint32(n)), 0, 0, 0, 0)
+}
+
+// ConsoleFloodTest asks the kernel to emit n (clamped to 64) filler lines
+// through klog.Errf from inside THIS syscall's handler context. With the
+// soft-IRQ console active, sustained calls saturate the kernel console
+// ring and force pushStringFull's ring-full park from handler context —
+// the yield path under test in xfertest's console-backpressure stage
+// (MAZ-193). Returns the number of lines the kernel emitted. Test-only.
+// Marker 0xDBB is reserved by ksyscall.DebugMarkerConsoleFlood.
+//
+//go:nosplit
+func ConsoleFloodTest(n uint32) int64 {
+	r1, _, _ := RawSyscall(mazzy.SysDebugPrint, 0xDBB, uintptr(n), 0, 0, 0, 0)
+	return int64(r1)
+}
+
+// RingPushParkCount returns the kernel console's cumulative ring-full
+// park count (pushStringFull entries into YieldToReadyThread). Test-only
+// companion to ConsoleFloodTest: xfertest samples it before and after
+// the flood to assert the park path was actually exercised (MAZ-193).
+// Marker 0xDBC is reserved by ksyscall.DebugMarkerRingPushParks.
+//
+//go:nosplit
+func RingPushParkCount() uint64 {
+	r1, _, _ := RawSyscall(mazzy.SysDebugPrint, 0xDBC, 0, 0, 0, 0, 0)
+	return uint64(r1)
+}
+
+// HandlerCtxDropCount returns the kernel console's cumulative count of
+// ring-full drops taken in handler context (pushStringFull's MAZ-193
+// refuse-to-park branch). Test-only companion to ConsoleFloodTest: on a
+// fixed kernel the flood must drive this counter, proving the
+// backpressure path under test actually ran. Marker 0xDBD is reserved
+// by ksyscall.DebugMarkerHandlerCtxDrops.
+//
+//go:nosplit
+func HandlerCtxDropCount() uint64 {
+	r1, _, _ := RawSyscall(mazzy.SysDebugPrint, 0xDBD, 0, 0, 0, 0, 0)
+	return uint64(r1)
 }
 
 // GetPTEFlags returns the caller's L3 PTE permission flags for va as ELF

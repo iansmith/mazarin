@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -370,10 +371,89 @@ func runSmokeTests() bool {
 	sys.UartWriteString(tag + "PASS TransferPages rollback preserves caller PTE flags (flags=0x" +
 		sys.Hex64(uint64(fpFlagsBefore)) + ")\n")
 
-	return true
+	// --- Final stage: console-backpressure survival (MAZ-193) ---
+	// Runs LAST so a machine wedge here cannot mask the stages above.
+	// Blocking (bool) so a live FAIL — hdrops==0, short-circuited flood —
+	// withholds "all checks done", which soak grading keys on; promoted
+	// from non-blocking at the MAZ-193 PR review gate. As the final stage
+	// the promotion halts nothing. Its other FAIL mode is machine death,
+	// graded by marker absence plus E:00 in serial.
+	return testConsoleBackpressure()
 }
 
 func main() { MazarinMain() }
+
+// consTag is the marker prefix for the console-backpressure stage.
+const consTag = "[constest] "
+
+// floodCalls × floodPerCall sizes the console flood: each call makes the
+// kernel klog.Errf ~800 bytes from inside the SVC handler — more than
+// topHalfUartRing holds (508 one-byte events) — so once the linux
+// shepherd's drain lags, pushStringFull hits ring-full IN HANDLER CONTEXT
+// and parks via YieldToReadyThread. 150 calls × up to 10ms park budget
+// bounds the stage at ~1.5s worst case.
+const (
+	floodCalls   = 150
+	floodPerCall = 8
+)
+
+// testConsoleBackpressure forces the kernel console into sustained
+// backpressure from syscall-handler context (MAZ-193 red test).
+//
+// Pre-MAZ-193, a ring-full push from handler context PARKED via
+// YieldToReadyThread with a hardcoded SPSR/SP: the mislabeled resume
+// landed handler code at EL1t on an SP_EL0 alias of the exception stack
+// and the machine died with `E:00 EL=1` (so this stage's PASS never
+// printed — 3/3 boots in the red run). With only the truthful-PSTATE
+// half of the fix, the park instead strands the calling thread forever
+// (this stage hangs after "start" — observed 3/3 in the first green
+// attempt), because a suspended mid-handler frame on the shared
+// exception stack cannot be legally resumed. The complete fix refuses
+// to park from handler context and DROPS instead, so a fixed kernel
+// survives the flood with a nonzero handler-context drop count.
+//
+// PASS therefore requires the drop path to have actually been ENTERED
+// (handler-drop delta > 0, via sys.HandlerCtxDropCount) — survival alone
+// is not proof the path under test ran (the drain could outpace the
+// flood). Park count is reported for visibility but not asserted:
+// legitimate thread-0 (EL1t) parks may or may not occur during the run.
+func testConsoleBackpressure() bool {
+	// ARM64-only: the hdrops>0 assertion is unsatisfiable on amd64 by
+	// construction (inHandlerContextASM returns 0 there — handler chains
+	// are resumable via the MAZ-136 rotation cursors, so the drop branch
+	// never runs). Skip rather than fail if this binary is ever bundled
+	// into an amd64 image.
+	if runtime.GOARCH != "arm64" {
+		sys.UartWriteString(consTag + "SKIP: handler-context drops are arm64-only\n")
+		return true
+	}
+	sys.UartWriteString(consTag + "start\n")
+	parks0 := sys.RingPushParkCount()
+	hdrops0 := sys.HandlerCtxDropCount()
+	lines := int64(0)
+	for i := 0; i < floodCalls; i++ {
+		lines += sys.ConsoleFloodTest(floodPerCall)
+	}
+	if lines != floodCalls*floodPerCall {
+		sys.UartWriteString(consTag + "FAIL: flood short-circuited: lines=" +
+			sys.Itoa(lines) + " want=" + sys.Itoa(floodCalls*floodPerCall) + "\n")
+		return false
+	}
+	hdrops := sys.HandlerCtxDropCount() - hdrops0
+	if hdrops == 0 {
+		sys.UartWriteString(consTag + "FAIL: handler-context backpressure path never exercised\n")
+		return false
+	}
+	// Liveness probe: a syscall that must round-trip if the kernel is sane.
+	if _, err := sys.GetShepherdByName(targetSym); err != nil {
+		sys.UartWriteString(consTag + "FAIL: post-flood liveness: " + err.Error() + "\n")
+		return false
+	}
+	parks := sys.RingPushParkCount() - parks0
+	sys.UartWriteString(consTag + "PASS survived console backpressure (hdrops=" +
+		sys.Itoa(int64(hdrops)) + " parks=" + sys.Itoa(int64(parks)) + ")\n")
+	return true
+}
 
 // pipeTag is the deterministic marker prefix the pipe2 guest stage prints.
 // One [pipe2test] PASS line on success; [pipe2test] FAIL <reason> otherwise.

@@ -33,6 +33,16 @@ func EnableIRQs()
 //go:nosplit
 func readELR_EL1() uint64
 
+// inHandlerContextASM reports whether the caller is running on the shared
+// exception stack (handler context). ARM64: returns SPSel (nonzero = EL1h).
+// amd64: always 0 — its handler chains are resumable by design (MAZ-136
+// global IST/RSP0 rotation cursors), so parking from handler context is
+// legal there. Used by pushStringFull to refuse to park from handler
+// context (MAZ-193).
+//
+//go:nosplit
+func inHandlerContextASM() uint64
+
 //go:nosplit
 func GetGRegister() uint64
 

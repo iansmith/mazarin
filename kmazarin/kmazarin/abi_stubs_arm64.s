@@ -202,16 +202,47 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	// Save X29 (FP) and X30 (LR)
 	STP	(R29, R30), 232(R20)
 
-	// Save SP (current stack pointer = SP_EL0 since we're in EL1t)
+	// [MAZ-193] Capture the REAL processor state. This block previously
+	// assumed the caller always runs at EL1t and hardcoded both values:
+	//   MOVD RSP, R0        // "current SP = SP_EL0 since we're in EL1t"
+	//   MOVD $0x4, R0       // "EL1t mode, all exceptions unmasked"
+	// Both are false when the caller yields from HANDLER context (EL1h) —
+	// which pushStringFull does on console backpressure (xfertest's
+	// [constest] stage forces exactly this). The hardcode then wrote an
+	// exception-stack address into the thread's SP and mislabelled the
+	// mode as EL1t with all exceptions unmasked; the later ERET resumed
+	// handler code at EL1t/DAIF=0 on an SP_EL0 alias of the exception
+	// stack (fatal signature: E:00 EL=1), and force-unmasked DAIF on
+	// every legitimate thread-0 yield-resume (MAZ-192).
+	//
+	// SPSel selects which SP is live: 0 = SP_EL0 (EL1t), 1 = SP_EL1 (EL1h).
+	MRS	SPSel, R1
+	CBZ	R1, yield_sp_el0_is_rsp
+	// EL1h: RSP is SP_EL1 (the shared exception stack), NOT this thread's
+	// stack. Save SP_EL0 instead — but NOTE: for an EL0-originated
+	// exception (the common case) SP_EL0 still holds the USERSPACE SP at
+	// this point (exception entry saves/restores it in the trap frame but
+	// never repoints it), so even this "truthful" save does NOT produce a
+	// resumable context — SP_EL1 is one shared stack and is never restored
+	// per-thread. EL1h callers must not park: pushStringFull refuses at
+	// the call site (drops instead); a self-enforcing guard here is
+	// MAZ-196. This branch exists so a future violation saves honest
+	// state for the post-mortem rather than a mislabelled EL1t context.
+	MRS	SP_EL0, R0
+	B	yield_sp_saved
+yield_sp_el0_is_rsp:
 	MOVD	RSP, R0
+yield_sp_saved:
 	MOVD	R0, 248(R20)
 
 	// Save ELR = LR (return address — where to resume when scheduled back)
 	MOVD	R30, 256(R20)
 
-	// Save SPSR = 0x4 (EL1t mode, all exceptions unmasked)
-	// When thread 0 is scheduled back, ERET restores this SPSR, returning to EL1t
-	MOVD	$0x4, R0
+	// SPSR = real DAIF (bits 9:6 — identical layout in DAIF and SPSR_EL1)
+	// OR the real mode M[3:0]: 4 = EL1t, 5 = EL1h. R1 still holds SPSel.
+	MRS	DAIF, R0
+	ADD	$4, R1, R1
+	ORR	R1, R0, R0
 	MOVD	R0, 264(R20)
 
 	// Save LR in R19 before CALL clobbers it (R30).
@@ -320,5 +351,17 @@ yield_no_thread:
 // func readELR_EL1() uint64
 TEXT ·readELR_EL1(SB), NOSPLIT|NOFRAME, $0-8
 	MRS	ELR_EL1, R0
+	MOVD	R0, ret+0(FP)
+	RET
+
+// inHandlerContextASM returns SPSel: nonzero = running on SP_EL1, the
+// shared exception stack (EL1h handler context). pushStringFull uses it
+// to refuse to park from handler context (MAZ-193) — a suspended
+// mid-handler continuation lives on the shared exception stack, which is
+// never restored per-thread, so it cannot be legally resumed.
+//
+// func inHandlerContextASM() uint64
+TEXT ·inHandlerContextASM(SB), NOSPLIT|NOFRAME, $0-8
+	MRS	SPSel, R0
 	MOVD	R0, ret+0(FP)
 	RET
