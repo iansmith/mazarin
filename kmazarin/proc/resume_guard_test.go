@@ -4,9 +4,11 @@ import "testing"
 
 // MAZ-196: handler-blob code only ever executes at EL1h, so a saved
 // context pairing a PC inside the exception-vector blob with SPSR mode
-// bits != EL1h (SPSR&0xF != 5) is poisoned by definition — exactly what
-// the MAZ-193 SPSR hardcode produced (tier-17 witness caught the real
-// poisoned continuation). The guard must halt these before the ERET.
+// bits != EL1h is poisoned by definition. This pins the predicate only;
+// its placement (Go-side scheduler resume sites) is defence-in-depth —
+// the MAZ-179 probe record (tier-17/18) proved the MAZ-193 poison
+// reached ERET via asm paths that bypass these sites. See the doc on
+// BadResumeARM64.
 func TestBadResumeARM64(t *testing.T) {
 	const (
 		blobLo   = 0x45917800 // injected bounds, shaped like the real blob
@@ -31,6 +33,9 @@ func TestBadResumeARM64(t *testing.T) {
 		{"blobHi is exclusive", blobHi, modeEL1t, blobLo, blobHi, false},
 		// A genuine EL1h handler continuation is NOT the guard's business.
 		{"healthy: blob PC + EL1h", inBlob, 0x3C0 | modeEL1h, blobLo, blobHi, false},
+		// M[4]=1 (AArch32 state) must not alias to EL1h: 0x15 & 0xF == 5,
+		// but no handler ever runs AArch32 — the mask must cover M[4:0].
+		{"poisoned: blob PC + AArch32 mode 0x15", inBlob, 0x15, blobLo, blobHi, true},
 		// Ordinary contexts stay resumable regardless of mode.
 		{"healthy: kernel PC + EL1t", 0x45900000, modeEL1t, blobLo, blobHi, false},
 		{"healthy: user PC + EL0t", 0x10000, modeEL0t, blobLo, blobHi, false},

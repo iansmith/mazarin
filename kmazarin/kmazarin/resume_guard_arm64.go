@@ -13,6 +13,14 @@ import "mazzy/kmazarin/proc"
 // of the exception stack. The predicate (one definition, host-tested) lives
 // in proc.BadResumeARM64: PC==0, plus the poisoned pair — a PC inside the
 // exception-vector blob whose SPSR mode bits are not EL1h.
+//
+// Coverage, honestly (probe record, tiers 17/18): the MAZ-193 poison
+// reached ERET via asm exception-return paths that never consult these
+// Go-side resume sites — the four badResumeRIP call sites stayed silent
+// while E:00 kept firing on the probe branch. With the producer fixed
+// (MAZ-193), this guard is defence-in-depth for future producers routing
+// through the scheduler; the asm consumption-waist (pre-ERET) guard is a
+// separate ticket.
 
 // vectorBlobLo/Hi bound the exception-vector handler blob. Zero until
 // initResumeGuardBounds runs (the predicate skips the vector check then).

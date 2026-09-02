@@ -2627,11 +2627,15 @@ el0_irq_handler:
 // ============================================================================
 // exceptionVectorBlobEnd — end marker for the resume guard (MAZ-196)
 // ============================================================================
-// Zero-body TEXT placed immediately after the ExceptionVectorTable blob so
-// [ExceptionVectorTable, exceptionVectorBlobEnd) bounds every handler PC.
-// Relies on the linker preserving object-file symbol order (it does today);
-// initResumeGuardBounds sanity-checks the resulting span and publishes zeros
-// (degrading the guard to PC==0) if the layout ever stops cooperating.
+// Zero-body TEXT placed after the ExceptionVectorTable blob so
+// [ExceptionVectorTable, exceptionVectorBlobEnd) bounds the vector blob's
+// PCs. NOTE: linker placement is alignment-driven, not strictly source
+// order — small file-static helpers (mlockRearmFromFrame, printHex64Dblflt)
+// already link BELOW the 0x800-aligned table, outside these bounds; the
+// bound covers the vector table TEXT itself, which is where handler
+// execution lives. initResumeGuardBounds sanity-checks the span and
+// publishes zeros (degrading the guard to PC==0) if the layout ever stops
+// cooperating.
 TEXT ·exceptionVectorBlobEnd(SB), NOSPLIT|NOFRAME, $0
 	RET
 
