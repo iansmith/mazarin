@@ -68,6 +68,15 @@ func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGrou
 			if desc := GetPageDescriptor(pa); desc != nil && (desc.Flags&PD_FILE_BACKED) != 0 {
 				continue // Handler still holds a live PTE; defer to handleFlushReply
 			}
+			// [MAZ-195] Unmap BEFORE release: never free a page while an
+			// address space — even a dying one — still maps it. Releasing
+			// with the leaf PTE live (it would otherwise survive until
+			// Phase 2 destroys the L3 table) hands the page to a new owner
+			// while the old mapping exists; that is benign today only
+			// because the owner's threads no longer run, which nothing
+			// enforces. Unmapping first also keeps Phase 2's walk exact —
+			// it no longer sees this PTE.
+			UnmapUserPageWithL0(va, l0PA)
 			releasePageByPA(pa)
 		}
 	})
