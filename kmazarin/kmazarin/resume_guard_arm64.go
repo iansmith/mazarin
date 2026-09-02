@@ -44,5 +44,5 @@ func initResumeGuardBounds() {
 //
 //go:nosplit
 func badResumeRIP(next *Thread) bool {
-	return proc.BadResumeARM64(next.Context.GetPC(), next.Context.SPSR, vectorBlobLo, vectorBlobHi)
+	return proc.BadResumeARM64(next.Context.GetPC(), next.Context.GetProcessorState(), vectorBlobLo, vectorBlobHi)
 }

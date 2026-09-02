@@ -16,10 +16,14 @@ package proc
 //     produced. ERETing such a context runs handler code in the wrong mode
 //     on the wrong stack; halt loudly before the ERET instead.
 //
+// SPSRModeEL1h is the SPSR_EL1 M[3:0] encoding for EL1 with SP_EL1 (EL1h) —
+// the only mode exception-handler code ever executes in.
+const SPSRModeEL1h = 0x5
+
 //go:nosplit
 func BadResumeARM64(pc, spsr, blobLo, blobHi uint64) bool {
 	if pc == 0 {
 		return true
 	}
-	return blobLo != 0 && pc >= blobLo && pc < blobHi && spsr&0xF != 5
+	return blobLo != 0 && pc >= blobLo && pc < blobHi && spsr&0xF != SPSRModeEL1h
 }
