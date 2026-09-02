@@ -95,7 +95,7 @@ const CompletionRingSize = 508
 type CompletionRing struct {
 	Head     uint32                       // atomic: consumer index (userspace)
 	Tail     uint32                       // atomic: producer index (kernel top-half)
-	Capacity uint32                       // ring size (256), set by kernel
+	Capacity uint32                       // informational ring size (CompletionRingSize), set by kernel; NEVER used for kernel index math (MAZ-194)
 	Flags    uint32                       // overflow counter (low bits)
 	Lock     uint32                       // CAS spinlock for multi-core producers
 	_        [3]uint32                    // pad header to 32 bytes
@@ -103,11 +103,15 @@ type CompletionRing struct {
 }
 
 // EventSlot returns the Events index used for a push at the given tail.
-// Extracted verbatim from the kernel's completionRingPush (MAZ-194) so the
-// index math has one definition and is host-testable. The kernel IRQ path
-// calls this; it must be safe against a scribbled user-shared header.
+// One definition of the completion-ring index math (kernel IRQ path calls
+// this). It deliberately ignores the Capacity field: the header lives in
+// the user-shared ring page, so userspace can scribble Capacity at any
+// time — index math in the IRQ path must use only the compile-time
+// constant (MAZ-194). A scribbled Capacity would otherwise early-wrap
+// over unconsumed events (0 < cap < 508), bounds-panic the kernel
+// (cap > 508), or mod-zero-panic it (cap == 0).
 func (r *CompletionRing) EventSlot(tail uint32) uint32 {
-	return tail % r.Capacity
+	return tail % CompletionRingSize
 }
 
 // InputDeviceInfo describes an available input device.
