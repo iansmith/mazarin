@@ -52,29 +52,29 @@ const MaxHIDEvents = 32
 // The first field is InterruptType so callers can discriminate multi-source slots.
 // Total size: 8 + 4 + 4 + 32*8 = 272 bytes.
 type KeyboardInterruptReturn struct {
-	Interrupt InterruptType            // KeyboardInterrupt (with optional payload)
-	Length    uint32                   // Number of valid events in Events array
-	_         uint32                   // Padding for 8-byte alignment
-	Events   [MaxHIDEvents]HIDEvent   // Events array
+	Interrupt InterruptType          // KeyboardInterrupt (with optional payload)
+	Length    uint32                 // Number of valid events in Events array
+	_         uint32                 // Padding for 8-byte alignment
+	Events    [MaxHIDEvents]HIDEvent // Events array
 }
 
 // MouseInterruptReturn is returned by WaitSoftIRQ for mouse interrupt slots.
 // Total size: 8 + 4 + 4 + 32*8 = 272 bytes.
 type MouseInterruptReturn struct {
-	Interrupt InterruptType            // MouseInterrupt (with optional payload)
-	Length    uint32                   // Number of valid events in Events array
-	_         uint32                   // Padding for 8-byte alignment
-	Events   [MaxHIDEvents]HIDEvent   // Events array
+	Interrupt InterruptType          // MouseInterrupt (with optional payload)
+	Length    uint32                 // Number of valid events in Events array
+	_         uint32                 // Padding for 8-byte alignment
+	Events    [MaxHIDEvents]HIDEvent // Events array
 }
 
 // SoftIRQReturn is a generic return structure used by WaitSoftIRQ.
 // The InterruptType field allows callers to determine the source and cast accordingly.
 // Total size: 8 + 4 + 4 + 32*8 = 272 bytes.
 type SoftIRQReturn struct {
-	Interrupt InterruptType            // Discriminator (KeyboardInterrupt, MouseInterrupt, etc.)
-	Length    uint32                   // Number of valid events in Events array
-	_         uint32                   // Padding for 8-byte alignment
-	Events   [MaxHIDEvents]HIDEvent   // Events array
+	Interrupt InterruptType          // Discriminator (KeyboardInterrupt, MouseInterrupt, etc.)
+	Length    uint32                 // Number of valid events in Events array
+	_         uint32                 // Padding for 8-byte alignment
+	Events    [MaxHIDEvents]HIDEvent // Events array
 }
 
 // CompletionRingSize is the number of event slots in a CompletionRing.
@@ -93,13 +93,32 @@ const CompletionRingSize = 508
 //
 // Total size: 32 + 508*8 = 4096 bytes (exactly one 4KB page).
 type CompletionRing struct {
-	Head     uint32                        // atomic: consumer index (userspace)
-	Tail     uint32                        // atomic: producer index (kernel top-half)
-	Capacity uint32                        // ring size (256), set by kernel
-	Flags    uint32                        // overflow counter (low bits)
-	Lock     uint32                        // CAS spinlock for multi-core producers
-	_        [3]uint32                     // pad header to 32 bytes
-	Events   [CompletionRingSize]HIDEvent  // event slots
+	Head     uint32                       // atomic: consumer index (userspace)
+	Tail     uint32                       // atomic: producer index (kernel top-half)
+	Capacity uint32                       // informational ring size (CompletionRingSize), set by kernel; NEVER used for kernel index math (MAZ-194)
+	Flags    uint32                       // overflow counter (low bits)
+	Lock     uint32                       // CAS spinlock for multi-core producers
+	_        [3]uint32                    // pad header to 32 bytes
+	Events   [CompletionRingSize]HIDEvent // event slots
+}
+
+// EventSlot returns the Events index for a ring counter value (producer
+// tail or consumer head). One definition of the completion-ring index
+// math — the kernel IRQ-path push and the userspace poller both call it.
+// It deliberately ignores the Capacity field: the header lives in the
+// user-shared ring page, so userspace can scribble Capacity at any time —
+// index math in the IRQ path must use only the compile-time constant
+// (MAZ-194). A scribbled Capacity would otherwise early-wrap over
+// unconsumed events (0 < cap < 508), bounds-panic the kernel (cap > 508),
+// or mod-zero-panic it (cap == 0).
+//
+// nosplit: called (inlined today, but do not rely on that) from the
+// nosplit IRQ top-half chain via completionRingPush; asm-implies-nosplit
+// transitivity must hold even if a future edit defeats inlining.
+//
+//go:nosplit
+func (r *CompletionRing) EventSlot(idx uint32) uint32 {
+	return idx % CompletionRingSize
 }
 
 // InputDeviceInfo describes an available input device.
