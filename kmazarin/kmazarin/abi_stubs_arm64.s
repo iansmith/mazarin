@@ -219,7 +219,15 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MRS	SPSel, R1
 	CBZ	R1, yield_sp_el0_is_rsp
 	// EL1h: RSP is SP_EL1 (the shared exception stack), NOT this thread's
-	// stack. Read the thread's real SP_EL0 instead.
+	// stack. Save SP_EL0 instead — but NOTE: for an EL0-originated
+	// exception (the common case) SP_EL0 still holds the USERSPACE SP at
+	// this point (exception entry saves/restores it in the trap frame but
+	// never repoints it), so even this "truthful" save does NOT produce a
+	// resumable context — SP_EL1 is one shared stack and is never restored
+	// per-thread. EL1h callers must not park: pushStringFull refuses at
+	// the call site (drops instead); a self-enforcing guard here is
+	// MAZ-196. This branch exists so a future violation saves honest
+	// state for the post-mortem rather than a mislabelled EL1t context.
 	MRS	SP_EL0, R0
 	B	yield_sp_saved
 yield_sp_el0_is_rsp:

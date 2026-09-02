@@ -158,6 +158,15 @@ var HandlerCtxDropsFn func() uint64
 //
 //go:noinline
 func consoleFloodTest(n uint64) int64 {
+	// Only flood once klog routes through the soft IRQ ring (SetLinuxReady
+	// is the last step of EnableSoftIRQConsole, so it implies the ring is
+	// wired). Before that, Errf falls back to polled UART writes — from
+	// this handler that is seconds of IRQ-masked stall, and the stage
+	// would fail with hdrops==0 anyway. Returning 0 makes xfertest FAIL
+	// fast with "flood short-circuited" instead.
+	if !klog.IsLinuxReady() {
+		return 0
+	}
 	if n > 64 {
 		n = 64
 	}

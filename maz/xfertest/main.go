@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -372,11 +373,12 @@ func runSmokeTests() bool {
 
 	// --- Final stage: console-backpressure survival (MAZ-193) ---
 	// Runs LAST so a machine wedge here cannot mask the stages above.
-	// Non-blocking by nature (nothing follows it), but its FAIL mode is
-	// machine death — graded by marker absence plus E:00 in serial.
-	testConsoleBackpressure()
-
-	return true
+	// Blocking (bool) so a live FAIL — hdrops==0, short-circuited flood —
+	// withholds "all checks done", which soak grading keys on; promoted
+	// from non-blocking at the MAZ-193 PR review gate. As the final stage
+	// the promotion halts nothing. Its other FAIL mode is machine death,
+	// graded by marker absence plus E:00 in serial.
+	return testConsoleBackpressure()
 }
 
 func main() { MazarinMain() }
@@ -415,7 +417,16 @@ const (
 // is not proof the path under test ran (the drain could outpace the
 // flood). Park count is reported for visibility but not asserted:
 // legitimate thread-0 (EL1t) parks may or may not occur during the run.
-func testConsoleBackpressure() {
+func testConsoleBackpressure() bool {
+	// ARM64-only: the hdrops>0 assertion is unsatisfiable on amd64 by
+	// construction (inHandlerContextASM returns 0 there — handler chains
+	// are resumable via the MAZ-136 rotation cursors, so the drop branch
+	// never runs). Skip rather than fail if this binary is ever bundled
+	// into an amd64 image.
+	if runtime.GOARCH != "arm64" {
+		sys.UartWriteString(consTag + "SKIP: handler-context drops are arm64-only\n")
+		return true
+	}
 	sys.UartWriteString(consTag + "start\n")
 	parks0 := sys.RingPushParkCount()
 	hdrops0 := sys.HandlerCtxDropCount()
@@ -426,21 +437,22 @@ func testConsoleBackpressure() {
 	if lines != floodCalls*floodPerCall {
 		sys.UartWriteString(consTag + "FAIL: flood short-circuited: lines=" +
 			sys.Itoa(lines) + " want=" + sys.Itoa(floodCalls*floodPerCall) + "\n")
-		return
+		return false
 	}
 	hdrops := sys.HandlerCtxDropCount() - hdrops0
 	if hdrops == 0 {
 		sys.UartWriteString(consTag + "FAIL: handler-context backpressure path never exercised\n")
-		return
+		return false
 	}
 	// Liveness probe: a syscall that must round-trip if the kernel is sane.
 	if _, err := sys.GetShepherdByName(targetSym); err != nil {
 		sys.UartWriteString(consTag + "FAIL: post-flood liveness: " + err.Error() + "\n")
-		return
+		return false
 	}
 	parks := sys.RingPushParkCount() - parks0
 	sys.UartWriteString(consTag + "PASS survived console backpressure (hdrops=" +
 		sys.Itoa(int64(hdrops)) + " parks=" + sys.Itoa(int64(parks)) + ")\n")
+	return true
 }
 
 // pipeTag is the deterministic marker prefix the pipe2 guest stage prints.
