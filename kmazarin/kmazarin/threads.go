@@ -980,8 +980,9 @@ func InitThreads() {
 	InitPerCPU()
 	initPerCPUOffsets()
 
-	// Publish kernel .text bounds for the asm-level IRETQ resume guards
-	// (must happen before IRQs are enabled; no-op on ARM64)
+	// Publish resume-guard bounds (must happen before IRQs are enabled):
+	// kernel .text for the asm-level IRETQ guards on amd64, the
+	// exception-vector blob for the poisoned-pair guard on ARM64 (MAZ-196).
 	initResumeGuardBounds()
 
 	// Initialize spinlock timing based on detected timer frequency

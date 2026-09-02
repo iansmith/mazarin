@@ -8,6 +8,13 @@ package main
 //go:nosplit
 func getAuxval(tag uint64) uint64
 
+// getExceptionVectorBlobEnd returns the address of the zero-body marker
+// placed immediately after the exception-vector blob in exceptions_arm64.s.
+// Paired with GetExceptionVectorBase by initResumeGuardBounds (MAZ-196).
+//
+//go:nosplit
+func getExceptionVectorBlobEnd() uintptr
+
 //go:nosplit
 func EnableGIC()
 
