@@ -275,7 +275,8 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool, teardown bool) int
 					l3VA := paToVAOrCache(l3PA)
 					if l3VA != 0 {
 						for l := 0; l < 512; l++ {
-							l3e := *(*uint64)(unsafe.Pointer(l3VA + uintptr(l)*8))
+							l3ep := (*uint64)(unsafe.Pointer(l3VA + uintptr(l)*8))
+							l3e := *l3ep
 							if pteIsValid(l3e) {
 								leafPA := pteExtractPA(l3e)
 								desc := GetPageDescriptor(leafPA)
@@ -295,27 +296,49 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool, teardown bool) int
 										continue
 									}
 								}
+								// [MAZ-195] Unmap BEFORE release: never free a page
+								// while any address space — even this dying one —
+								// still holds a valid PTE to it. Skipped entries
+								// (FILE_BACKED, shared/pinned) stay intact: their
+								// pages are not released here, and handleFlushReply
+								// owns the FILE_BACKED lifecycle. TLB is already
+								// covered by the per-ASID shootdown before cleanup;
+								// the dsbSY per table below makes the zero-stores
+								// visible before the table itself is released.
+								*l3ep = 0
 								releasePageByPA(leafPA)
 							}
 						}
+						dsbSY()
 					}
 				}
 
+				// [MAZ-195] Zero the parent entry before releasing the child
+				// table, so no freed table page is ever reachable through a
+				// live PTE (same invariant as the leaf zeroing above; applies
+				// even when releasePTPage declines to free — the parent table
+				// is itself torn down moments later).
+				*(*uint64)(unsafe.Pointer(l2VA + uintptr(k)*8)) = 0
 				// Free the L3 page table page itself.
 				if releasePTPage(l3PA, teardown) {
 					freed++
 				}
 			}
-			// Free the L2 page table page itself.
+			dsbSY()
+			// Free the L2 page table page itself ([MAZ-195] parent entry first).
+			*(*uint64)(unsafe.Pointer(l1VA + uintptr(j)*8)) = 0
 			if releasePTPage(l2PA, teardown) {
 				freed++
 			}
 		}
-		// Free the L1 page table page itself.
+		dsbSY()
+		// Free the L1 page table page itself ([MAZ-195] parent entry first).
+		*(*uint64)(unsafe.Pointer(l0VA + uintptr(i)*8)) = 0
 		if releasePTPage(l1PA, teardown) {
 			freed++
 		}
 	}
+	dsbSY()
 	// Free the L0 root page itself.
 	if releasePTPage(l0PA, teardown) {
 		freed++
