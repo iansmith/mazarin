@@ -4,20 +4,45 @@ package main
 
 import "mazzy/kmazarin/proc"
 
-// badResumeRIP preserves the prior RIP==0 guard on ARM64.
+// Resume guard (ARM64 side of MAZ-136's lineage; poisoned-pair check MAZ-196).
 //
-// ARM64 keeps g in a single home (X28), saved and restored verbatim in the trap
-// frame, so it has no dual-home save gap and has never exhibited the MAZ-136
-// kernel-mode resume corruption. The stronger kernel-.text bound lives in the
-// amd64 build (resume_guard_amd64.go); here the original cheap check is enough.
+// ARM64 keeps g in a single home (X28), so it lacks amd64's dual-home save
+// gap — but the claim that it "never exhibited kernel-mode resume corruption"
+// was REFUTED 2026-08-07 (MAZ-179 tier-16): the MAZ-193 SPSR/SP hardcode
+// saved poisoned continuations that ERET'd handler code at EL1t on an alias
+// of the exception stack. The predicate (one definition, host-tested) lives
+// in proc.BadResumeARM64: PC==0, plus the poisoned pair — a PC inside the
+// exception-vector blob whose SPSR mode bits are not EL1h.
+
+// vectorBlobLo/Hi bound the exception-vector handler blob. Zero until
+// initResumeGuardBounds runs (the predicate skips the vector check then).
+var (
+	vectorBlobLo uint64
+	vectorBlobHi uint64
+)
+
+// initResumeGuardBounds publishes the exception-vector blob bounds for the
+// resume guard. Called from InitThreads, before IRQs are enabled. The end
+// marker relies on linker symbol ordering, so sanity-check the span and
+// fail open (bounds stay zero → guard degrades to PC==0) rather than halt
+// healthy boots on a pathological layout.
+//
+//go:nosplit
+func initResumeGuardBounds() {
+	lo := uint64(GetExceptionVectorBase())
+	hi := uint64(getExceptionVectorBlobEnd())
+	// The blob is >2KB of vectors plus handler bodies, well under 1MB.
+	if hi <= lo || hi-lo < 0x800 || hi-lo > 1<<20 {
+		return
+	}
+	vectorBlobLo = lo
+	vectorBlobHi = hi
+}
+
+// badResumeRIP reports whether next's saved (ELR, SPSR) pair must not be
+// ERET'd. The scheduler halts loudly (badResumeHalt) when this returns true.
 //
 //go:nosplit
 func badResumeRIP(next *Thread) bool {
-	return proc.BadResumeARM64(next.Context.GetPC(), next.Context.SPSR, 0, 0)
+	return proc.BadResumeARM64(next.Context.GetPC(), next.Context.SPSR, vectorBlobLo, vectorBlobHi)
 }
-
-// initResumeGuardBounds is a no-op on ARM64: the asm-level IRETQ guards that
-// consume the published bounds are amd64-only (see resume_guard_amd64.go).
-//
-//go:nosplit
-func initResumeGuardBounds() {}

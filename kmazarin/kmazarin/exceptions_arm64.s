@@ -2625,6 +2625,24 @@ el0_irq_handler:
 	B	irq_exception_handler
 
 // ============================================================================
+// exceptionVectorBlobEnd — end marker for the resume guard (MAZ-196)
+// ============================================================================
+// Zero-body TEXT placed immediately after the ExceptionVectorTable blob so
+// [ExceptionVectorTable, exceptionVectorBlobEnd) bounds every handler PC.
+// Relies on the linker preserving object-file symbol order (it does today);
+// initResumeGuardBounds sanity-checks the resulting span and publishes zeros
+// (degrading the guard to PC==0) if the layout ever stops cooperating.
+TEXT ·exceptionVectorBlobEnd(SB), NOSPLIT|NOFRAME, $0
+	RET
+
+// getExceptionVectorBlobEnd — returns the end marker's address (same
+// pattern as GetExceptionVectorBase / getSigreturnTrampolineAddr).
+TEXT ·getExceptionVectorBlobEnd(SB), NOSPLIT, $0-8
+	MOVD	$·exceptionVectorBlobEnd(SB), R0
+	MOVD	R0, ret+0(FP)
+	RET
+
+// ============================================================================
 // GetExceptionVectorBase - Returns address of exception vector table
 // ============================================================================
 TEXT ·GetExceptionVectorBase(SB), NOSPLIT, $0-8
