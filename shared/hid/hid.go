@@ -102,16 +102,23 @@ type CompletionRing struct {
 	Events   [CompletionRingSize]HIDEvent // event slots
 }
 
-// EventSlot returns the Events index used for a push at the given tail.
-// One definition of the completion-ring index math (kernel IRQ path calls
-// this). It deliberately ignores the Capacity field: the header lives in
-// the user-shared ring page, so userspace can scribble Capacity at any
-// time — index math in the IRQ path must use only the compile-time
-// constant (MAZ-194). A scribbled Capacity would otherwise early-wrap
-// over unconsumed events (0 < cap < 508), bounds-panic the kernel
-// (cap > 508), or mod-zero-panic it (cap == 0).
-func (r *CompletionRing) EventSlot(tail uint32) uint32 {
-	return tail % CompletionRingSize
+// EventSlot returns the Events index for a ring counter value (producer
+// tail or consumer head). One definition of the completion-ring index
+// math — the kernel IRQ-path push and the userspace poller both call it.
+// It deliberately ignores the Capacity field: the header lives in the
+// user-shared ring page, so userspace can scribble Capacity at any time —
+// index math in the IRQ path must use only the compile-time constant
+// (MAZ-194). A scribbled Capacity would otherwise early-wrap over
+// unconsumed events (0 < cap < 508), bounds-panic the kernel (cap > 508),
+// or mod-zero-panic it (cap == 0).
+//
+// nosplit: called (inlined today, but do not rely on that) from the
+// nosplit IRQ top-half chain via completionRingPush; asm-implies-nosplit
+// transitivity must hold even if a future edit defeats inlining.
+//
+//go:nosplit
+func (r *CompletionRing) EventSlot(idx uint32) uint32 {
+	return idx % CompletionRingSize
 }
 
 // InputDeviceInfo describes an available input device.
