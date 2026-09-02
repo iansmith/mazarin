@@ -341,7 +341,7 @@ func completionRingPush(kva uintptr, ev hid.HIDEvent) bool {
 		atomic.StoreUint32(&ring.Lock, 0)
 		return false
 	}
-	ring.Events[tail%ring.Capacity] = ev
+	ring.Events[ring.EventSlot(tail)] = ev
 	asm.Dsb() // ensure event data visible before tail update
 	atomic.StoreUint32(&ring.Tail, tail+1)
 	atomic.StoreUint32(&ring.Lock, 0)
