@@ -40,9 +40,12 @@ import (
 // asserts that in the instructions immediately preceding each one, the code
 // computes the addresses of BOTH main.vectorBlobLo and main.vectorBlobHi
 // (the ADRP+LDR/STR/ADD idiom Go asm uses to reference a global) AND that a
-// conditional branch (b.cond/cbz/cbnz/tbz/tbnz) follows the first such
-// reference — so a guard that loads the bounds but never actually compares
-// and branches on them does not get credit. On current (unguarded) code
+// conditional branch is data-flow-linked to the loaded bounds — a
+// cmp/subs/cmn/ccmp naming a register that received a blob value followed
+// by a b.cond, or a cbz/cbnz/tbz/tbnz directly on such a register — so a
+// guard that loads the bounds but never actually compares and branches on
+// them does not get credit (the windows already contain unrelated
+// conditional branches, so mere branch presence proves nothing). On current (unguarded) code
 // this is false for all five sites — that is the red this phase
 // establishes. It does not, and cannot, prove the SPSR mask comparison or
 // the halt routing are wired correctly; that part of the DoD (no false halt
@@ -213,8 +216,13 @@ func findErets(lines []asmLine) []eretSite {
 
 // guardRefs records whether, within a site's search window, the code
 // computed the address of vectorBlobLo and/or vectorBlobHi, and whether a
-// conditional branch follows the first such reference (i.e. the loaded
-// bounds are actually acted on, not merely materialized).
+// conditional branch is data-flow-linked to the loaded bounds: a
+// cmp/subs/cmn/ccmp naming a register that received a blob value, followed
+// by a conditional branch — or a cbz/cbnz/tbz/tbnz directly on such a
+// register. A branch with no register link to the bounds gets no credit
+// (round-2 adversary: every one of the five windows already contains
+// unrelated conditional branches today, so mere branch presence is
+// satisfiable by dead loads).
 type guardRefs struct {
 	sawLo         bool
 	sawHi         bool
@@ -222,9 +230,26 @@ type guardRefs struct {
 	firstRefIndex int // stream index of the first blob reference, -1 if none
 }
 
-// condBranchMnemonics matches the ARM64 conditional-branch family a guard's
+// condBranchRe matches the ARM64 conditional-branch family a guard's
 // compare must end in: b.<cond>, cbz/cbnz, tbz/tbnz.
-var condBranchRe = regexp.MustCompile(`^(b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$`)
+var (
+	condBranchRe = regexp.MustCompile(`^(b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$`)
+	// firstRegRe pulls the destination/first-operand register off an
+	// instruction's operand string (`x9, [x27, #3880]` → x9).
+	firstRegRe = regexp.MustCompile(`^(x[0-9]+|w[0-9]+|xzr|sp)\b`)
+	// regTokenRe enumerates every register named anywhere in an operand
+	// string, for the cmp-mentions-a-blob-register check.
+	regTokenRe = regexp.MustCompile(`\b(x[0-9]+|w[0-9]+)\b`)
+)
+
+// normReg folds a W-register name onto its X register so a 32-bit view of a
+// blob-holding register still matches.
+func normReg(r string) string {
+	if strings.HasPrefix(r, "w") {
+		return "x" + r[1:]
+	}
+	return r
+}
 
 // findGuardRefsBeforeErets checks, for each ERET site, whether the
 // instructions immediately preceding it (bounded by guardWindowInstrs, the
@@ -255,10 +280,18 @@ func findGuardRefsBeforeErets(lines []asmLine, erets []eretSite, blobLo, blobHi 
 		}
 
 		regPage := map[string]uint64{}
+		// blobRegs tracks registers currently holding a blob value (or
+		// blob address); cmpArmed is set by a cmp/subs/cmn/ccmp that names
+		// one of them, and consumed by the next conditional branch.
+		blobRegs := map[string]bool{}
+		cmpArmed := false
 		refs := guardRefs{firstRefIndex: -1}
-		noteRef := func(i int) {
+		noteRef := func(i int, destReg string) {
 			if refs.firstRefIndex < 0 {
 				refs.firstRefIndex = i
+			}
+			if destReg != "" {
+				blobRegs[normReg(destReg)] = true
 			}
 		}
 		for i := lowerBound; i < e.idx; i++ {
@@ -267,8 +300,29 @@ func findGuardRefsBeforeErets(lines []asmLine, erets []eretSite, blobLo, blobHi 
 				continue
 			}
 			mn := strings.ToLower(l.mnemonic)
-			if refs.firstRefIndex >= 0 && condBranchRe.MatchString(mn) {
-				refs.branchAfter = true
+			if condBranchRe.MatchString(mn) {
+				switch mn {
+				case "cbz", "cbnz", "tbz", "tbnz":
+					// Compare-and-branch in one: credit only if it tests a
+					// blob-holding register directly.
+					if m := firstRegRe.FindStringSubmatch(l.operands); m != nil && blobRegs[normReg(m[1])] {
+						refs.branchAfter = true
+					}
+				default: // b.<cond> — credit only a compare-armed branch.
+					if cmpArmed {
+						refs.branchAfter = true
+					}
+				}
+				cmpArmed = false
+				continue
+			}
+			switch mn {
+			case "cmp", "subs", "cmn", "ccmp":
+				for _, r := range regTokenRe.FindAllString(l.operands, -1) {
+					if blobRegs[normReg(r)] {
+						cmpArmed = true
+					}
+				}
 			}
 			switch mn {
 			case "adrp":
@@ -285,13 +339,19 @@ func findGuardRefsBeforeErets(lines []asmLine, erets []eretSite, blobLo, blobHi 
 						offVal, err := strconv.ParseInt(off, 0, 64)
 						if err == nil {
 							addr := uint64(int64(page) + offVal)
+							dest := ""
+							if strings.HasPrefix(mn, "ldr") {
+								if dm := firstRegRe.FindStringSubmatch(l.operands); dm != nil {
+									dest = dm[1]
+								}
+							}
 							if addr == blobLo {
 								refs.sawLo = true
-								noteRef(i)
+								noteRef(i, dest)
 							}
 							if addr == blobHi {
 								refs.sawHi = true
-								noteRef(i)
+								noteRef(i, dest)
 							}
 						}
 					}
@@ -305,11 +365,11 @@ func findGuardRefsBeforeErets(lines []asmLine, erets []eretSite, blobLo, blobHi 
 							addr := uint64(int64(page) + offVal)
 							if addr == blobLo {
 								refs.sawLo = true
-								noteRef(i)
+								noteRef(i, m[1])
 							}
 							if addr == blobHi {
 								refs.sawHi = true
-								noteRef(i)
+								noteRef(i, m[1])
 							}
 							// Propagate so a chained ADRP+ADD+LDR (address
 							// materialized in a second register) is still
@@ -392,7 +452,7 @@ func TestEretSitesGuardedByVectorBlobBounds(t *testing.T) {
 			continue
 		}
 		if !refs.branchAfter {
-			t.Errorf("MAZ-197: ERET at %#x (in %s) loads %s/%s but no conditional branch (b.cond/cbz/cbnz/tbz/tbnz) follows the first reference — the bounds are materialized but never compared and acted on; a guard that cannot fire is not a guard",
+			t.Errorf("MAZ-197: ERET at %#x (in %s) loads %s/%s but no conditional branch is data-flow-linked to them (cmp/subs/cmn/ccmp on a bounds-holding register followed by b.cond, or cbz/cbnz/tbz/tbnz directly on one) — the bounds are materialized but never compared and acted on; a guard that cannot fire is not a guard",
 				e.addr, e.fn, vectorBlobLoSym, vectorBlobHiSym)
 		}
 	}
