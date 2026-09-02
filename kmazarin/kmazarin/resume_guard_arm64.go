@@ -2,6 +2,8 @@
 
 package main
 
+import "mazzy/kmazarin/proc"
+
 // badResumeRIP preserves the prior RIP==0 guard on ARM64.
 //
 // ARM64 keeps g in a single home (X28), saved and restored verbatim in the trap
@@ -11,7 +13,7 @@ package main
 //
 //go:nosplit
 func badResumeRIP(next *Thread) bool {
-	return next.Context.GetPC() == 0
+	return proc.BadResumeARM64(next.Context.GetPC(), next.Context.SPSR, 0, 0)
 }
 
 // initResumeGuardBounds is a no-op on ARM64: the asm-level IRETQ guards that
