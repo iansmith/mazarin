@@ -276,6 +276,33 @@ yield_sp_saved:
 	MOVD	264(R20), R0
 	MSR	R0, SPSR_EL1
 
+	// MAZ-197 pre-ERET resume guard: reject a poisoned (ELR,SPSR) pair
+	// immediately before this ERET — the last instant it is still data.
+	// Re-read the values just written to hardware via MRS into R0/R1
+	// (R0 is a rolling temp here anyway, about to be reassigned below).
+	// R2/R3/R4 are free (not yet reloaded by the GPR restore below); R20
+	// (the new thread's context pointer) MUST stay untouched — it is used
+	// all the way through the GPR restore below.
+	//
+	// Deliberately branch-free except the final conditional branch: see
+	// exceptions_arm64.s's sync_return guard for why (a merge label
+	// between here and the ERET would clip the disassembly-based
+	// structural test's backward-scan window and hide these checks from
+	// it). This site's own halt (yield_bad_resume_halt, below) mirrors
+	// exceptions_arm64.s's maz197_bad_resume_halt but can't reuse it
+	// directly — local labels don't cross .s files in Go asm.
+	MRS	ELR_EL1, R0
+	MRS	SPSR_EL1, R1
+	AND	$0x1F, R1, R4              // R4 = SPSR mode bits (M[4:0])
+	CMP	$5, R4                     // NE iff mode != EL1h
+	MOVD	·vectorBlobHi(SB), R3
+	CCMP	NE, R3, $0, $4             // if mode!=EL1h: NE' iff blobHi!=0 (published); else force NE=false
+	MOVD	·vectorBlobLo(SB), R2
+	CCMP	NE, R0, R2, $0             // if mode-bad && published: HS iff ELR>=blobLo; else force HS=false
+	CCMP	HS, R0, R3, $2             // if ...&&ELR>=blobLo: LO iff ELR<blobHi; else force LO=false
+	BLO	yield_bad_resume_halt      // all four hold: poisoned pair
+	// Not taken: falls straight through to the SPSel switch — no label.
+
 	// Switch to EL1h mode to safely set SP_EL0
 	MOVD	$1, R0
 	MSR	R0, SPSel  // SPSel=1 means use SP_EL1
@@ -324,6 +351,89 @@ yield_sp_saved:
 	ERET
 	DSB	$15
 	ISB	$15
+
+// yield_bad_resume_halt — MAZ-197: a poisoned (ELR,SPSR) pair was about to
+// be ERET'd here (PC inside the exception-vector handler blob, paired with
+// an SPSR mode that is not EL1h). Mirrors exceptions_arm64.s's
+// maz197_bad_resume_halt; kept separate because local labels don't cross
+// .s files in Go asm, and this is the only guarded ERET in this file.
+// Never returns; the thread is dead, so every register is free.
+// In: R0 = ELR_EL1, R1 = SPSR_EL1.
+yield_bad_resume_halt:
+	MOVD	$0xFFFFFFFF09000000, R12  // UART_BASE (see exceptions_arm64.s)
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+	MOVD	$'[', R13; MOVB	R13, (R12)
+	MOVD	$'M', R13; MOVB	R13, (R12)
+	MOVD	$'A', R13; MOVB	R13, (R12)
+	MOVD	$'Z', R13; MOVB	R13, (R12)
+	MOVD	$'1', R13; MOVB	R13, (R12)
+	MOVD	$'9', R13; MOVB	R13, (R12)
+	MOVD	$'7', R13; MOVB	R13, (R12)
+	MOVD	$']', R13; MOVB	R13, (R12)
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'B', R13; MOVB	R13, (R12)
+	MOVD	$'A', R13; MOVB	R13, (R12)
+	MOVD	$'D', R13; MOVB	R13, (R12)
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'U', R13; MOVB	R13, (R12)
+	MOVD	$'M', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$'L', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVD	R0, R14
+	MOVD	$60, R15
+yield_halt_elr_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	yield_halt_elr_digit
+	ADD	$('A'-10), R13
+	B	yield_halt_elr_emit
+yield_halt_elr_digit:
+	ADD	$'0', R13
+yield_halt_elr_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	yield_halt_elr_hex
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'P', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVD	R1, R14
+	MOVD	$60, R15
+yield_halt_spsr_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	yield_halt_spsr_digit
+	ADD	$('A'-10), R13
+	B	yield_halt_spsr_emit
+yield_halt_spsr_digit:
+	ADD	$'0', R13
+yield_halt_spsr_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	yield_halt_spsr_hex
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'I', R13; MOVB	R13, (R12)
+	MOVD	$'T', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVD	$'5', R13; MOVB	R13, (R12)
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+yield_bad_resume_loop:
+	B	yield_bad_resume_loop
 
 yield_restore_return:
 	// No thread to switch to — return normally.
