@@ -251,6 +251,30 @@ func normReg(r string) string {
 	return r
 }
 
+// nonWritingMnemonicRe matches mnemonics whose first operand is NOT a
+// written general register: stores, compares/tests, branches, system-writes
+// and hints. Everything else (ldr*/ldp/mov*/add/sub/and/orr/bic/mrs/adrp/…)
+// is treated as writing its first operand.
+var nonWritingMnemonicRe = regexp.MustCompile(`^(st\w*|cmp|cmn|ccmp|tst|b|bl|br|blr|ret|msr|eret|nop|dsb|dmb|isb|wfi|wfe|sev\w*|hint|prfm|yield)$`)
+
+// writtenRegs returns the normalized register(s) an instruction overwrites
+// (its first operand; for ldp, its first two), or nil when the instruction
+// writes no general register.
+func writtenRegs(mn, operands string) []string {
+	if nonWritingMnemonicRe.MatchString(mn) {
+		return nil
+	}
+	n := 1
+	if mn == "ldp" {
+		n = 2
+	}
+	var regs []string
+	for _, r := range regTokenRe.FindAllString(operands, n) {
+		regs = append(regs, normReg(r))
+	}
+	return regs
+}
+
 // findGuardRefsBeforeErets checks, for each ERET site, whether the
 // instructions immediately preceding it (bounded by guardWindowInstrs, the
 // enclosing function's start, and the previous ERET site — so guard credit
@@ -281,17 +305,25 @@ func findGuardRefsBeforeErets(lines []asmLine, erets []eretSite, blobLo, blobHi 
 
 		regPage := map[string]uint64{}
 		// blobRegs tracks registers currently holding a blob value (or
-		// blob address); cmpArmed is set by a cmp/subs/cmn/ccmp that names
-		// one of them, and consumed by the next conditional branch.
+		// blob address). A register is evicted on any later write to it
+		// that is not itself a blob load — the bulk GPR restores around
+		// these ERETs reuse scratch registers freely, and stale membership
+		// is a false-green vector (round-3 adversary finding 1). cmpArmed
+		// is re-decided by EVERY compare from its own operands — NZCV is a
+		// single global flag set, so an unrelated compare between the
+		// tracked one and the branch disarms credit (finding 2) — and is
+		// consumed/reset by the next conditional branch.
 		blobRegs := map[string]bool{}
 		cmpArmed := false
 		refs := guardRefs{firstRefIndex: -1}
+		blobWrite := "" // dest register this instruction proved blob-holding
 		noteRef := func(i int, destReg string) {
 			if refs.firstRefIndex < 0 {
 				refs.firstRefIndex = i
 			}
 			if destReg != "" {
-				blobRegs[normReg(destReg)] = true
+				blobWrite = normReg(destReg)
+				blobRegs[blobWrite] = true
 			}
 		}
 		for i := lowerBound; i < e.idx; i++ {
@@ -317,13 +349,17 @@ func findGuardRefsBeforeErets(lines []asmLine, erets []eretSite, blobLo, blobHi 
 				continue
 			}
 			switch mn {
-			case "cmp", "subs", "cmn", "ccmp":
+			case "cmp", "subs", "cmn", "ccmp", "tst":
+				// Every compare re-decides cmpArmed from its own operands:
+				// the last compare before a branch owns NZCV.
+				cmpArmed = false
 				for _, r := range regTokenRe.FindAllString(l.operands, -1) {
 					if blobRegs[normReg(r)] {
 						cmpArmed = true
 					}
 				}
 			}
+			blobWrite = ""
 			switch mn {
 			case "adrp":
 				if m := adrpRe.FindStringSubmatch(l.operands); m != nil {
@@ -377,6 +413,14 @@ func findGuardRefsBeforeErets(lines []asmLine, erets []eretSite, blobLo, blobHi 
 							regPage[m[1]] = addr
 						}
 					}
+				}
+			}
+			// Eviction: any write to a tracked register that this
+			// instruction did not itself prove blob-holding removes it —
+			// once overwritten, the register no longer carries the bounds.
+			for _, reg := range writtenRegs(mn, l.operands) {
+				if reg != blobWrite && blobRegs[reg] {
+					delete(blobRegs, reg)
 				}
 			}
 		}
