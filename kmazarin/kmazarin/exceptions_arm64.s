@@ -1379,6 +1379,36 @@ sync_elr0_halt:
 	B	sync_elr0_halt
 sync_elr_nonzero:
 
+	// MAZ-197 pre-ERET resume guard: reject a poisoned (ELR,SPSR) pair
+	// immediately before this ERET — the last instant it is still data.
+	// R10 = ELR_EL1, R11 = SPSR_EL1 (post-adjustment values just written to
+	// hardware above by the MSR pair); both are dead scratch until the GPR
+	// restore below reloads them from the frame, same as R12/R13/R14.
+	//
+	// Deliberately branch-free except the final conditional branch: the
+	// four conditions (mode != EL1h, bounds published, ELR >= blobLo,
+	// ELR < blobHi) are chained with CCMP into a single AND so the "not
+	// poisoned" path falls straight through into the restore code below
+	// with no merge label — the disassembly-based structural test
+	// (TestEretSitesGuardedByVectorBlobBounds) walks backward from the
+	// ERET and stops at the FIRST label it finds, so any label placed
+	// between this guard and the ERET would silently clip the guard's own
+	// checks out of the window it inspects.
+	// R9 = site tag for the halt dump. Set up front — MOVD doesn't touch
+	// NZCV, so it can't disturb the CCMP chain below — since the bad
+	// branch must jump straight to the shared halt with no intervening
+	// label (see note above).
+	MOVD	$'1', R9
+	AND	$0x1F, R11, R14            // R14 = SPSR mode bits (M[4:0])
+	CMP	$5, R14                    // NE iff mode != EL1h
+	MOVD	·vectorBlobHi(SB), R13
+	CCMP	NE, R13, $0, $4            // if mode!=EL1h: NE' iff blobHi!=0 (published); else force NE=false
+	MOVD	·vectorBlobLo(SB), R12
+	CCMP	NE, R10, R12, $0           // if mode-bad && published: HS iff ELR>=blobLo; else force HS=false
+	CCMP	HS, R10, R13, $2           // if ...&&ELR>=blobLo: LO iff ELR<blobHi; else force LO=false
+	BLO	maz197_bad_resume_halt     // all four hold: poisoned pair
+	// Not taken: falls straight through to the restore code — no label.
+
 	// Restore X28-X30 (R28 is g, use raw instruction)
 	// ldr x28, [sp, #224]
 	WORD	$0xf94073fc  // ldr x28, [sp, #224] - NOTE: 73fc not 70fc (Rn=31=sp)
@@ -1412,6 +1442,90 @@ sync_elr_nonzero:
 	// Clean up stack and return
 	ADD	$EXC_FRAME_SIZE, RSP
 	ERET
+
+// maz197_bad_resume_halt — MAZ-197: a poisoned (ELR,SPSR) pair was about to
+// be ERET'd (PC inside the exception-vector handler blob, paired with an
+// SPSR mode that is not EL1h — handler code only ever legitimately executes
+// at EL1h). Shared by every pre-ERET guard in this TEXT block (sync_return,
+// irq_return, el0_not_svc, el0_return — reached via plain B, all within
+// ·ExceptionVectorTable so the local labels below are in scope from any of
+// them). Never returns; the thread is dead, so every register is free.
+// In: R10 = ELR_EL1, R11 = SPSR_EL1, R9 = site tag ('1'..'4').
+maz197_bad_resume_halt:
+	MOVD	$UART_BASE, R12
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+	MOVD	$'[', R13; MOVB	R13, (R12)
+	MOVD	$'M', R13; MOVB	R13, (R12)
+	MOVD	$'A', R13; MOVB	R13, (R12)
+	MOVD	$'Z', R13; MOVB	R13, (R12)
+	MOVD	$'1', R13; MOVB	R13, (R12)
+	MOVD	$'9', R13; MOVB	R13, (R12)
+	MOVD	$'7', R13; MOVB	R13, (R12)
+	MOVD	$']', R13; MOVB	R13, (R12)
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'B', R13; MOVB	R13, (R12)
+	MOVD	$'A', R13; MOVB	R13, (R12)
+	MOVD	$'D', R13; MOVB	R13, (R12)
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'U', R13; MOVB	R13, (R12)
+	MOVD	$'M', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$'L', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVD	R10, R14
+	MOVD	$60, R15
+maz197_halt_elr_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	maz197_halt_elr_digit
+	ADD	$('A'-10), R13
+	B	maz197_halt_elr_emit
+maz197_halt_elr_digit:
+	ADD	$'0', R13
+maz197_halt_elr_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	maz197_halt_elr_hex
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'P', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVD	R11, R14
+	MOVD	$60, R15
+maz197_halt_spsr_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	maz197_halt_spsr_digit
+	ADD	$('A'-10), R13
+	B	maz197_halt_spsr_emit
+maz197_halt_spsr_digit:
+	ADD	$'0', R13
+maz197_halt_spsr_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	maz197_halt_spsr_hex
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'I', R13; MOVB	R13, (R12)
+	MOVD	$'T', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVB	R9, (R12)
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+maz197_halt_loop:
+	B	maz197_halt_loop
 
 // ============================================================================
 // irq_exception_handler - Hardware interrupts (timer, UART, etc.)
@@ -1936,6 +2050,26 @@ irq_elr0_halt:
 	B	irq_elr0_halt
 irq_elr_nonzero:
 
+	// MAZ-197 pre-ERET resume guard: reject a poisoned (ELR,SPSR) pair
+	// immediately before this ERET. R10 = ELR_EL1, R11 = SPSR_EL1
+	// (post-adjustment, just written to hardware above); dead scratch
+	// until the GPR restore below, same as R12/R13/R14. See
+	// maz197_bad_resume_halt (defined after sync_return) for the shared
+	// halt this jumps to, and sync_return's guard above for why this is
+	// deliberately branch-free (CCMP chain) except the final branch — a
+	// merge label here would clip the structural test's backward-scan
+	// window and hide this guard's own checks from it.
+	MOVD	$'2', R9
+	AND	$0x1F, R11, R14            // R14 = SPSR mode bits (M[4:0])
+	CMP	$5, R14                    // NE iff mode != EL1h
+	MOVD	·vectorBlobHi(SB), R13
+	CCMP	NE, R13, $0, $4            // if mode!=EL1h: NE' iff blobHi!=0 (published); else force NE=false
+	MOVD	·vectorBlobLo(SB), R12
+	CCMP	NE, R10, R12, $0           // if mode-bad && published: HS iff ELR>=blobLo; else force HS=false
+	CCMP	HS, R10, R13, $2           // if ...&&ELR>=blobLo: LO iff ELR<blobHi; else force LO=false
+	BLO	maz197_bad_resume_halt     // all four hold: poisoned pair
+	// Not taken: falls straight through to the restore code — no label.
+
 	// Restore X28-X30 (R28 is g, use raw instruction)
 	// ldr x28, [sp, #224]
 	WORD	$0xf94073fc  // ldr x28, [sp, #224] - NOTE: 73fc not 70fc (Rn=31=sp)
@@ -2275,6 +2409,29 @@ skip_g_switch_el0_nsc:
 	MOVD	ThreadContext_SPSR(R20), R0
 	MSR	R0, SPSR_EL1
 
+	// MAZ-197 pre-ERET resume guard: reject a poisoned (ELR,SPSR) pair
+	// immediately before this ERET. R0 is a rolling temp here (about to be
+	// reassigned below), so re-read the values just written to hardware via
+	// MRS into R10/R11 rather than trusting a stale copy — both, plus
+	// R12/R13/R14, are free (not yet reloaded by the GPR restore below).
+	// See maz197_bad_resume_halt (defined after sync_return, above) for
+	// the shared halt this jumps to, and sync_return's guard for why this
+	// is deliberately branch-free (CCMP chain) except the final branch —
+	// a merge label here would clip the structural test's backward-scan
+	// window and hide this guard's own checks from it.
+	MRS	ELR_EL1, R10
+	MRS	SPSR_EL1, R11
+	MOVD	$'3', R9
+	AND	$0x1F, R11, R14            // R14 = SPSR mode bits (M[4:0])
+	CMP	$5, R14                    // NE iff mode != EL1h
+	MOVD	·vectorBlobHi(SB), R13
+	CCMP	NE, R13, $0, $4            // if mode!=EL1h: NE' iff blobHi!=0 (published); else force NE=false
+	MOVD	·vectorBlobLo(SB), R12
+	CCMP	NE, R10, R12, $0           // if mode-bad && published: HS iff ELR>=blobLo; else force HS=false
+	CCMP	HS, R10, R13, $2           // if ...&&ELR>=blobLo: LO iff ELR<blobHi; else force LO=false
+	BLO	maz197_bad_resume_halt     // all four hold: poisoned pair
+	// Not taken: falls straight through to the SPSel switch — no label.
+
 	// Switch to EL1h mode to safely set SP_EL0
 	MOVD	$1, R0
 	MSR	R0, SPSel
@@ -2578,6 +2735,26 @@ el0_elr_ok:
 
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
+
+	// MAZ-197 pre-ERET resume guard: reject a poisoned (ELR,SPSR) pair
+	// immediately before this ERET. R10 = ELR_EL1, R11 = SPSR_EL1
+	// (post-adjustment, just written to hardware above); dead scratch
+	// until the GPR restore below, same as R12/R13/R14. See
+	// maz197_bad_resume_halt (defined after sync_return, above) for the
+	// shared halt this jumps to, and sync_return's guard for why this is
+	// deliberately branch-free (CCMP chain) except the final branch — a
+	// merge label here would clip the structural test's backward-scan
+	// window and hide this guard's own checks from it.
+	MOVD	$'4', R9
+	AND	$0x1F, R11, R14            // R14 = SPSR mode bits (M[4:0])
+	CMP	$5, R14                    // NE iff mode != EL1h
+	MOVD	·vectorBlobHi(SB), R13
+	CCMP	NE, R13, $0, $4            // if mode!=EL1h: NE' iff blobHi!=0 (published); else force NE=false
+	MOVD	·vectorBlobLo(SB), R12
+	CCMP	NE, R10, R12, $0           // if mode-bad && published: HS iff ELR>=blobLo; else force HS=false
+	CCMP	HS, R10, R13, $2           // if ...&&ELR>=blobLo: LO iff ELR<blobHi; else force LO=false
+	BLO	maz197_bad_resume_halt     // all four hold: poisoned pair
+	// Not taken: falls straight through to the svcDepth clear — no label.
 
 	// Clear svcDepth HERE — as late as possible before ERET.
 	// R10/R11 are dead (will be overwritten by frame restore below).
