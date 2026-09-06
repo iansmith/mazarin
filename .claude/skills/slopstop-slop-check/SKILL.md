@@ -2,7 +2,7 @@
 description: Inspect a branch diff for AI slop — tests rewritten to pass, assertions inverted, vacuous or tautological tests, swallowed errors — and return each finding with its location, the signal that identified it, a severity, and one overall verdict. Reports only; never fixes.
 ---
 
-<!-- GENERATED from slopstop be6277f by install-for-project.sh — do not edit.
+<!-- GENERATED from slopstop 48d1fbd by install-for-project.sh — do not edit.
      Edit skills/slop-check/ in the slopstop repo and re-run. (universal §5) -->
 
 # Slop check — the judgment pass over a diff
@@ -52,6 +52,10 @@ manufactures a green result. Read every untracked test file in full; they are in
 Read the repository's `CLAUDE.md`, any `CLAUDE-universal.md` it imports, and
 `.claude/rules/*.md`. They bind the code you are judging.
 
+→ Read `.claude/skills/slopstop-run/references/graph-tools.md`. When `codebase-memory-mcp` tools are
+available, use `trace_path` to trace imports and fixtures into the diff, and
+`search_graph` to find where helpers and fixtures are defined.
+
 ## Step 2 — Tamper signals (🔴)
 
 These concern **existing** tests — ones that already asserted something before this branch.
@@ -80,9 +84,11 @@ These concern **existing** tests — ones that already asserted something before
   Tests written in the same commit as the code were never shown failing, so they are free to
   assert whatever the code already does — an unfalsifiable green suite. This is 🔴, not
   "nothing to check"; treating it as a pass makes skipping the baseline the cheapest way to
-  evade everything above. Two exemptions, both matched as **literal strings** — a paraphrase
-  is not the marker: a plan recording `**Phase 0:** none` for a prose-only change, and
-  `--refactor` (whose ticket carries `**Mode:** refactor`).
+  evade everything above. Two exemptions: a plan recording the **literal string**
+  `**Phase 0:** none` for a prose-only change — a paraphrase is not the marker — and being
+  launched with `--refactor`. Take `--refactor` from the flag; the ticket declares it with
+  the `slopstop-refactor` label, which the orchestrator resolves at intake, and it is not
+  yours to re-derive.
 
 Formatting is not tampering. Compare whitespace-blind and rename-aware; a `gofmt` or `black`
 run and a file rename must not read as a rewrite.

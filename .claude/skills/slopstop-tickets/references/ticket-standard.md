@@ -43,6 +43,89 @@ time, not discovered later, so the adversary and the implementer read the *same*
 contract. Every item must be verifiable from artifacts (code, test output, git state),
 not from the implementer's claims.
 
+#### The one question that decides it, and the marking when the answer is "nothing"
+
+**For each item, name the artifact you would read to score it.** A file, a command's
+output, a `git` state. If you can name one, the item is fine and needs no marking.
+
+If scoring it needs a **human to do something**, **live infrastructure**, a **physical
+device**, or an **observation nobody can re-run**, there is no artifact — and the item must
+be marked, in the item itself:
+
+```
+- [ ] **(out-of-band)** Manual end-to-end call placed against staging, audio confirmed
+      both directions. Evidence: a human's report on the ticket. Scored once, out of band.
+```
+
+**The marking is not an escape hatch, it is the honest form.** Out-of-band items are
+legitimate — the motivating real case is on-device mobile testing, where an Expo/EAS build
+reaches hardware days later, and `[workflow] post_merge_done = false` exists precisely to
+park such a ticket. What is not legitimate is an item that *looks* artifact-verifiable and
+is not: nobody argues with "manual E2E call evidence", because it reads like rigour.
+
+**Why this is a rule and not advice.** It was advice, and SOP-262 shipped anyway. From its
+`run.jsonl`: `"DoD item 8"` appears **19 times across 12 handoff rounds**, every round
+classifying it identically — *"requires live infra/human action, not a code defect"* — over
+four separate attempts, each capped at three rounds, each spending part of its findings
+budget re-reporting an item that no attempt could ever close. The adversary was right every
+time; it was scoring an item that should not have passed authoring. A rule that exists only
+as guidance to the author is one the author can be sincere about and still violate.
+
+#### DoD pattern: **predict-then-verify** — for mechanical transforms
+
+**Use it when both conditions hold**, and not otherwise:
+
+1. The change is produced by a **deterministic transform** — same input, same output, no
+   judgment in the middle. Formatter runs, codegen regeneration, dependency-pin bumps, mass
+   renames, `tidy`-style dependency pruning, lockfile updates.
+2. The transform can **emit what it would do before it does it** — a dry-run, diff, or
+   check mode.
+
+**The pattern:** capture the transform's own dry-run output to a file **before** writing
+anything; apply the transform; then confirm the resulting `git diff` matches the captured
+prediction. State it in the DoD in one line:
+
+```
+- [ ] Predict-then-verify: <dry-run command> captured to a file before applying,
+      <apply command> run, and `git diff` equals the capture.
+```
+
+For a Go formatting ticket over ten files that would read:
+
+```
+- [ ] Predict-then-verify: `gofmt -d <scope>` captured before writing, `gofmt -w <scope>`
+      applied, `git diff` equals the capture.
+```
+
+**The dry-run flag is per-tool and there is no universal one.** `gofmt -d` is the example,
+not the rule — the rule is *capture the transform's own dry-run output*. Other tools spell
+it `--check`, `--dry-run`, `--diff`, `-n`, or a `plan` subcommand; some emit the diff and
+some only a file list, and a file list is enough to catch a file that should not have been
+touched. Name the actual flag in the ticket. Never write a specific formatter into a rule
+(BILL-503: this fleet spans three languages and a named tool is wrong in most repos).
+
+**A mismatch is a stop, not a warning.** This is the one thing that distinguishes the
+pattern from a gate finding: a gate warns and the run continues, whereas here the whole
+value *is* the difference. The transform's output was fully determined before it ran, so
+anything the diff contains that the prediction did not is something a human or a model
+introduced — and it must be identified and removed or separately justified before the
+ticket proceeds. Do not accept "the extra hunk looks harmless."
+
+**Why nothing else catches it.** A mechanical transform has exactly one real risk: a hand
+edit riding along inside it. Review reads a wholly cosmetic diff — struct-field alignment,
+trailing-comment spacing, a stray blank line, an import reordered within its existing group
+— as noise and skims it. A test suite cannot see it at all, because by construction nothing
+behavioural changed. Predict-then-verify is the only check pointed at that risk.
+
+This is the same principle as the tamper gate, generalised. Tamper diffs frozen test files
+against the tip because the expected change is **none**; predict-then-verify is that idea
+where the expected change is **computable** rather than empty. They are not
+interchangeable — see `run/references/handoff-verification.md`.
+
+**Do not require it on ordinary work.** Where the change is not a deterministic transform
+there is no prediction to compute, and the item would be noise in every ticket that carries
+it.
+
 ### 4. Out of scope
 
 Explicitly named temptations: "do NOT refactor the adjacent module", "do NOT touch the
@@ -125,6 +208,20 @@ rejected without further review:
 
 - [ ] All five sections present and **non-empty**.
 - [ ] Observable behaviors count is between **2 and 5**.
+- [ ] **Every DoD item either names an artifact or is marked `(out-of-band)`.** Apply §3's
+      one question to each item — *what would I read to score this?* An item needing a human
+      action, live infrastructure, a physical device, or an unrepeatable observation, and
+      **not** carrying the marker, **fails this item**. Name the offending item by number.
+
+      This is mechanical in the same sense as the rest of the list: it is one question per
+      item with a decidable answer, not a judgment about whether the item is *good*. **Do not
+      widen it into DoD quality review** — vague, weak and over-broad items are content
+      findings for the conformance caliber. The trigger here is *unsatisfiable by any
+      artifact*, and nothing else.
+
+      A ticket carrying a correctly marked out-of-band item **passes**. The marker is the
+      point; banning the item would reject the legitimate on-device case this rule was
+      written around.
 - [ ] File map names concrete paths or directories (not "various files";
       directory-granular entries are sanctioned where filenames are unknowable
       at cut time).
@@ -151,6 +248,26 @@ rejected without further review:
       dependency that no scheduler can act on, and it holds the ticket rather than being
       quietly ignored. Extra context is welcome **after** the keys, on the same line or the
       next one; the parse takes the keys and the reader gets the reasoning.
+- [ ] **The phrase is `Blocked by:` followed by the value — not a place to be creative.**
+      `:run` finds the declaration by the phrase `blocked by` and then reads to the end of
+      that sentence, so `**Blocked by three, all real:**` is a *recognised* declaration with
+      an unparseable value: it holds the ticket and reports a defect rather than scheduling
+      it. SOP-262 shipped with exactly that header. Put the keys (or `nothing`) immediately
+      after the colon, end the sentence, and put commentary after that — anything past the
+      first `.` is not read as a value, which is also what keeps a later `Related: KEY` in
+      the same paragraph from being mistaken for a blocker.
+- [ ] **Mode is declared by label, and the label set is legal.** A ticket's labels carry at
+      most one of `slopstop-refactor` and `slopstop-backfill`; **both present fails this
+      item**, because a ticket that freezes every test file *and* every production file can
+      change nothing at all. Neither present is legal and needs no declaration — normal is
+      the default, and there is deliberately no `slopstop-normal` label.
+
+      **The body must carry no mode marker.** A `Mode:` line, or any prose above the five
+      sections announcing the mode, fails this item. Mode moved to a label on 2026-08-09
+      precisely so it could not be reflowed or re-emphasised into something else; a body
+      marker alongside the label is a second source of truth (universal §5), and the two can
+      disagree with nothing able to act on the report. Check the labels through the backend's
+      API — reading the body tells you nothing about the mode either way.
 
 Only after a ticket passes structure does the adversary judge content: conformance to
 the PRD + charter, omissions, scope drift, implementability, face-value traps.
@@ -164,9 +281,9 @@ ticket **title**:
 ```
 Add webhook retry           ← V1 (unmarked)
 Add webhook retry (V2)      ← first rewrite
-Add webhook retry (V3)      ← second rewrite — with the default 3-version
-                              budget, the last before G-failure ([fleet.budget]
-                              governs the actual cap)
+Add webhook retry (V3)      ← second rewrite; a ticket that keeps failing after
+                              this is reported as stopped, with its findings and
+                              its preserved branch, for you to decide on
 ```
 
 The version marker makes the run ledger self-documenting in every ticket list. Every

@@ -2,7 +2,7 @@
 description: Run the cyclomatic-complexity gate over a branch diff with lizard and return every function at or over the configured warn/reject thresholds — file, line, measured CC, its CC at the base commit, the threshold it broke, and whether the did-not-get-worse exemption applies — plus one overall verdict and a ranked list of what was exempted. Mechanical measurement only; never fixes anything.
 ---
 
-<!-- GENERATED from slopstop be6277f by install-for-project.sh — do not edit.
+<!-- GENERATED from slopstop 48d1fbd by install-for-project.sh — do not edit.
      Edit skills/complexity-check/ in the slopstop repo and re-run. (universal §5) -->
 
 # Complexity check — measure CC over a branch diff
@@ -27,19 +27,24 @@ editorialize.
   → `CC BLOCKED: no --base given`, stop. Do not fall back to `origin/HEAD` or `HEAD~1`;
   both silently measure the wrong range.
 - **`--repo`** — repository root. Defaults to the cwd; say which you used.
+- **`--exclude-paths`** — a JSON array of gitignore-style globs, repo-relative, naming paths
+  to exclude from measurement entirely. **Required.** Missing → `CC BLOCKED: no
+  --exclude-paths given`, stop. An empty array (`[]`) means no filter — identical behaviour
+  to before this argument existed. The orchestrator resolves `[complexity].exclude_paths` and
+  passes the result; you do not read config.
 - **`--warn` / `--reject` / `--exempt-pre-existing` / `--file-nloc-warn`** — the resolved
-  thresholds. **All four are required. Never guess one, and never read
+  thresholds. **All five arguments are required. Never guess one, and never read
   `.project-conf.toml` yourself.** Missing → `CC BLOCKED: no --<name> given`, stop.
   `--exempt-pre-existing true` buys the second `lizard` run in Step 5b; it is not a switch
   you may skip the run for and answer from the diff.
 
 **You do not read config. The orchestrator does.** It is the sole reader of
 `.project-conf.toml`, resolves `[complexity]`'s `cc_warn_threshold`,
-`cc_reject_threshold`, `cc_exempt_pre_existing` and `file_nloc_warn_threshold` — applying
-the documented defaults for absent keys — and passes the resolved numbers here. Two readers
-of one config is two answers to one question: a worker that defaults to 5/10 while the
-orchestrator resolved 8/15 measures against a threshold nobody configured, and the report
-would name the wrong bound with total confidence.
+`cc_reject_threshold`, `cc_exempt_pre_existing`, `file_nloc_warn_threshold` and
+`exclude_paths` — applying the documented defaults for absent keys — and passes the
+resolved values here. Two readers of one config is two answers to one question: a worker
+that defaults to 5/10 while the orchestrator resolved 8/15 measures against a threshold
+nobody configured, and the report would name the wrong bound with total confidence.
 
 A value that is not an integer, or `warn >= reject`, is still an error here →
 `CC BLOCKED: <name> is <value>`, stop. **A malformed value is never silently defaulted** —
@@ -67,8 +72,17 @@ you do not read (charter C3a). **So the orchestrator passes an already-derived b
 your job is to say which sha you measured from so a wrong one is visible in the report
 rather than silent.
 
-Exclude deleted paths (nothing left to measure) and say how many you dropped. Empty →
-`CC SKIPPED: no lizard-measurable files changed` — a real verdict, not a pass.
+Exclude deleted paths (nothing left to measure) and say how many you dropped.
+
+**Apply `--exclude-paths` here, before anything is measured.** For each glob in the array,
+match it against repo-relative paths using gitignore semantics (`fnmatch` with
+`FNM_PATHNAME`; a trailing `/**` matches everything under a directory). Drop every match
+and record the pattern and its drop count — even when the count is zero. A path excluded
+at HEAD is never measured at base either (Step 5b uses this same filtered set), so the two
+runs are always symmetric.
+
+Empty after filtering → `CC SKIPPED: no lizard-measurable files changed` — a real verdict,
+not a pass.
 
 Resolve the tool: prefer `<repo>/.venv/bin/lizard` or `<repo>/venv/bin/lizard` (these work
 when the venv is not activated), then `lizard` on PATH, then `python3 -m lizard`. None
@@ -132,6 +146,32 @@ boundary is exactly where a reader checks the rule. The 🟡 band is `[warn, rej
 value is ever both. Label the bands with these comparisons verbatim; writing `CC > T` or
 `W < CC <= T` in the report contradicts the rule at the boundary.
 
+## Step 4a — Partition production from test, because only production blocks
+
+**A 🔴 in a test function is reported, never blocking** (BILL-566). Classify every row by its
+`filename` against the project's `test_globs` — the same list `run-jsonl.md` defines and stage
+10a classifies by. Do not invent a second convention here (universal §5); read that one, and
+say which list you used.
+
+- **production row** → participates in `N` exactly as before. Nothing about it changes.
+- **test row** → measured, ranked and reported as **informational**, and excluded from `N`.
+
+**Why the gate stops at the production boundary.** This gate measures *testability* — linearly
+independent paths ≈ the tests needed for branch coverage. That consequence is real for
+production code and does not exist for a test function: nobody writes tests for tests, and a
+table-driven case with subtests is high-CC by construction and none the worse for it. The
+scope was never argued, merely never restricted.
+
+**It became load-bearing the first time a real run met it.** AATK-81 was stopped by two 🔴s,
+both test functions, one of them in a **frozen** file — so the CC gate demanded a change that
+the stage-8a tamper gate forbids. Two mechanical gates, neither of which softens, and no move
+satisfying both. Restricting the scope dissolves that deadlock instead of adjudicating it.
+
+**Report test rows; do not drop them.** Not measuring is not the fix — not *gating* is. Keep
+them ranked alongside production so the data exists for anyone who later wants to ask whether
+test complexity is worth acting on. This ticket does not answer that question; it stops the
+question from stopping a run.
+
 ## Step 5 — Attribute each function, by line-range overlap
 
 This produces the `[new in this PR]` / `[pre-existing]` **tag**, which is informational.
@@ -164,8 +204,10 @@ added in an unrelated file "exempt" a real violation.
 
 Two limitations, stated rather than absorbed silently. **Renamed files:** a per-file
 pathspec cannot pair a rename with its content change even with `-M`, so a renamed file
-reads as one whole-file addition and every function in it reports touched — safe direction,
-but the exemption is inert there; say so when it happens. **Decorator-only edits:**
+reads as one whole-file addition and every function in it reports touched. That is the safe
+direction and it affects only this **tag**; the exemption is no longer inert across a rename
+— Step 5b translates HEAD paths to BASE paths and Step 5b's tier 3 pairs renamed functions by
+body identity (BILL-608). **Decorator-only edits:**
 `start_line` is the `def`/`func` line, so a hunk touching only a decorator above it falls
 outside the range and the function reads as untouched, though a decorator can change real
 behavior without moving CC.
@@ -183,12 +225,26 @@ about the past that is inferred rather than measured is a guess.
 ```bash
 BASE_WT=$(mktemp -d)
 git -C "$REPO" worktree add -q --detach "$BASE_WT" "$BASE"
-BASE_FILES=""                       # only files that existed at BASE
+
+# HEAD path -> BASE path for every file this branch renamed. Git detects these; do not guess.
+# Emits "newpath<TAB>oldpath", one per rename. Empty when the branch renamed nothing.
+RENAMES=$(git -C "$REPO" diff --find-renames --name-status --diff-filter=R "$BASE"..HEAD \
+          | awk -F'\t' '{print $3 "\t" $2}')
+
+BASE_FILES=""                       # only files that existed at BASE, under their BASE names
 for f in $CHANGED_CODE; do
-  git -C "$REPO" cat-file -e "$BASE:$f" 2>/dev/null && BASE_FILES="$BASE_FILES $f"
+  b=$(printf '%s\n' "$RENAMES" | awk -F'\t' -v h="$f" '$1==h {print $2; exit}')
+  b=${b:-$f}                        # not renamed -> same path at BASE
+  git -C "$REPO" cat-file -e "$BASE:$b" 2>/dev/null && BASE_FILES="$BASE_FILES $b"
 done
 ( cd "$BASE_WT" && $CC_CMD --csv $BASE_FILES )   # relative paths, run from the worktree
 ```
+
+**Resolve each changed file to its BASE name before asking whether it existed.** A renamed
+file does not exist at `$BASE` under its HEAD path, so an untranslated `cat-file -e` drops it
+from `BASE_FILES` and every function in it becomes unmatched — the exemption silently inert
+across a rename. `--find-renames` is git's own detection, not a heuristic of ours; a file it
+does not call a rename is simply not one.
 
 `$CHANGED_CODE` holds repo-relative paths (Step 2 read them from `git diff --name-only`), so
 every `git` call is `-C "$REPO"` and the `lizard` call is a `cd` into the worktree.
@@ -206,12 +262,17 @@ filtered with `git cat-file -e` rather than passed whole. **lizard exits 0 with 
 output for a file that does not exist**, so an unfiltered list would silently produce a
 short CSV instead of an error.
 
-### Pair a HEAD row with its BASE row — two tiers, then give up
+### Pair a HEAD row with its BASE row — three tiers, then give up
 
 `name` is the **bare** name and is not unique within a file: two classes' `go(self, x)`
 methods and a module-level `go(a, b, c)` all report `name = go`, and a Go method and a
 free function both report `Do`. `long_name` embeds the line range and the path as passed
 (`go@2-4@a.py`), so it cannot survive a commit boundary. Neither is a key on its own.
+
+**Key on the BASE path, not the HEAD path.** Translate every HEAD row's `filename` through
+`$RENAMES` before pairing; the base CSV is keyed under BASE names because that is what
+`lizard` was given. Skipping the translation makes every function in a renamed file
+unmatchable.
 
 1. **`(filename, name, signature)`** — exact match. `signature` carries the parameter list
    and, in Go, the receiver (`(t*T)Do a int , b int` vs `Do a int`), which is what
@@ -221,13 +282,22 @@ free function both report `Do`. `long_name` embeds the line range and the path a
    function, and this recovers that case. The uniqueness requirement on *both* sides is
    what makes it safe: it cannot silently pair a violation with a namesake in another
    class, because a namesake is what makes it non-unique.
-3. **No match** → the function has **no BASE counterpart**. Record it as `unmatched at
+3. **Identical body** — for a HEAD row still unmatched, a BASE row in the same file whose
+   extracted source is **byte-identical**. This is the renamed-function tier, and byte
+   identity is what makes it safe rather than a heuristic: a function whose body did not
+   change cannot have changed CC, so exempting it cannot bless a regression. Extract by line
+   range from the two worktrees (`sed -n "${start},${end}p"`) and compare, after requiring
+   `nloc`, `token_count`, `parameter_count` and CC to be equal — those four are a cheap
+   pre-filter, **not** the decision. Accept only when exactly one BASE row and one HEAD row
+   survive that filter, the same uniqueness discipline as tier 2. **A single differing byte
+   falls through to tier 4** — this tier rescues renames, never edits.
+4. **No match** → the function has **no BASE counterpart**. Record it as `unmatched at
    base` and carry that forward; Step 6 never exempts it.
 
-A renamed function, a renamed file, and a changed parameter list all land in tier 3. That
-is the safe direction — an unrecognised function is judged, not blessed — but it means the
-exemption is inert across a rename, so **say so in the report when it happens** rather than
-letting a reader read "not exempt" as "got worse".
+A function renamed *and* edited, a genuinely new function, and a changed parameter list on a
+non-unique name all land in tier 4. That is the safe direction — an unrecognised function is
+judged, not blessed. **Say in the report which tier each exemption was decided by**, so a
+reader can tell an exact-signature match from a body-identity one.
 
 ### When BASE cannot be measured, nothing is exempt
 
@@ -288,6 +358,7 @@ Return exactly this shape as your result:
 CC <verdict — see below>
 Base: <sha>  Files measured: <n>  Functions: <n>  Rows skipped: <n>  cwd: <path>
 Thresholds: warn=<W> reject=<T> exempt_pre_existing=<bool>  (as given by the caller)
+Excluded: <pattern1> (<n> paths), <pattern2> (<n> paths)  |  none
 Base measurement: <n files, n functions — worktree removed | not run (exempt off)
                    | inert: <reason — nothing exempt>>
 
@@ -317,9 +388,12 @@ spell it exactly:
 - **`CC CLEAN`** — no blocking 🔴 (after the exemption) and no 🟡. Exempt violations may
   still exist; when they do, append `— K exempt` so a clean verdict never reads as an empty
   queue.
-- **`CC VIOLATIONS: N 🔴, M 🟡[, K exempt]`** — `N` counts only **blocking** violations;
-  exempted ones are `K`, listed but not in `N`. Any `N > 0` is a blocking result; what to
-  do about it is the orchestrator's call, not yours.
+- **`CC VIOLATIONS: N 🔴, M 🟡[, K exempt][, T test-info]`** — `N` and `M` count
+  **production** rows only. Exempted ones are `K`, listed but not in `N`. `T` counts test-file
+  rows at or over either threshold: **listed, never blocking, never in `N` or `M`** (Step 4a).
+  Any `N > 0` is a blocking result; what to do about it is the orchestrator's call, not yours.
+  **`T > 0` with `N = 0` is a `CC CLEAN` run** — say `CC CLEAN — T test-info` rather than
+  `CC VIOLATIONS`, or the verdict line reports a stop that is not one.
 - **`CC INCONCLUSIVE: <files>`** — exit 0, no rows, changed files present.
 - **`CC SKIPPED: <reason>`** — no measurable files changed, or lizard unavailable.
 - **`CC ERROR: exit <code> — <stderr>`** — lizard failed to run.

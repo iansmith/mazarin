@@ -2,7 +2,7 @@
 description: Write the phase-0 failing tests that define a ticket's contract before any implementation exists, run them, and return the test files, node-ids, test command, and the observed failure output proving they are red.
 ---
 
-<!-- GENERATED from slopstop be6277f by install-for-project.sh — do not edit.
+<!-- GENERATED from slopstop 48d1fbd by install-for-project.sh — do not edit.
      Edit skills/red-tests/ in the slopstop repo and re-run. (universal §5) -->
 
 # Phase 0 — write the red tests
@@ -37,9 +37,11 @@ implementing a gate, a file existing where a manifest says it does. Test those.
 If the ticket is prose-only, write no tests and return `PHASE 0: none — prose-only change`
 with a one-paragraph justification. Do not manufacture tests to look productive.
 
-**A refactor ticket gets no red tests either.** If you were launched with `--refactor`, or
-the ticket body carries the literal line `**Mode:** refactor`, return
-`PHASE 0: none — refactor` immediately and write nothing. A refactor adds no behaviour, so
+**A refactor ticket gets no red tests either.** If you were launched with `--refactor`,
+return `PHASE 0: none — refactor` immediately and write nothing. Judge this from the flag
+alone — mode lives in the ticket's `slopstop-refactor` label, the orchestrator resolves it at
+intake, and a worker re-deriving it from the body would be reading a source that no longer
+carries the answer. A refactor adds no behaviour, so
 there is no contract for a new test to describe; its guard is the **existing** suite, run by
 `implement` before and after, and a test you invented here would be a new contract smuggled
 into a ticket whose whole claim is that nothing changed. In the normal case the orchestrator
@@ -105,6 +107,11 @@ capture it on untouched code.
 
 ## Step 4 — Write the tests
 
+→ Read `.claude/skills/slopstop-run/references/graph-tools.md`. When `codebase-memory-mcp` tools are
+available, use `search_graph` to find the types and functions the tests will target,
+`trace_path` to identify call chains to exercise, and `search_code` to find existing
+test patterns to mirror.
+
 Follow the layout, framework, and fixtures of the existing tests. Derive expected behaviors
 from the ticket description and DoD, transcribing any test expectations the ticket states
 explicitly. Write in this priority order — most commonly missed first:
@@ -123,6 +130,104 @@ one that asserts nothing, or only what it itself just set up. No skipped tests, 
 no commented-out assertions. If the ticket's expected value is contradictory or unknowable,
 stop with `TICKET UNDERSPECIFIED: <what cannot be pinned down>` rather than writing a test
 you cannot justify.
+
+### Your assertions will be mutation-tested
+
+**Every assertion you write is checked by perturbing the production code and requiring your
+test to fail.** That is `mutation-check` at stage 5, on the stubs you leave behind, and again
+at stage 9 against the real implementation. **An assertion that survives a mutation of the
+behaviour it names is not pinning that behaviour, whatever the test is called.**
+
+So the question to ask of each assertion is not *"does this fail right now"* — it does, or
+you would not be returning it — but ***"which single change to the production code would make
+this pass, and is that change the behaviour the ticket asked for?"*** If more than one answer
+fits, the assertion is loose.
+
+That is not a hypothetical failure mode. A real one, caught at the tier above after the code
+was written:
+
+> `TestHandleVoiceStream_RealtimeDialFailureEndsCallWithinDialTimeout` only asserts
+> `err != nil`, and **the default path ALSO returns non-nil**
+
+The name says dial-failure-within-timeout. The assertion says *something went wrong*. It was
+weak the moment it was written, and it survived stage 5 and three adversary rounds because
+nothing it was checked against could tell the difference. `err != nil`, `is not None`,
+`len(x) > 0`, `assertTrue(result)` — these pass against implementations that are wrong in
+exactly the way the test exists to prevent.
+
+**This is bounded by the ticket, and the bound is not a formality.** Pin the expected values
+*the ticket states*, at the boundaries *the ticket names*. An assertion the ticket does not
+call for is out of scope **even when it would strengthen the suite** — stage 10b hunts for
+things in the worktree that are not in the ticket, so Phase 0 grown past its contract trades
+one finding class for another. Tightening an assertion the ticket asked for is always in
+scope; adding a behaviour it did not is never.
+
+**Under `--backfill` this reads differently and you should know which situation you are in.**
+There, your tests come up **green** and `mutation-check` is *the gate on the ticket*, not a
+sanity check on redness — the whole question is whether your tests pin behaviour that already
+works. A green test that no mutation can break is the entire failure mode of that mode, so
+the paragraph above is not advice there; it is the thing being measured.
+
+## Step 4a — Tag every test with its category, as you write it
+
+**Every test you write carries a category tag in its own source**, on the line immediately
+above the test:
+
+```go
+// slopstop:test contract
+// slopstop:test regression — guards: "With no option supplied, behaviour is byte-identical to today."
+// slopstop:test non-interference — paired: asserts the consumer received all 50 events
+```
+
+Use the host language's ordinary line-comment marker; the token `slopstop:test` and the
+category word are the fixed part. One tag per test function.
+
+### The three categories
+
+| tag | at Phase 0 | against base | must also carry |
+|---|---|---|---|
+| `contract` | **red** | fails | — |
+| `regression` | green | **passes, by design** | what it guards, quoted |
+| `non-interference` | **red** | fails | its positive pairing, named |
+
+- **`contract`** — pins behaviour this ticket adds. The ordinary case, and the one that must
+  fail at Phase 0 for the reasons Step 6 already gives.
+- **`regression`** — guards behaviour that must **not** change: *"byte-identical to today"*,
+  *"existing destinations unchanged"*, *"a concurrent second `Run` still returns the refusal
+  error"*. Passing against pre-branch code is what it is *for*; a regression guard that failed
+  against old code would not be a guard. Quote what it guards — a `regression` tag with nothing
+  quoted is not a tag, and the quotation is the whole control.
+- **`non-interference`** — a **negative property of the new behaviour**: "does not stall the
+  audio", "does not trip the idle timer", "no goroutine outlives the call". **A do-nothing stub
+  satisfies any purely negative assertion, and no sentinel can fail one** — so Step 5's
+  "non-satisfying by construction" rule cannot be met, and the test is green at Phase 0 through
+  no fault of the stub. Naming this category is what forces the fix: **the test must also
+  assert something positive that an empty stub fails**, in the same test function. Name that
+  pairing in the tag.
+
+### A test you cannot categorize is a test in trouble — stop here
+
+**This is the point of the step.** If a test fits none of the three, do not force it into
+`contract` and do not leave it for a gate. Stop with
+`RED-TESTS BLOCKED: uncategorizable test — <name>: <why none of the three fit>`.
+
+Being unable to say what a test is *for*, while writing it, with the ticket in front of you, is
+the cheapest signal available that something is wrong with it — and it is available now, not
+eleven stages later. The categories are exhaustive over legitimate intents: a test that pins
+nothing new, guards nothing existing, and constrains no property of the new behaviour is not a
+test this ticket needs.
+
+**Choose the tag while writing, not after running.** A tag picked to explain a result is a
+rationalisation; the tag is fixed at `$FROZEN` with everything else at Phase 0 and cannot be
+changed once a downstream gate has flagged something.
+
+**Why this is worth the ceremony.** `vacuity-check` at stage 9 re-runs tests against pre-branch
+code and reports every one that passes as `vacuous`. It is right about the fact and cannot know
+the intent. Without the tag, a correct regression guard reads as slop and stops the ticket —
+three hours and eleven stages after the moment it could have been resolved for nothing. On
+AATK-81 that cost the run: six `vacuous` verdicts, of which two were correct regression guards,
+three were unpaired negative assertions, and one was a test of a test helper that no category
+fits (BILL-570).
 
 ## Step 5 — Add non-satisfying stubs when the surface does not exist
 
@@ -145,16 +250,23 @@ Run the resolved command. Four outcomes:
 - **All new tests fail at their assertions** → RED established. Go to Step 7.
 - **A test fails before reaching its assertion** (missing symbol, import or compile error)
   → **not yet red.** Go back to Step 5, add the stub, re-run.
-- **Some or all pass** → the behavior already exists, or the test is not exercising what
-  the ticket describes. Rewrite those until they fail; a test that passed here is **not**
-  red and must never appear in your report as one. If the ticket's expectation is itself
-  the wrong thing, take the `TICKET UNDERSPECIFIED` stop.
+- **A `contract` or `non-interference` test passes** → **not red.** For `contract`, the
+  behavior already exists or the test is not exercising what the ticket describes — rewrite it
+  until it fails. For `non-interference`, its positive pairing is missing or too weak to fail
+  against an empty stub — strengthen the pairing (Step 4a). A test that passed here is **not**
+  red and must never appear in your report as one. If the ticket's expectation is itself the
+  wrong thing, take the `TICKET UNDERSPECIFIED` stop.
+- **A `regression` test passes, and is supposed to** → expected; leave it alone. "Rewrite until
+  it fails" is not merely hard here, it is *wrong*: a test asserting *"behaviour is
+  byte-identical to today"* cannot be made to fail against today's code without asserting
+  something false. Report it under its own heading, never as a red node-id.
 - **The suite does not run** → stop with the captured error output verbatim.
 
 Re-run the Step 3 baseline before reporting: a stub is real production surface and can
 break an existing test, and unreported that breakage gets blamed on the wrong work later.
-Then run the project's formatter over the new test files, so a later `gofmt`/`black` run
-produces no hunks and the downstream tamper gate never has to tell a reformat from a rewrite.
+Then format the test files you wrote, so the downstream tamper gate never has to tell a
+reformat from a rewrite. → `worker-launch.md`, "A worker that writes code formats what it
+touched" — the project's own formatter, never a named one.
 
 ## Step 7 — Report
 
@@ -172,10 +284,21 @@ Test files created/modified:
 Stub files created (or: none):
   <path>  — sentinel: <what it returns, and why it cannot satisfy any assertion>
 Red test node-ids:
-  <exact node-id runnable by the command above>  FAIL
+  <exact node-id runnable by the command above>  FAIL  [contract | non-interference]
+Regression test node-ids (or: none):
+  <exact node-id>  PASS — guards: "<what it protects, quoted>"
 Observed failure output:
   <the decisive assertion-failure lines, quoted from the run>
 ```
+
+**Every node-id carries the tag written in its source** (Step 4a), and the report and the
+source must agree — the caller reads this list and never re-derives tags from the files.
+
+**Every `regression` entry carries its quotation, and every `non-interference` entry its
+pairing.** An entry missing the required clause is refused rather than read charitably: the
+clause is the control, and a tag that costs nothing to write is worth nothing downstream.
+`none` is a real answer for the regression section and often the right one; an empty section
+is not the same as an absent one, so write it.
 
 Node-ids must be exactly runnable (`tests/test_x.py::test_y`, `TestFoo/subcase`,
 `pkg -run TestFoo`) — downstream steps re-run them individually and cannot repair a

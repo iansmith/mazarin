@@ -145,3 +145,9 @@ CLAUDE.md
 !.claude/rules
 !.claude/skills
 !.claude/agents
+
+# slopstop project config. The SHARED file is tracked -- it holds project settings (system,
+# key, prefix, tiers, thresholds), not per-machine ones, and ignoring it means a second
+# developer clones the repo and gets none of them. Per-developer deviations -- a fork URL, a
+# local endpoint -- go in the LOCAL file, which is ignored.
+.project-conf-local.toml
