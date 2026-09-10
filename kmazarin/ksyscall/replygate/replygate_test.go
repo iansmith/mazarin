@@ -16,7 +16,7 @@ import "testing"
 // TestCheckAcceptsMatchingReply — in-use slot, caller SID matches the reply,
 // replier is the registered handler: the reply is genuine.
 func TestCheckAcceptsMatchingReply(t *testing.T) {
-	if v := Check(true, 5, 5, 3, 3); v != Accept {
+	if v := Check(true, 5, 5, 3, 3, 7, 7); v != Accept {
 		t.Fatalf("Check(matching) = %v, want Accept", v)
 	}
 }
@@ -26,7 +26,7 @@ func TestCheckAcceptsMatchingReply(t *testing.T) {
 // through. Today's code wakes the target thread unconditionally in this case,
 // poking a return value into whatever that TID is blocked on now.
 func TestCheckRejectsSlotFree(t *testing.T) {
-	if v := Check(false, 5, 5, 3, 3); v != RejectSlotFree {
+	if v := Check(false, 5, 5, 3, 3, 7, 7); v != RejectSlotFree {
 		t.Fatalf("Check(slot free) = %v, want RejectSlotFree", v)
 	}
 }
@@ -36,7 +36,7 @@ func TestCheckRejectsSlotFree(t *testing.T) {
 // caller 5). The reply must be rejected WITHOUT touching the slot — it
 // belongs to the new delegate, whose real reply is still coming.
 func TestCheckRejectsCallerMismatch(t *testing.T) {
-	if v := Check(true, 9, 5, 3, 3); v != RejectCallerMismatch {
+	if v := Check(true, 9, 5, 3, 3, 7, 7); v != RejectCallerMismatch {
 		t.Fatalf("Check(caller mismatch) = %v, want RejectCallerMismatch", v)
 	}
 }
@@ -46,7 +46,7 @@ func TestCheckRejectsCallerMismatch(t *testing.T) {
 // as a stale-caller reply (the slot isn't the replier's delegate at all), so
 // the stale-reply counter stays an accurate measure of the TID-reuse hazard.
 func TestCheckCallerMismatchPrecedesHandlerMismatch(t *testing.T) {
-	if v := Check(true, 9, 5, 4, 3); v != RejectCallerMismatch {
+	if v := Check(true, 9, 5, 4, 3, 7, 7); v != RejectCallerMismatch {
 		t.Fatalf("Check(both mismatch) = %v, want RejectCallerMismatch", v)
 	}
 }
@@ -55,7 +55,7 @@ func TestCheckCallerMismatchPrecedesHandlerMismatch(t *testing.T) {
 // slot-free must win, so the stale-reply counter's classification stays
 // accurate (a freed slot is not evidence of TID reuse).
 func TestCheckSlotFreePrecedesCallerMismatch(t *testing.T) {
-	if v := Check(false, 9, 5, 3, 3); v != RejectSlotFree {
+	if v := Check(false, 9, 5, 3, 3, 7, 7); v != RejectSlotFree {
 		t.Fatalf("Check(slot free + caller mismatch) = %v, want RejectSlotFree", v)
 	}
 }
@@ -63,7 +63,7 @@ func TestCheckSlotFreePrecedesCallerMismatch(t *testing.T) {
 // TestCheckSlotFreePrecedesHandlerMismatch — slot free AND handler mismatch
 // (caller matches): slot-free must win.
 func TestCheckSlotFreePrecedesHandlerMismatch(t *testing.T) {
-	if v := Check(false, 5, 5, 3, 4); v != RejectSlotFree {
+	if v := Check(false, 5, 5, 3, 4, 7, 7); v != RejectSlotFree {
 		t.Fatalf("Check(slot free + handler mismatch) = %v, want RejectSlotFree", v)
 	}
 }
@@ -72,7 +72,75 @@ func TestCheckSlotFreePrecedesHandlerMismatch(t *testing.T) {
 // a shepherd that guesses a caller TID must not be able to forge a reply
 // (the pre-existing HandlerSID security check, preserved).
 func TestCheckRejectsHandlerMismatch(t *testing.T) {
-	if v := Check(true, 5, 5, 3, 4); v != RejectHandlerMismatch {
+	if v := Check(true, 5, 5, 3, 4, 7, 7); v != RejectHandlerMismatch {
 		t.Fatalf("Check(handler mismatch) = %v, want RejectHandlerMismatch", v)
+	}
+}
+
+// MAZ-201 — generation witness. The SID+handler gate cannot distinguish two
+// SUCCESSIVE delegates from the SAME thread: a stray reply (late, duplicated,
+// or mis-laned inside the handler) carrying the caller's own SID and TID
+// passes every check above and lands as the return value of whatever delegate
+// that thread is blocked on NOW. Observed as MAZ-201's boot fatal: a fork/exec
+// child's runtime checkfds fcntl(0) returned ENOENT — a value no fcntl path
+// in kernel or linux shepherd can produce — because a stray same-identity
+// reply was delivered to it. A SysID would only narrow the hole (two
+// consecutive Reads are indistinguishable), so the witness is the slot's
+// GENERATION — bumped every time the slot is claimed for a new delegate,
+// echoed by the handler from the request it processed. replyGen 0 means the
+// replier sent no witness — accepted for compatibility.
+
+// TestCheckAcceptsMatchingGeneration — full match including the witness.
+func TestCheckAcceptsMatchingGeneration(t *testing.T) {
+	if v := Check(true, 5, 5, 3, 3, 7, 7); v != Accept {
+		t.Fatalf("Check(matching gen) = %v, want Accept", v)
+	}
+}
+
+// TestCheckRejectsGenerationMismatch — same caller, same handler, but the
+// reply echoes a different slot generation than the delegate in flight: the
+// stray-reply case the SID witness cannot see (including two successive
+// delegates of the SAME syscall type). Must be rejected without touching the
+// slot — the in-flight delegate's genuine reply is still coming.
+func TestCheckRejectsGenerationMismatch(t *testing.T) {
+	if v := Check(true, 5, 5, 3, 3, 6, 7); v != RejectGenerationMismatch {
+		t.Fatalf("Check(gen mismatch) = %v, want RejectGenerationMismatch", v)
+	}
+}
+
+// TestCheckRejectsStaleGenerationOfSameType — the MAZ-201 blind spot the
+// SysID variant of this witness would have missed: a late reply for the
+// PREVIOUS delegate of the same thread and same syscall type (generation 6)
+// arriving while generation 7 is in flight.
+func TestCheckRejectsStaleGenerationOfSameType(t *testing.T) {
+	if v := Check(true, 5, 5, 3, 3, 7, 6); v != RejectGenerationMismatch {
+		t.Fatalf("Check(stale gen) = %v, want RejectGenerationMismatch", v)
+	}
+}
+
+// TestCheckAcceptsLegacyNoWitness — replyGen 0 = no witness supplied (slot
+// generations are always nonzero): accept on the SID and handler checks
+// alone, preserving compatibility with repliers that predate the witness.
+func TestCheckAcceptsLegacyNoWitness(t *testing.T) {
+	if v := Check(true, 5, 5, 3, 3, 6, 0); v != Accept {
+		t.Fatalf("Check(no witness) = %v, want Accept", v)
+	}
+}
+
+// TestCheckCallerMismatchPrecedesGenerationMismatch — a reused slot with a
+// stale caller AND a differing generation classifies as caller mismatch: the
+// SID witness is the stronger incarnation signal and keeps the stale-reply
+// counter accurate.
+func TestCheckCallerMismatchPrecedesGenerationMismatch(t *testing.T) {
+	if v := Check(true, 9, 5, 3, 3, 6, 7); v != RejectCallerMismatch {
+		t.Fatalf("Check(caller + gen mismatch) = %v, want RejectCallerMismatch", v)
+	}
+}
+
+// TestCheckHandlerMismatchPrecedesGenerationMismatch — wrong replier AND
+// wrong generation: the forged-reply security classification wins.
+func TestCheckHandlerMismatchPrecedesGenerationMismatch(t *testing.T) {
+	if v := Check(true, 5, 5, 3, 4, 6, 7); v != RejectHandlerMismatch {
+		t.Fatalf("Check(handler + gen mismatch) = %v, want RejectHandlerMismatch", v)
 	}
 }

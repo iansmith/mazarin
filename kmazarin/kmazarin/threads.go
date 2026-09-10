@@ -1512,6 +1512,18 @@ func printEpochStatus() {
 	if uartDropped > 0 {
 		extra += fmt.Sprintf("  uart-ring: dropped=%d\n", uartDropped)
 	}
+	// MAZ-201: delegate reply-gate rejections. Any nonzero value is a caught
+	// would-have-been return-value corruption (or leaked retired page); the
+	// paired [DLG:*] klog lines carry the per-event detail, but klog is
+	// console-only once the soft-IRQ console is active, so the counters must
+	// ride the serial-visible [status] line for soak grading.
+	staleRejects := ksyscall.DelegateStaleReplyRejects.Load()
+	genRejects := ksyscall.DelegateGenerationMismatchRejects.Load()
+	retiredDrops := ksyscall.DelegateRetiredPageDrops.Load()
+	if staleRejects+genRejects+retiredDrops > 0 {
+		extra += fmt.Sprintf("  replygate: stale=%d gen_mismatch=%d retired_drops=%d\n",
+			staleRejects, genRejects, retiredDrops)
+	}
 	// MAZ-141: priority-wake counters (written from the IRQ-return path).
 	// Surfaced here so pwake activity is observable; a fresh ring dump on
 	// abnormal shepherd exit lives in pwake_trace_amd64.go. el1h/nog0 are the

@@ -94,12 +94,13 @@ func handleFileMappedPageFault(faultAddr uintptr, fm *proc.FileMapping) bool {
 
 	// Send MmapPageFill request to linux shepherd
 	reqPayload := ipc.FSDelegateReqPayload{
-		SysID:     uint16(sysid.MmapPageFill),
-		CallerSID: fm.CallerSID,
-		CallerTID: callerTID,
-		Args:      [6]uint64{uint64(fm.FD), fileOffset, 4096, 0, 0, 0},
-		DataVA:    handlerDataVA,
-		DataLen:   4096,
+		SysID:      uint16(sysid.MmapPageFill),
+		CallerSID:  fm.CallerSID,
+		CallerTID:  callerTID,
+		Args:       [6]uint64{uint64(fm.FD), fileOffset, 4096, 0, 0, 0},
+		DataVA:     handlerDataVA,
+		DataLen:    4096,
+		Generation: info.Generation,
 	}
 	msg := ipc.EncodeFSDelegateReq(&reqPayload)
 	handlerRingIdx := syscallDelegates[sysid.Read].ringIdx

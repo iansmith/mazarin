@@ -38,8 +38,12 @@ type SyscallRequest struct {
 	CallerPID int16    // Who made the call
 	CallerTID int16    // Caller's thread ID
 	Args      [6]uint64
-	dataVA    uintptr // VA of data page in our address space
-	dataLen   uint32
+	// Generation is the kernel's per-claim delegate-slot witness (MAZ-201).
+	// Reply echoes it so the kernel can reject a stray reply that carries
+	// the right caller identity but targets a different delegate.
+	Generation uint32
+	dataVA     uintptr // VA of data page in our address space
+	dataLen    uint32
 }
 
 // Arg0 returns the first syscall argument (e.g. fd for write/read/close).
@@ -93,11 +97,16 @@ func (r *SyscallRequest) PathString() string {
 // For Read: returnVal = number of bytes read (kernel copies that many from DataBuf).
 // For Close: returnVal = 0 on success, negative errno on error.
 func (r *SyscallRequest) Reply(returnVal int64) {
+	// arg4 is the generation witness (MAZ-201): the kernel rejects a reply
+	// whose echoed generation differs from the delegate in flight at the
+	// caller's TID slot, so a stray same-identity reply can no longer
+	// corrupt an unrelated syscall's return value. arg3 carries the SysID
+	// for the kernel's rejection diagnostics.
 	RawSyscall(mazzy.SysSyscallReply,
 		uintptr(r.CallerPID),
 		uintptr(r.CallerTID),
 		uintptr(uint64(returnVal)),
-		0, 0, 0)
+		uintptr(r.SysID), uintptr(r.Generation), 0)
 }
 
 // ReleaseDelegatePage unmaps and frees a data page that was mapped into this
@@ -138,12 +147,13 @@ func RegisterStdioWriteRing(ringIdx int) error {
 func DecodeFSDelegateReq(msg *ipc.UringIPCMsg) any {
 	p := ipc.DecodeFSDelegateReq(msg)
 	return SyscallRequest{
-		SysID:     sysid.ID(p.SysID),
-		CallerPID: p.CallerSID,
-		CallerTID: p.CallerTID,
-		Args:      p.Args,
-		dataVA:    uintptr(p.DataVA),
-		dataLen:   p.DataLen,
+		SysID:      sysid.ID(p.SysID),
+		CallerPID:  p.CallerSID,
+		CallerTID:  p.CallerTID,
+		Args:       p.Args,
+		Generation: p.Generation,
+		dataVA:     uintptr(p.DataVA),
+		dataLen:    p.DataLen,
 	}
 }
 
