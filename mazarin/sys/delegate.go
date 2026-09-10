@@ -93,11 +93,15 @@ func (r *SyscallRequest) PathString() string {
 // For Read: returnVal = number of bytes read (kernel copies that many from DataBuf).
 // For Close: returnVal = 0 on success, negative errno on error.
 func (r *SyscallRequest) Reply(returnVal int64) {
+	// arg3 is the SysID witness (MAZ-201): the kernel rejects a reply whose
+	// SysID differs from the delegate in flight at the caller's TID slot, so
+	// a stray same-identity reply can no longer corrupt an unrelated
+	// syscall's return value.
 	RawSyscall(mazzy.SysSyscallReply,
 		uintptr(r.CallerPID),
 		uintptr(r.CallerTID),
 		uintptr(uint64(returnVal)),
-		0, 0, 0)
+		uintptr(r.SysID), 0, 0)
 }
 
 // ReleaseDelegatePage unmaps and frees a data page that was mapped into this

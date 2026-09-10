@@ -16,7 +16,7 @@ import "testing"
 // TestCheckAcceptsMatchingReply — in-use slot, caller SID matches the reply,
 // replier is the registered handler: the reply is genuine.
 func TestCheckAcceptsMatchingReply(t *testing.T) {
-	if v := Check(true, 5, 5, 3, 3); v != Accept {
+	if v := Check(true, 5, 5, 3, 3, 7, 7); v != Accept {
 		t.Fatalf("Check(matching) = %v, want Accept", v)
 	}
 }
@@ -26,7 +26,7 @@ func TestCheckAcceptsMatchingReply(t *testing.T) {
 // through. Today's code wakes the target thread unconditionally in this case,
 // poking a return value into whatever that TID is blocked on now.
 func TestCheckRejectsSlotFree(t *testing.T) {
-	if v := Check(false, 5, 5, 3, 3); v != RejectSlotFree {
+	if v := Check(false, 5, 5, 3, 3, 7, 7); v != RejectSlotFree {
 		t.Fatalf("Check(slot free) = %v, want RejectSlotFree", v)
 	}
 }
@@ -36,7 +36,7 @@ func TestCheckRejectsSlotFree(t *testing.T) {
 // caller 5). The reply must be rejected WITHOUT touching the slot — it
 // belongs to the new delegate, whose real reply is still coming.
 func TestCheckRejectsCallerMismatch(t *testing.T) {
-	if v := Check(true, 9, 5, 3, 3); v != RejectCallerMismatch {
+	if v := Check(true, 9, 5, 3, 3, 7, 7); v != RejectCallerMismatch {
 		t.Fatalf("Check(caller mismatch) = %v, want RejectCallerMismatch", v)
 	}
 }
@@ -46,7 +46,7 @@ func TestCheckRejectsCallerMismatch(t *testing.T) {
 // as a stale-caller reply (the slot isn't the replier's delegate at all), so
 // the stale-reply counter stays an accurate measure of the TID-reuse hazard.
 func TestCheckCallerMismatchPrecedesHandlerMismatch(t *testing.T) {
-	if v := Check(true, 9, 5, 4, 3); v != RejectCallerMismatch {
+	if v := Check(true, 9, 5, 4, 3, 7, 7); v != RejectCallerMismatch {
 		t.Fatalf("Check(both mismatch) = %v, want RejectCallerMismatch", v)
 	}
 }
@@ -55,7 +55,7 @@ func TestCheckCallerMismatchPrecedesHandlerMismatch(t *testing.T) {
 // slot-free must win, so the stale-reply counter's classification stays
 // accurate (a freed slot is not evidence of TID reuse).
 func TestCheckSlotFreePrecedesCallerMismatch(t *testing.T) {
-	if v := Check(false, 9, 5, 3, 3); v != RejectSlotFree {
+	if v := Check(false, 9, 5, 3, 3, 7, 7); v != RejectSlotFree {
 		t.Fatalf("Check(slot free + caller mismatch) = %v, want RejectSlotFree", v)
 	}
 }
@@ -63,7 +63,7 @@ func TestCheckSlotFreePrecedesCallerMismatch(t *testing.T) {
 // TestCheckSlotFreePrecedesHandlerMismatch — slot free AND handler mismatch
 // (caller matches): slot-free must win.
 func TestCheckSlotFreePrecedesHandlerMismatch(t *testing.T) {
-	if v := Check(false, 5, 5, 3, 4); v != RejectSlotFree {
+	if v := Check(false, 5, 5, 3, 4, 7, 7); v != RejectSlotFree {
 		t.Fatalf("Check(slot free + handler mismatch) = %v, want RejectSlotFree", v)
 	}
 }
@@ -72,7 +72,7 @@ func TestCheckSlotFreePrecedesHandlerMismatch(t *testing.T) {
 // a shepherd that guesses a caller TID must not be able to forge a reply
 // (the pre-existing HandlerSID security check, preserved).
 func TestCheckRejectsHandlerMismatch(t *testing.T) {
-	if v := Check(true, 5, 5, 3, 4); v != RejectHandlerMismatch {
+	if v := Check(true, 5, 5, 3, 4, 7, 7); v != RejectHandlerMismatch {
 		t.Fatalf("Check(handler mismatch) = %v, want RejectHandlerMismatch", v)
 	}
 }

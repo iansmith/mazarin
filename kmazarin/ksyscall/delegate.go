@@ -112,6 +112,15 @@ var delegateCallInfos [MaxDelegateThreads]DelegateCallInfo
 // also klogs a [DLG:stale-reply] line.
 var DelegateStaleReplyRejects atomic.Uint64
 
+// DelegateSysIDMismatchRejects counts replies rejected because they carried
+// the right caller identity but the wrong SysID (MAZ-201): a stray reply —
+// late, duplicated, or mis-laned inside the handler — targeting a delegate
+// that is no longer the one in flight at that TID. Expected to read 0 in a
+// clean boot; any increment is a caught would-have-been return-value
+// corruption, and the paired [DLG:sysid-mismatch] klog line names the stray
+// reply's SysID (the producer).
+var DelegateSysIDMismatchRejects atomic.Uint64
+
 // DelegateRetiredPageDrops counts retired pages dropped because a slot was
 // reused a SECOND time while the first retired page was still unclaimed.
 // The dropped page leaks — freeing it could fault its handler, which may
@@ -1055,6 +1064,7 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	callerSID := int16(arg0)
 	callerTID := int16(arg1)
 	returnVal := int64(arg2)
+	replySysID := uint16(arg3) // SysID witness (MAZ-201); 0 = none supplied
 
 	replyingShepherd := proc.CurrentShepherd()
 	if replyingShepherd == nil {
@@ -1082,7 +1092,8 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	}
 	info := &delegateCallInfos[callerTID]
 	switch replygate.Check(info.InUse, info.CallerSID, callerSID,
-		info.HandlerSID, int16(replyingShepherd.PID)) {
+		info.HandlerSID, int16(replyingShepherd.PID),
+		uint16(info.SysID), replySysID) {
 	case replygate.RejectSlotFree, replygate.RejectCallerMismatch:
 		// Stale reply: the delegate this reply targeted is gone (slot
 		// already cleaned, or reused by a different caller). Do NOT touch
@@ -1119,6 +1130,21 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		// delegation. Without this check, any shepherd that guesses a
 		// caller's TID could forge a reply with an arbitrary return value.
 		return -1 // EPERM
+	case replygate.RejectSysIDMismatch:
+		// MAZ-201: the reply carries the caller's own SID and TID but is for
+		// a DIFFERENT syscall than the delegate in flight at this slot — a
+		// stray reply (late, duplicated, or mis-laned in the handler) that
+		// the SID witness cannot see because both delegates came from the
+		// same thread. Delivering it would corrupt the in-flight syscall's
+		// return value (observed as checkfds fcntl(0) returning ENOENT →
+		// "cannot open standard fds" boot fatal). Do not touch the slot; the
+		// in-flight delegate's genuine reply is still coming. The log line
+		// names the stray reply's SysID — that identifies the producer.
+		DelegateSysIDMismatchRejects.Add(1)
+		klog.Errf("[DLG:sysid-mismatch] replier=%d caller=%d tid=%d slot-sysid=%d reply-sysid=%d ret=%d\n",
+			int32(replyingShepherd.PID), int32(callerSID), int32(callerTID),
+			uint32(info.SysID), uint32(replySysID), returnVal)
+		return -3 // ESRCH — the delegate this reply was for is not in flight
 	}
 	isPageFaultReply = info.SysID == sysid.MmapPageFill
 	// For MmapPageFill: map into faulting shepherd's page table.

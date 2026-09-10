@@ -30,14 +30,25 @@ const (
 	// shepherd that guesses a caller TID must not be able to forge a reply
 	// (the pre-existing HandlerSID security check).
 	RejectHandlerMismatch
+	// RejectSysIDMismatch — right caller, right replier, but the reply is for
+	// a DIFFERENT syscall than the one in flight at this slot (MAZ-201). The
+	// SID witness cannot distinguish two successive delegates from the SAME
+	// thread, so a stray reply — late, duplicated, or mis-laned inside the
+	// handler — carrying the caller's own identity would land as the return
+	// value of whatever delegate the thread is blocked on now. The reply's
+	// SysID (what the handler actually processed) must match the slot's.
+	RejectSysIDMismatch
 )
 
 // Check decides whether a reply carrying replyCallerSID from replierSID may
-// fulfill the slot state (inUse, infoCallerSID, infoHandlerSID). Precedence:
-// slot-free, then caller mismatch, then handler mismatch — so the stale-reply
-// counter classifies accurately (a freed slot is not evidence of TID reuse,
-// and a reused slot is stale regardless of who the new handler is).
-func Check(inUse bool, infoCallerSID, replyCallerSID, infoHandlerSID, replierSID int16) Verdict {
+// fulfill the slot state (inUse, infoCallerSID, infoHandlerSID, infoSysID).
+// Precedence: slot-free, then caller mismatch, then handler mismatch, then
+// SysID mismatch — so the stale-reply counter classifies accurately (a freed
+// slot is not evidence of TID reuse, and a reused slot is stale regardless of
+// who the new handler is). replySysID 0 (sysid.Invalid, never a real
+// delegated syscall) means the replier supplied no witness: accepted on the
+// SID and handler checks alone, for compatibility.
+func Check(inUse bool, infoCallerSID, replyCallerSID, infoHandlerSID, replierSID int16, infoSysID, replySysID uint16) Verdict {
 	if !inUse {
 		return RejectSlotFree
 	}
@@ -46,6 +57,9 @@ func Check(inUse bool, infoCallerSID, replyCallerSID, infoHandlerSID, replierSID
 	}
 	if infoHandlerSID != replierSID {
 		return RejectHandlerMismatch
+	}
+	if replySysID != 0 && replySysID != infoSysID {
+		return RejectSysIDMismatch
 	}
 	return Accept
 }
