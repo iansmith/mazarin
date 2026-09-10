@@ -76,3 +76,60 @@ func TestCheckRejectsHandlerMismatch(t *testing.T) {
 		t.Fatalf("Check(handler mismatch) = %v, want RejectHandlerMismatch", v)
 	}
 }
+
+// MAZ-201 — SysID witness. The SID+handler gate cannot distinguish two
+// SUCCESSIVE delegates from the SAME thread: a stray reply (late, duplicated,
+// or mis-laned inside the handler) carrying the caller's own SID and TID
+// passes every check above and lands as the return value of whatever delegate
+// that thread is blocked on NOW. Observed as MAZ-201's boot fatal: a fork/exec
+// child's runtime checkfds fcntl(0) returned ENOENT — a value no fcntl path
+// in kernel or linux shepherd can produce — because a stray same-identity
+// reply was delivered to it. The reply now carries the SysID of the request
+// the handler processed (SyscallReply arg3); a mismatch against the slot's
+// recorded SysID rejects the reply. replySysID 0 (sysid.Invalid) means the
+// replier sent no witness — accepted for compatibility.
+
+// TestCheckAcceptsMatchingSysID — full match including the SysID witness.
+func TestCheckAcceptsMatchingSysID(t *testing.T) {
+	if v := Check(true, 5, 5, 3, 3, 7, 7); v != Accept {
+		t.Fatalf("Check(matching sysid) = %v, want Accept", v)
+	}
+}
+
+// TestCheckRejectsSysIDMismatch — same caller, same handler, but the reply is
+// for a DIFFERENT syscall than the one in flight at this slot: the stray-reply
+// case MAZ-155's SID witness cannot see. Must be rejected without touching
+// the slot — the in-flight delegate's genuine reply is still coming.
+func TestCheckRejectsSysIDMismatch(t *testing.T) {
+	if v := Check(true, 5, 5, 3, 3, 6, 7); v != RejectSysIDMismatch {
+		t.Fatalf("Check(sysid mismatch) = %v, want RejectSysIDMismatch", v)
+	}
+}
+
+// TestCheckAcceptsLegacyNoWitness — replySysID 0 = no witness supplied
+// (sysid.Invalid is never a real delegated syscall): accept on the SID and
+// handler checks alone, preserving compatibility with repliers that predate
+// the witness.
+func TestCheckAcceptsLegacyNoWitness(t *testing.T) {
+	if v := Check(true, 5, 5, 3, 3, 6, 0); v != Accept {
+		t.Fatalf("Check(no witness) = %v, want Accept", v)
+	}
+}
+
+// TestCheckCallerMismatchPrecedesSysIDMismatch — a reused slot with a stale
+// caller AND a differing SysID classifies as caller mismatch: the SID witness
+// is the stronger incarnation signal and keeps the stale-reply counter
+// accurate.
+func TestCheckCallerMismatchPrecedesSysIDMismatch(t *testing.T) {
+	if v := Check(true, 9, 5, 3, 3, 6, 7); v != RejectCallerMismatch {
+		t.Fatalf("Check(caller + sysid mismatch) = %v, want RejectCallerMismatch", v)
+	}
+}
+
+// TestCheckHandlerMismatchPrecedesSysIDMismatch — wrong replier AND wrong
+// SysID: the forged-reply security classification wins.
+func TestCheckHandlerMismatchPrecedesSysIDMismatch(t *testing.T) {
+	if v := Check(true, 5, 5, 3, 4, 6, 7); v != RejectHandlerMismatch {
+		t.Fatalf("Check(handler + sysid mismatch) = %v, want RejectHandlerMismatch", v)
+	}
+}
