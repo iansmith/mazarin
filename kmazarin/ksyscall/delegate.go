@@ -54,6 +54,17 @@ type DelegateCallInfo struct {
 	InUse           bool
 	WritableMapping bool // MmapPageFill: map page RW instead of RO
 
+	// Generation is the per-claim witness (MAZ-201): bumped every time this
+	// slot is claimed for a new delegate (prepareDelegateSlotForReuse — the
+	// choke point for every slot writer), stamped into the request payload,
+	// and echoed back by the handler in its reply. A reply whose echoed
+	// generation differs from the slot's is a stray — late, duplicated, or
+	// mis-laned — and is rejected instead of corrupting the in-flight
+	// delegate's return value. Never 0 (0 = "no witness" on the reply side)
+	// and never fireAndForgetGen. Flush continuation rounds reuse the claim,
+	// so the generation is stable across rounds by construction.
+	Generation uint32
+
 	// CallerDead is set by CleanupDelegateForDeadShepherd when the caller
 	// shepherd dies while its delegate request is still queued in the
 	// handler's uring ring. We can't unmap the handler's data page at
@@ -112,14 +123,20 @@ var delegateCallInfos [MaxDelegateThreads]DelegateCallInfo
 // also klogs a [DLG:stale-reply] line.
 var DelegateStaleReplyRejects atomic.Uint64
 
-// DelegateSysIDMismatchRejects counts replies rejected because they carried
-// the right caller identity but the wrong SysID (MAZ-201): a stray reply —
-// late, duplicated, or mis-laned inside the handler — targeting a delegate
-// that is no longer the one in flight at that TID. Expected to read 0 in a
-// clean boot; any increment is a caught would-have-been return-value
-// corruption, and the paired [DLG:sysid-mismatch] klog line names the stray
-// reply's SysID (the producer).
-var DelegateSysIDMismatchRejects atomic.Uint64
+// DelegateGenerationMismatchRejects counts replies rejected because they
+// carried the right caller identity but echoed a stale slot generation
+// (MAZ-201): a stray reply — late, duplicated, or mis-laned inside the
+// handler — targeting a delegate that is no longer the one in flight at that
+// TID. Expected to read 0 in a clean boot; any increment is a caught
+// would-have-been return-value corruption, and the paired [DLG:gen-mismatch]
+// klog line names the stray reply's SysID (the producer).
+var DelegateGenerationMismatchRejects atomic.Uint64
+
+// fireAndForgetGen is the generation stamped into delegate requests that
+// expect NO reply (console-stdio Writes, which have no slot claim). Slot
+// generations skip this value and 0, so a handler that wrongly replies to a
+// fire-and-forget request can never match an in-flight delegate.
+const fireAndForgetGen = ^uint32(0)
 
 // DelegateRetiredPageDrops counts retired pages dropped because a slot was
 // reused a SECOND time while the first retired page was still unclaimed.
@@ -167,6 +184,13 @@ func prepareDelegateSlotForReuse(info *DelegateCallInfo) {
 		}
 	}
 	info.CallerDead = false
+	// MAZ-201: new claim, new generation. Skip 0 ("no witness" on the reply
+	// side) and fireAndForgetGen (reserved for no-reply requests) so a stray
+	// reply can never accidentally present a matching witness.
+	info.Generation++
+	for info.Generation == 0 || info.Generation == fireAndForgetGen {
+		info.Generation++
+	}
 }
 
 func init() {
@@ -567,6 +591,11 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	// delegate the caller TID is currently blocked on — unmapping that
 	// (unrelated) syscall's data page and corrupting its return value.
 	consoleStdio := id == sysid.Write && arg0 <= 2 && !stdioRedirected(callerShepherd, arg0)
+	// Generation witness (MAZ-201): the handler echoes this in its reply, and
+	// the reply gate rejects a mismatch. Fire-and-forget requests expect no
+	// reply at all, so they carry the reserved fireAndForgetGen, which no
+	// slot generation can ever equal.
+	reqGen := fireAndForgetGen
 	if !consoleStdio && int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
 		prepareDelegateSlotForReuse(info)
@@ -579,16 +608,18 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		info.CallerL0PA = callerShepherd.PageTableL0PA
 		info.SysID = id
 		info.InUse = true
+		reqGen = info.Generation
 	}
 
 	// Send the request to the handler's uring ring.
 	reqPayload := ipc.FSDelegateReqPayload{
-		SysID:     uint16(id),
-		CallerSID: int16(callerShepherd.PID),
-		CallerTID: callerTID,
-		Args:      [6]uint64{arg0, arg1, arg2, arg3, arg4, arg5},
-		DataVA:    handlerDataVA,
-		DataLen:   dataLen,
+		SysID:      uint16(id),
+		CallerSID:  int16(callerShepherd.PID),
+		CallerTID:  callerTID,
+		Args:       [6]uint64{arg0, arg1, arg2, arg3, arg4, arg5},
+		DataVA:     handlerDataVA,
+		DataLen:    dataLen,
+		Generation: reqGen,
 	}
 	msg := ipc.EncodeFSDelegateReq(&reqPayload)
 	// Console stdio Writes get routed to the dedicated stdio override ring
@@ -1064,7 +1095,8 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	callerSID := int16(arg0)
 	callerTID := int16(arg1)
 	returnVal := int64(arg2)
-	replySysID := uint16(arg3) // SysID witness (MAZ-201); 0 = none supplied
+	replySysID := uint16(arg3) // SysID of the request the handler processed (diagnostic)
+	replyGen := uint32(arg4)   // generation witness (MAZ-201); 0 = none supplied
 
 	replyingShepherd := proc.CurrentShepherd()
 	if replyingShepherd == nil {
@@ -1093,7 +1125,7 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	info := &delegateCallInfos[callerTID]
 	switch replygate.Check(info.InUse, info.CallerSID, callerSID,
 		info.HandlerSID, int16(replyingShepherd.PID),
-		uint16(info.SysID), replySysID) {
+		info.Generation, replyGen) {
 	case replygate.RejectSlotFree, replygate.RejectCallerMismatch:
 		// Stale reply: the delegate this reply targeted is gone (slot
 		// already cleaned, or reused by a different caller). Do NOT touch
@@ -1130,20 +1162,20 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		// delegation. Without this check, any shepherd that guesses a
 		// caller's TID could forge a reply with an arbitrary return value.
 		return -1 // EPERM
-	case replygate.RejectSysIDMismatch:
-		// MAZ-201: the reply carries the caller's own SID and TID but is for
-		// a DIFFERENT syscall than the delegate in flight at this slot — a
-		// stray reply (late, duplicated, or mis-laned in the handler) that
-		// the SID witness cannot see because both delegates came from the
-		// same thread. Delivering it would corrupt the in-flight syscall's
-		// return value (observed as checkfds fcntl(0) returning ENOENT →
-		// "cannot open standard fds" boot fatal). Do not touch the slot; the
+	case replygate.RejectGenerationMismatch:
+		// MAZ-201: the reply carries the caller's own SID and TID but echoes
+		// a different slot generation than the delegate in flight — a stray
+		// reply (late, duplicated, or mis-laned in the handler) that the SID
+		// witness cannot see because both delegates came from the same
+		// thread. Delivering it would corrupt the in-flight syscall's return
+		// value (observed as checkfds fcntl(0) returning ENOENT → "cannot
+		// open standard fds" boot fatal). Do not touch the slot; the
 		// in-flight delegate's genuine reply is still coming. The log line
 		// names the stray reply's SysID — that identifies the producer.
-		DelegateSysIDMismatchRejects.Add(1)
-		klog.Errf("[DLG:sysid-mismatch] replier=%d caller=%d tid=%d slot-sysid=%d reply-sysid=%d ret=%d\n",
+		DelegateGenerationMismatchRejects.Add(1)
+		klog.Errf("[DLG:gen-mismatch] replier=%d caller=%d tid=%d slot-sysid=%d reply-sysid=%d slot-gen=%d reply-gen=%d ret=%d\n",
 			int32(replyingShepherd.PID), int32(callerSID), int32(callerTID),
-			uint32(info.SysID), uint32(replySysID), returnVal)
+			uint32(info.SysID), uint32(replySysID), info.Generation, replyGen, returnVal)
 		return -3 // ESRCH — the delegate this reply was for is not in flight
 	}
 	isPageFaultReply = info.SysID == sysid.MmapPageFill

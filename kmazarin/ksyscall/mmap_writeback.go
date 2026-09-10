@@ -94,12 +94,13 @@ func flushAndCleanupPages(fd uint64, callerSID int16, startOffset, length uint64
 // Called from flushAndCleanupPages (first round) and handleFlushReply (subsequent rounds).
 func sendFlushRound(info *DelegateCallInfo, handlerSID int16, callerSID int16, callerTID int16) {
 	reqPayload := ipc.FSDelegateReqPayload{
-		SysID:     uint16(sysid.MmapPageFlush),
-		CallerSID: callerSID,
-		CallerTID: callerTID,
-		Args:      [6]uint64{info.FlushFD, uint64(callerSID), info.FlushOffset, info.FlushLength, 0, 0},
-		DataVA:    info.FlushResponseVA,
-		DataLen:   4096,
+		SysID:      uint16(sysid.MmapPageFlush),
+		CallerSID:  callerSID,
+		CallerTID:  callerTID,
+		Args:       [6]uint64{info.FlushFD, uint64(callerSID), info.FlushOffset, info.FlushLength, 0, 0},
+		DataVA:     info.FlushResponseVA,
+		DataLen:    4096,
+		Generation: info.Generation,
 	}
 	msg := ipc.EncodeFSDelegateReq(&reqPayload)
 	handlerRingIdx := syscallDelegates[sysid.Write].ringIdx
@@ -170,12 +171,13 @@ func handleFlushReply(callerTID int16, info *DelegateCallInfo) bool {
 		// We need to send from the handler's SVC context. uringSendKernel
 		// just enqueues a message — it doesn't block.
 		reqPayload := ipc.FSDelegateReqPayload{
-			SysID:     uint16(sysid.MmapPageFlush),
-			CallerSID: info.FlushCallerSID,
-			CallerTID: callerTID,
-			Args:      [6]uint64{info.FlushFD, uint64(info.FlushCallerSID), info.FlushOffset, info.FlushLength, 0, 0},
-			DataVA:    info.FlushResponseVA,
-			DataLen:   4096,
+			SysID:      uint16(sysid.MmapPageFlush),
+			CallerSID:  info.FlushCallerSID,
+			CallerTID:  callerTID,
+			Args:       [6]uint64{info.FlushFD, uint64(info.FlushCallerSID), info.FlushOffset, info.FlushLength, 0, 0},
+			DataVA:     info.FlushResponseVA,
+			DataLen:    4096,
+			Generation: info.Generation, // same claim, same generation across rounds
 		}
 		msg := ipc.EncodeFSDelegateReq(&reqPayload)
 		flushRingIdx := syscallDelegates[sysid.Write].ringIdx

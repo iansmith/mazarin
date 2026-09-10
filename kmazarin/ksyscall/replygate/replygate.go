@@ -30,25 +30,27 @@ const (
 	// shepherd that guesses a caller TID must not be able to forge a reply
 	// (the pre-existing HandlerSID security check).
 	RejectHandlerMismatch
-	// RejectSysIDMismatch — right caller, right replier, but the reply is for
-	// a DIFFERENT syscall than the one in flight at this slot (MAZ-201). The
-	// SID witness cannot distinguish two successive delegates from the SAME
-	// thread, so a stray reply — late, duplicated, or mis-laned inside the
-	// handler — carrying the caller's own identity would land as the return
-	// value of whatever delegate the thread is blocked on now. The reply's
-	// SysID (what the handler actually processed) must match the slot's.
-	RejectSysIDMismatch
+	// RejectGenerationMismatch — right caller, right replier, but the reply
+	// echoes a different slot GENERATION than the delegate in flight
+	// (MAZ-201). The SID witness cannot distinguish two successive delegates
+	// from the SAME thread, so a stray reply — late, duplicated, or mis-laned
+	// inside the handler — carrying the caller's own identity would land as
+	// the return value of whatever delegate the thread is blocked on now. A
+	// syscall-type witness would only narrow the hole (two consecutive Reads
+	// stay indistinguishable), so the witness is the per-claim generation the
+	// kernel stamped into the request, echoed back by the handler.
+	RejectGenerationMismatch
 )
 
 // Check decides whether a reply carrying replyCallerSID from replierSID may
-// fulfill the slot state (inUse, infoCallerSID, infoHandlerSID, infoSysID).
+// fulfill the slot state (inUse, infoCallerSID, infoHandlerSID, infoGen).
 // Precedence: slot-free, then caller mismatch, then handler mismatch, then
-// SysID mismatch — so the stale-reply counter classifies accurately (a freed
-// slot is not evidence of TID reuse, and a reused slot is stale regardless of
-// who the new handler is). replySysID 0 (sysid.Invalid, never a real
-// delegated syscall) means the replier supplied no witness: accepted on the
+// generation mismatch — so the stale-reply counter classifies accurately (a
+// freed slot is not evidence of TID reuse, and a reused slot is stale
+// regardless of who the new handler is). replyGen 0 means the replier
+// supplied no witness (slot generations are always nonzero): accepted on the
 // SID and handler checks alone, for compatibility.
-func Check(inUse bool, infoCallerSID, replyCallerSID, infoHandlerSID, replierSID int16, infoSysID, replySysID uint16) Verdict {
+func Check(inUse bool, infoCallerSID, replyCallerSID, infoHandlerSID, replierSID int16, infoGen, replyGen uint32) Verdict {
 	if !inUse {
 		return RejectSlotFree
 	}
@@ -58,8 +60,8 @@ func Check(inUse bool, infoCallerSID, replyCallerSID, infoHandlerSID, replierSID
 	if infoHandlerSID != replierSID {
 		return RejectHandlerMismatch
 	}
-	if replySysID != 0 && replySysID != infoSysID {
-		return RejectSysIDMismatch
+	if replyGen != 0 && replyGen != infoGen {
+		return RejectGenerationMismatch
 	}
 	return Accept
 }

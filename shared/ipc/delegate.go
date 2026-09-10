@@ -17,18 +17,22 @@ import "unsafe"
 //	[4:6]   CallerTID — thread that made the syscall (for reply routing)
 //	[6:8]   _pad
 //	[8:56]  Args      — 6 uint64 syscall arguments
-//	[56:64] DataVA    — VA of shared data page in handler's address space (0 = none)
-//	[64:68] DataLen   — bytes of valid data in the page
-//	[68:72] _pad2
+//	[56:64] DataVA     — VA of shared data page in handler's address space (0 = none)
+//	[64:68] DataLen    — bytes of valid data in the page
+//	[68:72] Generation — per-claim delegate-slot generation (MAZ-201); the
+//	                     handler echoes it in its reply (SyscallReply arg4)
+//	                     so a stray same-identity reply cannot fulfill a
+//	                     different delegate. ^uint32(0) marks fire-and-forget
+//	                     requests that must never be replied to.
 type FSDelegateReqPayload struct {
-	SysID     uint16
-	CallerSID int16
-	CallerTID int16
-	_pad      uint16
-	Args      [6]uint64
-	DataVA    uint64
-	DataLen   uint32
-	_pad2     uint32
+	SysID      uint16
+	CallerSID  int16
+	CallerTID  int16
+	_pad       uint16
+	Args       [6]uint64
+	DataVA     uint64
+	DataLen    uint32
+	Generation uint32
 }
 
 // Compile-time size assertion — payload must fit in 112-byte Payload field.
@@ -46,5 +50,3 @@ func EncodeFSDelegateReq(p *FSDelegateReqPayload) UringIPCMsg {
 func DecodeFSDelegateReq(msg *UringIPCMsg) *FSDelegateReqPayload {
 	return (*FSDelegateReqPayload)(unsafe.Pointer(&msg.Payload[0]))
 }
-
-
