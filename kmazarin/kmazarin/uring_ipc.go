@@ -145,6 +145,10 @@ func AllocUringIPCRing(shepherd *proc.Shepherd, ringIdx int) bool {
 	hdr := (*ipc.UringIPCRingHeader)(unsafe.Pointer(slot.KVA[0]))
 	hdr.Head = 0
 	hdr.Tail = 0
+	// Reset the MAZ-203 consume-order shadow for this (sid, ring) — the
+	// slot may be a reuse after PID-allocator wrap, and a stale shadow
+	// would report a false head anomaly on the first consume. 0 = unprimed.
+	atomic.StoreUint32(&uringShadowNext[sid][ringIdx], 0)
 	hdr.Capacity = ipc.UringIPCCapacity
 	hdr.RingMask = ipc.UringIPCMask
 	hdr.OwnerSID = sid
@@ -665,45 +669,81 @@ func KernelWriteToRingFromIRQ(targetSID int16, msg *ipc.UringIPCMsg) {
 // ============================================================================
 
 // drainUringIPCRing pops one message from the shepherd's ring.
-// Returns (msg KVA, true) or (0, false) if empty.
+// Returns (msg KVA, head index used, true) or (0, 0, false) if empty.
 // The returned KVA points into the ring buffer — caller must copy before
-// advancing head.
+// advancing head, and must hand the SAME head index back to advanceUringHead:
+// the MAZ-203 consume-order check has to compare the index this drain
+// actually used, not a re-read of the live header (two racing drains of the
+// same slot each advance the live head+shadow in lockstep, so a re-read can
+// never see its own race).
 //
 //go:nosplit
-func drainUringIPCRing(sid int16, ringIdx int) (uintptr, bool) {
+func drainUringIPCRing(sid int16, ringIdx int) (uintptr, uint32, bool) {
 	if sid < 0 || int(sid) >= proc.MaxLiveShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
-		return 0, false
+		return 0, 0, false
 	}
 	slot := &uringIPCSlots[sid][ringIdx]
 	if slot.KVA[0] == 0 {
-		return 0, false
+		return 0, 0, false
 	}
 
 	hdr := ringHeader(slot)
 	head := atomic.LoadUint32(&hdr.Head)
 	tail := atomic.LoadUint32(&hdr.Tail)
 	if head == tail {
-		return 0, false // empty
+		return 0, 0, false // empty
 	}
 
 	slotIdx := head & ipc.UringIPCMask
 	msgKVA := ringSlotKVA(slot, slotIdx)
 
 	// Advance head AFTER caller copies (caller calls advanceUringHead)
-	return msgKVA, true
+	return msgKVA, head, true
 }
 
+// uringShadowNext is the MAZ-203 consume-order probe: a kernel-private shadow
+// of the next head index each ring's single consumer is expected to retire.
+// The shadow (not the header) is the trustworthy record of what the consumer
+// path actually retired. advanceUringHead compares against it and reports any
+// mismatch — a head that moved backward (entries re-delivered) or jumped
+// forward (entries skipped) — to the caller for serial-visible logging.
+//
+// 0 doubles as the "unprimed" sentinel: a legitimately stored value is always
+// head+1, and head+1 == 0 only at the uint32 wrap (the probe silently
+// re-primes there). The same sentinel serves ring REUSE tolerance only
+// because AllocUringIPCRing explicitly stores 0 on (re)allocation — wrap
+// tolerance is inherent, reuse tolerance is that reset. Zero-initialization
+// covers first boot for free.
+var uringShadowNext [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]uint32
+
 // advanceUringHead advances the consumer head pointer after the message
-// has been copied to userspace.
+// has been copied to userspace. drainedHead is the head index the paired
+// drainUringIPCRing call used — NOT re-read from the live header, so a
+// racing second consumer that drained the same slot shows up here as
+// drainedHead != expected (the winner already moved the shadow past it).
+// The header store is drainedHead+1 (idempotent under that race) rather
+// than a read-modify-write of the live head, so a detected double-drain
+// re-delivers the following message instead of silently skipping it.
+//
+// Returns 0 normally. If drainedHead is not what the shadow expected
+// (MAZ-203 duplicate-delivery probe), returns the anomaly packed as
+// uint64(drainedHead)<<32 | uint64(expected) — nonzero by construction,
+// since drainedHead == expected is never reported. Detection is
+// atomics-only so the nosplit budget is untouched; the caller logs.
 //
 //go:nosplit
-func advanceUringHead(sid int16, ringIdx int) {
+func advanceUringHead(sid int16, ringIdx int, drainedHead uint32) uint64 {
 	if sid < 0 || int(sid) >= proc.MaxLiveShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
-		return
+		return 0
 	}
 	hdr := ringHeader(&uringIPCSlots[sid][ringIdx])
-	head := atomic.LoadUint32(&hdr.Head)
-	atomic.StoreUint32(&hdr.Head, head+1)
+	var anomaly uint64
+	if expected := atomic.LoadUint32(&uringShadowNext[sid][ringIdx]); expected != 0 && drainedHead != expected {
+		anomaly = uint64(drainedHead)<<32 | uint64(expected)
+	}
+	atomic.StoreUint32(&uringShadowNext[sid][ringIdx], drainedHead+1)
+	atomic.StoreUint32(&hdr.Head, drainedHead+1)
+	return anomaly
 }
 
 // WakeSenderAfterDrain wakes any sender parked on this slot via the new

@@ -146,6 +146,56 @@ const fireAndForgetGen = ^uint32(0)
 // neither late reply arrived.
 var DelegateRetiredPageDrops atomic.Uint64
 
+// DelegateBadPageReleases counts delegate data-page frees REFUSED because the
+// page descriptor says the PA is not a PageSharedIPC page owned by the
+// releasing handler (MAZ-203). Expected to read 0 in a clean boot; any
+// increment is a caught would-have-been wrong-page free — the MAZ-179
+// class-A corruption shape. Coverage is provenance-shaped, not
+// message-shaped: it catches a stale/duplicated release whose PA has since
+// been freed and reallocated to a different owner, type, or shared mapping.
+// It CANNOT catch a stale console release whose handler VA was remapped to
+// another delegate data page of the SAME handler — that page carries
+// exactly the descriptor shape this check accepts; closing that needs
+// per-message release identity (a follow-up), not provenance. Each refusal
+// klogs a serial-visible [DLG:bad-release] line naming the path, PA, and
+// descriptor.
+var DelegateBadPageReleases atomic.Uint64
+
+// delegatePageReleasable reports whether pa is a delegate data page the
+// releasing handler may free. Legit shapes: an exclusive PageSharedIPC page
+// owned by the releasing handler (every delegate data page from
+// allocAndCopy*/allocEmptyDataPage), or — reclaim paths only — an exclusive
+// PageFileMmap page (MmapPageFill frames are allocated with the CALLER as
+// owner; their error/death reclaims run with the handler's identity). On any
+// other shape it bumps DelegateBadPageReleases and logs; the caller must
+// skip the free.
+func delegatePageReleasable(path string, pa uintptr, handlerSID int16, allowFileMmap bool) bool {
+	// Locked snapshot: unlocked field reads can tear against a concurrent
+	// releasePageByPA clearing Type/Owner/RefCount one field at a time and
+	// mis-approve a free mid-release elsewhere (review round-2 finding).
+	typ, owner, refCount, flags, inPool := kmem.SnapshotPageDescriptor(pa)
+	if !inPool {
+		// Outside the descriptor pool — cannot validate; preserve the
+		// historical behavior of freeing (early-boot pages).
+		return true
+	}
+	// RefCount must be EXACTLY 1 (exclusively held): 0 means a release is
+	// already in flight elsewhere — approving it would be the double-free
+	// this gate exists to stop.
+	pageDescOK := typ == kmem.PageSharedIPC && owner == handlerSID && refCount == 1
+	if !pageDescOK && allowFileMmap {
+		pageDescOK = typ == kmem.PageFileMmap && refCount == 1
+	}
+	if pageDescOK {
+		return true
+	}
+	DelegateBadPageReleases.Add(1)
+	klog.Criticalf("[DLG]", "[DLG:bad-release] path=%s pa=0x%x handler=%d desc: type=%d owner=%d ref=%d flags=0x%x\n",
+		path, uint64(pa), int32(handlerSID),
+		uint32(typ), int32(owner), int32(refCount), uint32(flags))
+	return false
+}
+
 // retiredLock guards the Retired* triple in every DelegateCallInfo. Three
 // paths race cross-CPU with no other common lock: dispatch retiring a dead
 // incarnation's page (preemptible), the stale-reply reclaim in SyscallReply
@@ -980,6 +1030,13 @@ func reclaimDataPage(pa uintptr, handlerVA uint64, handlerSID int16, handlerShep
 	if pa == 0 {
 		return
 	}
+	// MAZ-203: refuse to free a PA the descriptor does not attribute to this
+	// handler as an exclusive delegate data page — a stray reclaim here is a
+	// wrong-page free (class-A corruption). The unmap is skipped too: if the
+	// PA is not ours, the recorded VA pairing is equally suspect.
+	if !delegatePageReleasable("reclaim", pa, handlerSID, true) {
+		return
+	}
 	if handlerVA != 0 && handlerShepherd != nil {
 		kmem.UnmapUserPageWithL0(uintptr(handlerVA), handlerShepherd.PageTableL0PA)
 		handlerShepherd.Spans.Remove(handlerVA, 4096)
@@ -1019,6 +1076,19 @@ func SyscallReleaseDelegatePage(arg0, arg1, _, _, _, _ uint64) int64 {
 		pa := kmem.WalkUserPageTableWithL0(pageVA, handler.PageTableL0PA)
 		if pa == 0 {
 			continue // already released or never mapped
+		}
+		// MAZ-203: this fire-and-forget path has no reply gate, so a
+		// duplicated or late console message reaches here unchecked. Free
+		// only what the descriptor attributes to this handler as an
+		// exclusive delegate data page; refuse (and log) anything else —
+		// i.e. a VA now backing a freed-and-reallocated page of another
+		// owner/type. (A VA remapped to another delegate page of THIS
+		// handler passes the check — see DelegateBadPageReleases.) On
+		// refusal the mapping is left alone too: whatever now legitimately
+		// owns this VA in the handler's table, tearing it down blind
+		// would break that live state.
+		if !delegatePageReleasable("console-release", pa, int16(handler.PID), false) {
+			continue
 		}
 		kmem.UnmapUserPageWithL0(pageVA, handler.PageTableL0PA)
 		handler.Spans.Remove(uint64(pageVA), 4096)

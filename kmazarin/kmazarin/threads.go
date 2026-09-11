@@ -1520,9 +1520,20 @@ func printEpochStatus() {
 	staleRejects := ksyscall.DelegateStaleReplyRejects.Load()
 	genRejects := ksyscall.DelegateGenerationMismatchRejects.Load()
 	retiredDrops := ksyscall.DelegateRetiredPageDrops.Load()
-	if staleRejects+genRejects+retiredDrops > 0 {
-		extra += fmt.Sprintf("  replygate: stale=%d gen_mismatch=%d retired_drops=%d\n",
-			staleRejects, genRejects, retiredDrops)
+	badReleases := ksyscall.DelegateBadPageReleases.Load()
+	if staleRejects+genRejects+retiredDrops+badReleases > 0 {
+		extra += fmt.Sprintf("  replygate: stale=%d gen_mismatch=%d retired_drops=%d bad_release=%d\n",
+			staleRejects, genRejects, retiredDrops, badReleases)
+	}
+	// MAZ-203: ring-consumer duplicate-delivery probes. Nonzero means the
+	// uring consumer path retired an unexpected ring index (re-delivery of
+	// consumed entries) or ran concurrently for one ring; per-event detail
+	// is on the paired [URING:*] Criticalf lines.
+	headAnomalies := ksyscall.UringHeadAnomalies.Load()
+	concurrentRecv := ksyscall.UringConcurrentRecv.Load()
+	if headAnomalies+concurrentRecv > 0 {
+		extra += fmt.Sprintf("  uringring: head_anomaly=%d concurrent_recv=%d\n",
+			headAnomalies, concurrentRecv)
 	}
 	// MAZ-141: priority-wake counters (written from the IRQ-return path).
 	// Surfaced here so pwake activity is observable; a fresh ring dump on

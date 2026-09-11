@@ -388,6 +388,58 @@ func addCRBeforeLF(data []byte) []byte {
 	return out
 }
 
+// MAZ-203 ingest probe state. The kernel claims each delegate slot with a
+// per-TID generation that only ever increases — across caller incarnations
+// too (prepareDelegateSlotForReuse increments, never resets) — so a request
+// arriving with a generation at or below one already seen for the same TID is
+// a duplicate delivery: the producer of the MAZ-201 stray replies, caught at
+// ingest before the worker pool re-executes it. Fixed array (TIDs are
+// positive int16), touched only on the ring-2 reader goroutine; mirrors the
+// kernel's satellite-array convention rather than a growing map. dupReqCount
+// rides each [DLG:dup-req] line so a soak can grade on the cumulative count
+// (UART-direct, so it stays serial-visible after the soft-IRQ console takes
+// klog).
+var (
+	lastDelegateGenByTID [1 << 15]uint32
+	dupReqCount          uint64
+)
+
+// checkDelegateGenIngest applies the MAZ-203 duplicate-delivery check to one
+// ring-2 delegate request. Reader-goroutine-only; requests are still
+// forwarded by the caller so the downstream evidence ([DLG:gen-mismatch])
+// stays correlated.
+func checkDelegateGenIngest(req *sys.SyscallRequest) {
+	g := req.Generation
+	if g == 0 || g == ^uint32(0) || req.CallerTID < 0 {
+		return
+	}
+	// MmapPageFlush continuation rounds deliberately reuse one generation
+	// across every round of a single flush claim (mmap_writeback.go: "same
+	// claim, same generation across rounds"), so gen equality is legitimate
+	// there — a genuine duplicate of a flush round is probe A's job, not
+	// this check's.
+	if req.SysID == sysid.MmapPageFlush {
+		return
+	}
+	slot := &lastDelegateGenByTID[req.CallerTID]
+	if last := *slot; g <= last {
+		// A slot generation that wrapped uint32 lands far below the
+		// high-water mark; re-prime instead of flagging every subsequent
+		// request on this TID forever (same wrap class the kernel-side
+		// shadow handles with its 0 sentinel).
+		if last-g > 1<<31 {
+			*slot = g
+			return
+		}
+		dupReqCount++
+		sys.UartWriteString(fmt.Sprintf(
+			"[DLG:dup-req] sid=%d tid=%d sysid=%d gen=%d last=%d count=%d\n",
+			req.CallerPID, req.CallerTID, uint32(req.SysID), g, last, dupReqCount))
+		return
+	}
+	*slot = g
+}
+
 // startUringDispatchers sets up four uring Dispatchers, one per ring,
 // each with its own reader goroutine. Splitting traffic by class avoids
 // a single-reader bottleneck where slow file-lane operations would
@@ -458,6 +510,7 @@ func startUringDispatchers(fsClient fsclient.FSClient, delegateCh chan any, stdo
 		if !ok {
 			return
 		}
+		checkDelegateGenIngest(&req)
 		delegateCh <- req
 	})
 	delegateDispatcher.Start()
