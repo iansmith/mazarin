@@ -234,8 +234,19 @@ func SyscallUringRecv(arg0, arg1, _, _, _, _ uint64) int64 {
 	if bufPtr == 0 {
 		return -14 // EFAULT
 	}
+	// Validate the untrusted ring index (and the sid) HERE, before any
+	// kernel array is touched: tryDrainOnce's single-consumer claim indexes
+	// uringRecvActive[sid][ringIdx] ahead of drainUringIPCRing's own bounds
+	// check, so relying on the downstream check would let a bad arg1 panic
+	// the kernel on the array bounds.
+	if ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
+		return -22 // EINVAL
+	}
 
 	sid := getCurrentThreadSID()
+	if sid < 0 || int(sid) >= proc.MaxLiveShepherds {
+		return -1 // EPERM — no current shepherd context
+	}
 	shepherdIdx := int(sid)
 
 	// Try to drain immediately. On success this also wakes any sender
