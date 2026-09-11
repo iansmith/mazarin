@@ -147,8 +147,8 @@ func AllocUringIPCRing(shepherd *proc.Shepherd, ringIdx int) bool {
 	hdr.Tail = 0
 	// Reset the MAZ-203 consume-order shadow for this (sid, ring) — the
 	// slot may be a reuse after PID-allocator wrap, and a stale shadow
-	// would report a false head anomaly on the first consume.
-	atomic.StoreUint32(&uringShadowValid[sid][ringIdx], 0)
+	// would report a false head anomaly on the first consume. 0 = unprimed.
+	atomic.StoreUint32(&uringShadowNext[sid][ringIdx], 0)
 	hdr.Capacity = ipc.UringIPCCapacity
 	hdr.RingMask = ipc.UringIPCMask
 	hdr.OwnerSID = sid
@@ -697,17 +697,18 @@ func drainUringIPCRing(sid int16, ringIdx int) (uintptr, bool) {
 	return msgKVA, true
 }
 
-// uringShadowNext/uringShadowValid are the MAZ-203 consume-order probe: a
-// kernel-private shadow of the next head index each ring's single consumer is
-// expected to retire. The ring header lives in pages mapped into the owning
-// shepherd, so the shadow (not the header) is the trustworthy record of what
-// the consumer path actually retired. advanceUringHead compares against it and
-// reports any mismatch — a head that moved backward (entries re-delivered) or
-// jumped forward (entries skipped) — to the caller for serial-visible logging.
-var (
-	uringShadowNext  [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]uint32
-	uringShadowValid [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]uint32
-)
+// uringShadowNext is the MAZ-203 consume-order probe: a kernel-private shadow
+// of the next head index each ring's single consumer is expected to retire.
+// The shadow (not the header) is the trustworthy record of what the consumer
+// path actually retired. advanceUringHead compares against it and reports any
+// mismatch — a head that moved backward (entries re-delivered) or jumped
+// forward (entries skipped) — to the caller for serial-visible logging.
+//
+// 0 doubles as the "unprimed" sentinel: a legitimately stored value is always
+// head+1, and head+1 == 0 only at the uint32 wrap (the probe silently
+// re-primes there). Zero-initialization and the AllocUringIPCRing reset both
+// come for free.
+var uringShadowNext [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]uint32
 
 // advanceUringHead advances the consumer head pointer after the message
 // has been copied to userspace.
@@ -726,13 +727,10 @@ func advanceUringHead(sid int16, ringIdx int) uint64 {
 	hdr := ringHeader(&uringIPCSlots[sid][ringIdx])
 	head := atomic.LoadUint32(&hdr.Head)
 	var anomaly uint64
-	if atomic.LoadUint32(&uringShadowValid[sid][ringIdx]) == 1 {
-		if expected := atomic.LoadUint32(&uringShadowNext[sid][ringIdx]); head != expected {
-			anomaly = uint64(head)<<32 | uint64(expected)
-		}
+	if expected := atomic.LoadUint32(&uringShadowNext[sid][ringIdx]); expected != 0 && head != expected {
+		anomaly = uint64(head)<<32 | uint64(expected)
 	}
 	atomic.StoreUint32(&uringShadowNext[sid][ringIdx], head+1)
-	atomic.StoreUint32(&uringShadowValid[sid][ringIdx], 1)
 	atomic.StoreUint32(&hdr.Head, head+1)
 	return anomaly
 }

@@ -51,6 +51,31 @@ func releaseRecv(sid int16, ringIdx int) {
 	atomic.StoreUint32(&uringRecvActive[sid][ringIdx], 0)
 }
 
+// tryDrainOnce runs one claim+drain+advance+release cycle for the ring and,
+// on a successful drain, copies the message out, reports any consume-order
+// anomaly, and wakes a sender parked on the just-freed slot. Returns
+// (copy result, true) when a message was consumed, (0, false) on empty.
+// The MAZ-203 single-consumer claim brackets only drain+advance — never a
+// block or WFI wait.
+func tryDrainOnce(sid int16, ringIdx int, bufPtr uint64) (int64, bool) {
+	claimed := claimRecv(sid, ringIdx)
+	msgKVA, ok := drainUringIPCRing(sid, ringIdx)
+	if !ok {
+		if claimed {
+			releaseRecv(sid, ringIdx)
+		}
+		return 0, false
+	}
+	result := copyUringMsgToUser(bufPtr, msgKVA)
+	anomaly := advanceUringHead(sid, ringIdx)
+	if claimed {
+		releaseRecv(sid, ringIdx)
+	}
+	reportHeadAnomaly(sid, ringIdx, anomaly)
+	wakeSenderAfterDrain(sid, ringIdx)
+	return result, true
+}
+
 // reportHeadAnomaly logs a nonzero advanceUringHead anomaly (packed
 // head<<32|expected) with the ring identity.
 func reportHeadAnomaly(sid int16, ringIdx int, anomaly uint64) {
@@ -213,23 +238,10 @@ func SyscallUringRecv(arg0, arg1, _, _, _, _ uint64) int64 {
 	sid := getCurrentThreadSID()
 	shepherdIdx := int(sid)
 
-	// Try to drain immediately
-	claimed := claimRecv(sid, ringIdx)
-	msgKVA, ok := drainUringIPCRing(sid, ringIdx)
-	if ok {
-		result := copyUringMsgToUser(bufPtr, msgKVA)
-		anomaly := advanceUringHead(sid, ringIdx)
-		if claimed {
-			releaseRecv(sid, ringIdx)
-		}
-		reportHeadAnomaly(sid, ringIdx, anomaly)
-		// A slot just freed up — wake any sender parked on
-		// ThreadBlockedUringSend for this ring (Scenario B drain wake).
-		wakeSenderAfterDrain(sid, ringIdx)
+	// Try to drain immediately. On success this also wakes any sender
+	// parked on ThreadBlockedUringSend for this ring (Scenario B drain wake).
+	if result, ok := tryDrainOnce(sid, ringIdx, bufPtr); ok {
 		return result
-	}
-	if claimed {
-		releaseRecv(sid, ringIdx)
 	}
 
 	// Block until message arrives
@@ -242,20 +254,8 @@ func SyscallUringRecv(arg0, arg1, _, _, _, _ uint64) int64 {
 	// No other thread — WFI loop
 	for {
 		enableIRQsAndWait()
-		claimed = claimRecv(sid, ringIdx)
-		msgKVA, ok = drainUringIPCRing(sid, ringIdx)
-		if ok {
-			result := copyUringMsgToUser(bufPtr, msgKVA)
-			anomaly := advanceUringHead(sid, ringIdx)
-			if claimed {
-				releaseRecv(sid, ringIdx)
-			}
-			reportHeadAnomaly(sid, ringIdx, anomaly)
-			wakeSenderAfterDrain(sid, ringIdx)
+		if result, ok := tryDrainOnce(sid, ringIdx, bufPtr); ok {
 			return result
-		}
-		if claimed {
-			releaseRecv(sid, ringIdx)
 		}
 	}
 }
