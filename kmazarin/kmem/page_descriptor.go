@@ -183,6 +183,29 @@ func ClearPageDescriptor(pa uintptr) {
 	pageDescLock.Unlock()
 }
 
+// SnapshotPageDescriptor returns a consistent (Type, Owner, RefCount, Flags)
+// snapshot of the descriptor for pa, taken under pageDescLock so it cannot
+// tear against a concurrent release/clear mutating those fields one at a
+// time. ok is false when pa is outside the descriptor pool. Callers that
+// gate a free on descriptor provenance (MAZ-203 delegatePageReleasable)
+// need the snapshot form — unlocked field reads can pair one field's old
+// value with another's new one and mis-approve a free mid-release.
+//
+//go:nosplit
+func SnapshotPageDescriptor(pa uintptr) (typ PageType, owner int16, refCount int16, flags uint8, ok bool) {
+	desc := GetPageDescriptor(pa)
+	if desc == nil {
+		return 0, 0, 0, 0, false
+	}
+	pageDescLock.Lock()
+	typ = desc.Type
+	owner = desc.Owner
+	refCount = desc.RefCount
+	flags = desc.Flags
+	pageDescLock.Unlock()
+	return typ, owner, refCount, flags, true
+}
+
 // pageDescLock serializes RefCount/Flags/Owner mutations on PageDescriptors
 // (MAZ-15). The read-modify-write clusters ("bump + set flag", "dec + maybe
 // clear flag", "dec-to-zero + clear + free") run from two context classes:

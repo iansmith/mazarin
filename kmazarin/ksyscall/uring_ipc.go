@@ -31,21 +31,25 @@ var UringConcurrentRecv atomic.Uint64
 // uringRecvActive is the per-ring single-consumer claim used by the
 // concurrent-recv probe. Claimed only around drain+advance, never across a
 // block or WFI wait. The claim is DIAGNOSTIC ONLY: a failed claim is
-// counted and logged but does not block the drain — concurrent consumption
-// is observed, not prevented (the drainedHead handoff to advanceUringHead
-// is what makes the race visible as a head anomaly).
+// counted immediately and logged after the drain cycle, but does not block
+// the drain — concurrent consumption is observed, not prevented (the
+// drainedHead handoff to advanceUringHead is what makes the race visible
+// as a head anomaly).
 var uringRecvActive [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]uint32
 
 // claimRecv attempts the single-consumer claim; a failed claim is the
-// anomaly and is logged and counted. Returns whether THIS caller holds the
-// claim (and must release it).
+// anomaly and is counted here (atomics only). The paired Criticalf is
+// deferred to reportConcurrentRecv AFTER the drain cycle: emitting the
+// ~ms-scale polled-UART line here, between losing the CAS and racing into
+// drainUringIPCRing, would park the loser long enough for the winner to
+// finish drain+advance — flushing the very double-drain the probe exists
+// to observe. Returns whether THIS caller holds the claim (and must
+// release it).
 func claimRecv(sid int16, ringIdx int) bool {
 	if atomic.CompareAndSwapUint32(&uringRecvActive[sid][ringIdx], 0, 1) {
 		return true
 	}
 	UringConcurrentRecv.Add(1)
-	klog.Criticalf("[URING]", "[URING:concurrent-recv] sid=%d ring=%d\n",
-		int32(sid), int32(ringIdx))
 	return false
 }
 
@@ -67,6 +71,7 @@ func tryDrainOnce(sid int16, ringIdx int, bufPtr uint64) (int64, bool) {
 		if claimed {
 			releaseRecv(sid, ringIdx)
 		}
+		reportConcurrentRecv(sid, ringIdx, claimed)
 		return 0, false
 	}
 	result := copyUringMsgToUser(bufPtr, msgKVA)
@@ -76,9 +81,21 @@ func tryDrainOnce(sid int16, ringIdx int, bufPtr uint64) (int64, bool) {
 	if claimed {
 		releaseRecv(sid, ringIdx)
 	}
+	reportConcurrentRecv(sid, ringIdx, claimed)
 	reportHeadAnomaly(sid, ringIdx, anomaly)
 	wakeSenderAfterDrain(sid, ringIdx)
 	return result, true
+}
+
+// reportConcurrentRecv logs a failed single-consumer claim (already counted
+// by claimRecv). Called only after the drain cycle completes so the UART
+// wait cannot perturb the race being observed.
+func reportConcurrentRecv(sid int16, ringIdx int, claimed bool) {
+	if claimed {
+		return
+	}
+	klog.Criticalf("[URING]", "[URING:concurrent-recv] sid=%d ring=%d\n",
+		int32(sid), int32(ringIdx))
 }
 
 // reportHeadAnomaly logs a nonzero advanceUringHead anomaly (packed

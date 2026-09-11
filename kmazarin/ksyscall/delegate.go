@@ -170,15 +170,21 @@ var DelegateBadPageReleases atomic.Uint64
 // other shape it bumps DelegateBadPageReleases and logs; the caller must
 // skip the free.
 func delegatePageReleasable(path string, pa uintptr, handlerSID int16, allowFileMmap bool) bool {
-	desc := kmem.GetPageDescriptor(pa)
-	if desc == nil {
+	// Locked snapshot: unlocked field reads can tear against a concurrent
+	// releasePageByPA clearing Type/Owner/RefCount one field at a time and
+	// mis-approve a free mid-release elsewhere (review round-2 finding).
+	typ, owner, refCount, flags, inPool := kmem.SnapshotPageDescriptor(pa)
+	if !inPool {
 		// Outside the descriptor pool — cannot validate; preserve the
 		// historical behavior of freeing (early-boot pages).
 		return true
 	}
-	pageDescOK := desc.Type == kmem.PageSharedIPC && desc.Owner == handlerSID && desc.RefCount <= 1
+	// RefCount must be EXACTLY 1 (exclusively held): 0 means a release is
+	// already in flight elsewhere — approving it would be the double-free
+	// this gate exists to stop.
+	pageDescOK := typ == kmem.PageSharedIPC && owner == handlerSID && refCount == 1
 	if !pageDescOK && allowFileMmap {
-		pageDescOK = desc.Type == kmem.PageFileMmap && desc.RefCount <= 1
+		pageDescOK = typ == kmem.PageFileMmap && refCount == 1
 	}
 	if pageDescOK {
 		return true
@@ -186,7 +192,7 @@ func delegatePageReleasable(path string, pa uintptr, handlerSID int16, allowFile
 	DelegateBadPageReleases.Add(1)
 	klog.Criticalf("[DLG]", "[DLG:bad-release] path=%s pa=0x%x handler=%d desc: type=%d owner=%d ref=%d flags=0x%x\n",
 		path, uint64(pa), int32(handlerSID),
-		uint32(desc.Type), int32(desc.Owner), int32(desc.RefCount), uint32(desc.Flags))
+		uint32(typ), int32(owner), int32(refCount), uint32(flags))
 	return false
 }
 
