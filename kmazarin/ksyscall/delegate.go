@@ -146,6 +146,46 @@ const fireAndForgetGen = ^uint32(0)
 // neither late reply arrived.
 var DelegateRetiredPageDrops atomic.Uint64
 
+// DelegateBadPageReleases counts delegate data-page frees REFUSED because the
+// page descriptor says the PA is not a PageSharedIPC page owned by the
+// releasing handler (MAZ-203). Expected to read 0 in a clean boot; any
+// increment is a caught would-have-been wrong-page free — the MAZ-179 class-A
+// corruption shape. The fire-and-forget console lane (SysReleaseDelegatePage)
+// is the reply-gate blind spot this closes: a duplicated or late console
+// message whose handler VA has since been remapped to a NEW delegate's page
+// would otherwise free that live page silently. Each refusal also klogs a
+// serial-visible [DLG:bad-release] line naming the path, PA, and descriptor.
+var DelegateBadPageReleases atomic.Uint64
+
+// delegatePageReleasable reports whether pa is a delegate data page the
+// releasing handler may free. Legit shapes: an exclusive PageSharedIPC page
+// owned by the releasing handler (every delegate data page from
+// allocAndCopy*/allocEmptyDataPage), or — reclaim paths only — an exclusive
+// PageFileMmap page (MmapPageFill frames are allocated with the CALLER as
+// owner; their error/death reclaims run with the handler's identity). On any
+// other shape it bumps DelegateBadPageReleases and logs; the caller must
+// skip the free.
+func delegatePageReleasable(path string, pa uintptr, handlerSID int16, allowFileMmap bool) bool {
+	desc := kmem.GetPageDescriptor(pa)
+	if desc == nil {
+		// Outside the descriptor pool — cannot validate; preserve the
+		// historical behavior of freeing (early-boot pages).
+		return true
+	}
+	pageDescOK := desc.Type == kmem.PageSharedIPC && desc.Owner == handlerSID && desc.RefCount <= 1
+	if !pageDescOK && allowFileMmap {
+		pageDescOK = desc.Type == kmem.PageFileMmap && desc.RefCount <= 1
+	}
+	if pageDescOK {
+		return true
+	}
+	DelegateBadPageReleases.Add(1)
+	klog.Criticalf("[DLG]", "[DLG:bad-release] path=%s pa=0x%x handler=%d desc: type=%d owner=%d ref=%d flags=0x%x\n",
+		path, uint64(pa), int32(handlerSID),
+		uint32(desc.Type), int32(desc.Owner), int32(desc.RefCount), uint32(desc.Flags))
+	return false
+}
+
 // retiredLock guards the Retired* triple in every DelegateCallInfo. Three
 // paths race cross-CPU with no other common lock: dispatch retiring a dead
 // incarnation's page (preemptible), the stale-reply reclaim in SyscallReply
@@ -980,6 +1020,13 @@ func reclaimDataPage(pa uintptr, handlerVA uint64, handlerSID int16, handlerShep
 	if pa == 0 {
 		return
 	}
+	// MAZ-203: refuse to free a PA the descriptor does not attribute to this
+	// handler as an exclusive delegate data page — a stray reclaim here is a
+	// wrong-page free (class-A corruption). The unmap is skipped too: if the
+	// PA is not ours, the recorded VA pairing is equally suspect.
+	if !delegatePageReleasable("reclaim", pa, handlerSID, true) {
+		return
+	}
 	if handlerVA != 0 && handlerShepherd != nil {
 		kmem.UnmapUserPageWithL0(uintptr(handlerVA), handlerShepherd.PageTableL0PA)
 		handlerShepherd.Spans.Remove(handlerVA, 4096)
@@ -1019,6 +1066,14 @@ func SyscallReleaseDelegatePage(arg0, arg1, _, _, _, _ uint64) int64 {
 		pa := kmem.WalkUserPageTableWithL0(pageVA, handler.PageTableL0PA)
 		if pa == 0 {
 			continue // already released or never mapped
+		}
+		// MAZ-203: this fire-and-forget path is the reply-gate blind spot —
+		// a duplicated or late console message can name a handler VA that
+		// has since been remapped to a NEW delegate's live page. Free only
+		// what the descriptor attributes to this handler as an exclusive
+		// delegate data page; refuse (and log) anything else.
+		if !delegatePageReleasable("console-release", pa, int16(handler.PID), false) {
+			continue
 		}
 		kmem.UnmapUserPageWithL0(pageVA, handler.PageTableL0PA)
 		handler.Spans.Remove(uint64(pageVA), 4096)
