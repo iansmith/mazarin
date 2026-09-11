@@ -413,8 +413,24 @@ func checkDelegateGenIngest(req *sys.SyscallRequest) {
 	if g == 0 || g == ^uint32(0) || req.CallerTID < 0 {
 		return
 	}
+	// MmapPageFlush continuation rounds deliberately reuse one generation
+	// across every round of a single flush claim (mmap_writeback.go: "same
+	// claim, same generation across rounds"), so gen equality is legitimate
+	// there — a genuine duplicate of a flush round is probe A's job, not
+	// this check's.
+	if req.SysID == sysid.MmapPageFlush {
+		return
+	}
 	slot := &lastDelegateGenByTID[req.CallerTID]
 	if last := *slot; g <= last {
+		// A slot generation that wrapped uint32 lands far below the
+		// high-water mark; re-prime instead of flagging every subsequent
+		// request on this TID forever (same wrap class the kernel-side
+		// shadow handles with its 0 sentinel).
+		if last-g > 1<<31 {
+			*slot = g
+			return
+		}
 		dupReqCount++
 		sys.UartWriteString(fmt.Sprintf(
 			"[DLG:dup-req] sid=%d tid=%d sysid=%d gen=%d last=%d count=%d\n",

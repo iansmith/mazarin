@@ -15,10 +15,10 @@ func blockForUringRecv(shepherdIdx int, ringIdx int, bufPtr uint64) uintptr
 func uringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) (int64, uintptr)
 
 //go:linkname drainUringIPCRing main.drainUringIPCRing
-func drainUringIPCRing(sid int16, ringIdx int) (uintptr, bool)
+func drainUringIPCRing(sid int16, ringIdx int) (uintptr, uint32, bool)
 
 //go:linkname advanceUringHead main.advanceUringHead
-func advanceUringHead(sid int16, ringIdx int) uint64
+func advanceUringHead(sid int16, ringIdx int, drainedHead uint32) uint64
 
 //go:linkname wakeSenderAfterDrain main.WakeSenderAfterDrain
 func wakeSenderAfterDrain(sid int16, ringIdx int)

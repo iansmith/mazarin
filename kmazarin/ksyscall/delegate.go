@@ -149,12 +149,16 @@ var DelegateRetiredPageDrops atomic.Uint64
 // DelegateBadPageReleases counts delegate data-page frees REFUSED because the
 // page descriptor says the PA is not a PageSharedIPC page owned by the
 // releasing handler (MAZ-203). Expected to read 0 in a clean boot; any
-// increment is a caught would-have-been wrong-page free — the MAZ-179 class-A
-// corruption shape. The fire-and-forget console lane (SysReleaseDelegatePage)
-// is the reply-gate blind spot this closes: a duplicated or late console
-// message whose handler VA has since been remapped to a NEW delegate's page
-// would otherwise free that live page silently. Each refusal also klogs a
-// serial-visible [DLG:bad-release] line naming the path, PA, and descriptor.
+// increment is a caught would-have-been wrong-page free — the MAZ-179
+// class-A corruption shape. Coverage is provenance-shaped, not
+// message-shaped: it catches a stale/duplicated release whose PA has since
+// been freed and reallocated to a different owner, type, or shared mapping.
+// It CANNOT catch a stale console release whose handler VA was remapped to
+// another delegate data page of the SAME handler — that page carries
+// exactly the descriptor shape this check accepts; closing that needs
+// per-message release identity (a follow-up), not provenance. Each refusal
+// klogs a serial-visible [DLG:bad-release] line naming the path, PA, and
+// descriptor.
 var DelegateBadPageReleases atomic.Uint64
 
 // delegatePageReleasable reports whether pa is a delegate data page the
@@ -1067,11 +1071,16 @@ func SyscallReleaseDelegatePage(arg0, arg1, _, _, _, _ uint64) int64 {
 		if pa == 0 {
 			continue // already released or never mapped
 		}
-		// MAZ-203: this fire-and-forget path is the reply-gate blind spot —
-		// a duplicated or late console message can name a handler VA that
-		// has since been remapped to a NEW delegate's live page. Free only
-		// what the descriptor attributes to this handler as an exclusive
-		// delegate data page; refuse (and log) anything else.
+		// MAZ-203: this fire-and-forget path has no reply gate, so a
+		// duplicated or late console message reaches here unchecked. Free
+		// only what the descriptor attributes to this handler as an
+		// exclusive delegate data page; refuse (and log) anything else —
+		// i.e. a VA now backing a freed-and-reallocated page of another
+		// owner/type. (A VA remapped to another delegate page of THIS
+		// handler passes the check — see DelegateBadPageReleases.) On
+		// refusal the mapping is left alone too: whatever now legitimately
+		// owns this VA in the handler's table, tearing it down blind
+		// would break that live state.
 		if !delegatePageReleasable("console-release", pa, int16(handler.PID), false) {
 			continue
 		}

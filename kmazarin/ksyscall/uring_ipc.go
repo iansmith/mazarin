@@ -30,7 +30,10 @@ var UringConcurrentRecv atomic.Uint64
 
 // uringRecvActive is the per-ring single-consumer claim used by the
 // concurrent-recv probe. Claimed only around drain+advance, never across a
-// block or WFI wait.
+// block or WFI wait. The claim is DIAGNOSTIC ONLY: a failed claim is
+// counted and logged but does not block the drain — concurrent consumption
+// is observed, not prevented (the drainedHead handoff to advanceUringHead
+// is what makes the race visible as a head anomaly).
 var uringRecvActive [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]uint32
 
 // claimRecv attempts the single-consumer claim; a failed claim is the
@@ -59,7 +62,7 @@ func releaseRecv(sid int16, ringIdx int) {
 // block or WFI wait.
 func tryDrainOnce(sid int16, ringIdx int, bufPtr uint64) (int64, bool) {
 	claimed := claimRecv(sid, ringIdx)
-	msgKVA, ok := drainUringIPCRing(sid, ringIdx)
+	msgKVA, drainedHead, ok := drainUringIPCRing(sid, ringIdx)
 	if !ok {
 		if claimed {
 			releaseRecv(sid, ringIdx)
@@ -67,7 +70,9 @@ func tryDrainOnce(sid int16, ringIdx int, bufPtr uint64) (int64, bool) {
 		return 0, false
 	}
 	result := copyUringMsgToUser(bufPtr, msgKVA)
-	anomaly := advanceUringHead(sid, ringIdx)
+	// Hand the drain's OWN head index to the consume-order check — a live
+	// re-read could never see a concurrent double-drain of the same slot.
+	anomaly := advanceUringHead(sid, ringIdx, drainedHead)
 	if claimed {
 		releaseRecv(sid, ringIdx)
 	}
