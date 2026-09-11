@@ -453,10 +453,30 @@ func startUringDispatchers(fsClient fsclient.FSClient, delegateCh chan any, stdo
 	// redirected fd 1/2 Writes (the kernel routes only CONSOLE fd<=2 Writes
 	// to ring 3 separately).
 	delegateDispatcher := uring.NewDispatcherWithRing(2)
+	// MAZ-203 ingest probe: per-(sid,tid) generation high-water mark, touched
+	// only on this ring-2 reader goroutine. The kernel claims each delegate
+	// slot with a monotonically increasing generation and TIDs are monotonic
+	// (MAZ-179), so a request arriving with a generation at or below one
+	// already seen for the same (sid,tid) is a duplicate delivery — the
+	// producer of the MAZ-201 stray replies, caught at ingest before the
+	// worker pool re-executes it. UART-direct (serial-visible) and rare by
+	// construction. Requests are still forwarded so the downstream evidence
+	// ([DLG:gen-mismatch]) stays correlated.
+	lastGenBySIDTID := make(map[uint32]uint32)
 	delegateDispatcher.OnFunc(ipc.ProtoFSDelegateReq, sys.DecodeFSDelegateReq, func(v any) {
 		req, ok := v.(sys.SyscallRequest)
 		if !ok {
 			return
+		}
+		if g := req.Generation; g != 0 && g != ^uint32(0) {
+			key := uint32(uint16(req.CallerPID))<<16 | uint32(uint16(req.CallerTID))
+			if last, seen := lastGenBySIDTID[key]; seen && g <= last {
+				sys.UartWriteString(fmt.Sprintf(
+					"[DLG:dup-req] sid=%d tid=%d sysid=%d gen=%d last=%d\n",
+					req.CallerPID, req.CallerTID, uint32(req.SysID), g, last))
+			} else {
+				lastGenBySIDTID[key] = g
+			}
 		}
 		delegateCh <- req
 	})

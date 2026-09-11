@@ -1,11 +1,66 @@
 package ksyscall
 
 import (
+	"sync/atomic"
+	"unsafe"
+
+	"mazzy/kmazarin/klog"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/ipc"
-	"unsafe"
 )
+
+// MAZ-203 duplicate-delivery probes. The delegate reply gate (MAZ-201) caught
+// the linux shepherd replying a second time to a batch of already-answered
+// delegates; the shepherd retains no such requests, so the duplicates must
+// have been delivered twice by the ring layer. These counters (surfaced on
+// the [status] line) and the paired [URING:*] Criticalf lines discriminate
+// where: a head anomaly means the consumer path retired a ring index it had
+// already retired (re-delivery of consumed entries); a concurrent-recv hit
+// means two kernel contexts ran the single-consumer drain path for one ring
+// at once — the double-run precondition for a head rollback.
+
+// UringHeadAnomalies counts advanceUringHead calls that retired an index the
+// consume-order shadow did not expect.
+var UringHeadAnomalies atomic.Uint64
+
+// UringConcurrentRecv counts entries to a ring's drain path while another
+// context already held its single-consumer claim.
+var UringConcurrentRecv atomic.Uint64
+
+// uringRecvActive is the per-ring single-consumer claim used by the
+// concurrent-recv probe. Claimed only around drain+advance, never across a
+// block or WFI wait.
+var uringRecvActive [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]uint32
+
+// claimRecv attempts the single-consumer claim; a failed claim is the
+// anomaly and is logged and counted. Returns whether THIS caller holds the
+// claim (and must release it).
+func claimRecv(sid int16, ringIdx int) bool {
+	if atomic.CompareAndSwapUint32(&uringRecvActive[sid][ringIdx], 0, 1) {
+		return true
+	}
+	UringConcurrentRecv.Add(1)
+	klog.Criticalf("[URING]", "[URING:concurrent-recv] sid=%d ring=%d\n",
+		int32(sid), int32(ringIdx))
+	return false
+}
+
+// releaseRecv drops the claim taken by claimRecv.
+func releaseRecv(sid int16, ringIdx int) {
+	atomic.StoreUint32(&uringRecvActive[sid][ringIdx], 0)
+}
+
+// reportHeadAnomaly logs a nonzero advanceUringHead anomaly (packed
+// head<<32|expected) with the ring identity.
+func reportHeadAnomaly(sid int16, ringIdx int, anomaly uint64) {
+	if anomaly == 0 {
+		return
+	}
+	UringHeadAnomalies.Add(1)
+	klog.Criticalf("[URING]", "[URING:head-anomaly] sid=%d ring=%d head=%d expected=%d\n",
+		int32(sid), int32(ringIdx), uint32(anomaly>>32), uint32(anomaly))
+}
 
 // SyscallUringConnect connects to a target shepherd's IPC uring by uring ID.
 // arg0 = target uring ID (uint64)
@@ -159,14 +214,22 @@ func SyscallUringRecv(arg0, arg1, _, _, _, _ uint64) int64 {
 	shepherdIdx := int(sid)
 
 	// Try to drain immediately
+	claimed := claimRecv(sid, ringIdx)
 	msgKVA, ok := drainUringIPCRing(sid, ringIdx)
 	if ok {
 		result := copyUringMsgToUser(bufPtr, msgKVA)
-		advanceUringHead(sid, ringIdx)
+		anomaly := advanceUringHead(sid, ringIdx)
+		if claimed {
+			releaseRecv(sid, ringIdx)
+		}
+		reportHeadAnomaly(sid, ringIdx, anomaly)
 		// A slot just freed up — wake any sender parked on
 		// ThreadBlockedUringSend for this ring (Scenario B drain wake).
 		wakeSenderAfterDrain(sid, ringIdx)
 		return result
+	}
+	if claimed {
+		releaseRecv(sid, ringIdx)
 	}
 
 	// Block until message arrives
@@ -179,12 +242,20 @@ func SyscallUringRecv(arg0, arg1, _, _, _, _ uint64) int64 {
 	// No other thread — WFI loop
 	for {
 		enableIRQsAndWait()
+		claimed = claimRecv(sid, ringIdx)
 		msgKVA, ok = drainUringIPCRing(sid, ringIdx)
 		if ok {
 			result := copyUringMsgToUser(bufPtr, msgKVA)
-			advanceUringHead(sid, ringIdx)
+			anomaly := advanceUringHead(sid, ringIdx)
+			if claimed {
+				releaseRecv(sid, ringIdx)
+			}
+			reportHeadAnomaly(sid, ringIdx, anomaly)
 			wakeSenderAfterDrain(sid, ringIdx)
 			return result
+		}
+		if claimed {
+			releaseRecv(sid, ringIdx)
 		}
 	}
 }

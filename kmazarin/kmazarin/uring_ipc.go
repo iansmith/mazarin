@@ -145,6 +145,10 @@ func AllocUringIPCRing(shepherd *proc.Shepherd, ringIdx int) bool {
 	hdr := (*ipc.UringIPCRingHeader)(unsafe.Pointer(slot.KVA[0]))
 	hdr.Head = 0
 	hdr.Tail = 0
+	// Reset the MAZ-203 consume-order shadow for this (sid, ring) — the
+	// slot may be a reuse after PID-allocator wrap, and a stale shadow
+	// would report a false head anomaly on the first consume.
+	atomic.StoreUint32(&uringShadowValid[sid][ringIdx], 0)
 	hdr.Capacity = ipc.UringIPCCapacity
 	hdr.RingMask = ipc.UringIPCMask
 	hdr.OwnerSID = sid
@@ -693,17 +697,44 @@ func drainUringIPCRing(sid int16, ringIdx int) (uintptr, bool) {
 	return msgKVA, true
 }
 
+// uringShadowNext/uringShadowValid are the MAZ-203 consume-order probe: a
+// kernel-private shadow of the next head index each ring's single consumer is
+// expected to retire. The ring header lives in pages mapped into the owning
+// shepherd, so the shadow (not the header) is the trustworthy record of what
+// the consumer path actually retired. advanceUringHead compares against it and
+// reports any mismatch — a head that moved backward (entries re-delivered) or
+// jumped forward (entries skipped) — to the caller for serial-visible logging.
+var (
+	uringShadowNext  [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]uint32
+	uringShadowValid [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]uint32
+)
+
 // advanceUringHead advances the consumer head pointer after the message
 // has been copied to userspace.
 //
+// Returns 0 normally. If the head being retired is not the one the shadow
+// expected (MAZ-203 duplicate-delivery probe), returns the anomaly packed as
+// uint64(head)<<32 | uint64(expected) — nonzero by construction, since
+// head == expected is never reported. Detection is atomics-only so the
+// nosplit budget is untouched; the caller does the logging.
+//
 //go:nosplit
-func advanceUringHead(sid int16, ringIdx int) {
+func advanceUringHead(sid int16, ringIdx int) uint64 {
 	if sid < 0 || int(sid) >= proc.MaxLiveShepherds || ringIdx < 0 || ringIdx >= ipc.MaxRingsPerShepherd {
-		return
+		return 0
 	}
 	hdr := ringHeader(&uringIPCSlots[sid][ringIdx])
 	head := atomic.LoadUint32(&hdr.Head)
+	var anomaly uint64
+	if atomic.LoadUint32(&uringShadowValid[sid][ringIdx]) == 1 {
+		if expected := atomic.LoadUint32(&uringShadowNext[sid][ringIdx]); head != expected {
+			anomaly = uint64(head)<<32 | uint64(expected)
+		}
+	}
+	atomic.StoreUint32(&uringShadowNext[sid][ringIdx], head+1)
+	atomic.StoreUint32(&uringShadowValid[sid][ringIdx], 1)
 	atomic.StoreUint32(&hdr.Head, head+1)
+	return anomaly
 }
 
 // WakeSenderAfterDrain wakes any sender parked on this slot via the new

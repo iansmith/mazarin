@@ -18,7 +18,7 @@ func uringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 func drainUringIPCRing(sid int16, ringIdx int) (uintptr, bool)
 
 //go:linkname advanceUringHead main.advanceUringHead
-func advanceUringHead(sid int16, ringIdx int)
+func advanceUringHead(sid int16, ringIdx int) uint64
 
 //go:linkname wakeSenderAfterDrain main.WakeSenderAfterDrain
 func wakeSenderAfterDrain(sid int16, ringIdx int)
