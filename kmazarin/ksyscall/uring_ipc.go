@@ -245,7 +245,12 @@ func SyscallUringRecv(arg0, arg1, _, _, _, _ uint64) int64 {
 
 	sid := getCurrentThreadSID()
 	if sid < 0 || int(sid) >= proc.MaxLiveShepherds {
-		return -1 // EPERM — no current shepherd context
+		// Corrupted/out-of-range SID (a nil current thread reads as SID 0,
+		// which is in-bounds and NOT caught here). Pre-probe, such a SID
+		// fell through drain's bounds check into BlockForUringRecv, which
+		// would mark the thread ThreadBlockedUringRecv without wiring
+		// BlockedTID — parked forever, unwakeable. Fail loudly instead.
+		return -1 // EPERM
 	}
 	shepherdIdx := int(sid)
 

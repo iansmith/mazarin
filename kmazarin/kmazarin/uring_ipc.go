@@ -706,8 +706,10 @@ func drainUringIPCRing(sid int16, ringIdx int) (uintptr, bool) {
 //
 // 0 doubles as the "unprimed" sentinel: a legitimately stored value is always
 // head+1, and head+1 == 0 only at the uint32 wrap (the probe silently
-// re-primes there). Zero-initialization and the AllocUringIPCRing reset both
-// come for free.
+// re-primes there). The same sentinel serves ring REUSE tolerance only
+// because AllocUringIPCRing explicitly stores 0 on (re)allocation — wrap
+// tolerance is inherent, reuse tolerance is that reset. Zero-initialization
+// covers first boot for free.
 var uringShadowNext [proc.MaxLiveShepherds][ipc.MaxRingsPerShepherd]uint32
 
 // advanceUringHead advances the consumer head pointer after the message
