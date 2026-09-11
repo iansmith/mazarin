@@ -1153,7 +1153,9 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 			reclaimDataPage(retPA, retVA, retSID, replyingShepherd)
 		}
 		DelegateStaleReplyRejects.Add(1)
-		klog.Errf("[DLG:stale-reply] replier=%d claimed-caller=%d tid=%d slot: inuse=%t caller=%d ret=%d\n",
+		// Criticalf for the same reason as the gen-mismatch reject below:
+		// serial-visible producer forensics, rare by construction.
+		klog.Criticalf("[DLG]", "[DLG:stale-reply] replier=%d claimed-caller=%d tid=%d slot: inuse=%t caller=%d ret=%d\n",
 			int32(replyingShepherd.PID), int32(callerSID), int32(callerTID),
 			info.InUse, int32(info.CallerSID), returnVal)
 		return -3 // ESRCH — the caller this reply was for no longer exists
@@ -1173,7 +1175,12 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 		// in-flight delegate's genuine reply is still coming. The log line
 		// names the stray reply's SysID — that identifies the producer.
 		DelegateGenerationMismatchRejects.Add(1)
-		klog.Errf("[DLG:gen-mismatch] replier=%d caller=%d tid=%d slot-sysid=%d reply-sysid=%d slot-gen=%d reply-gen=%d ret=%d\n",
+		// Criticalf, not Errf: klog is console-only once the soft-IRQ console
+		// is active, and this event is the ONLY witness to the stray-reply
+		// producer's identity (reply-sysid). It is rare by construction
+		// (≤ a handful per boot measured 2026-09-11), so the slow serial
+		// path cannot be storm-driven by it.
+		klog.Criticalf("[DLG]", "[DLG:gen-mismatch] replier=%d caller=%d tid=%d slot-sysid=%d reply-sysid=%d slot-gen=%d reply-gen=%d ret=%d\n",
 			int32(replyingShepherd.PID), int32(callerSID), int32(callerTID),
 			uint32(info.SysID), uint32(replySysID), info.Generation, replyGen, returnVal)
 		return -3 // ESRCH — the delegate this reply was for is not in flight
