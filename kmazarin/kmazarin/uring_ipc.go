@@ -924,6 +924,7 @@ func CleanupUringIPCForShepherd(sid int16) {
 		if slot.BlockedTID >= 0 {
 			t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 			if t != nil && t.State == ThreadBlockedUringRecv {
+				atomic.AddUint64(&readerDeadCount, 1)
 				t.State = ThreadReady
 				enqueueReadySchedLockHeld(t)
 			}

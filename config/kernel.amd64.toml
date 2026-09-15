@@ -55,3 +55,8 @@ ctx_marshal_test = true
 # MAZ-163: run the page tracker shed-on-free self-test at boot. See
 # kernel.arm64.toml for the full rationale. OFF by default.
 page_tracker_test = false
+
+# MAZ-204: widen the publish→save window in doContextSwitchImpl to make the
+# block/wake race near-deterministic. RED-phase scaffolding only — remove
+# before merge.
+debug_race_delay = false

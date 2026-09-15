@@ -241,6 +241,25 @@ const (
 	ThreadBlockedKernelRingPush ThreadState = 20 // Thread 0 blocked in pushStringFull (topHalfUartRing full); woken by consumer pop or 10ms deadline
 )
 
+// MAZ-204 pending-wake kinds.
+const (
+	WakeKindNone     uint32 = 0 // no pending wake
+	WakeKindRewind   uint32 = 1 // rewind SVC + restore arg0/sysnum (recv, send, WaitingIO)
+	WakeKindRetVal   uint32 = 2 // set return value (delegate caller)
+	WakeKindNoMutate uint32 = 3 // ready only, no context mutation (futex, nanosleep, MmapPageFill)
+)
+
+// debugRaceDelay is set from KernelConfig.DebugRaceDelay at boot.
+// When true, doContextSwitchImpl spins briefly before SaveContextFromFrame
+// to widen the publish→save window for RED-phase testing.
+var debugRaceDelay bool
+var raceDelayBurn uint32       // sink for the nosplit spin loop (prevents elision)
+var doubleRunCanaryHits uint64 // MAZ-204 canary: incremented when W4 double-run detected
+var readerDeadCount uint64     // MAZ-204: incremented when uring reader exits with error
+
+// SetDebugRaceDelay wires the kernel TOML flag into the scheduler.
+func SetDebugRaceDelay(on bool) { debugRaceDelay = on }
+
 // MaxThreads is the maximum number of threads supported
 const MaxThreads = 512
 
@@ -480,6 +499,22 @@ type Thread struct {
 	// switch for such waiters: fast-resuming a P-released thread races the Go
 	// runtime's P-handoff and corrupts g/SP (morestack-on-g0). MAZ-135.
 	PReleasedWaiter bool
+
+	// MAZ-204 parked-wake handshake fields.
+	// ContextSaved: set to 1 by doContextSwitchImpl after SaveContextFromFrame
+	// completes under schedulerLock; cleared by block paths when they record
+	// resume intent. Wake sites check this before touching the context.
+	ContextSaved uint32
+	// PendingWakeKind: what the wake should do when ContextSaved transitions
+	// to 1. 0 = none, 1 = rewind (recv/send/WaitingIO), 2 = set-retval
+	// (delegate), 3 = no-mutation (futex/nanosleep/MmapPageFill).
+	PendingWakeKind uint32
+	// PendingWakeRetVal: return value for delegate wakes (kind==2).
+	PendingWakeRetVal int64
+	// RunningOnCPU: double-run canary. Set to the CPU ID + 1 when this thread
+	// is dispatched; cleared on block. If non-zero when dispatching, two CPUs
+	// are running the same thread — the race fired.
+	RunningOnCPU int32
 }
 
 // Thread struct field offsets for assembly access.
@@ -1535,6 +1570,15 @@ func printEpochStatus() {
 		extra += fmt.Sprintf("  uringring: head_anomaly=%d concurrent_recv=%d\n",
 			headAnomalies, concurrentRecv)
 	}
+	// MAZ-204: publish→save race detectors.
+	canaryHits := atomic.LoadUint64(&doubleRunCanaryHits)
+	readerDead := atomic.LoadUint64(&readerDeadCount)
+	malformedReq := ksyscall.DelegateMalformedRequests.Load()
+	if canaryHits+readerDead+malformedReq > 0 {
+		extra += fmt.Sprintf("  maz204: canary=%d reader_dead=%d malformed_req=%d\n",
+			canaryHits, readerDead, malformedReq)
+	}
+
 	// MAZ-141: priority-wake counters (written from the IRQ-return path).
 	// Surfaced here so pwake activity is observable; a fresh ring dump on
 	// abnormal shepherd exit lives in pwake_trace_amd64.go. el1h/nog0 are the
@@ -4210,6 +4254,16 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 //go:nosplit
 //go:noinline
 func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *ThreadContext {
+	// MAZ-204 RED: widen the publish→save window so a cross-CPU wake can land
+	// in it near-deterministically under stress. 100k iterations ≈ ~100µs on
+	// Apple Silicon under HVF — long enough that a cross-CPU wake is near-certain
+	// to land inside the window during a rapid block/wake stress test.
+	if debugRaceDelay {
+		for i := 0; i < 100000; i++ {
+			atomic.LoadUint32(&raceDelayBurn)
+		}
+	}
+
 	// Save current thread's context
 	SaveContextFromFrame(framePtr)
 
@@ -4329,6 +4383,18 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// by the PREEMPTION funnel, not this one (see design doc §8 / §10, OPEN #1).
 	// No-op for any non-g0 outgoing context.
 	mlockCheckpointSave(oldThread)
+
+	// MAZ-204 double-run canary: if the target thread is already marked as
+	// running on another CPU, the publish→save race fired (W4).
+	if prev := atomic.LoadInt32(&newThread.RunningOnCPU); prev != 0 {
+		atomic.AddUint64(&doubleRunCanaryHits, 1)
+	}
+	atomic.StoreInt32(&newThread.RunningOnCPU, int32(GetCPUID())+1)
+
+	// Clear canary on the outgoing thread.
+	if oldThread != nil {
+		atomic.StoreInt32(&oldThread.RunningOnCPU, 0)
+	}
 
 	// (SVC switch breadcrumbs removed for performance)
 	newThread.State = ThreadRunning

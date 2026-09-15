@@ -161,6 +161,12 @@ var DelegateRetiredPageDrops atomic.Uint64
 // descriptor.
 var DelegateBadPageReleases atomic.Uint64
 
+// DelegateMalformedRequests counts ring-2 ingest events where the incoming
+// request has SysID==0 or generation==0 — values the PR #116 replygate
+// probes never see because the request bypasses them by design. Nonzero
+// means a clobbered context reached the delegate ingest path.
+var DelegateMalformedRequests atomic.Uint64
+
 // delegatePageReleasable reports whether pa is a delegate data page the
 // releasing handler may free. Legit shapes: an exclusive PageSharedIPC page
 // owned by the releasing handler (every delegate data page from
@@ -1167,6 +1173,17 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	returnVal := int64(arg2)
 	replySysID := uint16(arg3) // SysID of the request the handler processed (diagnostic)
 	replyGen := uint32(arg4)   // generation witness (MAZ-201); 0 = none supplied
+
+	// MAZ-204: detect clobbered delegate requests at ring-2 ingest. SysID==0
+	// (Invalid sentinel) or gen==0 means the context was corrupted before the
+	// handler saw it — the PR #116 replygate can't catch this because those
+	// probes key on the reply, not the request.
+	if replySysID == 0 || replyGen == 0 {
+		DelegateMalformedRequests.Add(1)
+		klog.Criticalf("[DLG:malformed-req] ",
+			"callerSID=%d callerTID=%d sysID=%d gen=%d retval=%d\n",
+			callerSID, callerTID, replySysID, replyGen, returnVal)
+	}
 
 	replyingShepherd := proc.CurrentShepherd()
 	if replyingShepherd == nil {
