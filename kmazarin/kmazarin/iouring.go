@@ -121,7 +121,8 @@ func BlockForIOUring(ringID int, minComplete uint32, syscallNum uint64, pRelease
 
 	// Block the current thread.
 	t.State = ThreadBlockedIOUring
-	t.PReleasedWaiter = pReleased // MAZ-135: gate the fast-wake (amd64)
+	atomic.StoreUint32(&t.ContextSaved, 0) // MAZ-204
+	t.PReleasedWaiter = pReleased          // MAZ-135: gate the fast-wake (amd64)
 	t.SoftIRQSlotArg = uint64(ringID)
 	t.SoftIRQSyscallNum = syscallNum
 
@@ -191,22 +192,21 @@ func WakeIOUringFromIRQ() {
 		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 		if t != nil && t.State == ThreadBlockedIOUring {
 			atomic.AddUint32(&dbgWakeURWoke, 1)
-			t.State = ThreadReady
 			t.PriorityWoken = true
-			t.Context.RewindToSyscall()
-			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-
 			slot.BlockedTID = -1
 			slot.BlockedPtr = 0
 			slot.BlockDeadline = 0
-
-			enqueueReadyPrioritySchedLockHeld(t)
-			// MAZ-135: only request the immediate IRQ-return fast switch for
-			// P-held waiters. On amd64, fast-resuming a P-released waiter
-			// corrupts the runtime; arch helper returns false there.
-			if fastWakeAllowedForWaiter(t.PReleasedWaiter) {
-				atomic.StoreUint32(&priorityWakePending, 1)
+			if atomic.LoadUint32(&t.ContextSaved) == 0 {
+				atomic.StoreUint32(&t.PendingWakeKind, WakeKindRewind) // MAZ-204
+			} else {
+				t.Context.RewindToSyscall()
+				t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+				t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+				t.State = ThreadReady
+				enqueueReadyPrioritySchedLockHeld(t)
+				if fastWakeAllowedForWaiter(t.PReleasedWaiter) {
+					atomic.StoreUint32(&priorityWakePending, 1)
+				}
 			}
 			asm.Dsb()
 		}
@@ -268,16 +268,10 @@ func checkIOUringTimeoutFromTimer() {
 				}
 			}
 
-			t.State = ThreadReady
-			t.Context.RewindToSyscall()
-			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-
 			slot.BlockedTID = -1
 			slot.BlockedPtr = 0
 			slot.BlockDeadline = 0
-
-			enqueueReadySchedLockHeld(t) // Regular priority (timeout, not IRQ)
+			wakeOrPark(t, WakeKindRewind) // MAZ-204
 		}
 	}
 }

@@ -154,11 +154,9 @@ func softIRQWakeDispatcher(bundle SoftIRQBundle) {
 	bundlePtr := (*SoftIRQBundle)(unsafe.Pointer(uintptr(t.FutexAddr)))
 	*bundlePtr = bundle
 
-	// Wake with PRIORITY
-	t.State = ThreadReady
 	t.FutexAddr = 0
 	atomic.StoreUint32(&softIRQDispatcherBlocked, 0)
-	enqueueReadySchedLockHeld(t)
+	wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
@@ -268,7 +266,8 @@ func ThreadBlockSoftIRQ(sf *SchedulerFunc, bundlePtr uint64) uintptr {
 
 	// Commit state change
 	t.State = ThreadBlockedSoftIRQ
-	t.FutexAddr = bundlePtr // Reuse FutexAddr for bundle pointer
+	t.FutexAddr = bundlePtr                // Reuse FutexAddr for bundle pointer
+	atomic.StoreUint32(&t.ContextSaved, 0) // MAZ-204
 	atomic.StoreUint32(&softIRQDispatcherBlocked, 1)
 
 	schedulerLock.Unlock()

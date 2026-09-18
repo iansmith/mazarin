@@ -184,6 +184,7 @@ func blockAndSwitch(tidOut *int32) uintptr {
 	}
 
 	t.State = ThreadBlockedKernelWork
+	atomic.StoreUint32(&t.ContextSaved, 0) // MAZ-204
 
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
@@ -198,10 +199,9 @@ func wakeBlockedThread(tid int32, result int64) {
 
 	t := threadLookupByTID(tid)
 	if t != nil && t.State == ThreadBlockedKernelWork {
-		t.Context.SetReturnValue(uint64(result))
 		t.PreemptElapsed = 0
-		t.State = ThreadReady
-		enqueueReadySchedLockHeld(t)
+		t.PendingWakeRetVal = result
+		wakeOrPark(t, WakeKindRetVal) // MAZ-204
 		asm.Dsb()
 	} else {
 		if t == nil {

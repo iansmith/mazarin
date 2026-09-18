@@ -371,6 +371,14 @@ func runSmokeTests() bool {
 	sys.UartWriteString(tag + "PASS TransferPages rollback preserves caller PTE flags (flags=0x" +
 		sys.Hex64(uint64(fpFlagsBefore)) + ")\n")
 
+	// --- MAZ-204 stage: block/wake stress ---
+	// Drive thousands of delegate block/wake cycles across two goroutines
+	// (→ two CPUs) to exercise the publish→save race window. Each pipe
+	// write+read is a delegate round-trip that blocks the calling thread.
+	if !testBlockWakeStress() {
+		return false
+	}
+
 	// --- Final stage: console-backpressure survival (MAZ-193) ---
 	// Runs LAST so a machine wedge here cannot mask the stages above.
 	// Blocking (bool) so a live FAIL — hdrops==0, short-circuited flood —
@@ -452,6 +460,68 @@ func testConsoleBackpressure() bool {
 	parks := sys.RingPushParkCount() - parks0
 	sys.UartWriteString(consTag + "PASS survived console backpressure (hdrops=" +
 		sys.Itoa(int64(hdrops)) + " parks=" + sys.Itoa(int64(parks)) + ")\n")
+	return true
+}
+
+// bwTag is the marker prefix for the MAZ-204 block/wake stress stage.
+const bwTag = "[bwstress] "
+
+// bwRounds is the number of write+read delegate round-trips per goroutine.
+const bwRounds = 5000
+
+// testBlockWakeStress drives thousands of delegate block/wake cycles from
+// two concurrent goroutines. Each pipe write+read is a full delegate
+// round-trip that blocks the calling thread (ThreadBlockedDelegate →
+// wake → save context). Two goroutines ensure two kernel threads
+// exercising concurrent block/wake to stress the publish→save handshake.
+func testBlockWakeStress() bool {
+	r, w, err := os.Pipe()
+	if err != nil {
+		sys.UartWriteString(bwTag + "FAIL: os.Pipe: " + err.Error() + "\n")
+		return false
+	}
+	defer r.Close()
+	defer w.Close()
+
+	// Channel to collect goroutine results.
+	done := make(chan bool, 2)
+
+	// Writer goroutine: rapid small writes.
+	go func() {
+		runtime.LockOSThread()
+		buf := []byte{0x42}
+		for i := 0; i < bwRounds; i++ {
+			if _, err := w.Write(buf); err != nil {
+				sys.UartWriteString(bwTag + "FAIL: write round " + sys.Itoa(int64(i)) + ": " + err.Error() + "\n")
+				done <- false
+				return
+			}
+		}
+		done <- true
+	}()
+
+	// Reader goroutine: rapid small reads.
+	go func() {
+		runtime.LockOSThread()
+		buf := make([]byte, 1)
+		for i := 0; i < bwRounds; i++ {
+			if _, err := r.Read(buf); err != nil {
+				sys.UartWriteString(bwTag + "FAIL: read round " + sys.Itoa(int64(i)) + ": " + err.Error() + "\n")
+				done <- false
+				return
+			}
+		}
+		done <- true
+	}()
+
+	ok1 := <-done
+	ok2 := <-done
+
+	if !ok1 || !ok2 {
+		return false
+	}
+
+	sys.UartWriteString(bwTag + "PASS " + sys.Itoa(int64(bwRounds)) + " write+read delegate round-trips\n")
 	return true
 }
 
