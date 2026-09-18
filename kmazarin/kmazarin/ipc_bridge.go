@@ -68,6 +68,7 @@ func BlockForDelegatedSyscall() uintptr {
 	}
 
 	t.State = ThreadBlockedDelegate
+	atomic.StoreUint32(&t.ContextSaved, 0) // MAZ-204
 
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
@@ -86,15 +87,14 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 
 	t := threadLookupByTID(tid)
 	if t != nil && t.PID == proc.ShepherdId(pid) && t.State == ThreadBlockedDelegate {
-		t.Context.SetReturnValue(uint64(returnVal))
+		// MAZ-204: parks the wake for doContextSwitchImpl to apply after
+		// SaveContextFromFrame if the context isn't saved yet.
+		t.PendingWakeRetVal = returnVal
+		wakeOrPark(t, WakeKindRetVal)
 		t.PreemptElapsed = 0
 		t.DelegateBlockSinceTick = 0
 		t.DelegateBlockSysID = 0
-		t.State = ThreadReady
-		enqueueReadySchedLockHeld(t)
 		asm.Dsb()
-		// MAZ-7: clear the delegate-stuck latch so a re-block on the
-		// same TID can fire again.
 		if int(tid) >= 0 && int(tid) < threadArraySize {
 			dbgDelegate10sLatch[tid] = 0
 		}
@@ -117,12 +117,11 @@ func WakeDelegateCallerThreadNoReturn(pid int16, tid int32) {
 
 	t := threadLookupByTID(tid)
 	if t != nil && t.PID == proc.ShepherdId(pid) && t.State == ThreadBlockedDelegate {
-		// Do NOT call SetReturnValue — preserve all saved registers
+		// Do NOT call SetReturnValue — preserve all saved registers (MmapPageFill)
+		wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 		t.PreemptElapsed = 0
 		t.DelegateBlockSinceTick = 0
 		t.DelegateBlockSysID = 0
-		t.State = ThreadReady
-		enqueueReadySchedLockHeld(t)
 		asm.Dsb()
 		if int(tid) >= 0 && int(tid) < threadArraySize {
 			dbgDelegate10sLatch[tid] = 0
@@ -162,7 +161,8 @@ func BlockForWaitingIO() uintptr {
 	t.State = ThreadBlockedWaitingIO
 	// Save syscall args for RewindToSyscall restoration on wake.
 	t.SoftIRQSlotArg = uint64(t.WaitingIOFd)
-	t.SoftIRQSyscallNum = 0 // unused on ARM64
+	t.SoftIRQSyscallNum = 0                // unused on ARM64
+	atomic.StoreUint32(&t.ContextSaved, 0) // MAZ-204
 	waitingIOEnqueue(t)
 
 	schedulerLock.Unlock()
@@ -186,11 +186,7 @@ func WakeWaitingIOThread(t *Thread) {
 	}
 
 	atomic.StoreUint32(&t.WaitingIOComplete, 1)
-	t.State = ThreadReady
-	t.Context.RewindToSyscall()
-	t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-	t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-	enqueueReadySchedLockHeld(t)
+	wakeOrPark(t, WakeKindRewind) // MAZ-204
 	asm.Dsb()
 
 	schedulerLock.Unlock()

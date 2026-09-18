@@ -8,6 +8,7 @@ package main
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/ksyscall"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -43,8 +44,9 @@ func BlockForDirtyNotify(syscallArg0 uint64, shepherdSID uint64) uintptr {
 	// Block current thread. Set BlockedTID atomically with the state change
 	// so timer ISR can't see BlockedTID before the thread is actually blocked.
 	t.State = ThreadBlockedDirtyNotify
-	t.SoftIRQSlotArg = syscallArg0    // Save arg0 for rewind
-	t.SoftIRQSyscallNum = 0x102A      // SysAttrWaitDirty — for x86_64 RAX restore
+	atomic.StoreUint32(&t.ContextSaved, 0) // MAZ-204
+	t.SoftIRQSlotArg = syscallArg0         // Save arg0 for rewind
+	t.SoftIRQSyscallNum = 0x102A           // SysAttrWaitDirty — for x86_64 RAX restore
 	ksyscall.SetBlockedTID(int(shepherdSID), int32(t.TID))
 
 	schedulerLock.Unlock()
@@ -64,14 +66,8 @@ func WakeDirtyNotifyThread(tid int32) {
 
 	t := threadLookupByTID(tid)
 	if t != nil && t.State == ThreadBlockedDirtyNotify {
-		t.State = ThreadReady
-		// Rewind so the SVC re-executes SysAttrWaitDirty, which will
-		// find items in the notification queue and copy to userspace.
-		t.Context.RewindToSyscall()
-		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 		t.PreemptElapsed = 0
-		enqueueReadySchedLockHeld(t)
+		wakeOrPark(t, WakeKindRewind) // MAZ-204
 		asm.Dsb()
 	}
 
@@ -88,12 +84,8 @@ func WakeDirtyNotifyThread(tid int32) {
 func WakeDirtyNotifyThreadSchedLockHeld(tid int32) {
 	t := threadLookupByTID(tid)
 	if t != nil && t.State == ThreadBlockedDirtyNotify {
-		t.State = ThreadReady
-		t.Context.RewindToSyscall()
-		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 		t.PreemptElapsed = 0
-		enqueueReadySchedLockHeld(t)
+		wakeOrPark(t, WakeKindRewind) // MAZ-204
 		asm.Dsb()
 	}
 }

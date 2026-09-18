@@ -249,16 +249,8 @@ const (
 	WakeKindNoMutate uint32 = 3 // ready only, no context mutation (futex, nanosleep, MmapPageFill)
 )
 
-// debugRaceDelay is set from KernelConfig.DebugRaceDelay at boot.
-// When true, doContextSwitchImpl spins briefly before SaveContextFromFrame
-// to widen the publish→save window for RED-phase testing.
-var debugRaceDelay bool
-var raceDelayBurn uint32       // sink for the nosplit spin loop (prevents elision)
-var doubleRunCanaryHits uint64 // MAZ-204 canary: incremented when W4 double-run detected
-var readerDeadCount uint64     // MAZ-204: incremented when uring reader exits with error
-
-// SetDebugRaceDelay wires the kernel TOML flag into the scheduler.
-func SetDebugRaceDelay(on bool) { debugRaceDelay = on }
+var parkedWakeApplied uint64 // MAZ-204 diag: incremented when applyParkedWake fires
+var readerDeadCount uint64   // MAZ-204: incremented when uring reader exits with error
 
 // MaxThreads is the maximum number of threads supported
 const MaxThreads = 512
@@ -511,10 +503,6 @@ type Thread struct {
 	PendingWakeKind uint32
 	// PendingWakeRetVal: return value for delegate wakes (kind==2).
 	PendingWakeRetVal int64
-	// RunningOnCPU: double-run canary. Set to the CPU ID + 1 when this thread
-	// is dispatched; cleared on block. If non-zero when dispatching, two CPUs
-	// are running the same thread — the race fired.
-	RunningOnCPU int32
 }
 
 // Thread struct field offsets for assembly access.
@@ -612,22 +600,16 @@ func WakeThreadForSignal(t *Thread) {
 
 	switch t.State {
 	case ThreadBlockedFutex:
-		t.State = ThreadReady
 		t.FutexAddr = 0
 		blockedQueue.Pluck(t.TID)
-		enqueueReadySchedLockHeld(t)
+		wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 		atomic.AddUint64(&dbgSignalWokeFutex, 1)
 	case ThreadSleeping:
-		t.State = ThreadReady
 		sleepingQueue.Pluck(t.TID)
-		enqueueReadySchedLockHeld(t)
+		wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 	case ThreadBlockedSoftIRQ:
-		t.State = ThreadReady
 		clearSoftIRQSlotForTID(t.TID)
-		t.Context.RewindToSyscall()
-		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-		enqueueReadySchedLockHeld(t)
+		wakeOrPark(t, WakeKindRewind) // MAZ-204
 	case ThreadBlockedKernelWork:
 		// Defer signal delivery until kernel work completes — the worker
 		// goroutine will wake this thread with the result.
@@ -635,23 +617,11 @@ func WakeThreadForSignal(t *Thread) {
 		// Defer signal delivery until delegated syscall reply arrives.
 	// ThreadBlockedDelegateRecv removed — handlers now receive via uring
 	case ThreadBlockedDirtyNotify:
-		t.State = ThreadReady
-		t.Context.RewindToSyscall()
-		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-		enqueueReadySchedLockHeld(t)
+		wakeOrPark(t, WakeKindRewind) // MAZ-204
 	case ThreadBlockedInputEvent:
-		t.State = ThreadReady
-		t.Context.RewindToSyscall()
-		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-		enqueueReadySchedLockHeld(t)
+		wakeOrPark(t, WakeKindRewind) // MAZ-204
 	case ThreadBlockedUringRecv:
-		t.State = ThreadReady
-		t.Context.RewindToSyscall()
-		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-		enqueueReadySchedLockHeld(t)
+		wakeOrPark(t, WakeKindRewind) // MAZ-204
 	case ThreadBlockedIOUring:
 		// Defer signal delivery until io_uring completions arrive —
 		// the IRQ top-half or timeout will wake this thread.
@@ -1213,15 +1183,13 @@ func processStaticDeadlinesSchedLockHeld() {
 			continue // Thread exited
 		}
 		if t.State == ThreadBlockedFutex {
-			t.State = ThreadReady
 			t.FutexAddr = 0
 			blockedQueue.Pluck(ThreadId(tid))
-			enqueueReadySchedLockHeld(t)
+			wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 		} else if t.State == ThreadSleeping {
-			t.State = ThreadReady
 			sleepingQueue.Pluck(ThreadId(tid))
-			enqueueReadySchedLockHeld(t)
 			atomic.AddUint64(&dbgDeadlineWokeSleeper, 1)
+			wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 
 			// When waking a sleeping thread (e.g., sysmon from usleep),
 			// also wake that shepherd's netpoll waiter if one exists.
@@ -1235,9 +1203,13 @@ func processStaticDeadlinesSchedLockHeld() {
 					if waiterTID != 0 && int32(tid) != waiterTID {
 						wt := threadLookupByTID(waiterTID)
 						if wt != nil && wt.State == ThreadSleeping {
-							wt.State = ThreadReady
-							sleepingQueue.Pluck(ThreadId(int16(waiterTID)))
-							enqueueReadySchedLockHeld(wt)
+							if atomic.LoadUint32(&wt.ContextSaved) == 0 {
+								atomic.StoreUint32(&wt.PendingWakeKind, WakeKindNoMutate)
+							} else {
+								wt.State = ThreadReady
+								sleepingQueue.Pluck(ThreadId(int16(waiterTID)))
+								enqueueReadySchedLockHeld(wt)
+							}
 						}
 					}
 				}
@@ -1257,11 +1229,7 @@ func processStaticDeadlinesSchedLockHeld() {
 				t.UringSendBlockedSlotPtr = 0
 			}
 			atomic.StoreUint32(&t.UringSendDeadlineExpired, 1)
-			t.Context.RewindToSyscall()
-			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-			t.State = ThreadReady
-			enqueueReadySchedLockHeld(t)
+			wakeOrPark(t, WakeKindRewind) // MAZ-204
 		} else if t.State == ThreadBlockedKernelRingPush {
 			// Kernel pusher's 10ms deadline fired before the consumer
 			// drained the topHalfUartRing. Flag the expiry so pushStringFull
@@ -1276,8 +1244,7 @@ func processStaticDeadlinesSchedLockHeld() {
 				atomic.StoreInt32(&kernelRingPushBlockerTID, 0)
 				pushBlockerThreadPtr = 0
 			}
-			t.State = ThreadReady
-			enqueueReadySchedLockHeld(t)
+			wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 		} else {
 			// Deadline fired but thread in unexpected state — dropped
 		}
@@ -1570,13 +1537,13 @@ func printEpochStatus() {
 		extra += fmt.Sprintf("  uringring: head_anomaly=%d concurrent_recv=%d\n",
 			headAnomalies, concurrentRecv)
 	}
-	// MAZ-204: publish→save race detectors.
-	canaryHits := atomic.LoadUint64(&doubleRunCanaryHits)
+	// MAZ-204: publish→save race diagnostics.
+	parkedWakes := atomic.LoadUint64(&parkedWakeApplied)
 	readerDead := atomic.LoadUint64(&readerDeadCount)
 	malformedReq := ksyscall.DelegateMalformedRequests.Load()
-	if canaryHits+readerDead+malformedReq > 0 {
-		extra += fmt.Sprintf("  maz204: canary=%d reader_dead=%d malformed_req=%d\n",
-			canaryHits, readerDead, malformedReq)
+	if readerDead+malformedReq+parkedWakes > 0 {
+		extra += fmt.Sprintf("  maz204: parked=%d reader_dead=%d malformed_req=%d\n",
+			parkedWakes, readerDead, malformedReq)
 	}
 
 	// MAZ-141: priority-wake counters (written from the IRQ-return path).
@@ -1869,6 +1836,7 @@ func SaveThread0AndYield() uint64 {
 		pluckFromAllQueues(t0.TID)
 		if blockState == 0 {
 			t0.State = ThreadSleeping
+			atomic.StoreUint32(&t0.ContextSaved, 0) // MAZ-204
 			sleepingQueue.PushNoDuplicate(t0.TID)
 		} else {
 			// Custom block state (e.g. ThreadBlockedKernelRingPush). The
@@ -1876,6 +1844,7 @@ func SaveThread0AndYield() uint64 {
 			// path (drain hook or deadline expiry) flips state and pushes
 			// it back onto a ready queue.
 			t0.State = blockState
+			atomic.StoreUint32(&t0.ContextSaved, 0) // MAZ-204
 			if blockState == ThreadBlockedKernelRingPush {
 				atomic.StoreInt32(&kernelRingPushBlockerTID, int32(t0.TID))
 				pushBlockerThreadPtr = uintptr(unsafe.Pointer(t0))
@@ -2368,7 +2337,8 @@ func CloneVforkThread(stack, returnAddr, spsr uint64, parentTID ThreadId, reserv
 
 	// Suspend the PARENT: mark it as blocked on the child's execve
 	parent.State = ThreadBlockedKernelWork
-	parent.FutexAddr = 0 // Not a futex; just a kernel-work-blocked marker
+	atomic.StoreUint32(&parent.ContextSaved, 0) // MAZ-204
+	parent.FutexAddr = 0                        // Not a futex; just a kernel-work-blocked marker
 
 	// Set the syscall switch target to the TRANSIENT thread
 	SetSyscallSwitchTarget(uintptr(unsafe.Pointer(&t.Context)))
@@ -3618,6 +3588,7 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 	// releases the lock, and calls futex_wake to wake us.
 	t.State = ThreadBlockedFutex
 	t.FutexAddr = futexAddr
+	atomic.StoreUint32(&t.ContextSaved, 0) // MAZ-204
 	blockedQueue.PushNoDuplicate(t.TID)
 
 	if next == nil {
@@ -3676,10 +3647,9 @@ func ThreadWakeFutexWithSwitch(futexAddr uint64, maxWake int32) (int32, uintptr)
 			continue
 		}
 		if t.FutexAddr == futexAddr && t.PID == callerSID {
-			t.State = ThreadReady
 			t.FutexAddr = 0
 			pluckFromAllQueues(tid)
-			enqueueReadySchedLockHeld(t)
+			wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 			if firstWoken == nil {
 				firstWoken = t
 			}
@@ -3695,7 +3665,7 @@ func ThreadWakeFutexWithSwitch(futexAddr uint64, maxWake int32) (int32, uintptr)
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
-	if firstWoken != nil {
+	if firstWoken != nil && atomic.LoadUint32(&firstWoken.ContextSaved) == 1 {
 		return woken, uintptr(unsafe.Pointer(&firstWoken.Context))
 	}
 	return woken, 0
@@ -3731,21 +3701,14 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 		}
 
 		if t.FutexAddr == futexAddr && t.PID == callerSID {
-			// Move to ready
-			t.State = ThreadReady
 			t.FutexAddr = 0
-			// Pluck first to prevent duplicates
 			pluckFromAllQueues(tid)
-			enqueueReadySchedLockHeld(t)
+			wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 			woken++
 		} else {
-			// Track PID mismatches — if address matches but PID doesn't,
-			// this indicates cross-thread futex wake failure (e.g. sysmon
-			// waking a shepherd M's note).
 			if t.FutexAddr == futexAddr && t.PID != callerSID {
 				atomic.AddUint64(&DbgFutexPIDMismatch, 1)
 			}
-			// Put back if not matching
 			blockedQueue.PushNoDuplicate(tid)
 		}
 	}
@@ -3817,6 +3780,7 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 	// Block unconditionally — the caller has already added a deadline.
 	// Mark sleeping so the timer ISR can process the deadline and wake us.
 	t.State = ThreadSleeping
+	atomic.StoreUint32(&t.ContextSaved, 0) // MAZ-204
 	sleepingQueue.PushNoDuplicate(t.TID)
 
 	if next == nil {
@@ -3998,6 +3962,11 @@ func boostThread0ForPendingWork(sf *SchedulerFunc, oldThread *Thread, framePtr u
 	schedulerLock.Lock()
 	thread0 := threadLookupByTID(0)
 	if thread0 != nil && thread0.State == ThreadReady {
+		if oldThread.State != ThreadRunning {
+			schedulerLock.Unlock()
+			sf.EnableAndRestoreDAIF(savedDAIF)
+			return 0
+		}
 		atomic.AddUint64(&dbgBoostSuccess, 1)
 		// Save preempted thread's context and enqueue it
 		SaveContextFromFrame(uintptr(framePtr))
@@ -4141,6 +4110,16 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		atomic.AddUint64(&dbgBadPCCount, 1)
 	}
 
+	// MAZ-204: only preempt a Running thread. The timer can fire while the
+	// current thread is already Blocked/Sleeping — clobbering its state to
+	// Ready corrupts the scheduler (thread lands on both blocked and ready
+	// queues).
+	if oldThread.State != ThreadRunning {
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
+
 	oldThread.State = ThreadReady
 
 	// All threads — including thread 0 — go to TAIL of the ready queue.
@@ -4254,24 +4233,25 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 //go:nosplit
 //go:noinline
 func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *ThreadContext {
-	// MAZ-204 RED: widen the publish→save window so a cross-CPU wake can land
-	// in it near-deterministically under stress. 100k iterations ≈ ~100µs on
-	// Apple Silicon under HVF — long enough that a cross-CPU wake is near-certain
-	// to land inside the window during a rapid block/wake stress test.
-	if debugRaceDelay {
-		for i := 0; i < 100000; i++ {
-			atomic.LoadUint32(&raceDelayBurn)
-		}
-	}
-
-	// Save current thread's context
-	SaveContextFromFrame(framePtr)
-
 	// BEGIN CRITICAL SECTION - protect thread state modifications
+	// MAZ-204: acquire the lock BEFORE saving context. The old order
+	// (save → lock) left a window where a wake could mutate the context
+	// between publish and save, then have the save clobber the mutation.
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
+	// Save current thread's context (now under lock)
+	SaveContextFromFrame(framePtr)
+
+	// MAZ-204: mark context as saved and apply any parked wake.
 	oldThread := GetCurrentThread()
+	if oldThread != nil {
+		atomic.StoreUint32(&oldThread.ContextSaved, 1)
+		if kind := atomic.LoadUint32(&oldThread.PendingWakeKind); kind != WakeKindNone {
+			applyParkedWake(oldThread, kind)
+		}
+	}
+
 	newThread := threadList.Get(int(targetIdx)) // Get() for reserved slots
 
 	// Clone child register inheritance: copy parent's full register state to the
@@ -4384,18 +4364,6 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// No-op for any non-g0 outgoing context.
 	mlockCheckpointSave(oldThread)
 
-	// MAZ-204 double-run canary: if the target thread is already marked as
-	// running on another CPU, the publish→save race fired (W4).
-	if prev := atomic.LoadInt32(&newThread.RunningOnCPU); prev != 0 {
-		atomic.AddUint64(&doubleRunCanaryHits, 1)
-	}
-	atomic.StoreInt32(&newThread.RunningOnCPU, int32(GetCPUID())+1)
-
-	// Clear canary on the outgoing thread.
-	if oldThread != nil {
-		atomic.StoreInt32(&oldThread.RunningOnCPU, 0)
-	}
-
 	// (SVC switch breadcrumbs removed for performance)
 	newThread.State = ThreadRunning
 	// Restore StartTick from saved elapsed time so preemption tracking
@@ -4449,6 +4417,53 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	}
 
 	return &newThread.Context
+}
+
+// readyThreadWithKind applies kind's context mutation (if any) to t, then
+// marks it Ready and enqueues it on the regular (non-priority) ready queue.
+// The caller must hold schedulerLock and know t.ContextSaved != 0 — t's
+// context is only valid to mutate once doContextSwitchImpl has saved it.
+//
+//go:nosplit
+func readyThreadWithKind(t *Thread, kind uint32) {
+	switch kind {
+	case WakeKindRewind:
+		t.Context.RewindToSyscall()
+		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+	case WakeKindRetVal:
+		t.Context.SetReturnValue(uint64(t.PendingWakeRetVal))
+	}
+	t.State = ThreadReady
+	enqueueReadySchedLockHeld(t)
+}
+
+// applyParkedWake applies a wake that arrived before the context was saved.
+// Called under schedulerLock from doContextSwitchImpl after SaveContextFromFrame.
+// The thread's context is now valid, so we can safely apply the mutation and
+// ready the thread.
+//
+//go:nosplit
+func applyParkedWake(t *Thread, kind uint32) {
+	atomic.AddUint64(&parkedWakeApplied, 1)
+	atomic.StoreUint32(&t.PendingWakeKind, WakeKindNone)
+	readyThreadWithKind(t, kind)
+}
+
+// wakeOrPark is the publish→save race fix's core primitive: if t's context
+// has not yet been saved (t is mid context-switch on another CPU), the wake
+// is recorded as a pending kind for doContextSwitchImpl/applyParkedWake to
+// apply once the context is valid. Otherwise it's safe to apply the wake
+// immediately. Caller must hold schedulerLock. kind is WakeKindNoMutate,
+// WakeKindRewind, or WakeKindRetVal (with t.PendingWakeRetVal already set).
+//
+//go:nosplit
+func wakeOrPark(t *Thread, kind uint32) {
+	if atomic.LoadUint32(&t.ContextSaved) == 0 {
+		atomic.StoreUint32(&t.PendingWakeKind, kind)
+		return
+	}
+	readyThreadWithKind(t, kind)
 }
 
 // GetThreadContext returns a pointer to a thread's context by index

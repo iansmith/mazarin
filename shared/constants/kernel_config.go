@@ -72,12 +72,6 @@ type KernelConfig struct {
 	// saturating past MaxTrackedPages produces zero "page tracker full"
 	// warnings. OFF by default; enable only for tracker verification.
 	PageTrackerTest bool `toml:"page_tracker_test"`
-
-	// DebugRaceDelay inserts a short spin between blocked-state publish and
-	// SaveContextFromFrame in doContextSwitchImpl, widening the publish→save
-	// window so the block/wake race fires near-deterministically under stress.
-	// MAZ-204 RED-phase scaffolding — remove before merge.
-	DebugRaceDelay bool `toml:"debug_race_delay"`
 }
 
 // DefaultFramebufferMaxMB is the framebuffer cap (megabytes) used when the kernel

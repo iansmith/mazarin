@@ -472,9 +472,8 @@ const bwRounds = 5000
 // testBlockWakeStress drives thousands of delegate block/wake cycles from
 // two concurrent goroutines. Each pipe write+read is a full delegate
 // round-trip that blocks the calling thread (ThreadBlockedDelegate →
-// wake → save context). Two goroutines ensure two kernel threads on two
-// CPUs, maximizing the chance of a cross-CPU wake landing in the
-// publish→save window when debug_race_delay is enabled.
+// wake → save context). Two goroutines ensure two kernel threads
+// exercising concurrent block/wake to stress the publish→save handshake.
 func testBlockWakeStress() bool {
 	r, w, err := os.Pipe()
 	if err != nil {

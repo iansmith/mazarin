@@ -765,12 +765,6 @@ func simpleMain() {
 		RestoreIRQs(savedDAIF)
 	}
 
-	// MAZ-204: wire the debug race delay flag into the scheduler.
-	if kernelCfg.DebugRaceDelay {
-		SetDebugRaceDelay(true)
-		klog.Logf("[boot] MAZ-204 debug_race_delay ENABLED — publish→save window widened\n")
-	}
-
 	// NOTE: launchEmbeddedFS() used to run HERE — it was moved below
 	// kernelNetpollEagerInit() (MAZ-136). Do not move it back above the
 	// canary: shepherd syscall traffic must not exist while kernel main

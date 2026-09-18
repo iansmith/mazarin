@@ -418,20 +418,10 @@ func WakeSlotForIRQ(irqNum uint32) {
 	}
 
 	atomic.AddUint32(&dbgWakeSlotWoke, 1)
-	t.State = ThreadReady
 	slot.blockedTID = -1
 	slot.blockedThreadPtr = 0
-	// Rewind the thread's saved PC so it re-executes the SVC instruction
-	// when scheduled. SyscallWaitSoftIRQ will run fresh and drain the events
-	// from the ring, returning success instead of EAGAIN.
-	// Also restore X0/a0 (first arg = slotNum) which was overwritten with
-	// the return value by the SVC handler.
-	// On x86_64, restore RAX (syscall number) which was overwritten by the return value.
-	t.Context.RewindToSyscall()
-	t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-	t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-	enqueueReadySchedLockHeld(t)
-	asm.Dsb() // Memory barrier to ensure enqueue is visible to other CPUs
+	wakeOrPark(t, WakeKindRewind) // MAZ-204
+	asm.Dsb()
 
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
@@ -469,15 +459,15 @@ func BlockOnSlot(slotNum int32) uintptr {
 	// The Go runtime will exit the old M once it sees the goroutine moved.
 	prev := (*Thread)(unsafe.Pointer(softIRQSlotData[slotNum].blockedThreadPtr))
 	if prev != nil && prev.State == ThreadBlockedSoftIRQ {
-		prev.State = ThreadReady
-		enqueueReadySchedLockHeld(prev)
-		asm.Dsb() // Memory barrier to ensure enqueue is visible
+		wakeOrPark(prev, WakeKindNoMutate) // MAZ-204
+		asm.Dsb()
 	}
 
 	// Commit: block current thread, record in slot
 	t.State = ThreadBlockedSoftIRQ
-	t.SoftIRQSlotArg = uint64(slotNum) // Save for RewindToSyscall arg restore
-	t.SoftIRQSyscallNum = 0x100A       // sysWaitSoftIRQ — for x86_64 RAX restore
+	atomic.StoreUint32(&t.ContextSaved, 0) // MAZ-204
+	t.SoftIRQSlotArg = uint64(slotNum)     // Save for RewindToSyscall arg restore
+	t.SoftIRQSyscallNum = 0x100A           // sysWaitSoftIRQ — for x86_64 RAX restore
 	softIRQSlotData[slotNum].blockedTID = t.TID
 	softIRQSlotData[slotNum].blockedThreadPtr = uintptr(unsafe.Pointer(t))
 
@@ -550,8 +540,7 @@ func WakeKernelRingPusher() {
 	pushBlockerThreadPtr = 0
 	atomic.StoreUint32(&pushBlockerDeadlineExpired, 0)
 	staticDeadlineQueue.Remove(int16(t.TID))
-	t.State = ThreadReady
-	enqueueReadySchedLockHeld(t)
+	wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 	asm.Dsb()
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
@@ -589,18 +578,16 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 		slot.blockedThreadPtr = 0
 		return
 	}
-	t.State = ThreadReady
 	slot.blockedTID = -1
 	slot.blockedThreadPtr = 0
-	// Rewind the thread's saved PC so it re-executes the SVC instruction
-	// when scheduled. SyscallWaitSoftIRQ will run fresh and drain the events
-	// we just pushed, returning success instead of EAGAIN.
-	// Also restore X0/a0 (first arg = slotNum) which was overwritten with
-	// the return value by the SVC handler.
-	// On x86_64, restore RAX (syscall number) which was overwritten by the return value.
+	if atomic.LoadUint32(&t.ContextSaved) == 0 {
+		atomic.StoreUint32(&t.PendingWakeKind, WakeKindRewind) // MAZ-204
+		return
+	}
 	t.Context.RewindToSyscall()
 	t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
 	t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+	t.State = ThreadReady
 	// Push to HEAD of queue so the timer goroutine is scheduled promptly.
 	// processStaticDeadlinesSchedLockHeld processes futex deadlines before
 	// the timer deadline, filling the queue with futex-cycling runtime Ms.
@@ -685,8 +672,7 @@ func CleanupSoftIRQSlotsForShepherd(shepherdID int16) {
 		if slot.blockedTID >= 0 {
 			t := (*Thread)(unsafe.Pointer(slot.blockedThreadPtr))
 			if t != nil && t.State == ThreadBlockedSoftIRQ {
-				t.State = ThreadReady
-				enqueueReadySchedLockHeld(t)
+				wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 			}
 		}
 

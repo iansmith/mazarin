@@ -448,6 +448,7 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 		senderThread.SoftIRQSlotArg = uint64(uint16(targetSID)) // arg0 for rewind
 		senderThread.SoftIRQSyscallNum = mazzy.SysUringSend
 		senderThread.State = ThreadBlockedUringSend
+		atomic.StoreUint32(&senderThread.ContextSaved, 0) // MAZ-204
 
 		// Register a 10ms deadline so a wedged consumer doesn't strand us.
 		freq := uint64(kirq.GetTimerFrequency())
@@ -485,15 +486,21 @@ func UringSendKernel(senderSID, targetSID int16, ringIdx uint8, msgKVA uintptr) 
 	if slot.BlockedTID >= 0 {
 		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 		if t != nil && t.State == ThreadBlockedUringRecv {
-			t.State = ThreadReady
 			t.PriorityWoken = true
 			slot.BlockedTID = -1
 			slot.BlockedPtr = 0
-			t.Context.RewindToSyscall()
-			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-			enqueueReadyPrioritySchedLockHeld(t)
-			wokenCtx = uintptr(unsafe.Pointer(&t.Context))
+			if atomic.LoadUint32(&t.ContextSaved) == 0 {
+				atomic.StoreUint32(&t.PendingWakeKind, WakeKindRewind) // MAZ-204
+			} else {
+				t.Context.RewindToSyscall()
+				t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+				t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+				t.State = ThreadReady
+				enqueueReadyPrioritySchedLockHeld(t)
+			}
+			if atomic.LoadUint32(&t.ContextSaved) == 1 {
+				wokenCtx = uintptr(unsafe.Pointer(&t.Context))
+			}
 			asm.Dsb()
 		}
 	}
@@ -530,13 +537,20 @@ func wakeBlockedSenderSchedLockHeld(slot *UringIPCSlot) uintptr {
 	staticDeadlineQueue.Remove(int16(t.TID))
 	t.UringSendBlockedSlotPtr = 0
 	atomic.StoreUint32(&t.UringSendDeadlineExpired, 0)
-	t.Context.RewindToSyscall()
-	t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-	t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-	t.State = ThreadReady
 	t.PriorityWoken = true
-	enqueueReadyPrioritySchedLockHeld(t)
+	if atomic.LoadUint32(&t.ContextSaved) == 0 {
+		atomic.StoreUint32(&t.PendingWakeKind, WakeKindRewind) // MAZ-204
+	} else {
+		t.Context.RewindToSyscall()
+		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+		t.State = ThreadReady
+		enqueueReadyPrioritySchedLockHeld(t)
+	}
 	asm.Dsb()
+	if atomic.LoadUint32(&t.ContextSaved) == 0 {
+		return 0
+	}
 	return uintptr(unsafe.Pointer(&t.Context))
 }
 
@@ -642,20 +656,21 @@ func KernelWriteToRingFromIRQ(targetSID int16, msg *ipc.UringIPCMsg) {
 	if slot.BlockedTID >= 0 {
 		t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 		if t != nil && t.State == ThreadBlockedUringRecv {
-			t.State = ThreadReady
 			t.PriorityWoken = true
 			slot.BlockedTID = -1
 			slot.BlockedPtr = 0
-			t.Context.RewindToSyscall()
-			t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-			t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-			enqueueReadyPrioritySchedLockHeld(t)
-			// MAZ-135: RecvWithRing is always P-released (entersyscallblock).
-			// On amd64 fastWakeAllowedForWaiter returns false → no immediate
-			// switch (the timer resumes it). On ARM64 it returns true (current
-			// behavior). PReleasedWaiter is set true in BlockForUringRecv.
-			if fastWakeAllowedForWaiter(t.PReleasedWaiter) {
-				atomic.StoreUint32(&priorityWakePending, 1)
+			if atomic.LoadUint32(&t.ContextSaved) == 0 {
+				atomic.StoreUint32(&t.PendingWakeKind, WakeKindRewind) // MAZ-204
+			} else {
+				t.Context.RewindToSyscall()
+				t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+				t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+				t.State = ThreadReady
+				enqueueReadyPrioritySchedLockHeld(t)
+				// MAZ-135: RecvWithRing is always P-released (entersyscallblock).
+				if fastWakeAllowedForWaiter(t.PReleasedWaiter) {
+					atomic.StoreUint32(&priorityWakePending, 1)
+				}
 			}
 			asm.Dsb()
 		}
@@ -804,9 +819,10 @@ func BlockForUringRecv(shepherdIdx int, ringIdx int, bufPtr uint64) uintptr {
 	}
 
 	t.State = ThreadBlockedUringRecv
-	t.PReleasedWaiter = true     // MAZ-135: RecvWithRing is always P-released (entersyscallblock)
-	t.SoftIRQSlotArg = bufPtr    // arg0 for rewind
-	t.SoftIRQSyscallNum = 0x1015 // SysUringRecv
+	t.PReleasedWaiter = true               // MAZ-135: RecvWithRing is always P-released (entersyscallblock)
+	t.SoftIRQSlotArg = bufPtr              // arg0 for rewind
+	t.SoftIRQSyscallNum = 0x1015           // SysUringRecv
+	atomic.StoreUint32(&t.ContextSaved, 0) // MAZ-204: context not yet saved for this block cycle
 	if shepherdIdx >= 0 && shepherdIdx < proc.MaxLiveShepherds && ringIdx >= 0 && ringIdx < ipc.MaxRingsPerShepherd {
 		uringIPCSlots[shepherdIdx][ringIdx].BlockedTID = int16(t.TID)
 		uringIPCSlots[shepherdIdx][ringIdx].BlockedPtr = uintptr(unsafe.Pointer(t))
@@ -925,8 +941,7 @@ func CleanupUringIPCForShepherd(sid int16) {
 			t := (*Thread)(unsafe.Pointer(slot.BlockedPtr))
 			if t != nil && t.State == ThreadBlockedUringRecv {
 				atomic.AddUint64(&readerDeadCount, 1)
-				t.State = ThreadReady
-				enqueueReadySchedLockHeld(t)
+				wakeOrPark(t, WakeKindNoMutate) // MAZ-204
 			}
 			slot.BlockedTID = -1
 			slot.BlockedPtr = 0
@@ -941,11 +956,7 @@ func CleanupUringIPCForShepherd(sid int16) {
 				atomic.StoreUint32(&t.UringSendDeadlineExpired, 1)
 				t.UringSendBlockedSlotPtr = 0
 				staticDeadlineQueue.Remove(int16(t.TID))
-				t.Context.RewindToSyscall()
-				t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
-				t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
-				t.State = ThreadReady
-				enqueueReadySchedLockHeld(t)
+				wakeOrPark(t, WakeKindRewind) // MAZ-204
 			}
 			slot.BlockedSenderTID = -1
 			slot.BlockedSenderPtr = 0
