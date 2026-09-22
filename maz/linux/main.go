@@ -511,7 +511,7 @@ func startUringDispatchers(fsClient fsclient.FSClient, delegateCh chan any, stdo
 			return
 		}
 		checkDelegateGenIngest(&req)
-		delegateCh <- req
+		delegateCh <- v
 	})
 	delegateDispatcher.Start()
 	fmt.Printf("[linux] uring dispatcher ring=2 started (delegated syscalls)\n")
