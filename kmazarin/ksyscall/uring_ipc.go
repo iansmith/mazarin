@@ -361,6 +361,11 @@ func copyUringMsgToUser(bufPtr uint64, msgKVA uintptr) int64 {
 
 	dstKVA := scratchVA + pageOffset
 
+	// MAZ-215: acquire-fence before copy. Harmless on single-core (the
+	// actual fix is eliminating double-boxing in userspace), but closes a
+	// theoretical window on future multi-core configs.
+	_ = atomic.LoadUint32((*uint32)(unsafe.Pointer(msgKVA)))
+
 	// Copy 128 bytes
 	src := (*[ipc.UringIPCSlotSize]byte)(unsafe.Pointer(msgKVA))
 	dst := (*[ipc.UringIPCSlotSize]byte)(unsafe.Pointer(dstKVA))
