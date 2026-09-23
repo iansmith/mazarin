@@ -22,10 +22,10 @@ import (
 // random suffix is what guarantees a fresh, empty directory across the
 // lifetime of a shepherd-name + SID pair.
 //
-// A directory already at the path is a stale one left by an earlier shepherd
-// with the same name and SID (MAZ-206); it is removed first so the caller
-// always starts empty. Nothing else cleans up — /tmp is a ramdisk that resets
-// on reboot, and there is no controlled-shutdown path.
+// In the predictable form a directory already at the path is a stale one left
+// by an earlier shepherd with the same name and SID (MAZ-206); it is removed
+// first so the caller always starts empty. Nothing else cleans up — /tmp is a
+// ramdisk that resets on reboot, and there is no controlled-shutdown path.
 //
 // Returns the absolute path of the created directory.
 func SetupScratchDir(systemDebugging bool) (string, error) {
@@ -35,6 +35,9 @@ func SetupScratchDir(systemDebugging bool) (string, error) {
 	var path string
 	if systemDebugging {
 		path = fmt.Sprintf("/tmp/%s-%d", name, sid)
+		if err := os.RemoveAll(path); err != nil {
+			return "", fmt.Errorf("scratchdir: remove stale %s: %w", path, err)
+		}
 	} else {
 		var rand32 [4]byte
 		if _, err := rand.Read(rand32[:]); err != nil {
@@ -43,9 +46,6 @@ func SetupScratchDir(systemDebugging bool) (string, error) {
 		path = fmt.Sprintf("/tmp/%s-%d-%s", name, sid, hex.EncodeToString(rand32[:]))
 	}
 
-	if err := os.RemoveAll(path); err != nil {
-		return "", fmt.Errorf("scratchdir: remove stale %s: %w", path, err)
-	}
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return "", fmt.Errorf("scratchdir: mkdir %s: %w", path, err)
 	}
