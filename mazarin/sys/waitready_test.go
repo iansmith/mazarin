@@ -127,3 +127,30 @@ func TestWaitLoopNoShepherdWhenNeverSeen(t *testing.T) {
 		t.Fatalf("waitLoop = %v, want ErrNoShepherd", err)
 	}
 }
+
+// TestWaitLoopReportsDeadDependency — MAZ-206: fti panicked during startup
+// after maildb's first poll had already seen it (ErrNotReady). The sticky
+// "saw it once" flag then reported ErrNotReady at the deadline ~17s later,
+// hiding the death behind a timeout. A shepherd that was seen and then
+// vanishes has died: the loop must say so, and at once — waiting out the
+// window cannot bring it back.
+func TestWaitLoopReportsDeadDependency(t *testing.T) {
+	start := time.Unix(1000, 0)
+	c := &fakeReadyClock{now: start}
+	script := []error{ErrNotReady, ErrNotReady, ErrNoShepherd}
+	polls := 0
+	err := waitLoop(start.Add(20*time.Second), c.Now, c.Sleep, func() error {
+		e := script[len(script)-1]
+		if polls < len(script) {
+			e = script[polls]
+		}
+		polls++
+		return e
+	}, nil)
+	if !errors.Is(err, ErrShepherdDied) {
+		t.Fatalf("waitLoop = %v, want ErrShepherdDied (seen, then gone)", err)
+	}
+	if polls != len(script) {
+		t.Fatalf("polls = %d, want %d (return on the first poll that finds it gone)", polls, len(script))
+	}
+}

@@ -110,6 +110,10 @@ func runSmokeTests() bool {
 	// [pipe2test] PASS/FAIL marker and does not gate the transfer stages.
 	testPipe2()
 
+	// --- Test 0b: chdir errno contract through the delegate path (MAZ-206) ---
+	// Non-blocking: prints its own [chdirtest] PASS/FAIL marker.
+	testChdir()
+
 	// --- Test 1: SyscallTransferDMAClump ---
 	clump1, err := mem.AllocContiguous(4096)
 	if err != nil {
@@ -523,6 +527,65 @@ func testBlockWakeStress() bool {
 
 	sys.UartWriteString(bwTag + "PASS " + sys.Itoa(int64(bwRounds)) + " write+read delegate round-trips\n")
 	return true
+}
+
+// chdirTag is the marker prefix for the MAZ-206 chdir errno stage.
+const chdirTag = "[chdirtest] "
+
+// testChdir drives chdir(2) through the kernel delegate path to the linux
+// shepherd's sysChdir and checks the stock Linux errno for each shape of
+// path: empty → ENOENT, missing → ENOENT, a regular file → ENOTDIR, a real
+// directory → success with getcwd reporting it. The expected errnos are the
+// Linux ABI contract, not whatever the handler happens to return.
+func testChdir() {
+	dir := "/tmp/xfertest-chdir"
+	file := dir + "/file"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		sys.UartWriteString(chdirTag + "FAIL: setup mkdir: " + err.Error() + "\n")
+		return
+	}
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		sys.UartWriteString(chdirTag + "FAIL: setup write: " + err.Error() + "\n")
+		return
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		sys.UartWriteString(chdirTag + "FAIL: getwd: " + err.Error() + "\n")
+		return
+	}
+	defer syscall.Chdir(orig)
+
+	cases := []struct {
+		path string
+		want error // nil = success
+	}{
+		{"", syscall.ENOENT},
+		{dir + "/missing", syscall.ENOENT},
+		{file, syscall.ENOTDIR},
+		{dir, nil},
+	}
+	ok := true
+	for _, c := range cases {
+		err := syscall.Chdir(c.path)
+		if err != c.want {
+			got, want := "ok", "ok"
+			if err != nil {
+				got = err.Error()
+			}
+			if c.want != nil {
+				want = c.want.Error()
+			}
+			sys.UartWriteString(chdirTag + "FAIL: chdir(\"" + c.path + "\") = " + got + ", want " + want + "\n")
+			ok = false
+		}
+	}
+	if wd, err := os.Getwd(); err != nil || wd != dir {
+		sys.UartWriteString(chdirTag + "FAIL: getwd after chdir(" + dir + ") = \"" + wd + "\"\n")
+		ok = false
+	}
+	if ok {
+		sys.UartWriteString(chdirTag + "PASS empty/missing/file/dir errno contract\n")
+	}
 }
 
 // pipeTag is the deterministic marker prefix the pipe2 guest stage prints.
