@@ -645,12 +645,12 @@ func (s *fsIPCServer) ipcResolve(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp
 
 	inum, err := fsys.ResolveInode(relPath)
 	if err != nil {
-		resp.Err = ext2ToErrno(err)
+		resp.Err = resolveErrno(path, inum, err)
 		return
 	}
 	inode, err := fsys.ReadInode(inum)
 	if err != nil {
-		resp.Err = ext2ToErrno(err)
+		resp.Err = resolveErrno(path, inum, err)
 		return
 	}
 	isDir := uint64(0)
@@ -659,6 +659,18 @@ func (s *fsIPCServer) ipcResolve(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp
 	}
 	resp.Result0 = isDir
 	resp.Result1 = uint64(inode.Size)
+}
+
+// resolveErrno maps a Resolve failure to its errno, logging the EINVAL case.
+// MAZ-206: fti's scratch-dir chdir died on EINVAL once in 38 boots, and
+// ErrInvalidPath/ErrInvalidInode here is one of its two candidate sources;
+// the line names the path and inode so the next one is attributable.
+func resolveErrno(path string, inum uint32, err error) int32 {
+	errno := ext2ToErrno(err)
+	if errno == -22 {
+		fmt.Printf("[fs:resolve] EINVAL path=%q inum=%d err=%v\n", path, inum, err)
+	}
+	return errno
 }
 
 func (s *fsIPCServer) ipcSetMode(conn *fsIPCConn, req *ipc.FSIPCReqPayload, resp *ipc.FSIPCRespPayload, mt *mountTable) {

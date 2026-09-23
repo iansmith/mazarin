@@ -11,6 +11,7 @@ import "time"
 // Errors:
 //   - ErrNoShepherd: the shepherd was never found during the entire wait period.
 //   - ErrNotReady: the shepherd was found but never became ready.
+//   - ErrShepherdDied: the shepherd was found, then vanished (returned immediately).
 //   - ErrAmbiguousShepherd: multiple shepherds match the name (returned immediately).
 func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 	start := time.Now()
@@ -45,6 +46,9 @@ func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 //
 // poll returns nil (ready), ErrAmbiguousShepherd (fatal, returned
 // immediately), ErrNotReady (exists, not ready) or ErrNoShepherd (not found).
+// ErrNoShepherd after an ErrNotReady means the shepherd exited, so the loop
+// returns ErrShepherdDied at once (MAZ-206: maildb otherwise sat out its
+// window on a dead fti and blamed readiness).
 // report, if non-nil, is called after every unsuccessful non-fatal poll.
 func waitLoop(deadline time.Time, now func() time.Time, sleep func(time.Duration),
 	poll func() error, report func(polls int, err error)) error {
@@ -66,6 +70,8 @@ func waitLoop(deadline time.Time, now func() time.Time, sleep func(time.Duration
 		}
 		if err == ErrNotReady {
 			sawShepherd = true
+		} else if sawShepherd && err == ErrNoShepherd {
+			return ErrShepherdDied
 		}
 		if report != nil {
 			report(polls, err)
