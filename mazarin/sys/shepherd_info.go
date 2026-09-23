@@ -31,12 +31,21 @@ func ShepherdInfo() ([]hid.ShepherdInfoEntry, error) {
 	})
 }
 
-// readAllShepherdEntries runs fetch over a buffer and returns what it wrote.
+// readAllShepherdEntries runs fetch over a buffer, doubling it until fetch
+// leaves room to spare: the kernel stops writing at len(buf), so a full
+// buffer may be hiding live shepherds in later slots (MAZ-206 — a hidden
+// shepherd looks dead to WaitForShepherdReady). Terminates because the
+// kernel's live-shepherd table is bounded.
 func readAllShepherdEntries(fetch func([]hid.ShepherdInfoEntry) (int, error)) ([]hid.ShepherdInfoEntry, error) {
 	buf := make([]hid.ShepherdInfoEntry, 32)
-	n, err := fetch(buf)
-	if err != nil {
-		return nil, err
+	for {
+		n, err := fetch(buf)
+		if err != nil {
+			return nil, err
+		}
+		if n < len(buf) {
+			return buf[:n], nil
+		}
+		buf = make([]hid.ShepherdInfoEntry, 2*len(buf))
 	}
-	return buf[:n], nil
 }

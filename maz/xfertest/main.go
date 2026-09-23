@@ -583,8 +583,14 @@ func testChdir() {
 		sys.UartWriteString(chdirTag + "FAIL: getwd after chdir(" + dir + ") = \"" + wd + "\"\n")
 		ok = false
 	}
+	// chdir(NULL): the kernel sends no data page, which sysChdir must tell
+	// apart from "" (a zero-length page) and answer EFAULT.
+	if _, _, errno := syscall.Syscall(syscall.SYS_CHDIR, 0, 0, 0); errno != syscall.EFAULT {
+		sys.UartWriteString(chdirTag + "FAIL: chdir(NULL) errno=" + sys.Itoa(int64(errno)) + ", want EFAULT\n")
+		ok = false
+	}
 	if ok {
-		sys.UartWriteString(chdirTag + "PASS empty/missing/file/dir errno contract\n")
+		sys.UartWriteString(chdirTag + "PASS empty/missing/file/dir/NULL errno contract\n")
 	}
 }
 
