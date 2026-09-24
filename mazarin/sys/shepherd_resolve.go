@@ -13,10 +13,13 @@ import "strconv"
 //   - (sid, ErrNotReady) if the shepherd exists but has not called SetReady(true)
 //   - (0, ErrNoShepherd) if no matching shepherd is found
 //   - (0, ErrAmbiguousShepherd) if multiple shepherds match the name
+//   - (0, err) if the shepherd table could not be read — not ErrNoShepherd,
+//     since a failed read says nothing about absence (MAZ-206: waitLoop
+//     treats a seen shepherd's absence as death)
 func GetShepherdByName(name string) (int, error) {
-	entries, err := ShepherdInfo()
+	entries, err := shepherdInfo()
 	if err != nil {
-		return 0, ErrNoShepherd
+		return 0, err
 	}
 
 	// Try matching by name: "rachel" matches "/rachel.elf"

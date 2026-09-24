@@ -12,26 +12,44 @@ import (
 // Each entry includes the shepherd's PID, thread count, thread IDs,
 // launch filename, and number of mapped pages.
 func ShepherdInfo() ([]hid.ShepherdInfoEntry, error) {
-	var buf [32]hid.ShepherdInfoEntry
-	// Touch every page of the buffer to ensure demand faults fire before
-	// the kernel's CopyToUser writes to these addresses.
-	entrySize := unsafe.Sizeof(buf[0])
-	for i := range buf {
-		p := (*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(&buf[0])) + uintptr(i)*entrySize))
-		*p = 0
+	return readAllShepherdEntries(func(buf []hid.ShepherdInfoEntry) (int, error) {
+		// Touch every entry of the buffer to ensure demand faults fire
+		// before the kernel's CopyToUser writes to these addresses.
+		for i := range buf {
+			buf[i].SID = 0
+		}
+		r1, _, errno := syscall.RawSyscall6(
+			mazzy.SysShepherdInfo,
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(len(buf)),
+			0, 0, 0, 0,
+		)
+		if errno != 0 {
+			return 0, errors.New("ShepherdInfo failed")
+		}
+		return min(int(r1), len(buf)), nil
+	})
+}
+
+// shepherdInfo is what GetShepherdByName reads the table through; tests
+// replace it to drive lookup failures without a kernel.
+var shepherdInfo = ShepherdInfo
+
+// readAllShepherdEntries runs fetch over a buffer, doubling it until fetch
+// leaves room to spare: the kernel stops writing at len(buf), so a full
+// buffer may be hiding live shepherds in later slots (MAZ-206 — a hidden
+// shepherd looks dead to WaitForShepherdReady). Terminates because the
+// kernel's live-shepherd table is bounded.
+func readAllShepherdEntries(fetch func([]hid.ShepherdInfoEntry) (int, error)) ([]hid.ShepherdInfoEntry, error) {
+	buf := make([]hid.ShepherdInfoEntry, 32)
+	for {
+		n, err := fetch(buf)
+		if err != nil {
+			return nil, err
+		}
+		if n < len(buf) {
+			return buf[:n], nil
+		}
+		buf = make([]hid.ShepherdInfoEntry, 2*len(buf))
 	}
-	r1, _, errno := syscall.RawSyscall6(
-		mazzy.SysShepherdInfo,
-		uintptr(unsafe.Pointer(&buf[0])),
-		uintptr(len(buf)),
-		0, 0, 0, 0,
-	)
-	if errno != 0 {
-		return nil, errors.New("ShepherdInfo failed")
-	}
-	n := int(r1)
-	if n > len(buf) {
-		n = len(buf)
-	}
-	return buf[:n], nil
 }

@@ -12,4 +12,8 @@ var (
 
 	// ErrNotReady is returned when the shepherd exists but has not called SetReady(true).
 	ErrNotReady = errors.New("shepherd exists but is not ready")
+
+	// ErrShepherdDied is returned by WaitForShepherdReady when the shepherd
+	// was seen and then vanished from the shepherd table: it exited.
+	ErrShepherdDied = errors.New("shepherd died (seen, then exited)")
 )

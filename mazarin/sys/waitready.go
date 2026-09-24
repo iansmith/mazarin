@@ -11,6 +11,7 @@ import "time"
 // Errors:
 //   - ErrNoShepherd: the shepherd was never found during the entire wait period.
 //   - ErrNotReady: the shepherd was found but never became ready.
+//   - ErrShepherdDied: the shepherd was found, then vanished (returned immediately).
 //   - ErrAmbiguousShepherd: multiple shepherds match the name (returned immediately).
 func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 	start := time.Now()
@@ -25,8 +26,12 @@ func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 			return
 		}
 		state := "not ready yet"
-		if err == ErrNoShepherd {
+		switch err {
+		case ErrNotReady:
+		case ErrNoShepherd:
 			state = "not found"
+		default:
+			state = "lookup failed: " + err.Error()
 		}
 		UartWriteString("[waitready] " + name + " " + state + " (poll " + Itoa(int64(polls)) +
 			" t+" + Itoa(time.Since(start).Milliseconds()) + "ms)\n")
@@ -44,7 +49,12 @@ func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 // ready since ~t+1s).
 //
 // poll returns nil (ready), ErrAmbiguousShepherd (fatal, returned
-// immediately), ErrNotReady (exists, not ready) or ErrNoShepherd (not found).
+// immediately), ErrNotReady (exists, not ready), ErrNoShepherd (not found), or
+// any other error when the table itself could not be read — that says nothing
+// about the shepherd, so the loop keeps polling.
+// ErrNoShepherd after an ErrNotReady means the shepherd exited, so the loop
+// returns ErrShepherdDied at once (MAZ-206: maildb otherwise sat out its
+// window on a dead fti and blamed readiness).
 // report, if non-nil, is called after every unsuccessful non-fatal poll.
 func waitLoop(deadline time.Time, now func() time.Time, sleep func(time.Duration),
 	poll func() error, report func(polls int, err error)) error {
@@ -66,6 +76,8 @@ func waitLoop(deadline time.Time, now func() time.Time, sleep func(time.Duration
 		}
 		if err == ErrNotReady {
 			sawShepherd = true
+		} else if sawShepherd && err == ErrNoShepherd {
+			return ErrShepherdDied
 		}
 		if report != nil {
 			report(polls, err)

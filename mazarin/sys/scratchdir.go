@@ -13,16 +13,19 @@ import (
 // after WaitForCoreServices, before issuing any relative-path file I/O.
 //
 // Path format:
-//   systemDebugging=true:  /tmp/<name>-<sid>           (predictable; for hand-inspection)
-//   systemDebugging=false: /tmp/<name>-<sid>-<rand32>  (collision-free across SID reuse)
+//
+//	systemDebugging=true:  /tmp/<name>-<sid>           (predictable; for hand-inspection)
+//	systemDebugging=false: /tmp/<name>-<sid>-<rand32>  (collision-free across SID reuse)
 //
 // Under normal operation systemDebugging should be false; the predictable
 // form is the development affordance. SIDs are aggressively reused, so the
 // random suffix is what guarantees a fresh, empty directory across the
 // lifetime of a shepherd-name + SID pair.
 //
-// Cleanup of stale directories is not handled here — /tmp is a ramdisk that
-// resets on reboot, and we do not yet have a controlled-shutdown path.
+// In the predictable form a directory already at the path is a stale one left
+// by an earlier shepherd with the same name and SID (MAZ-206); it is removed
+// first so the caller always starts empty. Nothing else cleans up — /tmp is a
+// ramdisk that resets on reboot, and there is no controlled-shutdown path.
 //
 // Returns the absolute path of the created directory.
 func SetupScratchDir(systemDebugging bool) (string, error) {
@@ -32,6 +35,9 @@ func SetupScratchDir(systemDebugging bool) (string, error) {
 	var path string
 	if systemDebugging {
 		path = fmt.Sprintf("/tmp/%s-%d", name, sid)
+		if err := os.RemoveAll(path); err != nil {
+			return "", fmt.Errorf("scratchdir: remove stale %s: %w", path, err)
+		}
 	} else {
 		var rand32 [4]byte
 		if _, err := rand.Read(rand32[:]); err != nil {

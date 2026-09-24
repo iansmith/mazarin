@@ -981,14 +981,33 @@ func (h *syscallHandler) sysChdir(req sys.SyscallRequest) {
 	fdt := h.resolveTargetFDT(req)
 	path := req.PathString()
 	if path == "" {
-		req.Reply(EINVAL)
+		// MAZ-206: Linux answers chdir("") with ENOENT and chdir(NULL) with
+		// EFAULT; this branch used to answer both with EINVAL. The kernel
+		// sends no data page for a NULL pointer and a zero-length one for "".
+		// Logged because a non-empty caller path that arrives empty here is
+		// a delivery defect, and this line is what attributes it.
+		fmt.Printf("[lin:chdir] empty path sid=%d dataVA=0x%x len=%d cwd=%q\n",
+			req.CallerPID, req.DataVA(), len(req.Data()), fdt.Cwd)
+		if req.DataVA() == 0 {
+			req.Reply(EFAULT)
+		} else {
+			req.Reply(ENOENT)
+		}
 		return
 	}
 	absPath := fdt.ResolvePath(path)
 
 	isDir, _, err := h.fs.Resolve(absPath)
 	if err != nil {
-		req.Reply(int64(errToErrno(err)))
+		errno := int64(errToErrno(err))
+		if errno == EINVAL {
+			// MAZ-206: with the branch above gone, EINVAL can only come from
+			// fs (ext2 ErrInvalidPath / ErrInvalidInode). fti died on exactly
+			// this errno once in 38 boots; name the path so the next one is
+			// attributable from the serial log.
+			fmt.Printf("[lin:chdir] fs EINVAL sid=%d path=%q abs=%q\n", req.CallerPID, path, absPath)
+		}
+		req.Reply(errno)
 		return
 	}
 	if !isDir {
