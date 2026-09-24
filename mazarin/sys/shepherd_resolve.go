@@ -14,7 +14,7 @@ import "strconv"
 //   - (0, ErrNoShepherd) if no matching shepherd is found
 //   - (0, ErrAmbiguousShepherd) if multiple shepherds match the name
 func GetShepherdByName(name string) (int, error) {
-	entries, err := ShepherdInfo()
+	entries, err := shepherdInfo()
 	if err != nil {
 		return 0, ErrNoShepherd
 	}

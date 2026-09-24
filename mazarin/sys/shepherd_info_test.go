@@ -48,6 +48,22 @@ func TestReadAllShepherdEntriesPropagatesError(t *testing.T) {
 	}
 }
 
+// TestGetShepherdByNameLookupFailureIsNotAbsence — MAZ-206 review (CodeRabbit
+// + three angles): a failed ShepherdInfo call says nothing about whether the
+// shepherd exists. Reported as ErrNoShepherd, it let waitLoop's seen-then-gone
+// rule declare a live shepherd dead. It must surface as its own error.
+func TestGetShepherdByNameLookupFailureIsNotAbsence(t *testing.T) {
+	boom := errors.New("ShepherdInfo failed")
+	orig := shepherdInfo
+	shepherdInfo = func() ([]hid.ShepherdInfoEntry, error) { return nil, boom }
+	t.Cleanup(func() { shepherdInfo = orig })
+
+	_, err := GetShepherdByName("fti")
+	if errors.Is(err, ErrNoShepherd) || !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the lookup error itself, not ErrNoShepherd", err)
+	}
+}
+
 // fakeShepherdFetch mimics SyscallShepherdInfo with live shepherds: it
 // writes min(live, len(buf)) entries and returns that count.
 func fakeShepherdFetch(live int) func([]hid.ShepherdInfoEntry) (int, error) {

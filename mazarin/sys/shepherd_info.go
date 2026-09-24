@@ -31,6 +31,10 @@ func ShepherdInfo() ([]hid.ShepherdInfoEntry, error) {
 	})
 }
 
+// shepherdInfo is what GetShepherdByName reads the table through; tests
+// replace it to drive lookup failures without a kernel.
+var shepherdInfo = ShepherdInfo
+
 // readAllShepherdEntries runs fetch over a buffer, doubling it until fetch
 // leaves room to spare: the kernel stops writing at len(buf), so a full
 // buffer may be hiding live shepherds in later slots (MAZ-206 — a hidden
