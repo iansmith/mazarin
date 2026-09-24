@@ -26,8 +26,12 @@ func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 			return
 		}
 		state := "not ready yet"
-		if err == ErrNoShepherd {
+		switch err {
+		case ErrNotReady:
+		case ErrNoShepherd:
 			state = "not found"
+		default:
+			state = "lookup failed: " + err.Error()
 		}
 		UartWriteString("[waitready] " + name + " " + state + " (poll " + Itoa(int64(polls)) +
 			" t+" + Itoa(time.Since(start).Milliseconds()) + "ms)\n")
@@ -45,7 +49,9 @@ func WaitForShepherdReady(name string, maxWaitSeconds int) error {
 // ready since ~t+1s).
 //
 // poll returns nil (ready), ErrAmbiguousShepherd (fatal, returned
-// immediately), ErrNotReady (exists, not ready) or ErrNoShepherd (not found).
+// immediately), ErrNotReady (exists, not ready), ErrNoShepherd (not found), or
+// any other error when the table itself could not be read — that says nothing
+// about the shepherd, so the loop keeps polling.
 // ErrNoShepherd after an ErrNotReady means the shepherd exited, so the loop
 // returns ErrShepherdDied at once (MAZ-206: maildb otherwise sat out its
 // window on a dead fti and blamed readiness).
