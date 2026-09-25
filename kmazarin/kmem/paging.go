@@ -182,22 +182,7 @@ var (
 	// NOTE: processL0PA global removed - use readCurrentL0PA() to get current L0PA
 	ttbr1L1PA uintptr // Physical address of TTBR1 L1 table (lazy init)
 	// NOTE: ptPoolNext removed - PT allocation now uses unified pool
-
-	// Cache for allocated page table VAs
-	// Since we can't compute VA from PA (Cardinal doesn't map all RAM),
-	// we need to track the VAs of page tables we allocate.
-	// Key: PA of page table, Value: VA of page table
-	// CRITICAL: If this fills up, page table lookups will fail because
-	// PT pool pages are NOT identity-mapped - paToVA fallback won't work!
-	// 2048 entries supports many shepherds with large page tables.
-	ptVACache     [2048]ptVACacheEntry // Simple fixed-size cache
-	ptVACacheSize int
 )
-
-type ptVACacheEntry struct {
-	pa uintptr
-	va uintptr
-}
 
 // getKmazarinSize returns the kmazarin binary size from auxv.
 //
@@ -309,9 +294,6 @@ func CreateProcessPageTable() uintptr {
 	// trampoline must be at a user-accessible VA. On ARM64/x86_64, this is a no-op.
 	mapSigreturnVDSOInProcessL0(l0PA)
 
-	// Cache the PA -> VA mapping
-	cachePTVA(l0PA, l0VA)
-
 	// NOTE: We no longer set a global processL0PA here.
 	// The caller must store this L0PA in the Thread struct and use
 	// SwitchTTBR0WithASID() to activate it when switching to this process.
@@ -383,57 +365,6 @@ func SwitchTTBR0WithASID(l0PA uintptr, asid uint16) {
 //go:nosplit
 func paToVA(pa uintptr) uintptr {
 	return pa + constants.KernelVAOffset
-}
-
-// cachePTVA stores a PA -> VA mapping for an allocated page table.
-//
-//go:nosplit
-func cachePTVA(pa, va uintptr) {
-	// Hoist the global index into a local and compare unsigned so the compiler
-	// can prove the store is in bounds (0 <= n < len) and elide the bounds
-	// check entirely. Indexing the global directly — or comparing signed, which
-	// leaves the n>=0 lower-bound check live — pulls runtime.panicBounds64 into
-	// this nosplit chain and overflows the 792 B exception-stack budget on the
-	// syscallEntry→HandleUserPageFault path.
-	n := ptVACacheSize
-	if uint(n) < uint(len(ptVACache)) {
-		ptVACache[n] = ptVACacheEntry{pa: pa, va: va}
-		ptVACacheSize = n + 1
-	} else {
-		// CACHE FULL - this will cause page table lookup failures!
-		serial.RawUARTPuts("[kmem] WARN: ptVACache FULL!\r\n")
-	}
-}
-
-// lookupPTVA looks up the VA for a given PA in the cache.
-// Returns 0 if not found.
-//
-//go:nosplit
-func lookupPTVA(pa uintptr) uintptr {
-	for i := 0; i < ptVACacheSize; i++ {
-		if ptVACache[i].pa == pa {
-			return ptVACache[i].va
-		}
-	}
-	return 0
-}
-
-// GetPTVACacheStats returns the current ptVACache usage stats.
-//
-//go:nosplit
-func GetPTVACacheStats() (used, capacity int) {
-	return ptVACacheSize, len(ptVACache)
-}
-
-// paToVAOrCache converts a PA to VA, checking the cache first for PT pool pages.
-// Falls back to paToVA if not in cache (for pre-mapped pages).
-//
-//go:nosplit
-func paToVAOrCache(pa uintptr) uintptr {
-	if va := lookupPTVA(pa); va != 0 {
-		return va
-	}
-	return paToVA(pa)
 }
 
 // vaToPa converts a high-memory virtual address to a physical address.
@@ -1098,9 +1029,6 @@ func mapPage(va, pa uintptr) bool {
 			return false
 		}
 
-		// Cache the VA for this PA so we can find it later
-		cachePTVA(l1PA, l1VA)
-
 		// Link new L1 table into L0 (arch-specific PTE format)
 		*l0Entry = makeTablePTE(l1PA)
 
@@ -1111,9 +1039,9 @@ func mapPage(va, pa uintptr) bool {
 		dsbSY()
 		isbSY()
 	} else {
-		// Get existing L1 table VA - check cache first for PT pool pages
+		// Get existing L1 table VA
 		l1PA := pteExtractPA(*l0Entry)
-		l1VA = paToVAOrCache(l1PA)
+		l1VA = paToVA(l1PA)
 	}
 	if l1VA == 0 {
 		debugPrint('2')
@@ -1149,14 +1077,11 @@ func mapPage(va, pa uintptr) bool {
 			return false
 		}
 
-		// Cache the VA for this PA
-		cachePTVA(l2PA, l2VA)
-
 		// Link new L2 table into L1 (arch-specific PTE format)
 		*l1Entry = makeTablePTE(l2PA)
 	} else {
 		l2PA := pteExtractPA(*l1Entry)
-		l2VA = paToVAOrCache(l2PA)
+		l2VA = paToVA(l2PA)
 		if l2VA == 0 {
 			debugPrint('4')
 			debugPrint('!')
@@ -1202,9 +1127,6 @@ func mapPage(va, pa uintptr) bool {
 		debugPrintHex(uint64(l3PA))
 		debugPrint('}')
 
-		// Cache the VA for this PA
-		cachePTVA(l3PA, l3VA)
-
 		// Link new L3 table into L2 (arch-specific PTE format)
 		*l2Entry = makeTablePTE(l3PA)
 
@@ -1231,7 +1153,7 @@ func mapPage(va, pa uintptr) bool {
 		debugPrint('V') // DEBUG: Verified L2
 	} else {
 		l3PA := pteExtractPA(*l2Entry)
-		l3VA = paToVAOrCache(l3PA)
+		l3VA = paToVA(l3PA)
 		if l3VA == 0 {
 			debugPrint('6')
 			debugPrint('!')
@@ -1651,7 +1573,7 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 	}
 
 	// Get L0 table VA
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return false
 	}
@@ -1670,7 +1592,6 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 		if l1PA == 0 {
 			return false
 		}
-		cachePTVA(l1PA, l1VA)
 		*l0Entry = makeUserTablePTE(l1PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
 		dsbSY()
@@ -1679,7 +1600,7 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 		isbSY()
 	} else {
 		l1PA := pteExtractPA(*l0Entry)
-		l1VA = paToVAOrCache(l1PA)
+		l1VA = paToVA(l1PA)
 	}
 	if l1VA == 0 {
 		return false
@@ -1698,13 +1619,12 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 		if l2PA == 0 {
 			return false
 		}
-		cachePTVA(l2PA, l2VA)
 		*l1Entry = makeUserTablePTE(l2PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
 		dsbSY()
 	} else {
 		l2PA := pteExtractPA(*l1Entry)
-		l2VA = paToVAOrCache(l2PA)
+		l2VA = paToVA(l2PA)
 		if l2VA == 0 {
 			return false
 		}
@@ -1723,13 +1643,12 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 		if l3PA == 0 {
 			return false
 		}
-		cachePTVA(l3PA, l3VA)
 		*l2Entry = makeUserTablePTE(l3PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
 		dsbSY()
 	} else {
 		l3PA := pteExtractPA(*l2Entry)
-		l3VA = paToVAOrCache(l3PA)
+		l3VA = paToVA(l3PA)
 		if l3VA == 0 {
 			return false
 		}
@@ -1809,7 +1728,7 @@ func MapUserDevicePageWithL0(va, pa uintptr, l0PAParam uintptr) bool {
 	}
 
 	// Get L0 table VA
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return false
 	}
@@ -1828,7 +1747,6 @@ func MapUserDevicePageWithL0(va, pa uintptr, l0PAParam uintptr) bool {
 		if l1PA == 0 {
 			return false
 		}
-		cachePTVA(l1PA, l1VA)
 		*l0Entry = makeUserTablePTE(l1PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
 		dsbSY()
@@ -1837,7 +1755,7 @@ func MapUserDevicePageWithL0(va, pa uintptr, l0PAParam uintptr) bool {
 		isbSY()
 	} else {
 		l1PA := pteExtractPA(*l0Entry)
-		l1VA = paToVAOrCache(l1PA)
+		l1VA = paToVA(l1PA)
 	}
 	if l1VA == 0 {
 		return false
@@ -1856,7 +1774,6 @@ func MapUserDevicePageWithL0(va, pa uintptr, l0PAParam uintptr) bool {
 		if l2PA == 0 {
 			return false
 		}
-		cachePTVA(l2PA, l2VA)
 		*l1Entry = makeUserTablePTE(l2PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
 		dsbSY()
@@ -1865,7 +1782,7 @@ func MapUserDevicePageWithL0(va, pa uintptr, l0PAParam uintptr) bool {
 		isbSY()
 	} else {
 		l2PA := pteExtractPA(*l1Entry)
-		l2VA = paToVAOrCache(l2PA)
+		l2VA = paToVA(l2PA)
 	}
 	if l2VA == 0 {
 		return false
@@ -1884,7 +1801,6 @@ func MapUserDevicePageWithL0(va, pa uintptr, l0PAParam uintptr) bool {
 		if l3PA == 0 {
 			return false
 		}
-		cachePTVA(l3PA, l3VA)
 		*l2Entry = makeUserTablePTE(l3PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
 		dsbSY()
@@ -1893,7 +1809,7 @@ func MapUserDevicePageWithL0(va, pa uintptr, l0PAParam uintptr) bool {
 		isbSY()
 	} else {
 		l3PA := pteExtractPA(*l2Entry)
-		l3VA = paToVAOrCache(l3PA)
+		l3VA = paToVA(l3PA)
 	}
 	if l3VA == 0 {
 		return false
@@ -2028,7 +1944,7 @@ func WalkUserPageTableWithNext(va uintptr, l0PAParam uintptr) (uintptr, uintptr)
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA
 	}
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return 0, va + PageSize
 	}
@@ -2041,7 +1957,7 @@ func WalkUserPageTableWithNext(va uintptr, l0PAParam uintptr) (uintptr, uintptr)
 
 	// L1 table — absent entry means a 1 GB hole
 	l1PA := pteExtractPA(l0Entry)
-	l1VA := paToVAOrCache(l1PA)
+	l1VA := paToVA(l1PA)
 	if l1VA == 0 {
 		return 0, va + PageSize
 	}
@@ -2052,7 +1968,7 @@ func WalkUserPageTableWithNext(va uintptr, l0PAParam uintptr) (uintptr, uintptr)
 
 	// L2 table — absent entry means a 2 MB hole
 	l2PA := pteExtractPA(l1Entry)
-	l2VA := paToVAOrCache(l2PA)
+	l2VA := paToVA(l2PA)
 	if l2VA == 0 {
 		return 0, va + PageSize
 	}
@@ -2063,7 +1979,7 @@ func WalkUserPageTableWithNext(va uintptr, l0PAParam uintptr) (uintptr, uintptr)
 
 	// L3 table
 	l3PA := pteExtractPA(l2Entry)
-	l3VA := paToVAOrCache(l3PA)
+	l3VA := paToVA(l3PA)
 	if l3VA == 0 {
 		return 0, va + PageSize
 	}
@@ -2155,9 +2071,9 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	if l0PA == 0 {
 		l0PA = readCurrentL0PA()
 	}
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
-		klog.Errf("[DumpPTE] Failed to get L0 VA from cache\n")
+		klog.Errf("[DumpPTE] Failed to get L0 VA\n")
 		return
 	}
 
@@ -2171,9 +2087,9 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 
 	// L1 table
 	l1PA := pteExtractPA(l0Entry)
-	l1VA := paToVAOrCache(l1PA)
+	l1VA := paToVA(l1PA)
 	if l1VA == 0 {
-		klog.Errf("[DumpPTE] Failed to get L1 VA from cache (L1PA=0x%x)\n", l1PA)
+		klog.Errf("[DumpPTE] Failed to get L1 VA (L1PA=0x%x)\n", l1PA)
 		return
 	}
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
@@ -2185,9 +2101,9 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 
 	// L2 table
 	l2PA := pteExtractPA(l1Entry)
-	l2VA := paToVAOrCache(l2PA)
+	l2VA := paToVA(l2PA)
 	if l2VA == 0 {
-		klog.Errf("[DumpPTE] Failed to get L2 VA from cache (L2PA=0x%x)\n", l2PA)
+		klog.Errf("[DumpPTE] Failed to get L2 VA (L2PA=0x%x)\n", l2PA)
 		return
 	}
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
@@ -2199,9 +2115,9 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 
 	// L3 table
 	l3PA := pteExtractPA(l2Entry)
-	l3VA := paToVAOrCache(l3PA)
+	l3VA := paToVA(l3PA)
 	if l3VA == 0 {
-		klog.Errf("[DumpPTE] Failed to get L3 VA from cache (L3PA=0x%x)\n", l3PA)
+		klog.Errf("[DumpPTE] Failed to get L3 VA (L3PA=0x%x)\n", l3PA)
 		return
 	}
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
@@ -2258,7 +2174,7 @@ func UnmapUserPage(va uintptr) uintptr {
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA
 	}
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return 0
 	}
@@ -2271,7 +2187,7 @@ func UnmapUserPage(va uintptr) uintptr {
 
 	// L1 table
 	l1PA := pteExtractPA(l0Entry)
-	l1VA := paToVAOrCache(l1PA)
+	l1VA := paToVA(l1PA)
 	if l1VA == 0 {
 		return 0
 	}
@@ -2282,7 +2198,7 @@ func UnmapUserPage(va uintptr) uintptr {
 
 	// L2 table
 	l2PA := pteExtractPA(l1Entry)
-	l2VA := paToVAOrCache(l2PA)
+	l2VA := paToVA(l2PA)
 	if l2VA == 0 {
 		return 0
 	}
@@ -2293,7 +2209,7 @@ func UnmapUserPage(va uintptr) uintptr {
 
 	// L3 table
 	l3PA := pteExtractPA(l2Entry)
-	l3VA := paToVAOrCache(l3PA)
+	l3VA := paToVA(l3PA)
 	if l3VA == 0 {
 		return 0
 	}
@@ -2353,7 +2269,7 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA
 	}
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return 0
 	}
@@ -2366,7 +2282,7 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 
 	// L1 table
 	l1PA := pteExtractPA(l0Entry)
-	l1VA := paToVAOrCache(l1PA)
+	l1VA := paToVA(l1PA)
 	if l1VA == 0 {
 		return 0
 	}
@@ -2377,7 +2293,7 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 
 	// L2 table
 	l2PA := pteExtractPA(l1Entry)
-	l2VA := paToVAOrCache(l2PA)
+	l2VA := paToVA(l2PA)
 	if l2VA == 0 {
 		return 0
 	}
@@ -2388,7 +2304,7 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 
 	// L3 table
 	l3PA := pteExtractPA(l2Entry)
-	l3VA := paToVAOrCache(l3PA)
+	l3VA := paToVA(l3PA)
 	if l3VA == 0 {
 		return 0
 	}
@@ -2454,7 +2370,7 @@ func GetUserPTEFlags(va, l0PAParam uintptr) (uint32, bool) {
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA
 	}
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return 0, false
 	}
@@ -2465,7 +2381,7 @@ func GetUserPTEFlags(va, l0PAParam uintptr) (uint32, bool) {
 	}
 
 	l1PA := pteExtractPA(l0Entry)
-	l1VA := paToVAOrCache(l1PA)
+	l1VA := paToVA(l1PA)
 	if l1VA == 0 {
 		return 0, false
 	}
@@ -2475,7 +2391,7 @@ func GetUserPTEFlags(va, l0PAParam uintptr) (uint32, bool) {
 	}
 
 	l2PA := pteExtractPA(l1Entry)
-	l2VA := paToVAOrCache(l2PA)
+	l2VA := paToVA(l2PA)
 	if l2VA == 0 {
 		return 0, false
 	}
@@ -2485,7 +2401,7 @@ func GetUserPTEFlags(va, l0PAParam uintptr) (uint32, bool) {
 	}
 
 	l3PA := pteExtractPA(l2Entry)
-	l3VA := paToVAOrCache(l3PA)
+	l3VA := paToVA(l3PA)
 	if l3VA == 0 {
 		return 0, false
 	}
@@ -2579,7 +2495,7 @@ func GetUserL3PTE(va uintptr) uint64 {
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA
 	}
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return 0
 	}
@@ -2588,7 +2504,7 @@ func GetUserL3PTE(va uintptr) uint64 {
 		return 0
 	}
 	l1PA := pteExtractPA(l0Entry)
-	l1VA := paToVAOrCache(l1PA)
+	l1VA := paToVA(l1PA)
 	if l1VA == 0 {
 		return 0
 	}
@@ -2597,7 +2513,7 @@ func GetUserL3PTE(va uintptr) uint64 {
 		return 0
 	}
 	l2PA := pteExtractPA(l1Entry)
-	l2VA := paToVAOrCache(l2PA)
+	l2VA := paToVA(l2PA)
 	if l2VA == 0 {
 		return 0
 	}
@@ -2606,7 +2522,7 @@ func GetUserL3PTE(va uintptr) uint64 {
 		return 0
 	}
 	l3PA := pteExtractPA(l2Entry)
-	l3VA := paToVAOrCache(l3PA)
+	l3VA := paToVA(l3PA)
 	if l3VA == 0 {
 		return 0
 	}
@@ -3328,7 +3244,6 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 		if l1PA == 0 {
 			return false
 		}
-		cachePTVA(l1PA, l1VA)
 		*l0Entry = makeTablePTE(l1PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
 		dsbSY()
@@ -3337,7 +3252,7 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 		isbSY()
 	} else {
 		l1PA := pteExtractPA(*l0Entry)
-		l1VA = paToVAOrCache(l1PA)
+		l1VA = paToVA(l1PA)
 	}
 	if l1VA == 0 {
 		return false
@@ -3356,13 +3271,12 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 		if l2PA == 0 {
 			return false
 		}
-		cachePTVA(l2PA, l2VA)
 		*l1Entry = makeTablePTE(l2PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
 		dsbSY()
 	} else {
 		l2PA := pteExtractPA(*l1Entry)
-		l2VA = paToVAOrCache(l2PA)
+		l2VA = paToVA(l2PA)
 		if l2VA == 0 {
 			return false
 		}
@@ -3381,13 +3295,12 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 		if l3PA == 0 {
 			return false
 		}
-		cachePTVA(l3PA, l3VA)
 		*l2Entry = makeTablePTE(l3PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
 		dsbSY()
 	} else {
 		l3PA := pteExtractPA(*l2Entry)
-		l3VA = paToVAOrCache(l3PA)
+		l3VA = paToVA(l3PA)
 		if l3VA == 0 {
 			return false
 		}

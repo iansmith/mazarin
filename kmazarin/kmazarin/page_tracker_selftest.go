@@ -33,9 +33,8 @@ import (
 //	   unlike AllocAndMapUserPageWithL0), unmap it (UnmapUserPageWithL0),
 //	   release its frame (ReleasePageByPA — the real BuddyFreeTyped path).
 //	   Reuses a single L0/VA across the whole loop rather than rebuilding
-//	   per iteration, to avoid churning through page-table pages at a scale
-//	   that saturates the separate, pre-existing ptVACache (paging.go) —
-//	   not a page-tracker bug, out of scope here. Verifies
+//	   per iteration, to avoid churning through page-table pages, which
+//	   is out of scope here. Verifies
 //	   kmem.GetTrackerFullWarnings() doesn't advance and the tracked count
 //	   returns to baseline. RED today: the warning fires once the tracker
 //	   hits its cap and never lets go.

@@ -251,7 +251,6 @@ func mapDevicePage(va, pa uintptr) bool {
 		if l1PA == 0 {
 			return false
 		}
-		cachePTVA(l1PA, l1VA)
 		*l0Entry = uint64(l1PA) | PTE_VALID | PTE_TABLE
 		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
 		dsbSY()
@@ -260,7 +259,7 @@ func mapDevicePage(va, pa uintptr) bool {
 		isbSY()
 	} else {
 		l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
-		l1VA = paToVAOrCache(l1PA)
+		l1VA = paToVA(l1PA)
 	}
 	if l1VA == 0 {
 		return false
@@ -279,13 +278,12 @@ func mapDevicePage(va, pa uintptr) bool {
 		if l2PA == 0 {
 			return false
 		}
-		cachePTVA(l2PA, l2VA)
 		*l1Entry = uint64(l2PA) | PTE_VALID | PTE_TABLE
 		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
 		dsbSY()
 	} else {
 		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
-		l2VA = paToVAOrCache(l2PA)
+		l2VA = paToVA(l2PA)
 		if l2VA == 0 {
 			return false
 		}
@@ -304,7 +302,6 @@ func mapDevicePage(va, pa uintptr) bool {
 		if l3PA == 0 {
 			return false
 		}
-		cachePTVA(l3PA, l3VA)
 		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
 		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
 		dsbSY()
@@ -321,7 +318,6 @@ func mapDevicePage(va, pa uintptr) bool {
 		if l3PA == 0 {
 			return false
 		}
-		cachePTVA(l3PA, l3VA)
 
 		for i := uintptr(0); i < 512; i++ {
 			entryPA := blockPA + i*PageSize
@@ -340,7 +336,7 @@ func mapDevicePage(va, pa uintptr) bool {
 		isbSY()
 	} else {
 		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
-		l3VA = paToVAOrCache(l3PA)
+		l3VA = paToVA(l3PA)
 		if l3VA == 0 {
 			return false
 		}
@@ -558,7 +554,7 @@ func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
 	l3Idx := (va >> L3Shift) & 0x1FF
 
 	l0PA := selectRootPageTable(va)
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return 0, 0, false
 	}
@@ -571,7 +567,7 @@ func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
 
 	// L1
 	l1PA := pteExtractPA(l0Entry)
-	l1VA := paToVAOrCache(l1PA)
+	l1VA := paToVA(l1PA)
 	if l1VA == 0 {
 		return 0, 0, false
 	}
@@ -586,7 +582,7 @@ func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
 
 	// L2
 	l2PA := pteExtractPA(l1Entry)
-	l2VA := paToVAOrCache(l2PA)
+	l2VA := paToVA(l2PA)
 	if l2VA == 0 {
 		return 0, 0, false
 	}
@@ -601,7 +597,7 @@ func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
 
 	// L3
 	l3PA := pteExtractPA(l2Entry)
-	l3VA := paToVAOrCache(l3PA)
+	l3VA := paToVA(l3PA)
 	if l3VA == 0 {
 		return 0, 0, false
 	}
@@ -623,7 +619,7 @@ func platformWritePTEAt(va uintptr, newPTE uint64) bool {
 	l3Idx := (va >> L3Shift) & 0x1FF
 
 	l0PA := selectRootPageTable(va)
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return false
 	}
@@ -634,7 +630,7 @@ func platformWritePTEAt(va uintptr, newPTE uint64) bool {
 	}
 
 	l1PA := pteExtractPA(l0Entry)
-	l1VA := paToVAOrCache(l1PA)
+	l1VA := paToVA(l1PA)
 	if l1VA == 0 {
 		return false
 	}
@@ -644,7 +640,7 @@ func platformWritePTEAt(va uintptr, newPTE uint64) bool {
 	}
 
 	l2PA := pteExtractPA(l1Entry)
-	l2VA := paToVAOrCache(l2PA)
+	l2VA := paToVA(l2PA)
 	if l2VA == 0 {
 		return false
 	}
@@ -654,7 +650,7 @@ func platformWritePTEAt(va uintptr, newPTE uint64) bool {
 	}
 
 	l3PA := pteExtractPA(l2Entry)
-	l3VA := paToVAOrCache(l3PA)
+	l3VA := paToVA(l3PA)
 	if l3VA == 0 {
 		return false
 	}

@@ -27,17 +27,26 @@ tasks:
     run: once
     deps: [':check-env', 'arm64-overlay', ':stage-embedded-fs-arm64', ':stage-kernel-config-arm64']
     sources:
-      - '**/*.go'
-      - '**/*.s'
-      - '**/*.h'
+      # Scoped to the directories the kernel compiles from (go list -deps:
+      # kmazarin, shared, mazarin) plus the cmd/ build tools. Never a
+      # repo-wide '**': that walks .claude/worktrees (GBs of full repo
+      # copies) and made the up-to-date check take minutes. Task applies
+      # 'exclude:' only after globbing, so it cannot fix a wide glob.
+      - 'kmazarin/**/*.go'
+      - 'kmazarin/**/*.s'
+      - 'kmazarin/**/*.h'
+      - 'shared/**/*.go'
+      - 'shared/**/*.s'
+      - 'mazarin/**/*.go'
+      - 'cmd/**/*.go'
+      - 'go.mod'
+      - 'go.sum'
       - '{{.FS_ELF}}'
       - 'config/kernel.arm64.toml'
       # The staged copies the go:embed directives actually consume — catches
       # a hand-edited staged file that the build-dir originals wouldn't.
       - 'kmazarin/kmazarin/fs_arm64.elf'
       - 'kmazarin/kmazarin/kernel_arm64.toml'
-      - '../shared/**/*.go'
-      - '../mazarin/**/*.go'
       - '{{.KMAZARIN_OVERLAY_JSON}}'
       - '{{.RUNTIME_PATCHES_DIR}}/*.go'
       - '{{.RUNTIME_PATCHES_DIR}}/*.s'
@@ -68,17 +77,26 @@ tasks:
     run: once
     deps: [':check-env', 'x86_64-overlay', ':stage-embedded-fs-x86_64', ':stage-kernel-config-x86_64']
     sources:
-      - '**/*.go'
-      - '**/*.s'
-      - '**/*.h'
+      # Scoped to the directories the kernel compiles from (go list -deps:
+      # kmazarin, shared, mazarin) plus the cmd/ build tools. Never a
+      # repo-wide '**': that walks .claude/worktrees (GBs of full repo
+      # copies) and made the up-to-date check take minutes. Task applies
+      # 'exclude:' only after globbing, so it cannot fix a wide glob.
+      - 'kmazarin/**/*.go'
+      - 'kmazarin/**/*.s'
+      - 'kmazarin/**/*.h'
+      - 'shared/**/*.go'
+      - 'shared/**/*.s'
+      - 'mazarin/**/*.go'
+      - 'cmd/**/*.go'
+      - 'go.mod'
+      - 'go.sum'
       - '{{.FS_AMD64_ELF}}'
       - 'config/kernel.amd64.toml'
       # The staged copies the go:embed directives actually consume — catches
       # a hand-edited staged file that the build-dir originals wouldn't.
       - 'kmazarin/kmazarin/fs_amd64.elf'
       - 'kmazarin/kmazarin/kernel_amd64.toml'
-      - '../shared/**/*.go'
-      - '../mazarin/**/*.go'
       - '{{.KMAZARIN_AMD64_OVERLAY_JSON}}'
       - '{{.RUNTIME_PATCHES_DIR}}/*.go'
       - '{{.RUNTIME_PATCHES_DIR}}/*.s'
