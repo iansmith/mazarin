@@ -139,6 +139,9 @@ CLAUDE.md
 # mazarin/apps/slides/slides/.
 vibe-coded-os/
 
+# macOS Finder metadata.
+.DS_Store
+
 # slopstop project config. The SHARED file is tracked -- it holds project settings (system,
 # key, prefix, tiers, thresholds), not per-machine ones, and ignoring it means a second
 # developer clones the repo and gets none of them. Per-developer deviations -- a fork URL, a
