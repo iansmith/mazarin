@@ -132,19 +132,18 @@ CLAUDE.md
 /sophie/secrets/**/*.toml
 !/sophie/secrets/**/*.toml.example
 
-# slopstop: exclude .claude CONTENTS, not the directory. git cannot re-include a path whose
-# parent directory is excluded, so `.claude/` would make the negations below inert and the
-# generated skills would never be committed — defeating the version freeze they exist for.
-#
-# agents/ is exempted ahead of BILL-486, which may ship per-tier subagent definitions there.
-# Cost if that ticket closes wontfix: nothing, the directory simply stays absent. Cost of
-# adding it late: definitions land on disk, never get committed, and effort silently inherits
-# while the config reads as configured — the same silent shape that left one repo with zero
-# tracked skills.
-.claude/*
-!.claude/rules
-!.claude/skills
-!.claude/agents
+# Claude Code state (worktrees, settings, session files) is per-machine.
+.claude/
+
+# Talk deck source images; the copies the slides app embeds live in
+# mazarin/apps/slides/slides/.
+vibe-coded-os/
+
+# macOS Finder metadata.
+.DS_Store
+
+# Compiled MailTransfer applet: hard-codes personal Mail.app account names.
+tools/mailtransfer/MailTransfer.app/
 
 # slopstop project config. The SHARED file is tracked -- it holds project settings (system,
 # key, prefix, tiers, thresholds), not per-machine ones, and ignoring it means a second

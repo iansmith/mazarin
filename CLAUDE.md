@@ -7,21 +7,14 @@ The Go binary is unmodified — the project keeps a full Go runtime in the kerne
 
 # Mazzy-Specific Declarations
 
-The `universal §N` references below point at `.claude/rules/universal.md` (moved
-there in slopstop 4.0.0 from the old root-level `CLAUDE-universal.md`). Project
-rules here take precedence over it.
-
-## Pre-commit (overrides universal §1)
+## Pre-commit
 
 - **Do NOT commit by default.** After each meaningful chunk of edits, surface what changed and ASK whether to commit or continue. Self-driven commits bloat history, fragment diffs, and remove the user's review checkpoint. Leave the working tree dirty unless told otherwise.
 - **Rare exceptions where committing inline IS correct:**
-  - You're inside a structured workflow skill that owns commit semantics (the slopstop ticket workflow's PR step, or its plan step's Phase 0 RED-test commit that locks the spec before implementation).
+  - You're inside slopstop-q and the process says to commit.
   - The user just said "commit X".
   - You're rolling back a destructive change you just made.
   - Otherwise: stop and ask.
-- **Ticket-anchored work commits through the slopstop ticket workflow**, which bundles simplify + commit + PR + review in one pass. Self-driven phase-by-phase commits ahead of it defeat that design and clutter the history with intermediate states the reviewer doesn't need to see.
-- **Command names: check, don't assume.** The old `/ticket-*` commands no longer exist — they were renamed to `slopstop-*` and changed substantially in 4.0.0 (different steps, different arguments). The skills are project-local and version-frozen under `.claude/skills/slopstop-*`, which is why `.gitignore` un-ignores that path. **Read the live skill list rather than invoking from memory**, and ask if the step you want isn't there.
-- When committing IS the right call, universal §1's sub-rules still apply: run `simplify` (or `Agent(code-simplifier)`) on staged-or-working changes first, then build + targeted tests, then commit + push. Never use `pre-commit-review` as a stand-in for simplify.
 
 ## Environment (set every session)
 
@@ -55,7 +48,7 @@ $GO tool task --list                   # discover targets
 
 QEMU monitor: `echo "info registers" | nc 127.0.0.1 4446` (4445 for x86_64).
 
-## Testing (clarification on universal §2)
+## Testing
 
 This is an OS project. Conventional unit tests are often impossible or very difficult to write for kernel and syscall behavior. **Test programs** — most notably `maz/xfertest/` — are the encouraged substitute: they boot under QEMU and exercise behavior end-to-end. The red-first rule still applies: add a failing xfertest stage before the fix lands, watch it fail for the right reason, then implement.
 
@@ -78,7 +71,7 @@ Single module `mazzy`. Sources: `cmd/` (build tools), `diplomat/` (UEFI bootload
 
 ## Ticket workflow (MAZ on Linear)
 
-Both `task_plan.md` and the Linear ticket description MUST use the literal `## Definition of Done` h2 header (not `## DoD`, not `## Acceptance criteria`). The slopstop archive and merge steps key off the exact string; the archive's description-push silently rewrites a mismatched local header.
+Both `task_plan.md` and the Linear ticket description MUST use the literal `## Definition of Done` h2 header (not `## DoD`, not `## Acceptance criteria`).
 
 ## Cross-arch binary utilities
 
@@ -251,3 +244,17 @@ ADD $<framesize>, RSP
 # Philosophy
 
 Diplomat = GRUB/UEFI loader. Kmazarin = the real kernel (full Go runtime, multi-arch).
+
+## Law of response
+
+Be concise and brief in your responses to Ian. Ian knows to ask questions for
+things he doesn't understand, so there is no need for detailed discussion unless
+he specifically asks for it. In any case where you need to get a response from
+Ian, state the question to be decided clearly and show (again, concise and brief)
+consequences of that decision.
+
+## slopstop-q trial
+
+This repo uses **slopstop-q** for ticket work. The process doc is at
+`~/ticket-plugin/docs/slopstop-q.md` — read it at the start of a ticket session
+and follow it as written.
