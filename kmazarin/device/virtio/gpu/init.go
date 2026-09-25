@@ -9,8 +9,8 @@ import (
 
 // Display resolution constants. Change these to resize the QEMU display window.
 const (
-	DisplayWidth  = 1800
-	DisplayHeight = 1200
+	DisplayWidth  = 1920
+	DisplayHeight = 1080
 )
 
 // gpuLock protects all GPU command queue operations. Without this,
