@@ -6,6 +6,132 @@ author: iansmith
 
 # News
 
+## Sep 25, 2026
+
+**The delegate IPC path is now correct under stress.** *(landed
+Sep 10-24)* A run of hard, rare bugs in the kernel's syscall-delegation
+path were found and fixed, each one first pinned by a failing test that
+reproduced it. Stray replies from a previous claim on the same slot
+could be accepted as answers to the current one -- the reply gate now
+carries a per-claim *generation* witness, so a same-identity stale
+reply is rejected rather than handed to the wrong caller (this is what
+used to surface as the nonsensical "cannot open standard fds" boot
+failure). A publish-then-save race between a delegate becoming visible
+and its context being written was closed with a lock-first save and a
+parked-wake handshake. A double `convTnoptr` boxing in the request path
+was delivering zeroed requests. And a shepherd lookup that failed to
+read the table was reporting "no such shepherd" rather than "I could
+not tell" -- a failed read is not absence.
+
+**ARM64 assembly hygiene, and the one-hex-digit bug it caught.**
+*(landed Aug 3)* Four of the kernel's IRQ save/restore routines were
+independent hand-written copies, two of which hand-encoded the DAIF
+system register as a raw `WORD`. One digit was wrong: `op2=0` is NZCV,
+`op2=1` is DAIF, so the "mask interrupts" instruction was reading the
+condition flags. Hand-encoded words hide that from the assembler *and*
+from review. The four copies are now one, in a new `ksync` package,
+written in mnemonics -- and the tree carries build gates that reject
+`WORD`-encoded DAIF, barrier, and HINT operations outright, so the
+class cannot come back. Along the way the idle paths gained a real
+`WFI` and a fix for a lost-wakeup window.
+
+**ext2 reads got 16x cheaper.** *(landed Aug 2)* Reading a 64 KB chunk
+through a double-indirect ext2 block map cost 49 device round trips.
+Batched `ReadAt` plus per-handle caching of the indirect blocks brings
+that to 3.
+
+**Boot splash, and a scheduler that speaks in milliseconds.**
+*(landed Aug 3-4)* The boot splash is back: the image ships as an ESP
+asset, diplomat hands it to the kernel through new auxv entries, and
+the kernel paints it during GPU init. Separately, scheduling policy is
+now expressed in wall-clock units and tick counts are derived from
+them, instead of the config file quoting timer ticks -- a config that
+silently meant something different whenever the tick rate changed.
+
+### Lowlight
+
+**The page-table accessed/dirty sweep was eating the machine.** A
+periodic sweep over the page tables turned out to be roughly seventy
+points of CPU on an idle system. Making it hole-aware (skipping
+unmapped regions at table granularity) helped; measuring it honestly
+did not, so it is now gated off by default behind `ad_scan_enabled`.
+The underlying cost of a single tick is still too high and remains
+open. Not every performance story ends with a clever fix -- sometimes
+you just stop doing the expensive thing until you understand it.
+
+## Jul 23, 2026
+
+**Fork and exec work.** *(landed Jun-Jul)* mazarin can fork a process
+and exec a new program in the child. The mechanism is a kernel-emulated
+`vfork` plus a private `clone_exec` syscall that performs the combined
+clone-and-exec atomically, so there is never a half-built child to
+race against. Around it sits a real process model in the linux
+shepherd: a monotonic PID allocator, a per-PID record table, a
+notification ring that delivers child-exit to the parent, `wait4` with
+deferred reply parking, `pipe2`, `dup3`, `fcntl(F_SETFD)`, and
+`O_CLOEXEC` honored end to end through an FD table lifted into its own
+package. The shepherd limit went from 32 to 256 in the process.
+
+Getting it stable took most of two months of races: an FD table whose
+identity aliased between vfork parent and child, an intent-visibility
+window during clone setup, parent wake-ups lost on exec failure paths,
+stale delegate replies arriving for a PID that had already been
+recycled. The root cause of the last long-standing hang was ordering --
+the vfork child's FD table has to be finalized *before* `CloneExec`,
+not after.
+
+**Memory corruption, three separate mechanisms.** *(landed Jul 23)*
+A long-running corruption hunt closed with three unrelated fixes: a
+`deferreturn` value of zero in mazlink-produced modules (fixed by
+retargeting the PLT rather than trusting a lazily generated pclntab),
+a uring teardown that raced its own state lock, and a page-descriptor
+refcount race on shared pages. A ten-run, three-minute-each soak
+afterwards showed no corruption markers at all.
+
+**Per-SID ordered dispatch in the file lane.** *(landed Jul 6-16)*
+The linux shepherd's file lane now dispatches with same-sender FIFO
+ordering and mutual exclusion per sender, with oldest-ready-sender
+fairness across senders, plus a permanent canary that fires if an
+inversion ever occurs.
+
+## Jun 15, 2026
+
+**x86_64 stability: the `g` register has two homes.** *(landed Jun
+8-20)* A family of crashes unique to amd64 -- `morestack on g0`,
+priority-wake stalls, mysterious faults after a suspended handler
+resumed -- all came back to the same thing. On amd64 the Go runtime
+keeps the current goroutine pointer in *two* places, `R14` and TLS at
+`FS_BASE-8`, and kmazarin's exception save/restore only preserved one
+of them. Restoring a context could therefore resume a thread whose two
+homes disagreed. The fix captures and restores both, at every site, on
+both the user and kernel paths, and a `frameaudit` build gate now
+keeps the frame layout honest. ARM64 was never affected -- it has a
+single home in `R28`.
+
+**Two more x86-only exception bugs.** *(landed Jun 10-15)* Resetting
+`TSS.RSP0` to a fixed top on every entry trampled the frames of
+suspended syscall chains; the fix rotates both the IST pointers and
+`RSP0` through cursors. And a single global exception save-state was
+being clobbered by nested exceptions; each exception frame now mirrors
+its own state, the way ARM64's trap frame always did. A durable
+invariant fell out of the investigation and is now enforced: **kernel
+main must never gopark.**
+
+**A page fault that re-enabled interrupts.** *(landed Jun 2)* On
+ARM64, the synchronous-exception return path unconditionally cleared
+the interrupt mask bit in `SPSR`. A page fault taken while the
+scheduler lock was held would therefore return with interrupts
+*enabled*, and the next timer tick would deadlock the machine. The
+clear is now conditioned on returning to EL0. The same investigation
+made the buddy allocator's spinlock IRQ-atomic and added a detector
+that shouts if the scheduler lock is ever taken with interrupts on.
+
+**Constraint-system fixes in mancini.** *(landed Jun 4-15)*
+`ColumnEdgeToEdge` now computes its virtual height as a live
+constraint chain rather than a one-shot value, resetting a child's X
+no longer stomps a live constraint, and a kernel-attribute leak in
+`AddI64`/`ChildAfterI64` is fixed.
+
 ## Apr 28, 2026
 
 **A patched Go linker for true Go-only plugins.** *(landed Apr 18)* Stock

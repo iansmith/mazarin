@@ -4,25 +4,27 @@ title: mazarin, an introduction
 author: iansmith
 ---
 
-## [News (last updated Apr 28)](news.md). Go-linker plugins, Mail client, Full-text search, Go 1.26.2, and File-backed mmap!
+## [News (last updated Sep 25)](news.md). fork/exec, x86_64 stability, faster ext2 reads, and a delegate IPC path that survives a soak!
 
 ## [Mancini API Reference](mancini/index.md)
 
 ## What It Means
 
-mazarin now has its own patched Go linker that emits relocatable `.maz`
-plugins without ever falling back to the system linker -- every
-shepherd in `startup.toml` is loaded by a single generic
-`/shepherd.elf` host via a runtime loader called mazdl. There is a
-working email client backed by a maildb shepherd (BadgerDB +
-mbox import) and an fti shepherd (full-text search via bleve). The
-toolchain is on Go 1.26.2. `MAP_SHARED` writable mmap is supported
-with dirty-page write-back to ext2 on munmap and shepherd death --
-which is what makes BadgerDB and bleve usable. Rachel (the window
-manager) gained focused/unfocused title bars, click-drag window moves
-with screen clipping, and alpha-composited drag previews. Sadly, we
-also removed RISC-V support -- see the news page for details.
-
+mazarin can fork a process and exec a new program in the child -- via a
+kernel-emulated `vfork` and a private `clone_exec` syscall -- on top of
+a real process model in the linux shepherd: monotonic PIDs, `wait4`,
+`pipe2`, `dup3`, child-exit notification, and `O_CLOEXEC` honored end
+to end. On amd64, the family of crashes that came from the Go runtime
+keeping the goroutine pointer in *two* places (`R14` and TLS) is fixed, along with two more x86-only
+exception bugs. A long memory-corruption hunt closed with three
+unrelated fixes and a clean soak. Most of the last two months went into
+the kernel's syscall-delegation path, which is now correct under
+stress: stale replies are rejected by a per-claim generation witness,
+and a publish-then-save race is closed. Reading 64 KB out of ext2 costs
+3 device round trips instead of 49. Less happily, the page-table
+accessed/dirty sweep turned out to cost about seventy points of CPU on
+an idle machine and is switched off by default until we understand the
+tick cost -- see the news page.
 
 ## [Quick Start: build and run mazarin](quickstart.md)
 
