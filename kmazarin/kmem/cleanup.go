@@ -213,7 +213,7 @@ func releasePageByPA(pa uintptr) bool {
 func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool, teardown bool) int {
 	freed := 0
 
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return 0
 	}
@@ -230,7 +230,7 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool, teardown bool) int
 		}
 
 		l1PA := pteExtractPA(l0e)
-		l1VA := paToVAOrCache(l1PA)
+		l1VA := paToVA(l1PA)
 		if l1VA == 0 {
 			continue
 		}
@@ -252,7 +252,7 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool, teardown bool) int
 			}
 
 			l2PA := pteExtractPA(l1e)
-			l2VA := paToVAOrCache(l2PA)
+			l2VA := paToVA(l2PA)
 			if l2VA == 0 {
 				continue
 			}
@@ -272,7 +272,7 @@ func walkAndFreePageTablePages(l0PA uintptr, freeLeaves bool, teardown bool) int
 				// L3 table. On the normal path Phase 1 already freed all
 				// leaves via Spans, so we skip this to avoid redundant work.
 				if freeLeaves {
-					l3VA := paToVAOrCache(l3PA)
+					l3VA := paToVA(l3PA)
 					if l3VA != 0 {
 						for l := 0; l < 512; l++ {
 							l3ep := (*uint64)(unsafe.Pointer(l3VA + uintptr(l)*8))

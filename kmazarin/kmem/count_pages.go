@@ -8,7 +8,7 @@ import "unsafe"
 func CountMappedPages(l0PA uintptr) int {
 	count := 0
 
-	l0VA := paToVAOrCache(l0PA)
+	l0VA := paToVA(l0PA)
 	if l0VA == 0 {
 		return 0
 	}
@@ -22,7 +22,7 @@ func CountMappedPages(l0PA uintptr) int {
 		}
 
 		l1PA := pteExtractPA(l0e)
-		l1VA := paToVAOrCache(l1PA)
+		l1VA := paToVA(l1PA)
 		if l1VA == 0 {
 			continue
 		}
@@ -38,7 +38,7 @@ func CountMappedPages(l0PA uintptr) int {
 			}
 
 			l2PA := pteExtractPA(l1e)
-			l2VA := paToVAOrCache(l2PA)
+			l2VA := paToVA(l2PA)
 			if l2VA == 0 {
 				continue
 			}
@@ -54,7 +54,7 @@ func CountMappedPages(l0PA uintptr) int {
 				}
 
 				l3PA := pteExtractPA(l2e)
-				l3VA := paToVAOrCache(l3PA)
+				l3VA := paToVA(l3PA)
 				if l3VA == 0 {
 					continue
 				}
