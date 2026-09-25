@@ -33,6 +33,10 @@ path = "/mail.maz"
 gc_percent = 75
 
 [[shepherd]]
+name = "slides"
+path = "/slides.maz"
+
+[[shepherd]]
 name = "net"
 path = "/net.elf"
 
