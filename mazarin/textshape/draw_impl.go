@@ -1848,3 +1848,12 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 	}
 	xdraw.BiLinear.Transform(dc.im, s2d, im, im.Bounds(), xdraw.Over, nil)
 }
+
+// SetShouldAntialias is a RED-commit stub (MAZ-218).
+func (dc *DrawContextImpl) SetShouldAntialias(aa bool) {}
+
+// ShouldAntialias is a RED-commit stub (MAZ-218).
+func (dc *DrawContextImpl) ShouldAntialias() bool { return true }
+
+// ClipOut is a RED-commit stub (MAZ-218).
+func (dc *DrawContextImpl) ClipOut() { dc.ClearPath() }
