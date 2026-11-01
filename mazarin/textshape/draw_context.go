@@ -106,10 +106,23 @@ type DrawContext interface {
 	SetMiterLimit(limit float64)
 	SetFillRule(fillRule FillRule)
 	SetDash(dashes ...float64)
+	// SetShouldAntialias turns anti-aliasing of path fills, strokes and
+	// non-rectangular clips on or off (Blink's
+	// GraphicsContext::SetShouldAntialias). On by default: edge pixels get
+	// the rasterizer's fractional coverage, composited Porter-Duff Over.
+	// Off: any pixel the path touches is fully covered. Saved by Push/Pop.
+	SetShouldAntialias(aa bool)
+	ShouldAntialias() bool
 
 	// Clip intersects the current clipping region with the current path,
 	// then clears the path. Subsequent drawing is masked to the clipped area.
+	// A non-rectangular clip keeps fractional (anti-aliased) edge coverage
+	// when anti-aliasing is on; nested clips multiply their coverage.
 	Clip()
+	// ClipOut intersects the current clipping region with the complement of
+	// the current path (Skia SkClipOp::kDifference; Blink's
+	// GraphicsContext::ClipOut), then clears the path.
+	ClipOut()
 	// ResetClip removes the clipping region (restores full-canvas clipping).
 	ResetClip()
 	// ClipBounds returns the axis-aligned bounding box of the current clip in

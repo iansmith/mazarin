@@ -14,7 +14,7 @@ import (
 type pathOp int
 
 const (
-	pathMoveTo    pathOp = iota
+	pathMoveTo pathOp = iota
 	pathLineTo
 	pathQuadTo
 	pathCubicTo
@@ -40,7 +40,7 @@ type graphicsState struct {
 	proj    [9]float64
 	hasProj bool
 
-	color color.Color
+	color         color.Color
 	fillPattern   Pattern
 	strokePattern Pattern
 	lineWidth     float64
@@ -48,10 +48,29 @@ type graphicsState struct {
 	lineJoin      LineJoin
 	miterLimit    float64 // SVG/CSS stroke-miterlimit; ratio cap for LineJoinMiter. Default 4.
 	fillRule      FillRule
-	dashes        []float64
-	clipMask      *image.Alpha    // canvas-sized hard-edged coverage mask for non-rectangular clips; nil when the clip is rect-only
-	clipRect      image.Rectangle // axis-aligned clip rectangle (also the bounding box of clipMask when one is set)
-	hasClipRect   bool
+	// antialias mirrors Blink's GraphicsContext::ShouldAntialias (Skia
+	// paint/clip anti-aliasing): when true, path fills and non-rect clips
+	// use the rasterizer's fractional edge coverage; when false, any
+	// covered pixel is fully covered. Defaults to true.
+	antialias   bool
+	dashes      []float64
+	clipMask    *image.Alpha    // canvas-bounds coverage mask (0..255) for non-rectangular clips; nil when the clip is rect-only
+	clipRect    image.Rectangle // axis-aligned clip rectangle (also the bounding box of clipMask when one is set)
+	hasClipRect bool
+}
+
+// defaultGraphicsState is the initial graphics state of every context.
+func defaultGraphicsState() graphicsState {
+	return graphicsState{
+		matrix:        IdentityMatrix(),
+		color:         color.Transparent,
+		fillPattern:   NewSolidPattern(color.White),
+		strokePattern: NewSolidPattern(color.Black),
+		lineWidth:     1,
+		miterLimit:    4,
+		fillRule:      FillRuleWinding,
+		antialias:     true,
+	}
 }
 
 // groupEntry holds the image buffer saved by PushGroup.
@@ -77,10 +96,10 @@ type DrawContextImpl struct {
 	// ClearPath. (A future near-plane clip would instead split the primitive
 	// at W = ε; dropping is the conservative interim per the reviewer note.)
 	projBehindCamera bool
-	startX     float64
-	startY     float64
-	currentX   float64
-	currentY   float64
+	startX           float64
+	startY           float64
+	currentX         float64
+	currentY         float64
 
 	// graphics state
 	gs graphicsState
@@ -103,15 +122,7 @@ func NewDrawContext(width, height int, provider GlyphProvider) *DrawContextImpl 
 		im:     image.NewRGBA(image.Rect(0, 0, width, height)),
 		tl:     NewTextLayoutWithProvider(provider),
 	}
-	dc.gs = graphicsState{
-		matrix:        IdentityMatrix(),
-		color:         color.Transparent,
-		fillPattern:   NewSolidPattern(color.White),
-		strokePattern: NewSolidPattern(color.Black),
-		lineWidth:     1,
-		miterLimit:    4,
-		fillRule:      FillRuleWinding,
-	}
+	dc.gs = defaultGraphicsState()
 	return dc
 }
 
@@ -125,15 +136,7 @@ func NewDrawContextForImage(target *image.RGBA, provider GlyphProvider) *DrawCon
 		im:     target,
 		tl:     NewTextLayoutWithProvider(provider),
 	}
-	dc.gs = graphicsState{
-		matrix:        IdentityMatrix(),
-		color:         color.Transparent,
-		fillPattern:   NewSolidPattern(color.White),
-		strokePattern: NewSolidPattern(color.Black),
-		lineWidth:     1,
-		miterLimit:    4,
-		fillRule:      FillRuleWinding,
-	}
+	dc.gs = defaultGraphicsState()
 	return dc
 }
 
@@ -145,8 +148,8 @@ func (dc *DrawContextImpl) Clear() {
 // --- Canvas ---
 
 func (dc *DrawContextImpl) Image() image.Image { return dc.im }
-func (dc *DrawContextImpl) Width() int          { return dc.width }
-func (dc *DrawContextImpl) Height() int         { return dc.height }
+func (dc *DrawContextImpl) Width() int         { return dc.width }
+func (dc *DrawContextImpl) Height() int        { return dc.height }
 
 // NewChildContext creates an off-screen DrawContext rendering onto the
 // given target image, sharing the same text layout engine (and thus the
@@ -160,15 +163,7 @@ func (dc *DrawContextImpl) NewChildContext(target *image.RGBA) DrawContext {
 		tl:      dc.tl,
 		metrics: dc.metrics,
 	}
-	child.gs = graphicsState{
-		matrix:        IdentityMatrix(),
-		color:         color.Transparent,
-		fillPattern:   NewSolidPattern(color.White),
-		strokePattern: NewSolidPattern(color.Black),
-		lineWidth:     1,
-		miterLimit:    4,
-		fillRule:      FillRuleWinding,
-	}
+	child.gs = defaultGraphicsState()
 	return child
 }
 
@@ -191,12 +186,22 @@ func (dc *DrawContextImpl) SetStrokeStyle(p Pattern) {
 	dc.gs.strokePattern = p
 }
 
-func (dc *DrawContextImpl) SetLineWidth(w float64)       { dc.gs.lineWidth = w }
-func (dc *DrawContextImpl) SetLineCap(lc LineCap)        { dc.gs.lineCap = lc }
-func (dc *DrawContextImpl) SetLineJoin(lj LineJoin)      { dc.gs.lineJoin = lj }
-func (dc *DrawContextImpl) SetMiterLimit(limit float64)  { dc.gs.miterLimit = limit }
-func (dc *DrawContextImpl) SetFillRule(fr FillRule)      { dc.gs.fillRule = fr }
-func (dc *DrawContextImpl) SetDash(dashes ...float64)    { dc.gs.dashes = append([]float64(nil), dashes...) }
+func (dc *DrawContextImpl) SetLineWidth(w float64)      { dc.gs.lineWidth = w }
+func (dc *DrawContextImpl) SetLineCap(lc LineCap)       { dc.gs.lineCap = lc }
+func (dc *DrawContextImpl) SetLineJoin(lj LineJoin)     { dc.gs.lineJoin = lj }
+func (dc *DrawContextImpl) SetMiterLimit(limit float64) { dc.gs.miterLimit = limit }
+func (dc *DrawContextImpl) SetFillRule(fr FillRule)     { dc.gs.fillRule = fr }
+
+// SetShouldAntialias turns path/clip anti-aliasing on or off, like
+// Blink's GraphicsContext::SetShouldAntialias.
+func (dc *DrawContextImpl) SetShouldAntialias(aa bool) { dc.gs.antialias = aa }
+
+// ShouldAntialias reports whether path fills and clips are anti-aliased.
+func (dc *DrawContextImpl) ShouldAntialias() bool { return dc.gs.antialias }
+
+func (dc *DrawContextImpl) SetDash(dashes ...float64) {
+	dc.gs.dashes = append([]float64(nil), dashes...)
+}
 
 // --- Transform stack ---
 
@@ -218,10 +223,11 @@ func (dc *DrawContextImpl) Pop() {
 // Clip sets the clip region to the current path. An axis-aligned
 // rectangle is stored as a fast clipRect; any other path (circle,
 // ellipse, polygon, rounded rect, arbitrary curves) is rasterized into
-// a canvas-sized alpha coverage buffer — the clipMask — mirroring
-// Blink's GraphicsContext::ClipPath, which delegates to Skia's
-// clipPath. If a clip is already active, the new clip is intersected
-// with it (rect∩rect, rect∩mask, mask∩mask all supported).
+// a canvas-bounds alpha coverage buffer — the clipMask, anti-aliased
+// when ShouldAntialias — mirroring Blink's GraphicsContext::ClipPath,
+// which delegates to Skia's clipPath. If a clip is already active, the
+// new clip is intersected with it (rect∩rect, rect∩mask, mask∩mask all
+// supported; mask coverages multiply).
 func (dc *DrawContextImpl) Clip() {
 	// Clear the path on every exit path — including panics or early returns —
 	// so a malformed clip request from one caller (e.g. a renderer panicking
@@ -276,7 +282,7 @@ func (dc *DrawContextImpl) Clip() {
 	}
 	// Maintain clipRect as the mask's bounding box so the existing
 	// rasterizer-size clamps in fillWithPattern / FillRectangle stay tight.
-	bbox := dc.pathBoundingBox()
+	bbox := dc.pathBounds()
 	if dc.gs.hasClipRect {
 		bbox = bbox.Intersect(dc.gs.clipRect)
 	}
@@ -285,36 +291,42 @@ func (dc *DrawContextImpl) Clip() {
 	dc.gs.hasClipRect = true
 }
 
-// rasterizeClipMask rasterizes the current path into a canvas-sized
-// image.Alpha coverage buffer. Coverage is hard-edged — any non-zero
-// rasterizer coverage becomes fully opaque — mirroring fillWithPattern,
-// which treats any non-zero coverage as fully opaque for sharp CSS pixel
-// boundaries. A clip-path: circle()/ellipse() thus aligns exactly with
-// the same-geometry border-radius fill it is reftested against.
-//
-// The path is rasterized into a path-bounds-sized scratch buffer using
-// the *exact* same origin offset (the 1px-padded pathBounds() min) that
-// fillWithPattern uses, then blitted into the canvas-sized mask. Using
-// the identical offset matters: vector.Rasterizer consumes float32
-// coordinates, and feeding it path-relative coords (small magnitude,
-// full mantissa precision) versus canvas-absolute coords can round
-// boundary pixels differently — so the clip mask must rasterize the
-// path the same way the matching fill does, or a clip-path will be off
-// by a pixel from a same-geometry border-radius fill.
-func (dc *DrawContextImpl) rasterizeClipMask() *image.Alpha {
-	cb := dc.im.Bounds()
-	cw, ch := cb.Dx(), cb.Dy()
-	if cw <= 0 || ch <= 0 {
-		return nil
+// ClipOut intersects the clipping region with the complement of the
+// current path, then clears the path — Skia's clipPath with
+// SkClipOp::kDifference, as used by Blink's GraphicsContext::ClipOut /
+// ClipOutContouredRect. With anti-aliasing on, an edge pixel keeps the
+// coverage the path leaves uncovered, so a ClipOut and a Clip of the same
+// path partition every pixel exactly.
+func (dc *DrawContextImpl) ClipOut() {
+	defer dc.ClearPath()
+	if len(dc.path) == 0 {
+		return
 	}
-	// Path-bounds-sized scratch, matching fillWithPattern's bbox.
-	bbox := dc.pathBounds()
+	mask := dc.rasterizeClipMask()
+	if mask == nil {
+		return
+	}
+	for i, a := range mask.Pix {
+		mask.Pix[i] = 255 - a
+	}
+	if dc.gs.clipMask != nil {
+		intersectMasks(mask, dc.gs.clipMask)
+	}
+	if dc.gs.hasClipRect {
+		intersectMaskWithRect(mask, dc.gs.clipRect)
+	}
+	dc.gs.clipMask = mask
+}
+
+// rasterizePath rasterizes the current path's coverage within bbox
+// (canvas coordinates, inside the canvas). The returned mask's bounds are
+// bbox. With anti-aliasing on, edge pixels carry the rasterizer's
+// fractional coverage; with it off, any covered pixel is fully covered.
+func (dc *DrawContextImpl) rasterizePath(bbox image.Rectangle) *image.Alpha {
 	bw, bh := bbox.Dx(), bbox.Dy()
-	mask := image.NewAlpha(image.Rect(0, 0, cw, ch))
-	if bw <= 0 || bh <= 0 {
-		return mask
-	}
 	r := vector.NewRasterizer(bw, bh)
+	// vector.Rasterizer uses non-zero winding; even-odd is not directly
+	// supported, so the fill rule distinction is ignored here.
 	ox, oy := float32(bbox.Min.X), float32(bbox.Min.Y)
 	for _, seg := range dc.path {
 		switch seg.op {
@@ -336,25 +348,36 @@ func (dc *DrawContextImpl) rasterizeClipMask() *image.Alpha {
 	if dc.hasCurrent {
 		r.ClosePath()
 	}
-	scratch := image.NewAlpha(image.Rect(0, 0, bw, bh))
-	r.Draw(scratch, scratch.Bounds(), image.Opaque, image.Point{})
-	// Hard-edge any non-zero coverage and blit into the canvas-sized mask
-	// at the path's bounding-box origin.
-	for py := 0; py < bh; py++ {
-		cy := bbox.Min.Y + py
-		if cy < cb.Min.Y || cy >= cb.Max.Y {
-			continue
-		}
-		for px := 0; px < bw; px++ {
-			if scratch.Pix[py*scratch.Stride+px] == 0 {
-				continue
+	cov := image.NewAlpha(image.Rect(0, 0, bw, bh))
+	r.Draw(cov, cov.Bounds(), image.Opaque, image.Point{})
+	if !dc.gs.antialias {
+		for i, a := range cov.Pix {
+			if a != 0 {
+				cov.Pix[i] = 255
 			}
-			cx := bbox.Min.X + px
-			if cx < cb.Min.X || cx >= cb.Max.X {
-				continue
-			}
-			mask.Pix[cy*mask.Stride+cx] = 255
 		}
+	}
+	// Same Pix layout, re-based to canvas coordinates.
+	cov.Rect = bbox
+	return cov
+}
+
+// rasterizeClipMask rasterizes the current path into a coverage mask whose
+// bounds are the canvas bounds (which need not start at (0,0)). Pixels
+// outside the path's bounding box are zero.
+func (dc *DrawContextImpl) rasterizeClipMask() *image.Alpha {
+	cb := dc.im.Bounds()
+	if cb.Empty() {
+		return nil
+	}
+	mask := image.NewAlpha(cb)
+	bbox := dc.pathBounds()
+	if bbox.Empty() {
+		return mask
+	}
+	cov := dc.rasterizePath(bbox)
+	for y := bbox.Min.Y; y < bbox.Max.Y; y++ {
+		copy(mask.Pix[mask.PixOffset(bbox.Min.X, y):], cov.Pix[cov.PixOffset(bbox.Min.X, y):cov.PixOffset(bbox.Max.X, y)])
 	}
 	return mask
 }
@@ -366,35 +389,42 @@ func cloneAlpha(src *image.Alpha) *image.Alpha {
 	return dst
 }
 
-// intersectMasks multiplies dst by src in place (logical AND of two
-// hard-edged coverage masks). Both must be the same canvas-sized bounds.
+// mulCoverage multiplies two 0..255 coverages.
+func mulCoverage(a, b uint8) uint8 {
+	return uint8((uint32(a)*uint32(b) + 127) / 255)
+}
+
+// intersectMasks multiplies dst by src in place — the intersection of two
+// coverage masks. Pixels of dst outside src's bounds become zero.
 func intersectMasks(dst, src *image.Alpha) {
-	n := len(dst.Pix)
-	if len(src.Pix) < n {
-		n = len(src.Pix)
-	}
-	for i := 0; i < n; i++ {
-		if src.Pix[i] == 0 {
-			dst.Pix[i] = 0
+	b := dst.Rect
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			i := dst.PixOffset(x, y)
+			if !(image.Point{x, y}.In(src.Rect)) {
+				dst.Pix[i] = 0
+				continue
+			}
+			dst.Pix[i] = mulCoverage(dst.Pix[i], src.Pix[src.PixOffset(x, y)])
 		}
 	}
 }
 
-// intersectMaskWithRect zeroes a canvas-sized coverage mask outside the
-// given rectangle, returning the same mask.
+// intersectMaskWithRect zeroes a coverage mask outside the given
+// rectangle, returning the same mask.
 func intersectMaskWithRect(mask *image.Alpha, r image.Rectangle) *image.Alpha {
 	b := mask.Bounds()
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {
-			if x < r.Min.X || x >= r.Max.X || y < r.Min.Y || y >= r.Max.Y {
-				mask.Pix[y*mask.Stride+x] = 0
+			if !(image.Point{x, y}.In(r)) {
+				mask.Pix[mask.PixOffset(x, y)] = 0
 			}
 		}
 	}
 	return mask
 }
 
-// clipMaskAt returns the clip coverage (0 or 255) at canvas pixel
+// clipMaskAt returns the clip coverage (0..255) at canvas pixel
 // (x, y). Returns 255 when no clip mask is active.
 func (dc *DrawContextImpl) clipMaskAt(x, y int) uint8 {
 	m := dc.gs.clipMask
@@ -406,51 +436,6 @@ func (dc *DrawContextImpl) clipMaskAt(x, y int) uint8 {
 		return 0
 	}
 	return m.Pix[(y-b.Min.Y)*m.Stride+(x-b.Min.X)]
-}
-
-// pathBoundingBox returns the integer-pixel bounding rectangle of every point
-// in the current path. Used as a fallback for Clip() when the path isn't a
-// simple axis-aligned rectangle.
-func (dc *DrawContextImpl) pathBoundingBox() image.Rectangle {
-	if len(dc.path) == 0 {
-		return image.Rectangle{}
-	}
-	minX, minY := math.Inf(1), math.Inf(1)
-	maxX, maxY := math.Inf(-1), math.Inf(-1)
-	for _, seg := range dc.path {
-		// Each pathSeg holds up to 3 (x,y) pairs in args[0..5]; only the
-		// pairs actually written by the op contribute. To keep this simple
-		// and correct we walk all 6 floats but treat unset pairs (both 0)
-		// as a no-op. That matches MoveTo/LineTo/Quadratic/Cubic which
-		// always overwrite the relevant slots before appending.
-		pairs := []struct{ x, y float64 }{
-			{seg.args[0], seg.args[1]},
-			{seg.args[2], seg.args[3]},
-			{seg.args[4], seg.args[5]},
-		}
-		for _, p := range pairs {
-			if p.x == 0 && p.y == 0 {
-				continue
-			}
-			if p.x < minX {
-				minX = p.x
-			}
-			if p.x > maxX {
-				maxX = p.x
-			}
-			if p.y < minY {
-				minY = p.y
-			}
-			if p.y > maxY {
-				maxY = p.y
-			}
-		}
-	}
-	if math.IsInf(minX, 1) {
-		return image.Rectangle{}
-	}
-	return image.Rect(int(math.Floor(minX)), int(math.Floor(minY)),
-		int(math.Ceil(maxX)), int(math.Ceil(maxY)))
 }
 
 // pathIsAxisAlignedRect returns the bounding rectangle if the current
@@ -845,99 +830,45 @@ func (dc *DrawContextImpl) fillWithPattern(pat Pattern) {
 	if bw <= 0 || bh <= 0 {
 		return
 	}
-	ox, oy := float32(bbox.Min.X), float32(bbox.Min.Y)
+	alpha := dc.rasterizePath(bbox)
 
-	r := vector.NewRasterizer(bw, bh)
-	// vector.Rasterizer uses non-zero winding by default; even-odd is not
-	// directly supported, so we ignore the fill rule distinction here.
-
-	var subStartX, subStartY float32
-	for _, seg := range dc.path {
-		switch seg.op {
-		case pathMoveTo:
-			subStartX = float32(seg.args[0]) - ox
-			subStartY = float32(seg.args[1]) - oy
-			r.MoveTo(subStartX, subStartY)
-		case pathLineTo:
-			r.LineTo(float32(seg.args[0])-ox, float32(seg.args[1])-oy)
-		case pathQuadTo:
-			r.QuadTo(float32(seg.args[0])-ox, float32(seg.args[1])-oy,
-				float32(seg.args[2])-ox, float32(seg.args[3])-oy)
-		case pathCubicTo:
-			r.CubeTo(float32(seg.args[0])-ox, float32(seg.args[1])-oy,
-				float32(seg.args[2])-ox, float32(seg.args[3])-oy,
-				float32(seg.args[4])-ox, float32(seg.args[5])-oy)
-		case pathClose:
-			r.ClosePath()
-		}
-	}
-	// Close any open subpath.
-	if dc.hasCurrent {
-		r.ClosePath()
-	}
-
-	// Rasterize into a bbox-sized alpha buffer.
-	alpha := image.NewAlpha(image.Rect(0, 0, bw, bh))
-	r.Draw(alpha, alpha.Bounds(), image.Opaque, image.Point{})
-
-	// Apply clip: zero out coverage outside the clip region. clipRect is
-	// the fast axis-aligned case; clipMask is the non-rectangular
-	// clip-as-mask case (clip-path: circle()/ellipse()/polygon(), rounded
-	// rects, arbitrary curves).
-	if dc.gs.hasClipRect || dc.gs.clipMask != nil {
-		cr := dc.gs.clipRect
-		for py := 0; py < bh; py++ {
-			for px := 0; px < bw; px++ {
-				canvasX := px + bbox.Min.X
-				canvasY := py + bbox.Min.Y
-				if dc.gs.hasClipRect &&
-					(canvasX < cr.Min.X || canvasX >= cr.Max.X ||
-						canvasY < cr.Min.Y || canvasY >= cr.Max.Y) {
-					alpha.Pix[py*alpha.Stride+px] = 0
-					continue
-				}
-				if dc.gs.clipMask != nil && dc.clipMaskAt(canvasX, canvasY) == 0 {
-					alpha.Pix[py*alpha.Stride+px] = 0
-				}
+	// bbox already lies inside the clip rect; a non-rectangular clip
+	// multiplies the path coverage by the clip mask's coverage. Each pixel
+	// composites the pattern color scaled by coverage, Porter-Duff Over.
+	for canvasY := bbox.Min.Y; canvasY < bbox.Max.Y; canvasY++ {
+		for canvasX := bbox.Min.X; canvasX < bbox.Max.X; canvasX++ {
+			coverage := alpha.Pix[alpha.PixOffset(canvasX, canvasY)]
+			if coverage != 0 && dc.gs.clipMask != nil {
+				coverage = mulCoverage(coverage, dc.clipMaskAt(canvasX, canvasY))
 			}
-		}
-	}
-
-	// Composite only within the bounding box.
-	for py := 0; py < bh; py++ {
-		for px := 0; px < bw; px++ {
-			a := alpha.Pix[py*alpha.Stride+px]
-			if a == 0 {
+			if coverage == 0 {
 				continue
 			}
-			canvasX, canvasY := px+bbox.Min.X, py+bbox.Min.Y
 			src := pat.ColorAt(canvasX, canvasY)
-			sr, sg, sb, sa := src.RGBA()
-			// CSS rendering uses sharp pixel boundaries: any non-zero coverage
-			// is treated as fully opaque. This prevents anti-aliased seams where
-			// adjacent border polygons share a diagonal edge.
-			_ = a
-			coverage := uint32(255)
-			sa = sa * coverage / 255
-			sr = sr * coverage / 255
-			sg = sg * coverage / 255
-			sb = sb * coverage / 255
-			// Porter-Duff Over onto dc.im.
-			dst := dc.im.RGBAAt(canvasX, canvasY)
-			dr, dg, db, da := uint32(dst.R), uint32(dst.G), uint32(dst.B), uint32(dst.A)
-			sr8 := sr >> 8
-			sg8 := sg >> 8
-			sb8 := sb >> 8
-			sa8 := sa >> 8
-			inv := uint32(255) - sa8
-			dc.im.SetRGBA(canvasX, canvasY, color.RGBA{
-				R: uint8(sr8 + dr*inv/255),
-				G: uint8(sg8 + dg*inv/255),
-				B: uint8(sb8 + db*inv/255),
-				A: uint8(sa8 + da*inv/255),
-			})
+			dc.blendOver(canvasX, canvasY, src, coverage)
 		}
 	}
+}
+
+// blendOver composites the premultiplied color c, scaled by coverage
+// (0..255), over the canvas pixel (x, y) — Porter-Duff Over.
+func (dc *DrawContextImpl) blendOver(x, y int, c color.Color, coverage uint8) {
+	sr, sg, sb, sa := c.RGBA()
+	if sa == 0 {
+		return
+	}
+	cv := uint32(coverage)
+	sr8 := (sr * cv / 255) >> 8
+	sg8 := (sg * cv / 255) >> 8
+	sb8 := (sb * cv / 255) >> 8
+	sa8 := (sa * cv / 255) >> 8
+	inv := uint32(255) - sa8
+	o := dc.im.PixOffset(x, y)
+	p := dc.im.Pix[o : o+4 : o+4]
+	p[0] = uint8(sr8 + uint32(p[0])*inv/255)
+	p[1] = uint8(sg8 + uint32(p[1])*inv/255)
+	p[2] = uint8(sb8 + uint32(p[2])*inv/255)
+	p[3] = uint8(sa8 + uint32(p[3])*inv/255)
 }
 
 func (dc *DrawContextImpl) Fill() {
@@ -1373,27 +1304,11 @@ func (dc *DrawContextImpl) FillRectangle(x, y, w, h float64) {
 
 	for py := y0; py < y1; py++ {
 		for px := x0; px < x1; px++ {
-			if dc.gs.clipMask != nil && dc.clipMaskAt(px, py) == 0 {
+			coverage := dc.clipMaskAt(px, py)
+			if coverage == 0 {
 				continue
 			}
-			c := pat.ColorAt(px-x0, py-y0)
-			cr, cg, cb, ca := c.RGBA()
-			if ca == 0 {
-				continue
-			}
-			// Porter-Duff Over.
-			cr8 := uint8(cr >> 8)
-			cg8 := uint8(cg >> 8)
-			cb8 := uint8(cb >> 8)
-			ca8 := uint8(ca >> 8)
-			inv := uint32(255 - ca8)
-			dst := dc.im.RGBAAt(px, py)
-			dc.im.SetRGBA(px, py, color.RGBA{
-				R: uint8(uint32(cr8) + uint32(dst.R)*inv/255),
-				G: uint8(uint32(cg8) + uint32(dst.G)*inv/255),
-				B: uint8(uint32(cb8) + uint32(dst.B)*inv/255),
-				A: uint8(uint32(ca8) + uint32(dst.A)*inv/255),
-			})
+			dc.blendOver(px, py, pat.ColorAt(px-x0, py-y0), coverage)
 		}
 	}
 }
@@ -1524,9 +1439,11 @@ func (dc *DrawContextImpl) DrawText(text string, fontID int32, x, y float64) {
 						continue
 					}
 				}
-				// Apply non-rectangular clip mask.
-				if dc.gs.clipMask != nil && dc.clipMaskAt(dstX, dstY) == 0 {
-					continue
+				// Apply non-rectangular clip mask coverage.
+				if dc.gs.clipMask != nil {
+					if mask = mulCoverage(mask, dc.clipMaskAt(dstX, dstY)); mask == 0 {
+						continue
+					}
 				}
 
 				// Blend: src = foreground color * (mask/255) * (fA/255)
@@ -1643,8 +1560,10 @@ func (dc *DrawContextImpl) DrawTextWithFeatures(text string, fontID int32, x, y 
 						continue
 					}
 				}
-				if dc.gs.clipMask != nil && dc.clipMaskAt(dstX, dstY) == 0 {
-					continue
+				if dc.gs.clipMask != nil {
+					if mask = mulCoverage(mask, dc.clipMaskAt(dstX, dstY)); mask == 0 {
+						continue
+					}
 				}
 
 				off := (dstY-bounds.Min.Y)*dc.im.Stride + (dstX-bounds.Min.X)*4
@@ -1670,11 +1589,11 @@ func (dc *DrawContextImpl) MeasureTextWithFeatures(text string, fontID int32, fe
 		return dc.MeasureText(text, fontID)
 	}
 	adv, err := dc.tl.MeasureText(ShapingParams{
-		Text:     text,
-		FontID:   fontID,
+		Text:      text,
+		FontID:    fontID,
 		Direction: LTR,
-		Script:   ScriptLatin,
-		Features: features,
+		Script:    ScriptLatin,
+		Features:  features,
 	})
 	if err != nil {
 		return 0
@@ -1702,7 +1621,8 @@ func (dc *DrawContextImpl) TextLayout() TextLayout {
 // transparent offscreen buffer of the same size.
 func (dc *DrawContextImpl) PushGroup() {
 	dc.groupStack = append(dc.groupStack, groupEntry{im: dc.im})
-	dc.im = image.NewRGBA(image.Rect(0, 0, dc.width, dc.height))
+	// Same bounds as the parent canvas, which need not start at (0,0).
+	dc.im = image.NewRGBA(dc.im.Bounds())
 }
 
 // PopGroup composites the offscreen group buffer onto the parent surface
@@ -1741,7 +1661,7 @@ func (dc *DrawContextImpl) PopGroupWithAlpha(opacity float64) {
 
 	// Restore parent buffer and composite group onto it.
 	dc.im = entry.im
-	xdraw.Draw(dc.im, dc.im.Bounds(), group, image.Point{}, xdraw.Over)
+	xdraw.Draw(dc.im, dc.im.Bounds(), group, group.Bounds().Min, xdraw.Over)
 }
 
 // --- Image drawing ---
@@ -1794,22 +1714,9 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 			// cannot honour a non-rectangular clip.
 			for py := dst.Min.Y; py < dst.Max.Y; py++ {
 				for px := dst.Min.X; px < dst.Max.X; px++ {
-					if dc.clipMaskAt(px, py) == 0 {
-						continue
+					if coverage := dc.clipMaskAt(px, py); coverage != 0 {
+						dc.blendOver(px, py, im.At(sp.X+(px-dst.Min.X), sp.Y+(py-dst.Min.Y)), coverage)
 					}
-					sr, sg, sb, sa := im.At(sp.X+(px-dst.Min.X), sp.Y+(py-dst.Min.Y)).RGBA()
-					if sa == 0 {
-						continue
-					}
-					sr8, sg8, sb8, sa8 := sr>>8, sg>>8, sb>>8, sa>>8
-					inv := uint32(255) - sa8
-					d := dc.im.RGBAAt(px, py)
-					dc.im.SetRGBA(px, py, color.RGBA{
-						R: uint8(sr8 + uint32(d.R)*inv/255),
-						G: uint8(sg8 + uint32(d.G)*inv/255),
-						B: uint8(sb8 + uint32(d.B)*inv/255),
-						A: uint8(sa8 + uint32(d.A)*inv/255),
-					})
 				}
 			}
 			return
@@ -1827,33 +1734,12 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 		b := dc.im.Bounds()
 		for py := b.Min.Y; py < b.Max.Y; py++ {
 			for px := b.Min.X; px < b.Max.X; px++ {
-				if dc.clipMaskAt(px, py) == 0 {
-					continue
+				if coverage := dc.clipMaskAt(px, py); coverage != 0 {
+					dc.blendOver(px, py, scratch.RGBAAt(px, py), coverage)
 				}
-				sc := scratch.RGBAAt(px, py)
-				if sc.A == 0 {
-					continue
-				}
-				inv := uint32(255) - uint32(sc.A)
-				d := dc.im.RGBAAt(px, py)
-				dc.im.SetRGBA(px, py, color.RGBA{
-					R: uint8(uint32(sc.R) + uint32(d.R)*inv/255),
-					G: uint8(uint32(sc.G) + uint32(d.G)*inv/255),
-					B: uint8(uint32(sc.B) + uint32(d.B)*inv/255),
-					A: uint8(uint32(sc.A) + uint32(d.A)*inv/255),
-				})
 			}
 		}
 		return
 	}
 	xdraw.BiLinear.Transform(dc.im, s2d, im, im.Bounds(), xdraw.Over, nil)
 }
-
-// SetShouldAntialias is a RED-commit stub (MAZ-218).
-func (dc *DrawContextImpl) SetShouldAntialias(aa bool) {}
-
-// ShouldAntialias is a RED-commit stub (MAZ-218).
-func (dc *DrawContextImpl) ShouldAntialias() bool { return true }
-
-// ClipOut is a RED-commit stub (MAZ-218).
-func (dc *DrawContextImpl) ClipOut() { dc.ClearPath() }
