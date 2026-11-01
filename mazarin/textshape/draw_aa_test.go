@@ -226,3 +226,21 @@ func TestPushGroupOnOffsetCanvas(t *testing.T) {
 		t.Errorf("alpha outside group content = %d, want 0", a)
 	}
 }
+
+// A non-rect clip whose path has a vertex at the canvas origin must not
+// drop that vertex from the clip's bounding box (the box once skipped
+// every (0,0) point, shrinking the clip to the other vertices' extent).
+func TestClipMaskPathThroughOrigin(t *testing.T) {
+	dc := NewDrawContext(20, 20, nil)
+	dc.MoveTo(0, 0)
+	dc.LineTo(10, 5)
+	dc.LineTo(5, 10)
+	dc.ClosePath()
+	dc.Clip()
+	dc.SetColor(color.White)
+	dc.DrawRectangle(0, 0, 20, 20)
+	dc.Fill()
+	if a := alphaAt(dc.Image(), 3, 3); a != 255 {
+		t.Errorf("alpha inside the clip triangle near the origin = %d, want 255", a)
+	}
+}
