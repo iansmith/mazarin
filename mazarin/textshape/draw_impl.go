@@ -25,6 +25,10 @@ const (
 type pathSeg struct {
 	op   pathOp
 	args [6]float64 // x1,y1, x2,y2, x3,y3
+	// hom is a MoveTo/LineTo end point before the perspective divide
+	// (W = 1 in affine mode); nearPlaneClipPath clips it against the
+	// camera near-plane.
+	hom homogeneousPoint
 }
 
 // graphicsState holds all saveable/restorable drawing state (no image buffer).
@@ -70,12 +74,11 @@ type DrawContextImpl struct {
 	hasCurrent bool
 	// projBehindCamera is set while building a path under a projective
 	// (perspective) transform if any vertex falls on or behind the camera
-	// near-plane (homogeneous W ≤ projNearEpsilon). Such a primitive cannot
-	// be projected correctly — W ≤ 0 mirrors geometry to the front and W ≈ 0
-	// explodes to unbounded screen coordinates — so the whole primitive is
-	// dropped at fill/stroke time rather than rasterizing garbage. Reset by
-	// ClearPath. (A future near-plane clip would instead split the primitive
-	// at W = ε; dropping is the conservative interim per the reviewer note.)
+	// near-plane (homogeneous W ≤ projNearEpsilon). Such a vertex cannot be
+	// projected — W ≤ 0 mirrors geometry to the front and W ≈ 0 explodes to
+	// unbounded screen coordinates — so Fill and Clip first clip the path
+	// against the near-plane (nearPlaneClipPath); a stroke, or a path with
+	// curve segments, is dropped whole. Reset by ClearPath.
 	projBehindCamera bool
 	startX     float64
 	startY     float64
@@ -231,6 +234,18 @@ func (dc *DrawContextImpl) Clip() {
 
 	if len(dc.path) == 0 {
 		return
+	}
+	if dc.projBehindCamera {
+		// Clip to the part of the path in front of the camera near-plane.
+		// Nothing in front (or an unclippable curved path) clips out all.
+		clipped := dc.nearPlaneClipPath()
+		if len(clipped) == 0 {
+			dc.gs.clipMask = nil
+			dc.gs.clipRect = image.Rectangle{}
+			dc.gs.hasClipRect = true
+			return
+		}
+		dc.path = clipped
 	}
 	if rect, ok := dc.pathIsAxisAlignedRect(); ok {
 		// Fast path: axis-aligned rectangle. Intersect with whatever clip
@@ -568,46 +583,49 @@ func (dc *DrawContextImpl) MultiplyProjectiveMatrix(m00, m01, m02, m10, m11, m12
 // transformPoint applies the current matrix to a point.
 func (dc *DrawContextImpl) transformPoint(x, y float64) (float64, float64) {
 	if dc.gs.hasProj {
-		p := dc.gs.proj
-		X := p[0]*x + p[1]*y + p[2]
-		Y := p[3]*x + p[4]*y + p[5]
-		W := p[6]*x + p[7]*y + p[8]
-		if W > projNearEpsilon {
-			return X / W, Y / W
-		}
-		// On or behind the camera near-plane (W ≤ ε, incl. W ≤ 0). The
-		// perspective divide is invalid here: W < 0 mirrors geometry to the
-		// front, W ≈ 0 explodes to unbounded coordinates. Return the finite
-		// homogeneous numerators (never Inf/NaN) — any path containing such a
-		// vertex is flagged via projBehindCamera and dropped before raster,
-		// so these values are not drawn. callers that need the W (path
-		// building) use projW to set that flag.
-		return X, Y
+		return dc.projectHomogeneous(x, y).device()
 	}
 	return dc.gs.matrix.TransformPoint(x, y)
 }
 
-// projNearEpsilon is the camera near-plane threshold in homogeneous W. A
-// vertex with W ≤ projNearEpsilon is on/behind the near-plane and its
-// primitive is dropped (see projBehindCamera).
-const projNearEpsilon = 1e-6
-
-// projW returns the homogeneous W coordinate of (x,y) under the current
-// transform (1.0 when not in projective mode). Used during path building to
-// detect vertices on/behind the camera near-plane.
-func (dc *DrawContextImpl) projW(x, y float64) float64 {
+// projectHomogeneous returns (x,y) under the current transform before the
+// perspective divide (W = 1 in affine mode).
+func (dc *DrawContextImpl) projectHomogeneous(x, y float64) homogeneousPoint {
 	if !dc.gs.hasProj {
-		return 1
+		tx, ty := dc.gs.matrix.TransformPoint(x, y)
+		return homogeneousPoint{tx, ty, 1}
 	}
 	p := dc.gs.proj
-	return p[6]*x + p[7]*y + p[8]
+	return homogeneousPoint{p[0]*x + p[1]*y + p[2], p[3]*x + p[4]*y + p[5], p[6]*x + p[7]*y + p[8]}
 }
 
-// notePathPoint flags the in-progress path if (x,y) — in pre-transform local
-// coordinates — lies on or behind the camera near-plane under a projective
-// transform. No-op in affine mode.
-func (dc *DrawContextImpl) notePathPoint(x, y float64) {
-	if dc.gs.hasProj && dc.projW(x, y) <= projNearEpsilon {
+// device applies the perspective divide. On or behind the camera near-plane
+// (W ≤ ε, incl. W ≤ 0) the divide is invalid — W < 0 mirrors geometry to the
+// front, W ≈ 0 explodes to unbounded coordinates — so it returns the finite
+// homogeneous numerators (never Inf/NaN). Any path containing such a vertex
+// is flagged via projBehindCamera and near-plane-clipped or dropped before
+// raster, so these values are not drawn directly.
+func (h homogeneousPoint) device() (float64, float64) {
+	if h.w > projNearEpsilon {
+		return h.x / h.w, h.y / h.w
+	}
+	return h.x, h.y
+}
+
+// projNearEpsilon is the camera near-plane threshold in homogeneous W. A
+// point with W ≤ projNearEpsilon is on/behind the near-plane (see
+// projBehindCamera, nearPlaneClipPath, drawImageProjective). The value is
+// Skia's SkPathPriv::kW0PlaneDistance (src/core/SkPathPriv.h:75 @
+// 0b0ab56b7a4026174c53049b8e67ddf84d960bc4), the W plane its
+// PerspectiveClip clips paths against; it also bounds the projected
+// coordinates of near-plane cut points to 16384× their homogeneous
+// numerators.
+const projNearEpsilon = 1.0 / (1 << 14)
+
+// notePathPoint flags the in-progress path if the projected point h lies on
+// or behind the camera near-plane. Never fires in affine mode (W = 1).
+func (dc *DrawContextImpl) notePathPoint(h homogeneousPoint) {
+	if h.w <= projNearEpsilon {
 		dc.projBehindCamera = true
 	}
 }
@@ -637,12 +655,31 @@ func mul3(a, b [9]float64) [9]float64 {
 	}
 }
 
+// invert3 returns the inverse of a row-major 3×3 matrix, or false when it
+// is singular.
+func invert3(m [9]float64) ([9]float64, bool) {
+	c00 := m[4]*m[8] - m[5]*m[7]
+	c01 := m[5]*m[6] - m[3]*m[8]
+	c02 := m[3]*m[7] - m[4]*m[6]
+	det := m[0]*c00 + m[1]*c01 + m[2]*c02
+	if det == 0 || math.IsNaN(det) || math.IsInf(det, 0) {
+		return [9]float64{}, false
+	}
+	d := 1 / det
+	return [9]float64{
+		c00 * d, (m[2]*m[7] - m[1]*m[8]) * d, (m[1]*m[5] - m[2]*m[4]) * d,
+		c01 * d, (m[0]*m[8] - m[2]*m[6]) * d, (m[2]*m[3] - m[0]*m[5]) * d,
+		c02 * d, (m[1]*m[6] - m[0]*m[7]) * d, (m[0]*m[4] - m[1]*m[3]) * d,
+	}, true
+}
+
 // --- Path building ---
 
 func (dc *DrawContextImpl) MoveTo(x, y float64) {
-	dc.notePathPoint(x, y)
-	tx, ty := dc.transformPoint(x, y)
-	dc.path = append(dc.path, pathSeg{op: pathMoveTo, args: [6]float64{tx, ty}})
+	h := dc.projectHomogeneous(x, y)
+	dc.notePathPoint(h)
+	tx, ty := h.device()
+	dc.path = append(dc.path, pathSeg{op: pathMoveTo, args: [6]float64{tx, ty}, hom: h})
 	dc.startX, dc.startY = tx, ty
 	dc.currentX, dc.currentY = tx, ty
 	dc.hasCurrent = true
@@ -653,9 +690,10 @@ func (dc *DrawContextImpl) LineTo(x, y float64) {
 		dc.MoveTo(x, y)
 		return
 	}
-	dc.notePathPoint(x, y)
-	tx, ty := dc.transformPoint(x, y)
-	dc.path = append(dc.path, pathSeg{op: pathLineTo, args: [6]float64{tx, ty}})
+	h := dc.projectHomogeneous(x, y)
+	dc.notePathPoint(h)
+	tx, ty := h.device()
+	dc.path = append(dc.path, pathSeg{op: pathLineTo, args: [6]float64{tx, ty}, hom: h})
 	dc.currentX, dc.currentY = tx, ty
 }
 
@@ -663,10 +701,11 @@ func (dc *DrawContextImpl) QuadraticTo(x1, y1, x2, y2 float64) {
 	if !dc.hasCurrent {
 		dc.MoveTo(x1, y1)
 	}
-	dc.notePathPoint(x1, y1)
-	dc.notePathPoint(x2, y2)
-	tx1, ty1 := dc.transformPoint(x1, y1)
-	tx2, ty2 := dc.transformPoint(x2, y2)
+	h1, h2 := dc.projectHomogeneous(x1, y1), dc.projectHomogeneous(x2, y2)
+	dc.notePathPoint(h1)
+	dc.notePathPoint(h2)
+	tx1, ty1 := h1.device()
+	tx2, ty2 := h2.device()
 	dc.path = append(dc.path, pathSeg{op: pathQuadTo, args: [6]float64{tx1, ty1, tx2, ty2}})
 	dc.currentX, dc.currentY = tx2, ty2
 }
@@ -675,12 +714,13 @@ func (dc *DrawContextImpl) CubicTo(x1, y1, x2, y2, x3, y3 float64) {
 	if !dc.hasCurrent {
 		dc.MoveTo(x1, y1)
 	}
-	dc.notePathPoint(x1, y1)
-	dc.notePathPoint(x2, y2)
-	dc.notePathPoint(x3, y3)
-	tx1, ty1 := dc.transformPoint(x1, y1)
-	tx2, ty2 := dc.transformPoint(x2, y2)
-	tx3, ty3 := dc.transformPoint(x3, y3)
+	h1, h2, h3 := dc.projectHomogeneous(x1, y1), dc.projectHomogeneous(x2, y2), dc.projectHomogeneous(x3, y3)
+	dc.notePathPoint(h1)
+	dc.notePathPoint(h2)
+	dc.notePathPoint(h3)
+	tx1, ty1 := h1.device()
+	tx2, ty2 := h2.device()
+	tx3, ty3 := h3.device()
 	dc.path = append(dc.path, pathSeg{op: pathCubicTo, args: [6]float64{tx1, ty1, tx2, ty2, tx3, ty3}})
 	dc.currentX, dc.currentY = tx3, ty3
 }
@@ -696,6 +736,93 @@ func (dc *DrawContextImpl) ClearPath() {
 	dc.path = dc.path[:0]
 	dc.hasCurrent = false
 	dc.projBehindCamera = false
+}
+
+// nearPlaneClipPath returns the current path clipped, in homogeneous space,
+// against the camera near-plane W = projNearEpsilon, then projected — the
+// part of each closed subpath that is in front of the camera. A straight
+// edge stays straight under a homography, so clipping the homogeneous
+// polygon (Sutherland–Hodgman) is exact. Mirrors Skia's
+// SkPathPriv::PerspectiveClip (src/core/SkPath.cpp:909 @
+// 0b0ab56b7a4026174c53049b8e67ddf84d960bc4), which clips the source path
+// against the W plane before a perspective transform.
+//
+// Points cut at the near-plane project up to 1/projNearEpsilon times
+// further out than their numerators, so the projected polygon is then also
+// clipped to a guard band around the canvas: the fill inside the canvas is
+// unchanged, and the rasterizer is not fed edges spanning millions of rows.
+//
+// An empty result means the primitive must be dropped: it has curve
+// segments (not clipped here) or nothing remains in front of the camera.
+func (dc *DrawContextImpl) nearPlaneClipPath() (clipped []pathSeg) {
+	guard := dc.im.Bounds().Inset(-2)
+	gx0, gy0 := float64(guard.Min.X), float64(guard.Min.Y)
+	gx1, gy1 := float64(guard.Max.X), float64(guard.Max.Y)
+	var poly []homogeneousPoint
+	var start homogeneousPoint
+	flush := func() {
+		res := clipPolygonHalfPlane(poly, func(p homogeneousPoint) float64 { return p.w - projNearEpsilon })
+		poly = poly[:0]
+		for i := range res {
+			res[i] = homogeneousPoint{res[i].x / res[i].w, res[i].y / res[i].w, 1}
+		}
+		res = clipPolygonHalfPlane(res, func(p homogeneousPoint) float64 { return p.x - gx0 })
+		res = clipPolygonHalfPlane(res, func(p homogeneousPoint) float64 { return gx1 - p.x })
+		res = clipPolygonHalfPlane(res, func(p homogeneousPoint) float64 { return p.y - gy0 })
+		res = clipPolygonHalfPlane(res, func(p homogeneousPoint) float64 { return gy1 - p.y })
+		if len(res) < 3 {
+			return
+		}
+		for i, v := range res {
+			op := pathLineTo
+			if i == 0 {
+				op = pathMoveTo
+			}
+			clipped = append(clipped, pathSeg{op: op, args: [6]float64{v.x, v.y}, hom: v})
+		}
+		clipped = append(clipped, pathSeg{op: pathClose})
+	}
+	for _, seg := range dc.path {
+		switch seg.op {
+		case pathMoveTo, pathLineTo:
+			v := seg.hom
+			if seg.op == pathMoveTo {
+				flush()
+				start = v
+			}
+			poly = append(poly, v)
+		case pathClose:
+			flush()
+			// A segment after ClosePath continues from the subpath start.
+			poly = append(poly, start)
+		default:
+			return nil
+		}
+	}
+	flush()
+	return clipped
+}
+
+// homogeneousPoint is a 2D point in homogeneous coordinates (x, y, w).
+type homogeneousPoint struct{ x, y, w float64 }
+
+// clipPolygonHalfPlane clips the closed polygon poly to the half-plane
+// dist(p) ≥ 0 (one Sutherland–Hodgman stage). dist must be affine in the
+// point's coordinates, so cut points interpolate linearly along each edge.
+func clipPolygonHalfPlane(poly []homogeneousPoint, dist func(homogeneousPoint) float64) []homogeneousPoint {
+	res := make([]homogeneousPoint, 0, len(poly)+2)
+	for i, p := range poly {
+		q := poly[(i+1)%len(poly)]
+		dp, dq := dist(p), dist(q)
+		if dp >= 0 {
+			res = append(res, p)
+		}
+		if (dp >= 0) != (dq >= 0) {
+			t := dp / (dp - dq)
+			res = append(res, homogeneousPoint{p.x + t*(q.x-p.x), p.y + t*(q.y-p.y), p.w + t*(q.w-p.w)})
+		}
+	}
+	return res
 }
 
 // --- Shape primitives ---
@@ -818,10 +945,16 @@ func (dc *DrawContextImpl) fillWithPattern(pat Pattern) {
 		return
 	}
 	if dc.projBehindCamera {
-		// A vertex of this path is on/behind the camera near-plane; the
-		// projection is invalid. Drop the primitive rather than rasterize
-		// mirrored/exploded geometry. See projBehindCamera.
-		return
+		// A vertex of this path is on/behind the camera near-plane: fill
+		// only the part in front of it. The caller's path (FillPreserve)
+		// is restored afterwards.
+		clipped := dc.nearPlaneClipPath()
+		if len(clipped) == 0 {
+			return
+		}
+		saved := dc.path
+		dc.path = clipped
+		defer func() { dc.path = saved }()
 	}
 
 	// Compute path bounding box so we only rasterize/composite the affected region.
@@ -1275,7 +1408,9 @@ func (dc *DrawContextImpl) strokeWithPattern(pat Pattern) {
 		return
 	}
 	if dc.projBehindCamera {
-		// See fillWithPattern: a vertex is on/behind the near-plane; drop.
+		// A vertex is on/behind the near-plane. The stroke is expanded in
+		// device space, so stroking the near-plane-clipped outline would
+		// paint the cut edge; drop the primitive (see projBehindCamera).
 		return
 	}
 	expanded := dc.strokeExpand()
@@ -1753,21 +1888,20 @@ func (dc *DrawContextImpl) DrawImage(im image.Image, x, y int) {
 
 // DrawImageAnchored draws the image, offsetting by -ax*w and -ay*h from (x,y).
 // Uses BiLinear transform when the matrix has rotation/scale; plain draw.Draw otherwise.
+// Under a projective transform it uses the inverse-homography sampler
+// (drawImageProjective).
 func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay float64) {
-	// Projective (perspective) transforms are not supported for raster image
-	// content: the image sampler below builds an affine f64.Aff3 from
-	// gs.matrix and xdraw.BiLinear.Transform is affine-only — a homography
-	// cannot be represented, and under projective mode gs.matrix is stale
-	// (it diverged from the active homography at promotion). Drawing here
-	// would silently use the wrong transform, so skip deliberately rather
-	// than render incorrectly. CSS-3D-transformed images are a documented
-	// limitation; a per-pixel inverse-homography sampler is future work.
-	if dc.gs.hasProj {
-		return
-	}
 	s := im.Bounds().Size()
 	ox := x - int(ax*float64(s.X))
 	oy := y - int(ay*float64(s.Y))
+
+	if dc.gs.hasProj {
+		// gs.matrix is stale in projective mode (it diverged from the
+		// active homography at promotion) and xdraw.BiLinear.Transform is
+		// affine-only, so the affine paths below cannot be used.
+		dc.drawImageProjective(im, ox, oy)
+		return
+	}
 
 	fx, fy := float64(ox), float64(oy)
 	m := dc.gs.matrix.Translate(fx, fy)
@@ -1847,4 +1981,146 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 		return
 	}
 	xdraw.BiLinear.Transform(dc.im, s2d, im, im.Bounds(), xdraw.Over, nil)
+}
+
+// drawImageProjective draws im, its bounds offset by (ox, oy) in local
+// coordinates, under the active projective transform (gs.proj). Each device
+// pixel centre in the clip is mapped back through the inverse homography to
+// a source point, which is sampled bilinearly and composited Over —
+// mirroring xdraw.BiLinear.Transform's affine sampler (pixel-centre
+// convention, edge clamping, hard-edged coverage, 16-bit Over blend) so an
+// affine homography renders the same as the affine path.
+//
+// Near-plane: a device pixel whose source point lies on or behind the camera
+// (homogeneous W ≤ projNearEpsilon) is skipped — W < 0 points project
+// mirrored. Like the near-plane clip of path primitives (nearPlaneClipPath),
+// this keeps the W > 0 part of an image that straddles the near-plane,
+// which is what Skia's perspective image draw produces
+// (css-transforms/perspective-split-by-zero-w).
+func (dc *DrawContextImpl) drawImageProjective(im image.Image, ox, oy int) {
+	sr := im.Bounds()
+	if sr.Empty() {
+		return
+	}
+	h := mul3(dc.gs.proj, [9]float64{1, 0, float64(ox), 0, 1, float64(oy), 0, 0, 1})
+	inv, ok := invert3(h)
+	if !ok {
+		return
+	}
+
+	// The clip rect is the clip path's bounding box, which may extend past
+	// the canvas, so bound it by the canvas too.
+	dr := dc.ClipBounds().Intersect(dc.im.Bounds())
+	// When every corner is in front of the camera the image projects to a
+	// convex quad, so its corners' bounding box bounds the affected pixels.
+	// Otherwise the visible part is unbounded in device space and the whole
+	// clip is scanned (the per-pixel W test does the culling).
+	minX, minY := math.Inf(1), math.Inf(1)
+	maxX, maxY := math.Inf(-1), math.Inf(-1)
+	allFront := true
+	for _, c := range [4]image.Point{sr.Min, {sr.Max.X, sr.Min.Y}, sr.Max, {sr.Min.X, sr.Max.Y}} {
+		cx, cy := float64(c.X), float64(c.Y)
+		w := h[6]*cx + h[7]*cy + h[8]
+		if w <= projNearEpsilon {
+			allFront = false
+			break
+		}
+		X, Y := (h[0]*cx+h[1]*cy+h[2])/w, (h[3]*cx+h[4]*cy+h[5])/w
+		minX, maxX = math.Min(minX, X), math.Max(maxX, X)
+		minY, maxY = math.Min(minY, Y), math.Max(maxY, Y)
+	}
+	if allFront {
+		// Clamp in float space before converting so a near-plane-adjacent
+		// corner (tiny W, huge coordinates) cannot overflow int.
+		clamp := func(v float64, lo, hi int) int {
+			return int(min(max(v, float64(lo)), float64(hi)))
+		}
+		dr = image.Rect(
+			clamp(math.Floor(minX), dr.Min.X, dr.Max.X), clamp(math.Floor(minY), dr.Min.Y, dr.Max.Y),
+			clamp(math.Ceil(maxX)+1, dr.Min.X, dr.Max.X), clamp(math.Ceil(maxY)+1, dr.Min.Y, dr.Max.Y),
+		)
+	}
+
+	for py := dr.Min.Y; py < dr.Max.Y; py++ {
+		dy := float64(py) + 0.5
+		for px := dr.Min.X; px < dr.Max.X; px++ {
+			if dc.clipMaskAt(px, py) == 0 {
+				continue
+			}
+			dx := float64(px) + 0.5
+			u := inv[0]*dx + inv[1]*dy + inv[2]
+			v := inv[3]*dx + inv[4]*dy + inv[5]
+			w := inv[6]*dx + inv[7]*dy + inv[8]
+			// inv is the exact inverse of h, so the source point's forward
+			// W is 1/w: skip it on or behind the near-plane (1/w ≤ ε).
+			if w <= 0 || w*projNearEpsilon >= 1 {
+				continue
+			}
+			rw := 1 / w
+			sx, sy := u*rw, v*rw
+			if !(image.Point{int(math.Floor(sx)), int(math.Floor(sy))}).In(sr) {
+				continue
+			}
+			pr, pg, pb, pa := bilinearSample(im, sr, sx, sy)
+			if pa == 0 {
+				continue // Over with a transparent source leaves dst as is
+			}
+			pa1 := (0xffff - pa) * 0x101
+			i := dc.im.PixOffset(px, py)
+			d := dc.im.Pix[i : i+4 : i+4]
+			d[0] = uint8((uint32(d[0])*pa1/0xffff + pr) >> 8)
+			d[1] = uint8((uint32(d[1])*pa1/0xffff + pg) >> 8)
+			d[2] = uint8((uint32(d[2])*pa1/0xffff + pb) >> 8)
+			d[3] = uint8((uint32(d[3])*pa1/0xffff + pa) >> 8)
+		}
+	}
+}
+
+// bilinearSample returns the 16-bit premultiplied colour of src at the
+// continuous source point (sx, sy), pixel centres at half-integers, with
+// samples clamped to sr — the same filter as xdraw.BiLinear.
+func bilinearSample(src image.Image, sr image.Rectangle, sx, sy float64) (r, g, b, a uint32) {
+	sx0, sx1, xFrac0 := bilinearAxis(sx, sr.Min.X, sr.Max.X)
+	sy0, sy1, yFrac0 := bilinearAxis(sy, sr.Min.Y, sr.Max.Y)
+	xFrac1, yFrac1 := 1-xFrac0, 1-yFrac0
+
+	// *image.RGBA (louis14's layer buffers) is read directly: At boxes a
+	// color.Color per call, four times per device pixel.
+	rgba, _ := src.(*image.RGBA)
+	at := func(x, y int) (r, g, b, a uint32) {
+		if rgba != nil {
+			p := rgba.Pix[rgba.PixOffset(x, y):]
+			return uint32(p[0]) * 0x101, uint32(p[1]) * 0x101, uint32(p[2]) * 0x101, uint32(p[3]) * 0x101
+		}
+		return src.At(x, y).RGBA()
+	}
+	lerpRow := func(y int) (r, g, b, a float64) {
+		r0, g0, b0, a0 := at(sx0, y)
+		r1, g1, b1, a1 := at(sx1, y)
+		return xFrac1*float64(r0) + xFrac0*float64(r1),
+			xFrac1*float64(g0) + xFrac0*float64(g1),
+			xFrac1*float64(b0) + xFrac0*float64(b1),
+			xFrac1*float64(a0) + xFrac0*float64(a1)
+	}
+	r0, g0, b0, a0 := lerpRow(sy0)
+	r1, g1, b1, a1 := lerpRow(sy1)
+	return uint32(yFrac1*r0 + yFrac0*r1), uint32(yFrac1*g0 + yFrac0*g1),
+		uint32(yFrac1*b0 + yFrac0*b1), uint32(yFrac1*a0 + yFrac0*a1)
+}
+
+// bilinearAxis returns the two sample indices along one axis for the
+// continuous coordinate s (pixel centres at half-integers) and the weight
+// of the second, clamping to [lo, hi) as xdraw.BiLinear does.
+func bilinearAxis(s float64, lo, hi int) (i0, i1 int, frac float64) {
+	s -= 0.5
+	f := math.Floor(s)
+	i0, frac = int(f), s-f
+	i1 = i0 + 1
+	if i0 < lo {
+		return lo, lo, 0
+	}
+	if i1 >= hi {
+		return hi - 1, hi - 1, 1
+	}
+	return i0, i1, frac
 }
