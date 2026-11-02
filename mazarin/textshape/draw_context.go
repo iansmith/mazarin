@@ -139,13 +139,18 @@ type DrawContext interface {
 	//   - Vector path fills/strokes are projected exactly for straight-edged
 	//     shapes (perspective preserves lines), so solid-color boxes under
 	//     perspective are correct.
-	//   - Raster content (images via DrawImage*, glyph bitmaps) is NOT
-	//     perspective-warped — those paths sample via the affine matrix and
-	//     are skipped under projective mode rather than drawn incorrectly. A
-	//     per-pixel inverse-homography sampler is future work.
-	//   - A primitive with any vertex on or behind the camera near-plane
-	//     (homogeneous W ≤ ε) is dropped whole, not near-plane-clipped;
-	//     Sutherland–Hodgman W-clipping is future work.
+	//   - Images (DrawImage*) are perspective-warped by a per-pixel
+	//     inverse-homography bilinear sampler. Device pixels whose source
+	//     point is on or behind the camera near-plane (homogeneous W ≤ ε)
+	//     are skipped, so the W > 0 part of an image straddling the
+	//     near-plane still renders.
+	//   - Glyph bitmaps are NOT perspective-warped: DrawText* projects only
+	//     the baseline origin and blits the bitmaps unwarped.
+	//   - A straight-edged path with a vertex on or behind the near-plane
+	//     (W ≤ ε) is clipped against it (Sutherland–Hodgman in homogeneous
+	//     space, as Skia's PerspectiveClip) for Fill and Clip, so its W > 0
+	//     part renders. Strokes and curved paths crossing the near-plane
+	//     are still dropped whole.
 	//   - Stroke width is a uniform scalar (no per-vertex perspective
 	//     widening) and curves are flattened in local space before
 	//     projection; both are quality, not correctness, concerns.
