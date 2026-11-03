@@ -5,14 +5,12 @@ import (
 	"image"
 	"math"
 	"slices"
-
-	"golang.org/x/image/vector"
 )
 
 // Edge coverage for path fills and clips.
 //
 // Anti-aliased coverage is the exact area of each pixel the path covers
-// (x/image/vector's accumulation rasterizer) — the analogue of Skia's
+// (areaCoverage, an accumulation rasterizer) — the analogue of Skia's
 // analytic AA. Non-anti-aliased coverage mirrors Skia's non-AA scan
 // converter (SkScan_Path.cpp walk_edges / SkEdge::setLine): every edge is
 // sampled at pixel-centre scanlines, and edge positions round half up
@@ -48,32 +46,84 @@ func (dc *DrawContextImpl) pathCoverage(bbox image.Rectangle, antiAlias bool) *i
 }
 
 // edgeCoverage rasterizes closed polygon edges (buffer coordinates) into a
-// w×h coverage buffer: analytic area coverage (x/image/vector's
-// accumulation rasterizer, fed the same flattened edges) when antiAlias,
+// w×h coverage buffer: exact area coverage (areaCoverage) when antiAlias,
 // else Skia's non-AA centre sampling (scanCentres).
 func edgeCoverage(edges []edgeLine, w, h int, antiAlias bool) *image.Alpha {
 	cov := image.NewAlpha(image.Rect(0, 0, max(w, 0), max(h, 0)))
 	if w <= 0 || h <= 0 {
 		return cov
 	}
-	if !antiAlias {
+	if antiAlias {
+		areaCoverage(cov, edges)
+	} else {
 		scanCentres(cov, edges)
-		return cov
 	}
-	r := vector.NewRasterizer(w, h)
+	return cov
+}
+
+// areaCoverage fills cov with each pixel's exact covered area under the
+// non-zero rule, clamped to 1: every edge deposits its signed area into an
+// accumulation buffer, whose running sum is the coverage. This is the
+// floating-point algorithm of x/image/vector's Rasterizer
+// (raster_floating.go floatingLineTo / floatingAccumulateOpSrc), in
+// float64. The Rasterizer itself switches to a fixed-point variant for
+// buffers up to 512px, which misplaces edge coverage by up to ⅛ of a
+// pixel and so depends on where a shape lands; analytic AA must not.
+func areaCoverage(cov *image.Alpha, edges []edgeLine) {
+	w, h := cov.Rect.Dx(), cov.Rect.Dy()
+	// One flat buffer: deposits clamped to x == w land on the next row's
+	// first cell, where the running sum cancels them, as in vector.
+	buf := make([]float64, w*h+1)
+	clampX := func(x int) int { return min(max(x, 0), w) }
 	for _, e := range edges {
-		// The accumulation rasterizer sums each segment's signed area
-		// independently, so edges need not be chained into contours.
-		if e.winding > 0 {
-			r.MoveTo(float32(e.x0), float32(e.y0))
-			r.LineTo(float32(e.x1), float32(e.y1))
-		} else {
-			r.MoveTo(float32(e.x1), float32(e.y1))
-			r.LineTo(float32(e.x0), float32(e.y0))
+		dir := float64(e.winding)
+		ax, ay, bx, by := e.x0, e.y0, e.x1, e.y1
+		if by-ay <= 1e-6 {
+			continue
+		}
+		dxdy := (bx - ax) / (by - ay)
+		// Rows above the buffer only move x: start at the first visible one.
+		y0 := max(int(math.Floor(ay)), 0)
+		x := ax + (math.Max(float64(y0), ay)-ay)*dxdy
+		for y := y0; y < min(int(math.Ceil(by)), h); y++ {
+			dy := math.Min(float64(y+1), by) - math.Max(float64(y), ay)
+			xNext := x + dy*dxdy
+			row := buf[y*w:]
+			d := dy * dir
+			x0, x1 := min(x, xNext), max(x, xNext)
+			x0i, x1i := int(math.Floor(x0)), int(math.Ceil(x1))
+			if x1i <= x0i+1 {
+				xmf := 0.5*(x+xNext) - float64(x0i)
+				row[clampX(x0i)] += d - d*xmf
+				row[clampX(x0i+1)] += d * xmf
+			} else {
+				s := 1 / (x1 - x0)
+				x0f := x0 - float64(x0i)
+				a0 := 0.5 * s * (1 - x0f) * (1 - x0f)
+				x1f := x1 - float64(x1i) + 1
+				am := 0.5 * s * x1f * x1f
+				row[clampX(x0i)] += d * a0
+				if x1i == x0i+2 {
+					row[clampX(x0i+1)] += d * (1 - a0 - am)
+				} else {
+					a1 := s * (1.5 - x0f)
+					row[clampX(x0i+1)] += d * (a1 - a0)
+					for xi := x0i + 2; xi < x1i-1; xi++ {
+						row[clampX(xi)] += d * s
+					}
+					a2 := a1 + s*float64(x1i-x0i-3)
+					row[clampX(x1i-1)] += d * (1 - a2 - am)
+				}
+				row[clampX(x1i)] += d * am
+			}
+			x = xNext
 		}
 	}
-	r.Draw(cov, cov.Bounds(), image.Opaque, image.Point{})
-	return cov
+	acc := 0.0
+	for i := range cov.Pix {
+		acc += buf[i]
+		cov.Pix[i] = uint8(255.99998 * math.Min(math.Abs(acc), 1))
+	}
 }
 
 // edgeLine is one flattened, non-horizontal path edge in buffer
