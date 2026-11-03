@@ -32,6 +32,19 @@ const (
 	FillRuleEvenOdd
 )
 
+// ClipOp selects how a clip path combines with the current clip. Mirrors
+// Skia's SkClipOp.
+type ClipOp int
+
+const (
+	// ClipOpIntersect keeps the part of the current clip inside the path
+	// (SkClipOp::kIntersect).
+	ClipOpIntersect ClipOp = iota
+	// ClipOpDifference removes the path from the current clip
+	// (SkClipOp::kDifference).
+	ClipOpDifference
+)
+
 // RepeatOp specifies how a surface pattern tiles.
 type RepeatOp int
 

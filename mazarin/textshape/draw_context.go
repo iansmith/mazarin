@@ -107,9 +107,29 @@ type DrawContext interface {
 	SetFillRule(fillRule FillRule)
 	SetDash(dashes ...float64)
 
+	// SetAntiAlias sets whether Fill, Stroke, FillRectangle and DrawImage*
+	// anti-alias their edges. Mirrors SkPaint::setAntiAlias (and
+	// cc::PaintFlags::setAntiAlias): on, an edge pixel is weighted by the
+	// area of it the shape covers; off, Skia's non-anti-aliased scan
+	// conversion paints a pixel iff its centre is inside the shape (edges
+	// round half up). On by default, as in Blink's GraphicsContextState
+	// (platform/graphics/graphics_context_state.cc:22-30 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), whose fill and stroke
+	// flags anti-alias unless a call opts out. Part of the saved graphics
+	// state (Push/Pop); NewChildContext inherits it.
+	SetAntiAlias(antiAlias bool)
+	// IsAntiAlias reports the flag set by SetAntiAlias (SkPaint::isAntiAlias).
+	IsAntiAlias() bool
+
 	// Clip intersects the current clipping region with the current path,
 	// then clears the path. Subsequent drawing is masked to the clipped area.
+	// Equivalent to ClipPath(ClipOpIntersect, false).
 	Clip()
+	// ClipPath combines the current path with the clipping region by op,
+	// anti-aliasing the path's edge when doAntiAlias is set, then clears the
+	// path. Mirrors SkCanvas::clipPath(path, op, doAntiAlias). The clip
+	// keeps per-pixel coverage, so nested anti-aliased clips multiply.
+	ClipPath(op ClipOp, doAntiAlias bool)
 	// ResetClip removes the clipping region (restores full-canvas clipping).
 	ResetClip()
 	// ClipBounds returns the axis-aligned bounding box of the current clip in
