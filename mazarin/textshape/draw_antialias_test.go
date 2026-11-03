@@ -137,6 +137,26 @@ func TestFillAntiAliasDiagonal(t *testing.T) {
 	}
 }
 
+// TestFillAntiAliasEdgeCoverageIsExact: both slanted edges of a trapezoid
+// get their exact covered area. In row 67 each edge moves ¼px across one
+// pixel, leaving ⅛ of it uncovered: 0.875 coverage on both sides
+// (x/image/vector's fixed-point rasterizer gave 0.75 on the right).
+func TestFillAntiAliasEdgeCoverageIsExact(t *testing.T) {
+	dc := NewDrawContext(103, 70, nil)
+	dc.SetColor(aaRed)
+	dc.MoveTo(1, 68)
+	dc.LineTo(17+2.0/3, 1+1.0/3)
+	dc.LineTo(84+1.0/3, 1+1.0/3)
+	dc.LineTo(101, 68)
+	dc.ClosePath()
+	dc.Fill()
+	for _, x := range []int{1, 100} {
+		if a := alphaAt(dc, x, 67); absDiff8(a, 223) > 1 {
+			t.Errorf("edge pixel (%d,67): alpha %d, want 223±1 (7/8 coverage)", x, a)
+		}
+	}
+}
+
 // TestStrokeAntiAlias: strokes honour the flag.
 func TestStrokeAntiAlias(t *testing.T) {
 	dc := NewDrawContext(20, 20, nil)
