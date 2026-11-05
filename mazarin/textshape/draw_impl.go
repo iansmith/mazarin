@@ -1860,7 +1860,13 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 		}
 		return
 	}
-	xdraw.BiLinear.Transform(dc.im, s2d, im, im.Bounds(), xdraw.Over, nil)
+	// A rect-only clip bounds the destination: Skia clips every draw to the
+	// device clip. SubImage keeps canvas coordinates, so s2d is unchanged.
+	dst := dc.im
+	if dc.gs.hasClipRect {
+		dst = dc.im.SubImage(dc.gs.clipRect).(*image.RGBA)
+	}
+	xdraw.BiLinear.Transform(dst, s2d, im, im.Bounds(), xdraw.Over, nil)
 }
 
 // blendOver composites the 16-bit premultiplied colour (r, g, b, a),
