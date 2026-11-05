@@ -61,3 +61,39 @@ func TestDrawImageAffineHonoursClipRect(t *testing.T) {
 		})
 	}
 }
+
+// With a clip mask, the affine path transforms into a scratch buffer at the
+// clip's bounding box (non-zero origin) and composites through the mask.
+func TestDrawImageAffineHonoursClipMask(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	for y := 0; y < 10; y++ {
+		for x := 0; x < 10; x++ {
+			src.SetRGBA(x, y, color.RGBA{G: 255, A: 255})
+		}
+	}
+	dc := NewDrawContext(40, 40, nil)
+	dc.SetAntiAlias(false)
+	// Off-grid edges with AA clipping make a coverage mask.
+	dc.DrawRectangle(10.5, 10.5, 10, 20)
+	dc.ClipPath(ClipOpIntersect, true)
+	if dc.gs.clipMask == nil {
+		t.Fatalf("setup: expected a clip mask")
+	}
+	dc.Scale(2, 2)
+	dc.DrawImage(src, 0, 0)
+
+	if got := dc.im.RGBAAt(15, 15); got.G != 255 {
+		t.Errorf("inside clip (15,15): %v, want green", got)
+	}
+	box := dc.gs.clipRect
+	for y := 0; y < 40; y++ {
+		for x := 0; x < 40; x++ {
+			if image.Pt(x, y).In(box) {
+				continue
+			}
+			if got := dc.im.RGBAAt(x, y); got != (color.RGBA{}) {
+				t.Fatalf("outside clip box %v at (%d,%d): %v, want untouched", box, x, y, got)
+			}
+		}
+	}
+}

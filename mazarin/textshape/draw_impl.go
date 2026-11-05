@@ -1799,6 +1799,12 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 		return
 	}
 
+	// Every draw is bounded by the device clip, as in Skia. ClipBounds is the
+	// clip rect (the clip mask's bounding box when a mask is set) or the
+	// canvas. A SubImage or scratch buffer at these bounds keeps canvas
+	// coordinates, so the transforms below are unchanged.
+	b := dc.ClipBounds().Intersect(dc.im.Bounds())
+
 	fx, fy := float64(ox), float64(oy)
 	m := dc.gs.matrix.Translate(fx, fy)
 
@@ -1814,10 +1820,7 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 	if isIdentityScale {
 		// Fast path: plain pixel copy.
 		origMin := image.Pt(skRoundToInt(m.X0), skRoundToInt(m.Y0))
-		dst := image.Rect(origMin.X, origMin.Y, origMin.X+s.X, origMin.Y+s.Y)
-		if dc.gs.hasClipRect {
-			dst = dst.Intersect(dc.gs.clipRect)
-		}
+		dst := image.Rect(origMin.X, origMin.Y, origMin.X+s.X, origMin.Y+s.Y).Intersect(b)
 		// Adjust source point to account for any clipping offset so that
 		// the source-to-destination alignment is preserved after clipping.
 		sp := image.Pt(
@@ -1844,11 +1847,6 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 	}
 
 	s2d := f64.Aff3{m.XX, m.XY, m.X0, m.YX, m.YY, m.Y0}
-	// Every draw is bounded by the device clip, as in Skia. ClipBounds is the
-	// clip rect (the clip mask's bounding box when a mask is set) or the
-	// canvas; SubImage and a scratch buffer at those bounds keep canvas
-	// coordinates, so s2d is unchanged.
-	b := dc.ClipBounds().Intersect(dc.im.Bounds())
 	if dc.gs.clipMask != nil {
 		// Transform into a scratch buffer, then composite through the clip
 		// mask. xdraw.BiLinear.Transform cannot honour a per-pixel clip.
