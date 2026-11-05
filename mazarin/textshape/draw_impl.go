@@ -1779,6 +1779,8 @@ func (dc *DrawContextImpl) DrawImage(im image.Image, x, y int) {
 
 // DrawImageAnchored draws the image, offsetting by -ax*w and -ay*h from (x,y).
 // Uses BiLinear transform when the matrix has rotation/scale; plain draw.Draw otherwise.
+// Every path honours the clip (clip rect and clip mask), as Skia clips each
+// draw to the device clip.
 // Under a projective transform — or, with anti-aliasing on, under any
 // affine transform that puts the image's edges off the pixel grid — it uses the
 // inverse-homography sampler (drawImageHomography), which weights the
@@ -1797,6 +1799,12 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 		return
 	}
 
+	// Every draw is bounded by the device clip, as in Skia. ClipBounds is the
+	// clip rect (the clip mask's bounding box when a mask is set) or the
+	// canvas. A SubImage or scratch buffer at these bounds keeps canvas
+	// coordinates, so the transforms below are unchanged.
+	b := dc.ClipBounds().Intersect(dc.im.Bounds())
+
 	fx, fy := float64(ox), float64(oy)
 	m := dc.gs.matrix.Translate(fx, fy)
 
@@ -1812,10 +1820,7 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 	if isIdentityScale {
 		// Fast path: plain pixel copy.
 		origMin := image.Pt(skRoundToInt(m.X0), skRoundToInt(m.Y0))
-		dst := image.Rect(origMin.X, origMin.Y, origMin.X+s.X, origMin.Y+s.Y)
-		if dc.gs.hasClipRect {
-			dst = dst.Intersect(dc.gs.clipRect)
-		}
+		dst := image.Rect(origMin.X, origMin.Y, origMin.X+s.X, origMin.Y+s.Y).Intersect(b)
 		// Adjust source point to account for any clipping offset so that
 		// the source-to-destination alignment is preserved after clipping.
 		sp := image.Pt(
@@ -1845,9 +1850,8 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 	if dc.gs.clipMask != nil {
 		// Transform into a scratch buffer, then composite through the clip
 		// mask. xdraw.BiLinear.Transform cannot honour a per-pixel clip.
-		scratch := image.NewRGBA(dc.im.Bounds())
+		scratch := image.NewRGBA(b)
 		xdraw.BiLinear.Transform(scratch, s2d, im, im.Bounds(), xdraw.Over, nil)
-		b := dc.im.Bounds()
 		for py := b.Min.Y; py < b.Max.Y; py++ {
 			for px := b.Min.X; px < b.Max.X; px++ {
 				cov := dc.clipCoverageAt(px, py)
@@ -1860,7 +1864,7 @@ func (dc *DrawContextImpl) DrawImageAnchored(im image.Image, x, y int, ax, ay fl
 		}
 		return
 	}
-	xdraw.BiLinear.Transform(dc.im, s2d, im, im.Bounds(), xdraw.Over, nil)
+	xdraw.BiLinear.Transform(dc.im.SubImage(b).(*image.RGBA), s2d, im, im.Bounds(), xdraw.Over, nil)
 }
 
 // blendOver composites the 16-bit premultiplied colour (r, g, b, a),
