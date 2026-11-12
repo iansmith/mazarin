@@ -554,12 +554,15 @@ func ComputeFontMetricsWithData(face *goFont.Face, scale float32, fontID int32, 
 	return computeFontMetricsWithData(face, scale, fontID, fontData)
 }
 
-// computeFontMetricsWithData builds FontMetrics, preferring OS/2 sTypo
-// metrics parsed from fontData when they are present. Falls back to the
-// Face's FontHExtents (hhea-based for fonts without USE_TYPO_METRICS).
+// computeFontMetricsWithData builds FontMetrics from the font's vertical
+// metrics parsed from fontData (sfntVerticalMetrics). Falls back to the
+// Face's FontHExtents when fontData has no hhea table to parse. The values
+// are the raw table values: variable-font MVAR deltas are not applied.
 func computeFontMetricsWithData(face *goFont.Face, scale float32, fontID int32, fontData []byte) FontMetrics {
-	asc, desc, gap, ok := parseSTypoMetrics(fontData)
-	if !ok {
+	var asc, desc, gap float32
+	if m, ok := parseSFNTVerticalMetrics(fontData); ok {
+		asc, desc, gap = m.ascenderDescenderLeading()
+	} else {
 		ext, _ := face.FontHExtents()
 		asc, desc, gap = ext.Ascender, ext.Descender, ext.LineGap
 	}
@@ -575,30 +578,52 @@ func computeFontMetricsWithData(face *goFont.Face, scale float32, fontID int32, 
 	}
 }
 
-// parseSTypoMetrics reads the OS/2 table from fontData and returns the
-// sTypoAscender / sTypoDescender / sTypoLineGap values in font units.
-// Returns ok=false if the OS/2 table is absent, fails to parse, or has
-// an invalid (zero) STypoAscender. Descender is returned as a negative
-// value (matching the FontHExtents convention).
-func parseSTypoMetrics(fontData []byte) (ascender, descender, lineGap float32, ok bool) {
+// sfntVerticalMetrics holds the font-unit fields from which a font's
+// ascent, descent and leading are chosen: the hhea table's and, when the
+// font has one, the OS/2 table's.
+type sfntVerticalMetrics struct {
+	hasOS2                                   bool
+	os2Version, fsSelection                  uint16
+	typoAscender, typoDescender, typoLineGap int16
+	hheaAscender, hheaDescender, hheaLineGap int16
+}
+
+// ascenderDescenderLeading returns the ascender, descender (negative, the
+// FontHExtents convention) and leading in font units: the OS/2 sTypo
+// metrics when they are present, else hhea's.
+func (m sfntVerticalMetrics) ascenderDescenderLeading() (ascender, descender, leading float32) {
+	if m.hasOS2 && m.typoAscender != 0 {
+		return float32(m.typoAscender), float32(m.typoDescender), float32(m.typoLineGap)
+	}
+	return float32(m.hheaAscender), float32(m.hheaDescender), float32(m.hheaLineGap)
+}
+
+// parseSFNTVerticalMetrics reads the hhea and OS/2 tables from fontData.
+// ok is false when fontData is empty or has no parsable hhea table; an
+// absent or unparsable OS/2 table leaves hasOS2 false.
+func parseSFNTVerticalMetrics(fontData []byte) (m sfntVerticalMetrics, ok bool) {
 	if len(fontData) == 0 {
-		return 0, 0, 0, false
+		return m, false
 	}
 	loader, err := ot.NewLoader(bytes.NewReader(fontData))
 	if err != nil {
-		return 0, 0, 0, false
+		return m, false
 	}
-	raw, err := loader.RawTable(ot.MustNewTag("OS/2"))
-	if err != nil || len(raw) == 0 {
-		return 0, 0, 0, false
+	rawHhea, err := loader.RawTable(ot.MustNewTag("hhea"))
+	if err != nil || len(rawHhea) == 0 {
+		return m, false
 	}
-	os2, _, err := ottables.ParseOs2(raw)
+	hhea, _, err := ottables.ParseHhea(rawHhea)
 	if err != nil {
-		return 0, 0, 0, false
+		return m, false
 	}
-	// Reject clearly invalid sTypo tables (zero ascender).
-	if os2.STypoAscender == 0 {
-		return 0, 0, 0, false
+	m.hheaAscender, m.hheaDescender, m.hheaLineGap = hhea.Ascender, hhea.Descender, hhea.LineGap
+	if rawOS2, err := loader.RawTable(ot.MustNewTag("OS/2")); err == nil && len(rawOS2) > 0 {
+		if os2, _, err := ottables.ParseOs2(rawOS2); err == nil {
+			m.hasOS2 = true
+			m.os2Version, m.fsSelection = os2.Version, os2.FsSelection
+			m.typoAscender, m.typoDescender, m.typoLineGap = os2.STypoAscender, os2.STypoDescender, os2.STypoLineGap
+		}
 	}
-	return float32(os2.STypoAscender), float32(os2.STypoDescender), float32(os2.STypoLineGap), true
+	return m, true
 }
