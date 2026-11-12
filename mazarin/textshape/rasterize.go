@@ -536,16 +536,16 @@ func (p *DirectGlyphProvider) metricsFor(fontID int32) FontMetrics {
 // This entry point uses only the go-text Face (no raw font data), so it
 // reports whatever Ascender/Descender/LineGap the Face exposes — which is
 // hhea metrics unless the font's OS/2 USE_TYPO_METRICS bit is set. Prefer
-// computeFontMetricsWithData when raw font bytes are available, so that
-// OS/2 sTypo metrics can be used regardless of the USE_TYPO_METRICS bit
-// (matching Blink's policy of preferring sTypo for modern fonts).
+// computeFontMetricsWithData when raw font bytes are available: it makes
+// the same choice exactly as Skia does (sfntVerticalMetrics) and clamps a
+// negative line gap.
 func ComputeFontMetrics(face *goFont.Face, scale float32, fontID int32) FontMetrics {
 	return computeFontMetricsWithData(face, scale, fontID, nil)
 }
 
-// ComputeFontMetricsWithData builds FontMetrics, preferring OS/2 sTypo
-// metrics parsed from fontData when they are present. Falls back to the
-// Face's FontHExtents (hhea-based for fonts without USE_TYPO_METRICS).
+// ComputeFontMetricsWithData builds FontMetrics from fontData's vertical
+// metrics: OS/2 sTypo when USE_TYPO_METRICS is set, else hhea
+// (sfntVerticalMetrics). Falls back to the Face's FontHExtents.
 //
 // Exported so providers that load fonts outside the DirectGlyphProvider
 // path (e.g. FontSvcGlyphProvider's @font-face buffer registration) can
@@ -588,14 +588,27 @@ type sfntVerticalMetrics struct {
 	hheaAscender, hheaDescender, hheaLineGap int16
 }
 
+// kUseTypoMetricsMask is fsSelection bit 7, USE_TYPO_METRICS.
+const kUseTypoMetricsMask = 1 << 7
+
 // ascenderDescenderLeading returns the ascender, descender (negative, the
-// FontHExtents convention) and leading in font units: the OS/2 sTypo
-// metrics when they are present, else hhea's.
+// FontHExtents convention) and leading in font units, chosen as Chrome on
+// Linux chooses them for a scalable font: the OS/2 sTypo metrics when the
+// OS/2 table's version is not 0xFFFF and USE_TYPO_METRICS is set, else the
+// hhea metrics, whose leading (FreeType's height + descender - ascender) is
+// the hhea line gap; a negative leading is 0. Mirrors
+// SkScalerContext_FreeType::generateFontMetrics
+// (src/ports/SkFontHost_FreeType.cpp:1597-1611, :1678-1681 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). Not ported: FreeType's own
+// fallback from an all-zero hhea ascender and descender to OS/2, and the
+// bitmap-strike branch.
 func (m sfntVerticalMetrics) ascenderDescenderLeading() (ascender, descender, leading float32) {
-	if m.hasOS2 && m.typoAscender != 0 {
-		return float32(m.typoAscender), float32(m.typoDescender), float32(m.typoLineGap)
+	if m.hasOS2 && m.os2Version != 0xFFFF && m.fsSelection&kUseTypoMetricsMask != 0 {
+		ascender, descender, leading = float32(m.typoAscender), float32(m.typoDescender), float32(m.typoLineGap)
+	} else {
+		ascender, descender, leading = float32(m.hheaAscender), float32(m.hheaDescender), float32(m.hheaLineGap)
 	}
-	return float32(m.hheaAscender), float32(m.hheaDescender), float32(m.hheaLineGap)
+	return ascender, descender, max(leading, 0)
 }
 
 // parseSFNTVerticalMetrics reads the hhea and OS/2 tables from fontData.
