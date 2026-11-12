@@ -6,7 +6,8 @@ import "testing"
 // ascent, descent and leading are chosen, as Chrome on Linux chooses them:
 // the OS/2 sTypo metrics only when the OS/2 table's version is not 0xFFFF
 // and fsSelection bit 7 (USE_TYPO_METRICS) is set; otherwise the hhea
-// metrics, with leading the hhea line gap, never negative.
+// metrics, with leading the hhea line gap, never negative; and when hhea's
+// ascender and descender are both 0, FreeType's OS/2 fallback.
 // (SkScalerContext_FreeType::generateFontMetrics,
 // src/ports/SkFontHost_FreeType.cpp:1597-1611, :1678-1681 @ skia
 // d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e.)

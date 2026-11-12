@@ -2,6 +2,7 @@ package textshape
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -592,22 +593,40 @@ type sfntVerticalMetrics struct {
 // kUseTypoMetricsMask is fsSelection bit 7, USE_TYPO_METRICS.
 const kUseTypoMetricsMask = 1 << 7
 
+// OS/2 table byte offsets of usWinAscent and usWinDescent (OpenType spec).
+const (
+	os2UsWinAscentOffset  = 74
+	os2UsWinDescentOffset = 76
+)
+
 // ascenderDescenderLeading returns the ascender, descender (negative, the
 // FontHExtents convention) and leading in font units, chosen as Chrome on
 // Linux chooses them for a scalable font: the OS/2 sTypo metrics when the
 // OS/2 table's version is not 0xFFFF and USE_TYPO_METRICS is set, else the
 // hhea metrics, whose leading (FreeType's height + descender - ascender) is
-// the hhea line gap; a negative leading is 0. Mirrors
-// SkScalerContext_FreeType::generateFontMetrics
+// the hhea line gap; a negative leading is 0. When hhea's ascender and
+// descender are both 0, FreeType takes them from OS/2: sTypo with its line
+// gap if either is non-zero, else usWinAscent and -usWinDescent with none.
+// Mirrors SkScalerContext_FreeType::generateFontMetrics
 // (src/ports/SkFontHost_FreeType.cpp:1597-1611, :1678-1681 @ skia
-// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). Not ported: FreeType's own
-// fallback from an all-zero hhea ascender and descender to OS/2, and the
-// bitmap-strike branch.
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e) over FreeType's sfnt_load_face
+// (src/sfnt/sfobjs.c:1489-1522 @ FreeType
+// a5877f48fff8dd6cf8d53c505ce055499376aee2, Chromium's DEPS pin). Not
+// ported: the bitmap-strike branch.
 func (m sfntVerticalMetrics) ascenderDescenderLeading() (ascender, descender, leading float32) {
-	if m.hasOS2 && m.os2Version != 0xFFFF && m.fsSelection&kUseTypoMetricsMask != 0 {
-		ascender, descender, leading = float32(m.typoAscender), float32(m.typoDescender), float32(m.typoLineGap)
-	} else {
+	validOS2 := m.hasOS2 && m.os2Version != 0xFFFF
+	typo := func() (float32, float32, float32) {
+		return float32(m.typoAscender), float32(m.typoDescender), float32(m.typoLineGap)
+	}
+	switch {
+	case validOS2 && m.fsSelection&kUseTypoMetricsMask != 0:
+		ascender, descender, leading = typo()
+	case m.hheaAscender != 0 || m.hheaDescender != 0 || !validOS2:
 		ascender, descender, leading = float32(m.hheaAscender), float32(m.hheaDescender), float32(m.hheaLineGap)
+	case m.typoAscender != 0 || m.typoDescender != 0:
+		ascender, descender, leading = typo()
+	default:
+		ascender, descender = float32(m.winAscent), -float32(m.winDescent)
 	}
 	return ascender, descender, max(leading, 0)
 }
@@ -637,6 +656,11 @@ func parseSFNTVerticalMetrics(fontData []byte) (m sfntVerticalMetrics, ok bool) 
 			m.hasOS2 = true
 			m.os2Version, m.fsSelection = os2.Version, os2.FsSelection
 			m.typoAscender, m.typoDescender, m.typoLineGap = os2.STypoAscender, os2.STypoDescender, os2.STypoLineGap
+			// The parsed table does not export usWinAscent / usWinDescent.
+			if len(rawOS2) >= os2UsWinDescentOffset+2 {
+				m.winAscent = binary.BigEndian.Uint16(rawOS2[os2UsWinAscentOffset:])
+				m.winDescent = binary.BigEndian.Uint16(rawOS2[os2UsWinDescentOffset:])
+			}
 		}
 	}
 	return m, true
