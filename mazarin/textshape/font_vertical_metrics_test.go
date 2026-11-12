@@ -25,6 +25,11 @@ func TestSFNTVerticalMetrics_SkiaFreeTypeChoice(t *testing.T) {
 	noOS2.hasOS2 = false
 	negativeGap := liberation
 	negativeGap.hheaLineGap = -10
+	zeroHhea := liberation
+	zeroHhea.hheaAscender, zeroHhea.hheaDescender = 0, 0
+	zeroHheaAndTypo := zeroHhea
+	zeroHheaAndTypo.typoAscender, zeroHheaAndTypo.typoDescender = 0, 0
+	zeroHheaAndTypo.winAscent, zeroHheaAndTypo.winDescent = 1900, 500
 
 	for _, tc := range []struct {
 		name                         string
@@ -36,6 +41,13 @@ func TestSFNTVerticalMetrics_SkiaFreeTypeChoice(t *testing.T) {
 		{"bit 7 on an invalid OS/2 table: hhea", bit7NoValidOS2, 1825, -443, 87},
 		{"no OS/2 table: hhea", noOS2, 1825, -443, 87},
 		{"negative line gap clamps to 0", negativeGap, 1825, -443, 0},
+		// FreeType's face metrics fall back to OS/2 when hhea's ascender
+		// and descender are both 0: sTypo (with its line gap) if either is
+		// non-zero, else usWin (no line gap) (sfnt_load_face,
+		// src/sfnt/sfobjs.c:1489-1522 @ FreeType
+		// a5877f48fff8dd6cf8d53c505ce055499376aee2, Chromium's DEPS pin).
+		{"zero hhea: sTypo", zeroHhea, 1420, -442, 307},
+		{"zero hhea and sTypo: usWin", zeroHheaAndTypo, 1900, -500, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			asc, desc, leading := tc.m.ascenderDescenderLeading()

@@ -585,6 +585,7 @@ type sfntVerticalMetrics struct {
 	hasOS2                                   bool
 	os2Version, fsSelection                  uint16
 	typoAscender, typoDescender, typoLineGap int16
+	winAscent, winDescent                    uint16
 	hheaAscender, hheaDescender, hheaLineGap int16
 }
 
