@@ -52,19 +52,28 @@ func TestSetDash_StraightLine(t *testing.T) {
 	}
 }
 
-// A closed 22x10 rectangle (perimeter 64) dashed 6 on, 4 off: the pattern
-// runs on around the corners, and the last dash, starting 60 along, joins
-// the first across the start corner (5,5) as one stroke, so the mitered
-// corner is filled rather than notched by two butt ends.
-func TestSetDash_ClosedContourJoinsAcrossStart(t *testing.T) {
+// strokeDashedRect strokes the closed 22x10 rectangle (5,5)-(27,15),
+// perimeter 64, 2px wide with butt caps and miter joins, dashed 6 on, 4
+// off at phase.
+func strokeDashedRect(phase float64) *DrawContextImpl {
 	dc := dashContext(40, 25, 2, LineCapButt, LineJoinMiter)
 	dc.SetDash(6, 4)
+	dc.SetDashPhase(phase)
 	dc.MoveTo(5, 5)
 	dc.LineTo(27, 5)
 	dc.LineTo(27, 15)
 	dc.LineTo(5, 15)
 	dc.ClosePath()
 	dc.Stroke()
+	return dc
+}
+
+// A closed 22x10 rectangle (perimeter 64) dashed 6 on, 4 off: the pattern
+// runs on around the corners, and the last dash, starting 60 along, joins
+// the first across the start corner (5,5) as one stroke, so the mitered
+// corner is filled rather than notched by two butt ends.
+func TestSetDash_ClosedContourJoinsAcrossStart(t *testing.T) {
+	dc := strokeDashedRect(0)
 	wantAlpha(t, dc, 7, 5, true, "first dash along the top, path 0-6 (x 5-11)")
 	wantAlpha(t, dc, 13, 5, false, "first gap along the top, path 6-10 (x 11-15)")
 	wantAlpha(t, dc, 26, 7, true, "the dash at path 20-26 turns the top-right corner (y 5-9)")
@@ -131,4 +140,49 @@ func TestSetDash_DashStartingAtVertexIsCapped(t *testing.T) {
 	dc.Stroke()
 	wantAlpha(t, dc, 9, 10, true, "second dash's square start cap, x 9-10")
 	wantAlpha(t, dc, 7, 10, false, "first gap, x 6-9 after the first dash's cap")
+}
+
+// A phase starts the stroke that far into the pattern
+// (SkDashPath::CalcDashParameters, src/utils/SkDashPath.cpp:54-90 @ skia
+// d19e557a). 4 on, 2 off from x 0 to 21 at phase 1: the first dash is cut
+// to x 0-3, then x 5-9, 11-15 and 17-21.
+func TestSetDashPhase_StartsIntoThePattern(t *testing.T) {
+	dc := dashContext(30, 10, 2, LineCapButt, LineJoinMiter)
+	dc.SetDash(4, 2)
+	dc.SetDashPhase(1)
+	dc.MoveTo(0, 5)
+	dc.LineTo(21, 5)
+	dc.Stroke()
+	wantAlpha(t, dc, 2, 4, true, "first dash, cut to x 0-3")
+	wantAlpha(t, dc, 3, 4, false, "first gap, x 3-5")
+	wantAlpha(t, dc, 5, 4, true, "second dash, x 5-9")
+	wantAlpha(t, dc, 9, 4, false, "second gap, x 9-11")
+}
+
+// A negative phase counts back from the pattern's end: -1 on a 6-long
+// pattern is phase 5, one into the 2-long gap, so x 0-1 is gap and the
+// first dash runs x 1-5.
+func TestSetDashPhase_NegativeWraps(t *testing.T) {
+	dc := dashContext(30, 10, 2, LineCapButt, LineJoinMiter)
+	dc.SetDash(4, 2)
+	dc.SetDashPhase(-1)
+	dc.MoveTo(0, 5)
+	dc.LineTo(21, 5)
+	dc.Stroke()
+	wantAlpha(t, dc, 0, 4, false, "rest of the gap, x 0-1")
+	wantAlpha(t, dc, 1, 4, true, "first dash, x 1-5")
+	wantAlpha(t, dc, 5, 4, false, "gap, x 5-7")
+}
+
+// On a closed contour whose phase starts in a gap, nothing is carried
+// round to join the last dash (InternalFilter's closing getSegment needs
+// an even initial interval, SkDashPath.cpp:451-454): the 22x10 rectangle
+// (perimeter 64) at phase 8, 6 on 4 off, starts in a gap, so its last
+// dash runs 62-64 and stops at the start corner (5,5) with a butt end.
+func TestSetDashPhase_ClosedContourStartingInGap(t *testing.T) {
+	dc := strokeDashedRect(8)
+	wantAlpha(t, dc, 6, 5, false, "gap, x 5-7 along the top")
+	wantAlpha(t, dc, 8, 5, true, "first dash, x 7-13 along the top")
+	wantAlpha(t, dc, 5, 6, true, "last dash, up the left side to the corner")
+	wantAlpha(t, dc, 4, 4, false, "no miter: the last dash ends butt at the corner")
 }
