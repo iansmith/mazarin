@@ -10,15 +10,19 @@ import (
 // d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e, Chromium a9f50e52's
 // skia_revision), with SkContourMeasure::getSegment
 // (src/core/SkContourMeasure.cpp, same SHA) cutting each dash out of the
-// contour. The phase is always 0: DrawContext.SetDash takes no offset.
+// contour, and SkDashPath::CalcDashParameters (:54-90, same SHA) placing
+// the stroke's start in the pattern for SetDashPhase.
 //
 // Dashing runs on strokeExpand's flattened contours, which are in device
 // space, so the intervals are device lengths — like lineWidth.
 
-// validDashIntervals is SkDashPath::ValidDashPath for phase 0: an even,
-// non-empty count of non-negative intervals with a positive sum. Any other
-// pattern strokes solid.
-func validDashIntervals(intervals []float64) bool {
+// validDashIntervals is SkDashPath::ValidDashPath: an even, non-empty
+// count of non-negative intervals with a positive, finite sum and a finite
+// phase. Any other pattern strokes solid.
+func validDashIntervals(intervals []float64, phase float64) bool {
+	if math.IsNaN(phase) || math.IsInf(phase, 0) {
+		return false
+	}
 	if len(intervals) < 2 || len(intervals)%2 != 0 {
 		return false
 	}
@@ -29,18 +33,51 @@ func validDashIntervals(intervals []float64) bool {
 		}
 		sum += v
 	}
-	return sum > 0
+	return sum > 0 && !math.IsInf(sum, 0)
+}
+
+// calcDashParameters is SkDashPath::CalcDashParameters: phase wrapped
+// into [0, pattern length) (a negative phase counts back from the end),
+// then the interval it falls in and how much of that interval is left.
+func calcDashParameters(phase float64, intervals []float64) (initialDashLength float64, initialDashIndex int) {
+	length := 0.0
+	for _, v := range intervals {
+		length += v
+	}
+	if phase < 0 {
+		phase = -phase
+		if phase > length {
+			phase = math.Mod(phase, length)
+		}
+		phase = length - phase
+		if phase == length { // precision: length >>> phase
+			phase = 0
+		}
+	} else if phase >= length {
+		phase = math.Mod(phase, length)
+	}
+	// find_first_interval (SkDashPath.cpp:35-52).
+	for i, gap := range intervals {
+		if phase > gap || (phase == gap && gap != 0) {
+			phase -= gap
+			continue
+		}
+		return gap - phase, i
+	}
+	return intervals[0], 0 // accumulated rounding: phase "past" the end
 }
 
 // dashLines replaces strokeExpand's flattened contours (lines, with
 // nextLine linking each line to the next in its contour: -1 ends an open
 // contour, the contour's first index closes it) by their dashes, per
-// InternalFilter. Each contour restarts the pattern. An "on" interval is
-// emitted while it starts before the contour's end, the last one cut at the
-// end; a zero-length one becomes a zero-length line, which strokeExpand
-// caps as a dot. On a closed contour the first dash is skipped and appended
-// after the last, joined to it when the last dash ran to the end.
-func dashLines(lines [][2][2]float64, nextLine []int, intervals []float64) ([][2][2]float64, []int) {
+// InternalFilter. Each contour restarts the pattern at phase. An "on"
+// interval is emitted while it starts before the contour's end, the last
+// one cut at the end; a zero-length one becomes a zero-length line, which
+// strokeExpand caps as a dot. On a closed contour the first interval is
+// skipped and, when it is a dash, appended after the last, joined to it
+// when the last dash ran to the end.
+func dashLines(lines [][2][2]float64, nextLine []int, intervals []float64, phase float64) ([][2][2]float64, []int) {
+	initialDashLength, initialDashIndex := calcDashParameters(phase, intervals)
 	outLines := make([][2][2]float64, 0, len(lines))
 	outNext := make([]int, 0, len(lines))
 	var cum []float64
@@ -110,18 +147,19 @@ func dashLines(lines [][2][2]float64, nextLine []int, intervals []float64) ([][2
 
 		skipFirstSegment := closed
 		addedSegment := false
-		distance, index := 0.0, 0
+		distance, index, dlen := 0.0, initialDashIndex, initialDashLength
 		for distance < length {
 			addedSegment = index%2 == 0 && !skipFirstSegment
 			if addedSegment {
-				getSegment(distance, distance+intervals[index], true)
+				getSegment(distance, distance+dlen, true)
 			}
-			distance += intervals[index]
+			distance += dlen
 			skipFirstSegment = false
 			index = (index + 1) % len(intervals)
+			dlen = intervals[index]
 		}
-		if closed {
-			getSegment(0, intervals[0], !addedSegment)
+		if closed && initialDashIndex%2 == 0 {
+			getSegment(0, initialDashLength, !addedSegment)
 		}
 		endPiece()
 		start = end + 1

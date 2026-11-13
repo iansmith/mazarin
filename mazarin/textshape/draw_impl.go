@@ -1086,8 +1086,8 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 	}
 	finalizeSubpath(false) // finalize trailing subpath if it didn't end with Close
 
-	if validDashIntervals(dc.gs.dashes) {
-		lines, nextLine = dashLines(lines, nextLine, dc.gs.dashes)
+	if validDashIntervals(dc.gs.dashes, dc.gs.dashPhase) {
+		lines, nextLine = dashLines(lines, nextLine, dc.gs.dashes, dc.gs.dashPhase)
 	}
 	if len(lines) == 0 {
 		return nil
