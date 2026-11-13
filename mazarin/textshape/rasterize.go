@@ -2,6 +2,7 @@ package textshape
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -536,16 +537,16 @@ func (p *DirectGlyphProvider) metricsFor(fontID int32) FontMetrics {
 // This entry point uses only the go-text Face (no raw font data), so it
 // reports whatever Ascender/Descender/LineGap the Face exposes — which is
 // hhea metrics unless the font's OS/2 USE_TYPO_METRICS bit is set. Prefer
-// computeFontMetricsWithData when raw font bytes are available, so that
-// OS/2 sTypo metrics can be used regardless of the USE_TYPO_METRICS bit
-// (matching Blink's policy of preferring sTypo for modern fonts).
+// computeFontMetricsWithData when raw font bytes are available: it makes
+// the same choice exactly as Skia does (sfntVerticalMetrics) and clamps a
+// negative line gap.
 func ComputeFontMetrics(face *goFont.Face, scale float32, fontID int32) FontMetrics {
 	return computeFontMetricsWithData(face, scale, fontID, nil)
 }
 
-// ComputeFontMetricsWithData builds FontMetrics, preferring OS/2 sTypo
-// metrics parsed from fontData when they are present. Falls back to the
-// Face's FontHExtents (hhea-based for fonts without USE_TYPO_METRICS).
+// ComputeFontMetricsWithData builds FontMetrics from fontData's vertical
+// metrics: OS/2 sTypo when USE_TYPO_METRICS is set, else hhea
+// (sfntVerticalMetrics). Falls back to the Face's FontHExtents.
 //
 // Exported so providers that load fonts outside the DirectGlyphProvider
 // path (e.g. FontSvcGlyphProvider's @font-face buffer registration) can
@@ -554,12 +555,15 @@ func ComputeFontMetricsWithData(face *goFont.Face, scale float32, fontID int32, 
 	return computeFontMetricsWithData(face, scale, fontID, fontData)
 }
 
-// computeFontMetricsWithData builds FontMetrics, preferring OS/2 sTypo
-// metrics parsed from fontData when they are present. Falls back to the
-// Face's FontHExtents (hhea-based for fonts without USE_TYPO_METRICS).
+// computeFontMetricsWithData builds FontMetrics from the font's vertical
+// metrics parsed from fontData (sfntVerticalMetrics). Falls back to the
+// Face's FontHExtents when fontData has no hhea table to parse. The values
+// are the raw table values: variable-font MVAR deltas are not applied.
 func computeFontMetricsWithData(face *goFont.Face, scale float32, fontID int32, fontData []byte) FontMetrics {
-	asc, desc, gap, ok := parseSTypoMetrics(fontData)
-	if !ok {
+	var asc, desc, gap float32
+	if m, ok := parseSFNTVerticalMetrics(fontData); ok {
+		asc, desc, gap = m.ascenderDescenderLeading()
+	} else {
 		ext, _ := face.FontHExtents()
 		asc, desc, gap = ext.Ascender, ext.Descender, ext.LineGap
 	}
@@ -575,30 +579,89 @@ func computeFontMetricsWithData(face *goFont.Face, scale float32, fontID int32, 
 	}
 }
 
-// parseSTypoMetrics reads the OS/2 table from fontData and returns the
-// sTypoAscender / sTypoDescender / sTypoLineGap values in font units.
-// Returns ok=false if the OS/2 table is absent, fails to parse, or has
-// an invalid (zero) STypoAscender. Descender is returned as a negative
-// value (matching the FontHExtents convention).
-func parseSTypoMetrics(fontData []byte) (ascender, descender, lineGap float32, ok bool) {
+// sfntVerticalMetrics holds the font-unit fields from which a font's
+// ascent, descent and leading are chosen: the hhea table's and, when the
+// font has one, the OS/2 table's.
+type sfntVerticalMetrics struct {
+	hasOS2                                   bool
+	os2Version, fsSelection                  uint16
+	typoAscender, typoDescender, typoLineGap int16
+	winAscent, winDescent                    uint16
+	hheaAscender, hheaDescender, hheaLineGap int16
+}
+
+// kUseTypoMetricsMask is fsSelection bit 7, USE_TYPO_METRICS.
+const kUseTypoMetricsMask = 1 << 7
+
+// OS/2 table byte offsets of usWinAscent and usWinDescent (OpenType spec).
+const (
+	os2UsWinAscentOffset  = 74
+	os2UsWinDescentOffset = 76
+)
+
+// ascenderDescenderLeading returns the ascender, descender (negative, the
+// FontHExtents convention) and leading in font units, chosen as Chrome on
+// Linux chooses them for a scalable font: the OS/2 sTypo metrics when the
+// OS/2 table's version is not 0xFFFF and USE_TYPO_METRICS is set, else the
+// hhea metrics, whose leading (FreeType's height + descender - ascender) is
+// the hhea line gap; a negative leading is 0. When hhea's ascender and
+// descender are both 0, FreeType takes them from OS/2: sTypo with its line
+// gap if either is non-zero, else usWinAscent and -usWinDescent with none.
+// Mirrors SkScalerContext_FreeType::generateFontMetrics
+// (src/ports/SkFontHost_FreeType.cpp:1597-1611, :1678-1681 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e) over FreeType's sfnt_load_face
+// (src/sfnt/sfobjs.c:1489-1522 @ FreeType
+// a5877f48fff8dd6cf8d53c505ce055499376aee2, Chromium's DEPS pin). Not
+// ported: the bitmap-strike branch.
+func (m sfntVerticalMetrics) ascenderDescenderLeading() (ascender, descender, leading float32) {
+	validOS2 := m.hasOS2 && m.os2Version != 0xFFFF
+	typo := func() (float32, float32, float32) {
+		return float32(m.typoAscender), float32(m.typoDescender), float32(m.typoLineGap)
+	}
+	switch {
+	case validOS2 && m.fsSelection&kUseTypoMetricsMask != 0:
+		ascender, descender, leading = typo()
+	case m.hheaAscender != 0 || m.hheaDescender != 0 || !validOS2:
+		ascender, descender, leading = float32(m.hheaAscender), float32(m.hheaDescender), float32(m.hheaLineGap)
+	case m.typoAscender != 0 || m.typoDescender != 0:
+		ascender, descender, leading = typo()
+	default:
+		ascender, descender = float32(m.winAscent), -float32(m.winDescent)
+	}
+	return ascender, descender, max(leading, 0)
+}
+
+// parseSFNTVerticalMetrics reads the hhea and OS/2 tables from fontData.
+// ok is false when fontData is empty or has no parsable hhea table; an
+// absent or unparsable OS/2 table leaves hasOS2 false.
+func parseSFNTVerticalMetrics(fontData []byte) (m sfntVerticalMetrics, ok bool) {
 	if len(fontData) == 0 {
-		return 0, 0, 0, false
+		return m, false
 	}
 	loader, err := ot.NewLoader(bytes.NewReader(fontData))
 	if err != nil {
-		return 0, 0, 0, false
+		return m, false
 	}
-	raw, err := loader.RawTable(ot.MustNewTag("OS/2"))
-	if err != nil || len(raw) == 0 {
-		return 0, 0, 0, false
+	rawHhea, err := loader.RawTable(ot.MustNewTag("hhea"))
+	if err != nil || len(rawHhea) == 0 {
+		return m, false
 	}
-	os2, _, err := ottables.ParseOs2(raw)
+	hhea, _, err := ottables.ParseHhea(rawHhea)
 	if err != nil {
-		return 0, 0, 0, false
+		return m, false
 	}
-	// Reject clearly invalid sTypo tables (zero ascender).
-	if os2.STypoAscender == 0 {
-		return 0, 0, 0, false
+	m.hheaAscender, m.hheaDescender, m.hheaLineGap = hhea.Ascender, hhea.Descender, hhea.LineGap
+	if rawOS2, err := loader.RawTable(ot.MustNewTag("OS/2")); err == nil && len(rawOS2) > 0 {
+		if os2, _, err := ottables.ParseOs2(rawOS2); err == nil {
+			m.hasOS2 = true
+			m.os2Version, m.fsSelection = os2.Version, os2.FsSelection
+			m.typoAscender, m.typoDescender, m.typoLineGap = os2.STypoAscender, os2.STypoDescender, os2.STypoLineGap
+			// The parsed table does not export usWinAscent / usWinDescent.
+			if len(rawOS2) >= os2UsWinDescentOffset+2 {
+				m.winAscent = binary.BigEndian.Uint16(rawOS2[os2UsWinAscentOffset:])
+				m.winDescent = binary.BigEndian.Uint16(rawOS2[os2UsWinDescentOffset:])
+			}
+		}
 	}
-	return float32(os2.STypoAscender), float32(os2.STypoDescender), float32(os2.STypoLineGap), true
+	return m, true
 }
