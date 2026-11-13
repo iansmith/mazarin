@@ -106,6 +106,13 @@ type DrawContext interface {
 	SetMiterLimit(limit float64)
 	SetFillRule(fillRule FillRule)
 	SetDash(dashes ...float64)
+	// SetDashPhase sets how far into the dash pattern a stroke starts,
+	// Skia's SkDashPathEffect phase (SkDashPath::CalcDashParameters,
+	// src/utils/SkDashPath.cpp:54-90 @ skia
+	// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e): a negative phase counts
+	// back from the pattern's end, and the phase wraps by the pattern's
+	// length. Default 0.
+	SetDashPhase(phase float64)
 
 	// SetAntiAlias sets whether Fill, Stroke, FillRectangle and DrawImage*
 	// anti-alias their edges. Mirrors SkPaint::setAntiAlias (and

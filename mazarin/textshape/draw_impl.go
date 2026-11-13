@@ -52,6 +52,7 @@ type graphicsState struct {
 	miterLimit    float64 // SVG/CSS stroke-miterlimit; ratio cap for LineJoinMiter. Default 4.
 	fillRule      FillRule
 	dashes        []float64
+	dashPhase     float64 // SetDashPhase
 	clipMask      *image.Alpha    // canvas-sized 0..255 coverage mask for clips that are not a whole-pixel rect; nil when the clip is rect-only
 	clipRect      image.Rectangle // axis-aligned clip rectangle (also the bounding box of clipMask when one is set)
 	hasClipRect   bool
@@ -206,6 +207,7 @@ func (dc *DrawContextImpl) SetLineJoin(lj LineJoin)      { dc.gs.lineJoin = lj }
 func (dc *DrawContextImpl) SetMiterLimit(limit float64)  { dc.gs.miterLimit = limit }
 func (dc *DrawContextImpl) SetFillRule(fr FillRule)      { dc.gs.fillRule = fr }
 func (dc *DrawContextImpl) SetDash(dashes ...float64)    { dc.gs.dashes = append([]float64(nil), dashes...) }
+func (dc *DrawContextImpl) SetDashPhase(phase float64)   { dc.gs.dashPhase = phase }
 
 // SetAntiAlias mirrors SkPaint::setAntiAlias (see [DrawContext]).
 func (dc *DrawContextImpl) SetAntiAlias(antiAlias bool) { dc.gs.antiAlias = antiAlias }
@@ -1084,6 +1086,9 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 	}
 	finalizeSubpath(false) // finalize trailing subpath if it didn't end with Close
 
+	if validDashIntervals(dc.gs.dashes, dc.gs.dashPhase) {
+		lines, nextLine = dashLines(lines, nextLine, dc.gs.dashes, dc.gs.dashPhase)
+	}
 	if len(lines) == 0 {
 		return nil
 	}
@@ -1260,6 +1265,14 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 		dx, dy := x1-x0, y1-y0
 		length := math.Hypot(dx, dy)
 		if length < 1e-10 {
+			// A zero-length contour is capped as a dot, oriented along
+			// the x axis (SkStroke draws a degenerate line's caps when
+			// the cap is not butt; this is how a zero-length dash becomes
+			// a round or square dot).
+			if prevLine[i] == -1 && nextLine[i] == -1 {
+				addCap(x0, y0, 1, 0, true)
+				addCap(x0, y0, 1, 0, false)
+			}
 			continue
 		}
 		// Perpendicular unit vector scaled to half-width.
