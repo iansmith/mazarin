@@ -811,17 +811,20 @@ func (dc *DrawContextImpl) DrawRectangle(x, y, w, h float64) {
 func (dc *DrawContextImpl) DrawRoundedRectangle(x, y, w, h, r float64) {
 	dc.MoveTo(x+r, y)
 	dc.LineTo(x+w-r, y)
-	dc.drawArc(x+w-r, y+r, r, -math.Pi/2, 0)
+	dc.drawArc(x+w-r, y+r, r, -math.Pi/2, 0, false)
 	dc.LineTo(x+w, y+h-r)
-	dc.drawArc(x+w-r, y+h-r, r, 0, math.Pi/2)
+	dc.drawArc(x+w-r, y+h-r, r, 0, math.Pi/2, false)
 	dc.LineTo(x+r, y+h)
-	dc.drawArc(x+r, y+h-r, r, math.Pi/2, math.Pi)
+	dc.drawArc(x+r, y+h-r, r, math.Pi/2, math.Pi, false)
 	dc.LineTo(x, y+r)
-	dc.drawArc(x+r, y+r, r, math.Pi, 3*math.Pi/2)
+	dc.drawArc(x+r, y+r, r, math.Pi, 3*math.Pi/2, false)
 	dc.ClosePath()
 }
 
-func (dc *DrawContextImpl) drawArc(cx, cy, r, a1, a2 float64) {
+// drawArc appends the arc from angle a1 to a2. Its first point starts a
+// new subpath when newSubpath (or when there is no current point), and
+// otherwise joins the current point with a line.
+func (dc *DrawContextImpl) drawArc(cx, cy, r, a1, a2 float64, newSubpath bool) {
 	const n = 16
 	for i := 0; i < n; i++ {
 		t1 := float64(i) / float64(n)
@@ -837,7 +840,7 @@ func (dc *DrawContextImpl) drawArc(cx, cy, r, a1, a2 float64) {
 		qcx := 2*xMid - x0/2 - x2/2
 		qcy := 2*yMid - y0/2 - y2/2
 		if i == 0 {
-			if dc.hasCurrent {
+			if dc.hasCurrent && !newSubpath {
 				dc.LineTo(x0, y0)
 			} else {
 				dc.MoveTo(x0, y0)
@@ -847,8 +850,10 @@ func (dc *DrawContextImpl) drawArc(cx, cy, r, a1, a2 float64) {
 	}
 }
 
+// DrawCircle adds a circle as its own subpath, as SkPath::addCircle starts
+// a new contour (skia d19e557a): it does not join the current point.
 func (dc *DrawContextImpl) DrawCircle(x, y, r float64) {
-	dc.drawArc(x, y, r, 0, 2*math.Pi)
+	dc.drawArc(x, y, r, 0, 2*math.Pi, true)
 	dc.ClosePath()
 }
 
