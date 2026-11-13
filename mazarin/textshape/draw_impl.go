@@ -1116,7 +1116,16 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 	hw := dc.gs.lineWidth / 2
 	var out []pathSeg
 
+	// Every piece of the outline winds the same way as the segment quads
+	// (positive signed area in image coordinates), so the non-zero fill
+	// unions them; a piece wound the other way would cancel the quads it
+	// overlaps. Skia strokes into one outer and one inner contour
+	// (SkPathStroker, src/core/SkStroke.cpp @ skia
+	// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e), which has no such overlaps.
 	addTri := func(a, b, c [2]float64) {
+		if (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]) < 0 {
+			b, c = c, b
+		}
 		out = append(out,
 			pathSeg{op: pathMoveTo, args: [6]float64{a[0], a[1]}},
 			pathSeg{op: pathLineTo, args: [6]float64{b[0], b[1]}},
@@ -1184,8 +1193,12 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 	}
 
 	// emitJoin fills the outer corner between lines[i] (incoming) and
-	// lines[next] (outgoing). Bevel emits no patch — the existing
-	// per-segment quad ends already meet at a chord-like seam.
+	// lines[next] (outgoing), on whichever side the path turns away from,
+	// as Skia's joiners choose it by is_clockwise(before, after)
+	// (src/core/SkStrokerPriv.cpp:50-56, RoundJoiner :103-139, MiterJoiner
+	// :141-240 @ skia d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). Bevel emits
+	// no patch — the existing per-segment quad ends already meet at a
+	// chord-like seam.
 	emitJoin := func(i, next int) {
 		dx := lines[i][1][0] - lines[i][0][0]
 		dy := lines[i][1][1] - lines[i][0][1]
@@ -1197,21 +1210,28 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 			return
 		}
 		P := [2]float64{lines[i][1][0], lines[i][1][1]}
+		// Unit perpendiculars using the +perp convention from the quad
+		// (rotates segment direction 90° math-CCW; image-CW since y is
+		// down), flipped to the outer side: -perp when the cross product
+		// is positive (a right turn in image coordinates).
+		sign := 1.0
+		if dx*ny > dy*nx {
+			sign = -1
+		}
+		n1x, n1y := -sign*dy/dlen, sign*dx/dlen
+		n2x, n2y := -sign*ny/nlen, sign*nx/nlen
 
 		switch dc.gs.lineJoin {
 		case LineJoinRound:
-			// Normalize the sweep to the shortest arc so the ±π branch
-			// cut of Atan2 doesn't turn a tiny corner into a ~360° fan.
-			a1 := math.Atan2(dy, dx) - math.Pi/2
-			a2 := math.Atan2(ny, nx) - math.Pi/2
-			delta := a2 - a1
+			// The arc from the incoming to the outgoing outer normal,
+			// normalized to the shorter sweep so the ±π branch cut of
+			// Atan2 doesn't turn a tiny corner into a ~360° fan.
+			a1 := math.Atan2(n1y, n1x)
+			delta := math.Atan2(n2y, n2x) - a1
 			if delta > math.Pi {
 				delta -= 2 * math.Pi
 			} else if delta < -math.Pi {
 				delta += 2 * math.Pi
-			}
-			if delta < 0 {
-				a1, delta = a1+delta, -delta // start at the other endpoint, sweep forward
 			}
 			const steps = 8
 			for j := 0; j < steps; j++ {
@@ -1224,27 +1244,13 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 				)
 			}
 		case LineJoinMiter:
-			// Unit perpendiculars using the +perp convention from the
-			// quad (rotates segment direction 90° math-CCW; image-CW
-			// since y is down). dot(n1, n2) is invariant under joint
-			// sign flip, so compute it from the pp's directly.
-			pp1x, pp1y := -dy/dlen, dx/dlen
-			pp2x, pp2y := -ny/nlen, nx/nlen
-			dotN := pp1x*pp2x + pp1y*pp2y
+			dotN := n1x*n2x + n1y*n2y
 			if dotN > 1 {
 				dotN = 1
 			} else if dotN < -1 {
 				dotN = -1
 			}
 			sinHalf := math.Sqrt((1 + dotN) / 2)
-			// Outer side: -perp when the cross product is positive
-			// (right turn in image coords; raw cross sign suffices).
-			sign := 1.0
-			if dx*ny > dy*nx {
-				sign = -1
-			}
-			n1x, n1y := sign*pp1x, sign*pp1y
-			n2x, n2y := sign*pp2x, sign*pp2y
 			A1 := [2]float64{P[0] + n1x*hw, P[1] + n1y*hw}
 			A2 := [2]float64{P[0] + n2x*hw, P[1] + n2y*hw}
 			// Fallback per SVG/CSS: degrade to bevel when miter length
