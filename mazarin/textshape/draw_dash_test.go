@@ -118,3 +118,17 @@ func TestSetDash_InvalidPatternStrokesSolid(t *testing.T) {
 		wantAlpha(t, dc, 5, 4, true, "solid stroke for an invalid dash pattern")
 	}
 }
+
+// A dash that starts exactly on a vertex still gets its start cap: square
+// caps on a 4-on/4-off dash of the polyline (2,10)-(10,10)-(30,10) put the
+// second dash at x 10-14, capped out to x 9.
+func TestSetDash_DashStartingAtVertexIsCapped(t *testing.T) {
+	dc := dashContext(40, 20, 2, LineCapSquare, LineJoinMiter)
+	dc.SetDash(4, 4)
+	dc.MoveTo(2, 10)
+	dc.LineTo(10, 10)
+	dc.LineTo(30, 10)
+	dc.Stroke()
+	wantAlpha(t, dc, 9, 10, true, "second dash's square start cap, x 9-10")
+	wantAlpha(t, dc, 7, 10, false, "first gap, x 6-9 after the first dash's cap")
+}

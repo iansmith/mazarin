@@ -1084,6 +1084,9 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 	}
 	finalizeSubpath(false) // finalize trailing subpath if it didn't end with Close
 
+	if validDashIntervals(dc.gs.dashes) {
+		lines, nextLine = dashLines(lines, nextLine, dc.gs.dashes)
+	}
 	if len(lines) == 0 {
 		return nil
 	}
@@ -1260,6 +1263,14 @@ func (dc *DrawContextImpl) strokeExpand() []pathSeg {
 		dx, dy := x1-x0, y1-y0
 		length := math.Hypot(dx, dy)
 		if length < 1e-10 {
+			// A zero-length contour is capped as a dot, oriented along
+			// the x axis (SkStroke draws a degenerate line's caps when
+			// the cap is not butt; this is how a zero-length dash becomes
+			// a round or square dot).
+			if prevLine[i] == -1 && nextLine[i] == -1 {
+				addCap(x0, y0, 1, 0, true)
+				addCap(x0, y0, 1, 0, false)
+			}
 			continue
 		}
 		// Perpendicular unit vector scaled to half-width.
